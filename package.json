@@ -1,0 +1,92 @@
+{
+  "name": "dispatch-claude-code",
+  "displayName": "Dispatch",
+  "description": "Session monitor for Claude Code — status cards, subagent tracking, usage quotas, and transcript viewer in the VS Code sidebar",
+  "version": "1.0.0",
+  "publisher": "snowmelt",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/snowmeltio/dispatch.git"
+  },
+  "license": "SEE LICENSE IN LICENSE.md",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agent",
+    "session",
+    "monitor",
+    "dispatch",
+    "subagent"
+  ],
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claude-agent-panel",
+          "title": "Dispatch",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "claude-agent-panel": [
+        {
+          "type": "webview",
+          "id": "agentActivity.panel",
+          "name": "Dispatch"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agentActivity.refresh",
+        "title": "Refresh Agent Activity",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "agentActivity.focusSession",
+        "title": "Focus Claude Code Session"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentActivity.refresh",
+          "when": "view == agentActivity.panel",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "package": "node esbuild.config.mjs --production",
+    "lint": "eslint src/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "node smoke.mjs",
+    "vsce:package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.94.0",
+    "@typescript-eslint/eslint-plugin": "^8.57.0",
+    "@typescript-eslint/parser": "^8.57.0",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^10.0.3",
+    "jsdom": "^29.0.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.18"
+  }
+}

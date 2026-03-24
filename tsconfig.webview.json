@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "module": "ES2022",
+    "target": "ES2022",
+    "outDir": "media",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "declaration": false,
+    "sourceMap": true
+  },
+  "include": ["src/panel.ts", "src/panelUtils.ts"],
+  "exclude": ["node_modules"]
+}
