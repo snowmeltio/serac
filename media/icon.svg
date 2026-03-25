@@ -1,6 +1,10 @@
-<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2" y="3" width="8" height="8" rx="2" fill="currentColor" opacity="0.8"/>
-  <rect x="13" y="3" width="8" height="8" rx="2" fill="currentColor" opacity="0.5"/>
-  <rect x="2" y="13" width="8" height="8" rx="2" fill="currentColor" opacity="0.6"/>
-  <rect x="13" y="13" width="8" height="8" rx="2" fill="currentColor" opacity="0.3"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Swept wing, banking left, three-quarter from below, nose up-left, 3-panel -->
+  <rect width="128" height="128" fill="#61c1c4"/>
+  <!-- Underside left wing -->
+  <polygon points="28,48 62,62 40,82" fill="white" opacity="0.5"/>
+  <!-- Underside right wing -->
+  <polygon points="62,62 96,52 80,78" fill="white" opacity="0.75"/>
+  <!-- Central body/keel -->
+  <polygon points="62,62 40,82 80,78" fill="white" opacity="1"/>
 </svg>

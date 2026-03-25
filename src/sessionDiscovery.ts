@@ -343,7 +343,7 @@ export class SessionDiscovery {
     snapshots.push(...active, ...completed, ...dismissed);
 
     // Append extended archive entries (older than SCAN_AGE_GATE_MS) when range demands it
-    if (this.archiveRangeMs > SessionDiscovery.SCAN_AGE_GATE_MS && this.extendedArchive.size > 0) {
+    if (this.archiveRangeMs >= SessionDiscovery.SCAN_AGE_GATE_MS && this.extendedArchive.size > 0) {
       const extendedDismissed: SessionSnapshot[] = [];
       for (const snap of this.extendedArchive.values()) {
         // Skip if already covered by a live session (shouldn't happen, but guard)
@@ -362,8 +362,9 @@ export class SessionDiscovery {
   async setArchiveRange(rangeMs: number): Promise<boolean> {
     // 0 = no limit (all). Convert to Infinity internally.
     const effective = rangeMs === 0 ? Infinity : rangeMs;
+    this.log.info('[archive] setArchiveRange(%d) effective=%s loadedRange=%s', rangeMs, effective, this.extendedArchiveLoadedRange);
     this.archiveRangeMs = effective;
-    if (effective <= SessionDiscovery.SCAN_AGE_GATE_MS) {
+    if (effective < SessionDiscovery.SCAN_AGE_GATE_MS) {
       // Within the active scan gate — clear extended archive
       this.extendedArchive.clear();
       this.extendedArchiveLoadedRange = 0;
@@ -420,12 +421,14 @@ export class SessionDiscovery {
             confidence: 'high', // terminal status
           };
           this.extendedArchive.set(sessionId, snapshot);
-        } catch { /* skip unreadable files */ }
+        } catch (err) {
+          this.log.warn('[archive] Failed to stat %s: %s', file, err);
+        }
       }
       this.extendedArchiveLoadedRange = rangeMs;
-      this.log.trace('[archive] Extended archive scan: %d entries for range %dms', this.extendedArchive.size, rangeMs);
-    } catch {
-      // Workspace directory doesn't exist
+      this.log.info('[archive] Extended archive scan complete: %d entries for range %dms (scanned %d jsonl files)', this.extendedArchive.size, rangeMs, files.filter(f => f.endsWith('.jsonl')).length);
+    } catch (err) {
+      this.log.warn('[archive] Failed to read workspace directory %s: %s', wsDir, err);
     }
   }
 
