@@ -8,11 +8,34 @@ Dispatch is a VS Code sidebar extension that shows all your Claude Code sessions
 
 The sidebar is organised into vertical zones, top to bottom:
 
-1. **Top bar** — status summary counts (running, waiting, done) with colour-coded dots. Refresh and new-chat buttons.
-2. **Active session cards** — one card per running or waiting session. Colour-coded left border (blue = running, peach = waiting, teal = done). Each card shows session name, status pill, elapsed time, context usage bar, and subagent tree.
-3. **Archive section** — dismissed sessions in a collapsible list with time-range filter (1d / 3d / 7d / 30d / all). Click to view transcript or restore.
-4. **Usage quotas** — weekly session usage bar showing consumption against your plan limits (5-hour and 7-day windows). Sourced from the Anthropic OAuth API.
-5. **Other workspaces** — collapsed summary of Claude Code sessions running in other VS Code windows, with running/waiting/done counts per workspace.
+1. **Top bar** — status summary counts (running, waiting, done) with colour-coded dots. Refresh, Cleanup, and + New buttons.
+2. **Active session cards** — one card per running, waiting, or recently completed session. Colour-coded left border (blue = running, peach = waiting, teal = done). Each card shows session name, status pill, elapsed time, context usage bar, and subagent tree.
+3. **Archive section** — dismissed sessions in a compact list with time-range filter (1d / 3d / 7d / 30d / all).
+4. **Usage quotas** — current session and weekly usage bars showing consumption against your plan limits. Sourced from the Anthropic OAuth API.
+5. **Other workspaces** — summary of Claude Code sessions running in other VS Code windows, with running/waiting/done counts per workspace.
+
+## How to use
+
+### Starting a new session
+Click **+ New** in the top bar. This opens a fresh Claude Code editor panel. The session card appears in Dispatch when you send your first message.
+
+### Focusing a session
+Click any active session card to open that Claude Code session in the editor. The card highlights briefly to confirm focus.
+
+### Dismissing and archiving
+Hover over a session card to reveal action buttons on the right. Click the **×** button to dismiss the session. Dismissed sessions move to the archive section below. Dismissed sessions can be filtered by age using the time-range pills (1d, 3d, 7d, 30d, all).
+
+### Restoring an archived session
+Click any row in the archive section to restore it to the active list and open it in the editor.
+
+### Viewing a transcript
+Hover over a session card or archive row to reveal the transcript button (scroll icon). Click it to render the full session log as readable markdown in a new editor tab.
+
+### Cleanup
+Click **Cleanup** in the top bar, then click **Confirm?** within 3 seconds. This closes all Claude Code editor tabs except the one you're currently viewing. Useful when you've accumulated many open session tabs.
+
+### Refresh
+Click the refresh icon in the top bar to force an immediate rescan of all sessions. Dispatch also polls automatically (500ms when sessions are active, 2s when idle).
 
 ## Features
 
@@ -20,8 +43,8 @@ The sidebar is organised into vertical zones, top to bottom:
 - **Automatic discovery** — finds all Claude Code sessions in your workspace by scanning `~/.claude/projects/`. No configuration needed.
 - **Status inference** — determines session state (running, waiting, done) from JSONL records using a state machine with idle timers, permission detection, and process liveness checks.
 - **Status confidence** — sessions display at full, 75%, or 50% opacity depending on how recently data was received. Stale sessions show elapsed time instead of status labels.
-- **Click to focus** — clicking a card opens that Claude Code session in the editor.
 - **Session naming** — displays custom title, topic (from first user message), or folder name. Titles survive context compaction.
+- **Session repair** — automatically extracts titles from JSONL logs for sessions that Claude Code hasn't named yet, so every session has a readable label.
 
 ### Subagent tracking
 - **Nested agent detection** — Agent and Task tool calls appear as child items under the parent session card.
@@ -32,14 +55,15 @@ The sidebar is organised into vertical zones, top to bottom:
 
 ### Usage tracking
 - **OAuth API integration** — polls the Anthropic usage API for server-truth quota data (5-hour rolling window, 7-day rolling window).
-- **Visual quota bars** — colour-coded progress bars with hot-zone warnings.
+- **Visual quota bars** — colour-coded progress bars with hot-zone warnings at 60% capacity.
 - **Per-session context** — each card shows a context usage bar (tokens consumed vs model context window).
 - **Model-aware** — correctly sizes context bars for different models (1M for Opus/Sonnet, 200K for Haiku).
 - **Ghost bars** — shows greyed-out quota bars when your usage window has expired, so you know the state without confusion.
 
 ### Transcript viewer
-- Renders any session's full JSONL log as readable markdown.
+- Renders any session's full JSONL log as readable markdown with user/assistant/tool sections.
 - Opens in a VS Code editor tab for searching, copying, and reference.
+- Accessible from both active cards and archived sessions.
 
 ### Cross-workspace monitoring
 - **Foreign workspaces** — shows running/waiting/done counts for Claude Code sessions in other open VS Code windows.
@@ -48,7 +72,7 @@ The sidebar is organised into vertical zones, top to bottom:
 
 ### Visual design
 - **FLIP animations** — smooth 300ms card reordering when session states change.
-- **Light and dark themes** — full CSS variants for both VS Code themes, using the Snowmelt colour palette.
+- **Light and dark themes** — full CSS variants for both VS Code themes.
 - **Keyboard accessible** — focus-visible styles, keyboard activation on all interactive elements, WCAG AA contrast ratios.
 
 ## Requirements
@@ -70,7 +94,7 @@ code --install-extension dispatch-claude-code-1.0.0.vsix
 
 ### From VS Code Marketplace
 
-Not yet published. Coming soon as an unlisted extension under the `snowmelt` publisher.
+Not yet published. Coming soon as an unlisted extension under the `snowmeltio` publisher.
 
 ## Configuration
 
@@ -152,4 +176,6 @@ npm run smoke        # smoke test (build + basic checks)
 
 Use it freely. Fork it, extend it, run it at work. The one restriction: don't sell it or use it to build a competing product.
 
-Copyright 2026 Snowmelt Pty Ltd.
+If you'd like to use Dispatch beyond the scope of the licence, get in touch at [murray@snowmelt.io](mailto:murray@snowmelt.io).
+
+Copyright 2026 Snowmelt Consulting Pty Ltd.

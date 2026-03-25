@@ -3,7 +3,7 @@
   "displayName": "Dispatch",
   "description": "Session monitor for Claude Code — status cards, subagent tracking, usage quotas, and transcript viewer in the VS Code sidebar",
   "version": "1.0.0",
-  "publisher": "snowmelt",
+  "publisher": "snowmeltio",
   "repository": {
     "type": "git",
     "url": "https://github.com/snowmeltio/dispatch.git"
