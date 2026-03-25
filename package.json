@@ -2,7 +2,7 @@
   "name": "dispatch-claude-code",
   "displayName": "Dispatch",
   "description": "Session monitor for Claude Code — status cards, subagent tracking, usage quotas, and transcript viewer in the VS Code sidebar",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",
