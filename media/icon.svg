@@ -1,10 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <!-- Swept wing, banking left, three-quarter from below, nose up-left, 3-panel -->
-  <rect width="128" height="128" fill="#61c1c4"/>
+  <!-- Activity bar icon — transparent bg, VS Code applies theme colour -->
   <!-- Underside left wing -->
-  <polygon points="28,48 62,62 40,82" fill="white" opacity="0.5"/>
+  <polygon points="28,48 62,62 40,82" fill="currentColor" opacity="0.45"/>
   <!-- Underside right wing -->
-  <polygon points="62,62 96,52 80,78" fill="white" opacity="0.75"/>
+  <polygon points="62,62 96,52 80,78" fill="currentColor" opacity="0.7"/>
   <!-- Central body/keel -->
-  <polygon points="62,62 40,82 80,78" fill="white" opacity="1"/>
+  <polygon points="62,62 40,82 80,78" fill="currentColor"/>
 </svg>

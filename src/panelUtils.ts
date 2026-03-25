@@ -107,6 +107,8 @@ export function getDisplayName(s: PanelSession): string {
 // ===== Ghost detection =====
 
 export function isGhost(s: PanelSession): boolean {
+  // Dismissed (archived) sessions are never ghosts — they should always appear in the archive list
+  if (s.dismissed) { return false; }
   return !s.topic && !s.activity && (s.status === 'done' || s.status === 'stale');
 }
 
