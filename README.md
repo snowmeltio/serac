@@ -4,6 +4,8 @@
 
 Dispatch is a VS Code sidebar extension that shows all your Claude Code sessions as colour-coded status cards. Built for multi-session workflows where you need to know which agent needs attention, which is finished, and which is blocked.
 
+![Active sessions](media/screenshot-active.png) ![Archive and cross-workspace](media/screenshot-archive.png)
+
 ## Panel layout
 
 The sidebar is organised into vertical zones, top to bottom:
@@ -81,29 +83,6 @@ Click the refresh icon in the top bar to force an immediate rescan of all sessio
 - Claude Code VS Code extension (provides the `claude-vscode.editor.open` command)
 - macOS (see [Platform notes](#platform-notes))
 
-## Installation
-
-### From VSIX (local)
-
-```bash
-npm install
-npm run build
-npx vsce package
-code --install-extension dispatch-claude-code-1.0.0.vsix
-```
-
-### From VS Code Marketplace
-
-Not yet published. Coming soon as an unlisted extension under the `snowmeltio` publisher.
-
-## Configuration
-
-Dispatch works with zero configuration. All settings are optional.
-
-| Setting | Type | Default | Purpose |
-|---------|------|---------|---------|
-| `agentActivity.accountCutover` | string | `""` | ISO 8601 timestamp. Sessions before this date become transcript-only (useful after switching Claude accounts). |
-
 ## Commands
 
 | Command | Title | Description |
@@ -126,49 +105,12 @@ Dispatch reads Claude Code's internal data formats. None of these are documented
 |------------|--------------------------|
 | **JSONL session logs** (`~/.claude/projects/<key>/*.jsonl`) | Session discovery, status inference, transcript rendering. This is the core data source. |
 | **JSONL record format** (type, content, tool_use structure) | Status state machine, subagent detection, topic extraction. |
-| **`session-meta.json`** | Dismissed/acknowledged state persistence. |
+| **Dispatch session metadata** (`session-meta.json` in `~/.claude/projects/<key>/`) | Dismissed/acknowledged state persistence. |
 | **OAuth usage API** (`api.anthropic.com/api/oauth/usage`) | Usage quota bars. Undocumented endpoint; could change or be removed. |
 | **Keychain entry** (`Claude Code-credentials`) | OAuth token retrieval on macOS. |
 | **`claude-vscode.editor.open`** command | Click-to-focus. If the Claude Code extension changes this command ID, focusing breaks. |
 
-**In practice:** Dispatch has been stable through 37 development sessions and daily use since March 2026. JSONL format changes are the highest-risk dependency; the extension validates records defensively and degrades gracefully (unknown records are skipped, not crashed on).
-
-## Architecture
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical reference: data flow, status inference rules, timer hierarchy, usage model, and webview rendering protocol.
-
-### Source files
-
-| File | LOC | Role |
-|------|-----|------|
-| `extension.ts` | ~220 | VS Code entry, OutputChannel, command registration |
-| `sessionManager.ts` | ~1,154 | Per-session state machine, record processing |
-| `sessionDiscovery.ts` | ~679 | JSONL scanning, meta persistence, extended archive scanning |
-| `foreignWorkspaceManager.ts` | 213 | Cross-workspace session discovery and polling |
-| `panel.ts` | ~795 | Webview UI, DOM reconciler, error boundary |
-| `panelProvider.ts` | 166 | WebviewViewProvider, CSP, HTML template |
-| `panelUtils.ts` | ~205 | 16 pure functions for testability |
-| `toolProfiles.ts` | 112 | Tool metadata map, `computeDemotion` pure function |
-| `subagentTailerManager.ts` | 192 | Subagent JSONL tailer lifecycle and I/O polling |
-| `jsonlTailer.ts` | 125 | Byte-offset JSONL tailing with truncation detection |
-| `jsonlValidator.ts` | ~130 | Record validation, type predicates, content extraction |
-| `usageProvider.ts` | 307 | OAuth token + Anthropic usage API polling |
-| `transcriptRenderer.ts` | ~215 | Markdown transcript generation |
-| `sessionRepair.ts` | 190 | Title extraction from first user message |
-| `types.ts` | ~238 | All shared types and discriminated unions |
-| `validation.ts` | 39 | Session ID + webview message validation |
-
-445 tests across 18 test files.
-
-## Development
-
-```bash
-npm install
-npm run build        # esbuild dual-target (Node CJS + browser IIFE)
-npm test             # vitest
-npm run lint         # eslint
-npm run smoke        # smoke test (build + basic checks)
-```
+These dependencies have been stable through daily use since March 2026. The extension validates records defensively and degrades gracefully (unknown records are skipped, not crashed on).
 
 ## Licence
 
