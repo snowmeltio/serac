@@ -21,3 +21,8 @@ dist/jsonlTailer.*
 dist/transcriptRenderer.*
 dist/usageProvider.*
 dist/types.*
+STATE.md
+HANDOFF-PROMPT.md
+.locks/**
+logo-concepts/**
+CHANGELOG.md

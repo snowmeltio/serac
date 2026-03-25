@@ -5,3 +5,5 @@ dist/
 .snapshot-*
 media/panel.js
 media/panel.js.map
+logo-concepts/
+.locks/
