@@ -4,7 +4,7 @@
 
 Dispatch is a VS Code sidebar extension that shows all your Claude Code sessions as colour-coded status cards. Built for multi-session workflows where you need to know which agent needs attention, which is finished, and which is blocked.
 
-![Active sessions](media/screenshot-active.png) ![Archive and cross-workspace](media/screenshot-archive.png)
+![Active sessions](https://raw.githubusercontent.com/snowmeltio/dispatch/main/media/screenshot-active.png) ![Archive and cross-workspace](https://raw.githubusercontent.com/snowmeltio/dispatch/main/media/screenshot-archive.png)
 
 ## Panel layout
 
