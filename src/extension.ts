@@ -10,7 +10,7 @@ export function activate(context: vscode.ExtensionContext) {
   if (!workspacePath) { return; }
   const wsPath: string = workspacePath;
 
-  const log = vscode.window.createOutputChannel('Dispatch', { log: true });
+  const log = vscode.window.createOutputChannel('Serac', { log: true });
   context.subscriptions.push(log);
 
   const discovery = new SessionDiscovery(wsPath, { log });

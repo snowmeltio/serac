@@ -127,7 +127,7 @@ describe('extension', () => {
 
   it('creates output channel, discovery, usage provider, and panel', () => {
     activate(context as any);
-    expect(vscode.window.createOutputChannel).toHaveBeenCalledWith('Dispatch', { log: true });
+    expect(vscode.window.createOutputChannel).toHaveBeenCalledWith('Serac', { log: true });
     expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalled();
     expect(mockDiscovery.start).toHaveBeenCalled();
     expect(mockUsageProvider.start).toHaveBeenCalled();
