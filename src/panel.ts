@@ -1,5 +1,5 @@
 /**
- * Webview panel script for Dispatch.
+ * Webview panel script for Serac.
  * Runs inside the VS Code webview (browser context).
  * Bundled by esbuild from src/panel.ts → media/panel.js.
  */

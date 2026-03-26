@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 40 84 50">
   <!-- Activity bar icon — transparent bg, VS Code applies theme colour -->
   <!-- Underside left wing -->
   <polygon points="28,48 62,62 40,82" fill="currentColor" opacity="0.45"/>

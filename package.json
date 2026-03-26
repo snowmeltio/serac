@@ -1,12 +1,12 @@
 {
-  "name": "dispatch-claude-code",
-  "displayName": "Dispatch",
+  "name": "serac-claude-code",
+  "displayName": "Serac Session Monitor",
   "description": "Session monitor for Claude Code — status cards, subagent tracking, usage quotas, and transcript viewer in the VS Code sidebar",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",
-    "url": "https://github.com/snowmeltio/dispatch.git"
+    "url": "https://github.com/snowmeltio/serac.git"
   },
   "license": "SEE LICENSE IN LICENSE.md",
   "keywords": [
@@ -15,7 +15,7 @@
     "agent",
     "session",
     "monitor",
-    "dispatch",
+    "serac",
     "subagent"
   ],
   "icon": "media/icon.png",
@@ -32,7 +32,7 @@
       "activitybar": [
         {
           "id": "claude-agent-panel",
-          "title": "Dispatch",
+          "title": "Serac",
           "icon": "media/icon.svg"
         }
       ]
@@ -42,7 +42,7 @@
         {
           "type": "webview",
           "id": "agentActivity.panel",
-          "name": "Dispatch"
+          "name": "Session Monitor"
         }
       ]
     },

@@ -7,3 +7,12 @@ media/panel.js
 media/panel.js.map
 logo-concepts/
 .locks/
+
+# Claude Code — personal/ephemeral (keep CLAUDE.md and .claude/settings.json)
+.claude/projects/
+.claude/todos/
+.claude/debug/
+.claude/file-history/
+.claude/shell-snapshots/
+.claude/transcripts/
+.claude/settings.local.json

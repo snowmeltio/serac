@@ -1,4 +1,4 @@
-# Dispatch — Architecture
+# Serac — Architecture
 
 ## Data flow
 

@@ -1,10 +1,10 @@
-# Dispatch
+# Serac
 
 **Session monitor for Claude Code.**
 
-Dispatch is a VS Code sidebar extension that shows all your Claude Code sessions as colour-coded status cards. Built for multi-session workflows where you need to know which agent needs attention, which is finished, and which is blocked.
+Serac is a VS Code sidebar extension that shows all your Claude Code sessions as colour-coded status cards. Built for multi-session workflows where you need to know which agent needs attention, which is finished, and which is blocked.
 
-![Active sessions](https://raw.githubusercontent.com/snowmeltio/dispatch/main/media/screenshot-active.png) ![Archive and cross-workspace](https://raw.githubusercontent.com/snowmeltio/dispatch/main/media/screenshot-archive.png)
+![Active sessions](https://raw.githubusercontent.com/snowmeltio/serac/main/media/screenshot-active.png) ![Archive and cross-workspace](https://raw.githubusercontent.com/snowmeltio/serac/main/media/screenshot-archive.png)
 
 ## Panel layout
 
@@ -19,7 +19,7 @@ The sidebar is organised into vertical zones, top to bottom:
 ## How to use
 
 ### Starting a new session
-Click **+ New** in the top bar. This opens a fresh Claude Code editor panel. The session card appears in Dispatch when you send your first message.
+Click **+ New** in the top bar. This opens a fresh Claude Code editor panel. The session card appears in Serac when you send your first message.
 
 ### Focusing a session
 Click any active session card to open that Claude Code session in the editor. The card highlights briefly to confirm focus.
@@ -37,7 +37,7 @@ Hover over a session card or archive row to reveal the transcript button (scroll
 Click **Cleanup** in the top bar, then click **Confirm?** within 3 seconds. This closes all Claude Code editor tabs except the one you're currently viewing. Useful when you've accumulated many open session tabs.
 
 ### Refresh
-Click the refresh icon in the top bar to force an immediate rescan of all sessions. Dispatch also polls automatically (500ms when sessions are active, 2s when idle).
+Click the refresh icon in the top bar to force an immediate rescan of all sessions. Serac also polls automatically (500ms when sessions are active, 2s when idle).
 
 ## Features
 
@@ -92,20 +92,20 @@ Click the refresh icon in the top bar to force an immediate rescan of all sessio
 
 ## Platform notes
 
-**Dispatch is built and tested on macOS.** It will run on other platforms, but with reduced functionality:
+**Serac is built and tested on macOS.** It will run on other platforms, but with reduced functionality:
 
 - **Credential extraction** — usage quota data is read from the macOS Keychain (`Claude Code-credentials`). On Linux/Windows, it falls back to `~/.claude/.credentials.json` (plaintext). If neither is available, usage bars are hidden.
 - **File paths** — session discovery paths (`~/.claude/projects/`) are Unix-convention. Windows support has not been tested.
 
 ## Fragility profile
 
-Dispatch reads Claude Code's internal data formats. None of these are documented or guaranteed by Anthropic:
+Serac reads Claude Code's internal data formats. None of these are documented or guaranteed by Anthropic:
 
 | Dependency | What breaks if it changes |
 |------------|--------------------------|
 | **JSONL session logs** (`~/.claude/projects/<key>/*.jsonl`) | Session discovery, status inference, transcript rendering. This is the core data source. |
 | **JSONL record format** (type, content, tool_use structure) | Status state machine, subagent detection, topic extraction. |
-| **Dispatch session metadata** (`session-meta.json` in `~/.claude/projects/<key>/`) | Dismissed/acknowledged state persistence. |
+| **Serac session metadata** (`session-meta.json` in `~/.claude/projects/<key>/`) | Dismissed/acknowledged state persistence. |
 | **OAuth usage API** (`api.anthropic.com/api/oauth/usage`) | Usage quota bars. Undocumented endpoint; could change or be removed. |
 | **Keychain entry** (`Claude Code-credentials`) | OAuth token retrieval on macOS. |
 | **`claude-vscode.editor.open`** command | Click-to-focus. If the Claude Code extension changes this command ID, focusing breaks. |
@@ -118,6 +118,6 @@ These dependencies have been stable through daily use since March 2026. The exte
 
 Use it freely. Fork it, extend it, run it at work. The one restriction: don't sell it or use it to build a competing product.
 
-If you'd like to use Dispatch beyond the scope of the licence, get in touch at [murray@snowmelt.io](mailto:murray@snowmelt.io).
+If you'd like to use Serac beyond the scope of the licence, get in touch at [murray@snowmelt.io](mailto:murray@snowmelt.io).
 
 Copyright 2026 Snowmelt Consulting Pty Ltd.
