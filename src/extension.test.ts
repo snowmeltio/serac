@@ -16,9 +16,16 @@ vi.mock('vscode', () => {
       }),
     },
     ViewColumn: { One: 1, Active: -1 },
+    RelativePattern: class { constructor(public base: unknown, public pattern: string) {} },
     workspace: {
       workspaceFolders: [{ uri: { scheme: 'file', fsPath: '/test/ws' }, name: 'ws', index: 0 }],
       openTextDocument: vi.fn().mockResolvedValue({}),
+      createFileSystemWatcher: vi.fn(() => ({
+        onDidChange: vi.fn(),
+        onDidCreate: vi.fn(),
+        onDidDelete: vi.fn(),
+        dispose: vi.fn(),
+      })),
     },
     window: {
       createOutputChannel: vi.fn(() => ({
@@ -93,6 +100,11 @@ vi.mock('./transcriptRenderer.js', () => ({
 
 vi.mock('./sessionRepair.js', () => ({
   ensureSessionMetadata: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock('./claudeSettings.js', () => ({
+  readCompactSettings: vi.fn().mockReturnValue({ autoCompactWindow: 200_000, autoCompactPct: 95 }),
+  getClaudeSettingsPath: vi.fn().mockReturnValue('/mock/.claude/settings.json'),
 }));
 
 import { activate, deactivate } from './extension.js';

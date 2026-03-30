@@ -201,6 +201,8 @@ export type WebviewMessage =
       usage: UsageSnapshot | null;
       /** Foreign workspace summaries (empty when no other workspaces active) */
       foreignWorkspaces?: WorkspaceGroup[];
+      /** Claude Code auto-compact settings (from ~/.claude/settings.json env overrides) */
+      compactSettings?: import('./claudeSettings.js').CompactSettings;
     }
   | {
       type: 'focusSession';

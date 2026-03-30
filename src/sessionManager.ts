@@ -94,8 +94,13 @@ const IDLE_DELAY_MS = 5000;
  *  mechanism (no authoritative signal exists in current Claude Code JSONL output). */
 const PERMISSION_DELAY_MS = 3_000;
 /** Extended threshold for slow tools (Bash auto-approve resolves in <4s;
- *  MCP tools need network round-trip). 8s covers execution + network. */
-const SLOW_PERMISSION_DELAY_MS = 8_000;
+ *  MCP tools need network round-trip). 6s covers execution + network
+ *  while keeping worst-case doubled delay at 12s (down from 16s). */
+const SLOW_PERMISSION_DELAY_MS = 6_000;
+/** Recency window: only double permission delay if a tool result arrived
+ *  within this window. Prevents stale flag from inflating delay on permission
+ *  prompts that appear long after the last tool completed. */
+const TOOL_RECENCY_MS = 3_000;
 /** Topic extraction patterns [A3]:
  *  HANDOFF_PATTERN — matches "HANDOFF-PROMPT: <title>" or "HANDOFF-PROMPT <title>"
  *  CONTINUE_PATTERN — matches "Continuing: /path/to/project" from /continue prompts */
@@ -125,10 +130,10 @@ export class SessionManager {
   /** Tracks when a message was enqueued. Used by display layer to avoid marking
    *  queued sessions as stale (C3: enqueue→done+acknowledged premature stale). */
   private enqueuedAt = 0;
-  /** Whether a tool_result has been received in the current turn [#106/Phase 4].
-   *  When true, tools are actively flowing — extend permission delay to reduce
-   *  false "waiting" on tool-heavy turns with brief inter-tool silence. */
-  private hadToolsInTurn = false;
+  /** Timestamp (ms) of the most recent tool_result in this turn.
+   *  Used to extend permission delay only when tools completed recently,
+   *  avoiding stale flag inflation on later permission prompts. */
+  private lastToolResultAt = 0;
   /** Whether an assistant or progress record has arrived in the current turn.
    *  Reset on user record. When false, the 30s extended thinking grace applies.
    *  When true, the 5s idle timer is used (thinking phase is over). */
@@ -195,7 +200,7 @@ export class SessionManager {
     this.state.firstActivity = now;
     this.firstActivitySet = false;
     this.seenOutputInTurn = false;
-    this.hadToolsInTurn = false;
+    this.lastToolResultAt = 0;
     // Dispose all subagent resources before clearing
     this.subagentTailers.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
@@ -560,7 +565,7 @@ export class SessionManager {
     const content = record.message?.content || [];
     for (const block of content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
-        this.hadToolsInTurn = true;
+        this.lastToolResultAt = Date.now();
         const toolName = this.state.activeTools.get(block.tool_use_id);
         this.removeTool(this.state.activeTools, block.tool_use_id);
 
@@ -590,7 +595,7 @@ export class SessionManager {
     // User input means the assistant turn finished — now running again
     // Reset turn-scoped flags: new turn starts, thinking phase begins
     this.seenOutputInTurn = false;
-    this.hadToolsInTurn = false;
+    this.lastToolResultAt = 0;
     this.setRunning();
     // Cancel any pending permission timer — tool results have arrived
     if (this.state.permissionTimerId) {
@@ -1003,8 +1008,10 @@ export class SessionManager {
   }
 
   /** Shared permission timer scheduling. Returns timer ID or undefined if no non-exempt tools.
-   *  When hadToolsInTurn is true (tools actively flowing), doubles the delay to reduce
-   *  false "waiting" on tool-heavy turns with brief inter-tool silence [#106/Phase 4]. */
+   *  When a tool result arrived recently (within TOOL_RECENCY_MS), doubles the delay to
+   *  reduce false "waiting" on tool-heavy turns with brief inter-tool silence [#106/Phase 4].
+   *  Unlike the previous boolean flag, recency-based doubling decays naturally so permission
+   *  prompts arriving after a gap are detected at base speed. */
   private schedulePermissionTimer(
     tools: Map<string, string>,
     onExpired: () => void,
@@ -1015,8 +1022,9 @@ export class SessionManager {
 
     const hasSlow = toolNames.some(name => getToolProfile(name).slow);
     let delay = hasSlow ? SLOW_PERMISSION_DELAY_MS : PERMISSION_DELAY_MS;
-    // Tools actively completing → double the delay before inferring permission wait
-    if (this.hadToolsInTurn) { delay *= 2; }
+    // Only double if a tool result arrived recently — avoids stale inflation
+    const recentToolResult = this.lastToolResultAt > 0 && (Date.now() - this.lastToolResultAt < TOOL_RECENCY_MS);
+    if (recentToolResult) { delay *= 2; }
 
     return setTimeout(() => {
       if (this.disposed) { return; }

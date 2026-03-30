@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
 import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WebviewCommand, WorkspaceGroup } from './types.js';
+import type { CompactSettings } from './claudeSettings.js';
 import { parseWebviewCommand } from './validation.js';
 
 /**
@@ -15,6 +16,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private waitingCount = 0;
   private usage: UsageSnapshot | null = null;
   private foreignWorkspaces: WorkspaceGroup[] = [];
+  private compactSettings: CompactSettings | undefined;
   private onFocusSession: ((sessionId: string) => void) | undefined;
   private onDismissSession: ((sessionId: string) => void) | undefined;
   private onUndismissSession: ((sessionId: string) => void) | undefined;
@@ -103,12 +105,13 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /** Update the panel with new session data */
-  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[]): void {
+  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings): void {
     this.sessions = sessions;
     this.waitingCount = waitingCount;
     this.workspacePath = workspacePath;
     this.usage = usage;
     this.foreignWorkspaces = foreignWorkspaces ?? [];
+    this.compactSettings = compactSettings;
 
     // Update badge
     if (this.view) {
@@ -136,6 +139,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       workspacePath: this.workspacePath,
       usage: this.usage,
       foreignWorkspaces: this.foreignWorkspaces.length > 0 ? this.foreignWorkspaces : undefined,
+      compactSettings: this.compactSettings,
     };
 
     this.view.webview.postMessage(message);
