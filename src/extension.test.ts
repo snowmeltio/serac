@@ -60,6 +60,11 @@ const mockDiscovery = {
   isSessionRunning: vi.fn().mockReturnValue(false),
   getSessionFilePath: vi.fn().mockReturnValue(null),
   setArchiveRange: vi.fn().mockResolvedValue(true),
+  getTeamSnapshots: vi.fn().mockReturnValue([]),
+  dismissTeam: vi.fn(),
+  undismissTeam: vi.fn(),
+  getTeamSessionFilePath: vi.fn().mockReturnValue(null),
+  isTeamSessionRunning: vi.fn().mockReturnValue(false),
 };
 
 const mockUsageProvider = {
@@ -78,6 +83,8 @@ const mockPanelProvider = {
   setNewChatHandler: vi.fn(),
   setCleanupHandler: vi.fn(),
   setArchiveRangeHandler: vi.fn(),
+  setDismissTeamHandler: vi.fn(),
+  setUndismissTeamHandler: vi.fn(),
 };
 
 vi.mock('./sessionDiscovery.js', () => ({

@@ -191,6 +191,72 @@ export interface WorkspaceGroup {
   confidence: StatusConfidence;
 }
 
+// ── Team types (Cornice orchestrator integration) ───────────────────
+
+/** Exit status of a Cornice-spawned agent */
+export type AgentExitStatus = 'success' | 'failed' | 'cancelled';
+
+/** Agent entry in a Cornice team manifest */
+export interface TeamAgentEntry {
+  sessionId: string;
+  name: string;
+  cwd: string;
+  parentSessionId: string;
+  depth: number;
+  spawnedAt: number;       // epoch ms (parsed from ISO)
+  completedAt: number | null;
+  exitStatus: AgentExitStatus | null;
+}
+
+/** Parsed team manifest (from ~/.claude/teams/<id>.json) */
+export interface TeamManifest {
+  version: number;
+  orchestrator: {
+    sessionId: string;
+    name: string;
+    startedAt: number;     // epoch ms
+    cwd: string;
+  };
+  agents: TeamAgentEntry[];
+  updatedAt: number;       // epoch ms
+}
+
+/** Snapshot of a team agent sent to webview (manifest + JSONL state merged) */
+export interface TeamAgentSnapshot {
+  sessionId: string;
+  name: string;
+  cwd: string;
+  parentSessionId: string;
+  depth: number;
+  spawnedAt: number;
+  status: DisplayStatus;
+  activity: string;
+  confidence: StatusConfidence;
+  /** Session-level subagents within this agent (from its JSONL) */
+  subagents: SubagentSnapshot[];
+  contextTokens: number;
+  exitStatus: AgentExitStatus | null;
+}
+
+/** Full team snapshot sent to webview */
+export interface TeamSnapshot {
+  /** Orchestrator session ID */
+  teamId: string;
+  name: string;
+  orchestrator: {
+    sessionId: string;
+    status: DisplayStatus;
+    activity: string;
+    confidence: StatusConfidence;
+    contextTokens: number;
+    modelLabel: string;
+  };
+  agents: TeamAgentSnapshot[];
+  /** Aggregated status counts across all agents */
+  counts: Record<string, number>;
+  dismissed: boolean;
+}
+
 /** Message types sent from extension to webview */
 export type WebviewMessage =
   | {
@@ -201,6 +267,8 @@ export type WebviewMessage =
       usage: UsageSnapshot | null;
       /** Foreign workspace summaries (empty when no other workspaces active) */
       foreignWorkspaces?: WorkspaceGroup[];
+      /** Cornice agent team snapshots (empty when no teams active) */
+      teams?: TeamSnapshot[];
       /** Claude Code auto-compact settings (from ~/.claude/settings.json env overrides) */
       compactSettings?: import('./claudeSettings.js').CompactSettings;
     }
@@ -219,7 +287,9 @@ export type WebviewCommand =
   | { type: 'copyToClipboard'; text: string }
   | { type: 'requestUpdate' }
   | { type: 'cleanup' }
-  | { type: 'archiveRange'; rangeMs: number };
+  | { type: 'archiveRange'; rangeMs: number }
+  | { type: 'dismissTeam'; teamId: string }
+  | { type: 'undismissTeam'; teamId: string };
 
 /** Known JSONL record types that the extension processes */
 export type JsonlRecordType =

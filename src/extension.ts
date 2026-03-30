@@ -50,8 +50,10 @@ export function activate(context: vscode.ExtensionContext) {
     previouslyFocusedSessionId = sessionId;
     // Ensure the JSONL has summary metadata so the Claude extension can discover it.
     // Skip for running sessions to avoid concurrent write risk.
-    if (!discovery.isSessionRunning(sessionId)) {
-      const jsonlPath = discovery.getSessionFilePath(sessionId);
+    const isRunning = discovery.isSessionRunning(sessionId) || discovery.isTeamSessionRunning(sessionId);
+    if (!isRunning) {
+      const jsonlPath = discovery.getSessionFilePath(sessionId)
+        ?? discovery.getTeamSessionFilePath(sessionId);
       if (jsonlPath) { void ensureSessionMetadata(sessionId, jsonlPath); }
     }
     vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
@@ -144,7 +146,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Handle transcript view: render JSONL to markdown and open it
   panelProvider.setTranscriptHandler((sessionId: string) => {
-    const jsonlPath = discovery.getSessionFilePath(sessionId);
+    const jsonlPath = discovery.getSessionFilePath(sessionId)
+      ?? discovery.getTeamSessionFilePath(sessionId);
     if (!jsonlPath) {
       vscode.window.showWarningMessage('Session file not found.');
       return;
@@ -168,6 +171,17 @@ export function activate(context: vscode.ExtensionContext) {
       changed => { if (changed) { sendUpdate(); } },
       err => log.warn('Failed to set archive range:', err),
     );
+  });
+
+  // Handle team dismiss/undismiss
+  panelProvider.setDismissTeamHandler((teamId: string) => {
+    discovery.dismissTeam(teamId);
+    sendUpdate();
+  });
+
+  panelProvider.setUndismissTeamHandler((teamId: string) => {
+    discovery.undismissTeam(teamId);
+    sendUpdate();
   });
 
   // Register refresh command
@@ -195,10 +209,19 @@ export function activate(context: vscode.ExtensionContext) {
     if (now - lastSendTime < 200) { return; }
     lastSendTime = now;
     const sessions = discovery.getSnapshots();
-    const waitingCount = discovery.getWaitingCount();
+    const teams = discovery.getTeamSnapshots();
+    // Include team agents waiting on input in the badge count
+    let waitingCount = discovery.getWaitingCount();
+    for (const team of teams) {
+      if (team.dismissed) { continue; }
+      for (const agent of team.agents) {
+        if (agent.status === 'waiting') { waitingCount++; }
+      }
+      if (team.orchestrator.status === 'waiting') { waitingCount++; }
+    }
     const usage = usageProvider.getSnapshot();
     const foreignWorkspaces = discovery.getForeignWorkspaces();
-    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings);
+    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams);
 
     // Auto-focus new session created via "+ New" button
     if (pendingNewChatKnownIds) {

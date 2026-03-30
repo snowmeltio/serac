@@ -122,7 +122,7 @@ describe('SessionManager sidechain tests', () => {
       }
 
       // Add tool 501 — should evict tool-0
-      await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-500')]);
+      await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-500')]);
 
       // tool-0 should have been evicted, so completing it should not change status
       // but tool-500 should still be tracked — permission timer detects waiting
@@ -165,7 +165,7 @@ describe('SessionManager sidechain tests', () => {
     it('demotes to waiting when permission timer fires', async () => {
       const mgr = makeManager();
       await feedRecords(mgr, [userRecord('start')]);
-      await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
+      await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-1')]);
       expect(mgr.getStatus()).toBe('running');
 
       // Permission timer fires at 3s
@@ -315,7 +315,7 @@ describe('SessionManager sidechain tests', () => {
       await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-1', { description: 'Worker' })]);
 
       // Subagent uses a non-exempt tool
-      await feedRecords(mgr, [sidechainAssistantToolUse('Edit', 'sc-1', 'agent-1')]);
+      await feedRecords(mgr, [sidechainAssistantToolUse('SomeTool', 'sc-1', 'agent-1')]);
 
       // Wait for subagent permission timer (3s for normal tools)
       vi.advanceTimersByTime(3_001);
@@ -329,7 +329,7 @@ describe('SessionManager sidechain tests', () => {
       await feedRecords(mgr, [userRecord('start')]);
       await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-1', { description: 'Worker' })]);
 
-      await feedRecords(mgr, [sidechainAssistantToolUse('Edit', 'sc-1', 'agent-1')]);
+      await feedRecords(mgr, [sidechainAssistantToolUse('SomeTool', 'sc-1', 'agent-1')]);
       vi.advanceTimersByTime(3_001);
       expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(true);
 
@@ -414,7 +414,7 @@ describe('SessionManager sidechain tests', () => {
       expect(mgr.getStatus()).toBe('running');
 
       // Tool use → running
-      await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
+      await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-1')]);
       expect(mgr.getStatus()).toBe('running');
 
       // Permission timer with active tool → waiting
@@ -426,7 +426,7 @@ describe('SessionManager sidechain tests', () => {
       expect(mgr.getStatus()).toBe('running');
 
       // Another tool use
-      await feedRecords(mgr, [assistantToolUseRecord('Write', 'tool-2')]);
+      await feedRecords(mgr, [assistantToolUseRecord('AnotherTool', 'tool-2')]);
       expect(mgr.getStatus()).toBe('running');
 
       // Another permission wait
@@ -468,8 +468,8 @@ describe('SessionManager sidechain tests', () => {
         timestamp: new Date().toISOString(),
         message: {
           content: [
-            { type: 'tool_use', name: 'Edit', id: 'tool-1', input: {} },
-            { type: 'tool_use', name: 'Write', id: 'tool-2', input: {} },
+            { type: 'tool_use', name: 'SomeTool', id: 'tool-1', input: {} },
+            { type: 'tool_use', name: 'AnotherTool', id: 'tool-2', input: {} },
           ],
         },
       }]);
@@ -593,7 +593,7 @@ describe('SessionManager sidechain tests', () => {
     it('clears permission timer', async () => {
       const mgr = makeManager();
       await feedRecords(mgr, [userRecord('start')]);
-      await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
+      await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-1')]);
       // Permission timer is pending
       mgr.dispose();
       vi.advanceTimersByTime(25_000);
@@ -604,7 +604,7 @@ describe('SessionManager sidechain tests', () => {
       const mgr = makeManager();
       await feedRecords(mgr, [userRecord('start')]);
       await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-1', { description: 'Worker' })]);
-      await feedRecords(mgr, [sidechainAssistantToolUse('Edit', 'sc-1', 'agent-1')]);
+      await feedRecords(mgr, [sidechainAssistantToolUse('SomeTool', 'sc-1', 'agent-1')]);
       // Subagent permission timer pending
       mgr.dispose();
       vi.advanceTimersByTime(25_000);
@@ -615,7 +615,7 @@ describe('SessionManager sidechain tests', () => {
     it('prevents timer callbacks from mutating state after dispose', async () => {
       const mgr = makeManager();
       await feedRecords(mgr, [userRecord('start')]);
-      await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
+      await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-1')]);
 
       // Don't dispose yet — let permission timer be set
       // Now dispose

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
-import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WebviewCommand, WorkspaceGroup } from './types.js';
+import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WebviewCommand, WorkspaceGroup, TeamSnapshot } from './types.js';
 import type { CompactSettings } from './claudeSettings.js';
 import { parseWebviewCommand } from './validation.js';
 
@@ -16,6 +16,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private waitingCount = 0;
   private usage: UsageSnapshot | null = null;
   private foreignWorkspaces: WorkspaceGroup[] = [];
+  private teams: TeamSnapshot[] = [];
   private compactSettings: CompactSettings | undefined;
   private onFocusSession: ((sessionId: string) => void) | undefined;
   private onDismissSession: ((sessionId: string) => void) | undefined;
@@ -24,6 +25,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private onNewChat: (() => void) | undefined;
   private onCleanup: (() => void) | undefined;
   private onArchiveRange: ((rangeMs: number) => void) | undefined;
+  private onDismissTeam: ((teamId: string) => void) | undefined;
+  private onUndismissTeam: ((teamId: string) => void) | undefined;
   private workspacePath = '';
 
   constructor(
@@ -58,7 +61,13 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.onArchiveRange = handler;
   }
 
+  setDismissTeamHandler(handler: (teamId: string) => void): void {
+    this.onDismissTeam = handler;
+  }
 
+  setUndismissTeamHandler(handler: (teamId: string) => void): void {
+    this.onUndismissTeam = handler;
+  }
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -95,6 +104,10 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         vscode.env.clipboard.writeText(message.text);
       } else if (message.type === 'archiveRange' && this.onArchiveRange) {
         this.onArchiveRange(message.rangeMs);
+      } else if (message.type === 'dismissTeam' && this.onDismissTeam) {
+        this.onDismissTeam(message.teamId);
+      } else if (message.type === 'undismissTeam' && this.onUndismissTeam) {
+        this.onUndismissTeam(message.teamId);
       } else if (message.type === 'requestUpdate') {
         this.sendUpdate();
       }
@@ -105,12 +118,13 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /** Update the panel with new session data */
-  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings): void {
+  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[]): void {
     this.sessions = sessions;
     this.waitingCount = waitingCount;
     this.workspacePath = workspacePath;
     this.usage = usage;
     this.foreignWorkspaces = foreignWorkspaces ?? [];
+    this.teams = teams ?? [];
     this.compactSettings = compactSettings;
 
     // Update badge
@@ -139,6 +153,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       workspacePath: this.workspacePath,
       usage: this.usage,
       foreignWorkspaces: this.foreignWorkspaces.length > 0 ? this.foreignWorkspaces : undefined,
+      teams: this.teams.length > 0 ? this.teams : undefined,
       compactSettings: this.compactSettings,
     };
 
