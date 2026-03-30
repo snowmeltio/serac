@@ -486,6 +486,111 @@ body {
 .api-dot.cached { background: var(--sm-frozen-peach); }
 .api-dot.disconnected { background: var(--sm-salmon-red); }
 
+/* === TEAM GROUPS (Cornice agent teams) === */
+.team-section { padding: 0 6px 4px 6px; display: flex; flex-direction: column; gap: 5px; }
+.team-section-header { font-size: 10px; font-weight: 600; color: var(--vscode-editor-foreground, #cccccc); padding: 6px 6px 2px 6px; }
+
+.team-group {
+  background: var(--vscode-editor-background, #2d2d2d);
+  border-radius: 5px;
+  border-left: 3px solid var(--sm-blizzard-blue);
+  overflow: hidden;
+}
+.team-group.team-waiting { border-left-color: var(--sm-frozen-peach); }
+.team-group.team-done { border-left-color: var(--sm-arctic-teal); }
+.team-group.team-stale { border-left-color: #666666; }
+
+/* Orchestrator header (mini card) */
+.team-orchestrator {
+  padding: 8px 8px 6px 10px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.team-orchestrator:hover { background: var(--vscode-list-hoverBackground, #353535); }
+.team-orchestrator .card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; margin-bottom: 2px; }
+.team-orchestrator .card-name { font-size: 12px; font-weight: 600; color: var(--vscode-editor-foreground, #e0e0e0); line-height: 1.3; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-orchestrator .card-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.team-orchestrator .card-detail { font-size: 11px; color: var(--vscode-descriptionForeground, #888888); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.team-badge { font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; line-height: 13px; color: var(--sm-blizzard-blue); background: rgba(var(--sm-blizzard-blue-rgb), 0.15); }
+
+/* Agent summary row (expandable) */
+.team-agent-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px 3px 10px;
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, #888888);
+  cursor: pointer;
+}
+.team-agent-summary:hover { background: rgba(255, 255, 255, 0.03); }
+.team-agent-summary .running-count { color: var(--sm-blizzard-blue); }
+.team-agent-summary .waiting-count { color: var(--sm-frozen-peach); }
+.team-chevron { transition: transform 0.15s; font-size: 8px; }
+.team-chevron.expanded { transform: rotate(90deg); }
+
+/* Agent list */
+.team-agent-list { padding: 0 6px 6px 6px; }
+
+/* Individual agent row */
+.team-agent {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 3px 4px;
+  font-size: 10px;
+  color: #999999;
+  line-height: 1.5;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.team-agent:hover { background: rgba(255, 255, 255, 0.04); }
+.team-agent-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+.team-agent-dot.running { background: var(--sm-blizzard-blue); box-shadow: 0 0 3px rgba(var(--sm-blizzard-blue-rgb), 0.4); }
+.team-agent-dot.waiting { background: var(--sm-frozen-peach); box-shadow: 0 0 3px rgba(var(--sm-frozen-peach-rgb), 0.4); }
+.team-agent-dot.done { background: #444444; }
+.team-agent-dot.stale { background: #333333; }
+.team-agent-dot.failed { background: var(--sm-salmon-red); }
+.team-agent-content { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; }
+.team-agent-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.team-agent-activity { font-size: 9px; color: #666666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
+.team-agent-status { font-size: 9px; flex-shrink: 0; color: #888888; }
+.team-agent-status.running-status { color: var(--sm-blizzard-blue); }
+.team-agent-status.waiting-status { color: var(--sm-frozen-peach); }
+.team-agent-status.failed-status { color: var(--sm-salmon-red); }
+
+/* Depth indentation */
+.team-agent.depth-1 { padding-left: 4px; }
+.team-agent.depth-2 { padding-left: 16px; }
+.team-agent.depth-3 { padding-left: 28px; }
+
+/* Session subagents within a team agent (inline dots) */
+.team-agent-subagents { display: flex; gap: 2px; align-items: center; flex-shrink: 0; }
+.team-agent-subagent-dot { width: 4px; height: 4px; border-radius: 50%; }
+.team-agent-subagent-dot.running { background: var(--sm-blizzard-blue); }
+.team-agent-subagent-dot.waiting { background: var(--sm-frozen-peach); }
+.team-agent-subagent-dot.done { background: #444444; }
+
+/* Depth badge for deeper nesting */
+.team-depth-badge { font-size: 7px; background: rgba(255, 255, 255, 0.08); color: #777777; padding: 0 3px; border-radius: 2px; flex-shrink: 0; }
+
+/* Context bar within team orchestrator */
+.team-orchestrator .context-bar { position: relative; bottom: auto; left: auto; right: auto; margin-top: 4px; }
+
+/* Team dismiss button */
+.team-dismiss-btn { font-size: 14px; width: 18px; height: 18px; border: none; background: transparent; color: var(--vscode-descriptionForeground, #666666); line-height: 18px; text-align: center; cursor: pointer; border-radius: 3px; padding: 0; opacity: 0; transition: opacity 0.15s, background 0.1s; }
+.team-orchestrator:hover .team-dismiss-btn { opacity: 0.6; }
+.team-dismiss-btn:hover { opacity: 1 !important; background: rgba(255, 255, 255, 0.08); }
+
+/* Team archive compact row */
+.team-compact-row { display: flex; align-items: center; padding: 4px 8px; border-radius: 4px; cursor: pointer; gap: 7px; transition: background 0.1s; }
+.team-compact-row:hover { background: var(--vscode-list-hoverBackground, #2a2a2a); }
+.team-compact-row .compact-name { font-size: 11px; color: var(--vscode-foreground, #cccccc); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.team-compact-row .compact-age { font-size: 9px; color: var(--vscode-descriptionForeground, #999999); flex-shrink: 0; }
+.team-compact-row .team-badge { font-size: 7px; padding: 0 4px; }
+
 /* ============ LIGHT THEME ============ */
 
 /* -- Top bar: status counts -- */
@@ -579,3 +684,21 @@ body.vscode-light .usage-row.ghost { color: #999999; }
 body.vscode-light .usage-row.ghost .usage-row-label { color: #999999; }
 body.vscode-light .usage-ghost-msg { color: #999999; }
 body.vscode-light .usage-weekly-sep { border-top-color: rgba(0, 0, 0, 0.06); }
+
+/* -- Teams -- */
+body.vscode-light .team-group { background: var(--vscode-editor-background, #ffffff); }
+body.vscode-light .team-group.team-stale { border-left-color: #cccccc; }
+body.vscode-light .team-orchestrator:hover { background: var(--vscode-list-hoverBackground, #f0f0f0); }
+body.vscode-light .team-badge { color: #4a6cd4; background: rgba(var(--sm-blizzard-blue-rgb), 0.1); }
+body.vscode-light .team-agent:hover { background: rgba(0, 0, 0, 0.04); }
+body.vscode-light .team-agent-dot.done { background: #cccccc; }
+body.vscode-light .team-agent-dot.stale { background: #dddddd; }
+body.vscode-light .team-agent-activity { color: #999999; }
+body.vscode-light .team-agent-status { color: #999999; }
+body.vscode-light .team-agent-status.running-status { color: #4a6cd4; }
+body.vscode-light .team-agent-status.waiting-status { color: #c47a3a; }
+body.vscode-light .team-agent-status.failed-status { color: #d44444; }
+body.vscode-light .team-agent-subagent-dot.done { background: #cccccc; }
+body.vscode-light .team-depth-badge { background: rgba(0, 0, 0, 0.06); color: #999999; }
+body.vscode-light .team-dismiss-btn:hover { background: rgba(0, 0, 0, 0.06); }
+body.vscode-light .team-compact-row:hover { background: var(--vscode-list-hoverBackground, #f0f0f0); }

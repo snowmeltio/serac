@@ -44,6 +44,39 @@ interface WorkspaceGroup {
  *  redefined here because the webview bundle cannot import extension-side modules). */
 interface PanelCompactSettings { autoCompactWindow: number; autoCompactPct: number }
 
+/** Team agent snapshot (mirrors TeamAgentSnapshot from types.ts) */
+interface PanelTeamAgent {
+  sessionId: string;
+  name: string;
+  cwd: string;
+  parentSessionId: string;
+  depth: number;
+  spawnedAt: number;
+  status: string;
+  activity: string;
+  confidence: string;
+  subagents: PanelSession['subagents'];
+  contextTokens: number;
+  exitStatus: string | null;
+}
+
+/** Team snapshot (mirrors TeamSnapshot from types.ts) */
+interface PanelTeam {
+  teamId: string;
+  name: string;
+  orchestrator: {
+    sessionId: string;
+    status: string;
+    activity: string;
+    confidence: string;
+    contextTokens: number;
+    modelLabel: string;
+  };
+  agents: PanelTeamAgent[];
+  counts: Record<string, number>;
+  dismissed: boolean;
+}
+
 interface UpdateMessage {
   type: 'update';
   sessions: PanelSession[];
@@ -51,6 +84,7 @@ interface UpdateMessage {
   workspacePath: string;
   usage?: UsageData;
   foreignWorkspaces?: WorkspaceGroup[];
+  teams?: PanelTeam[];
   compactSettings?: PanelCompactSettings;
 }
 
@@ -88,6 +122,7 @@ const RANGE_MS: Record<string, number> = {
   let lastNeedsInputCount = 0;
   let lastUsage: UsageData | null = null;
   let lastForeignWorkspaces: WorkspaceGroup[] | null = null;
+  let lastTeams: PanelTeam[] = [];
   let compactSettings: PanelCompactSettings | null = null;
 
   // Status debounce: tracks when each session entered waiting
@@ -97,6 +132,13 @@ const RANGE_MS: Record<string, number> = {
   const expandedSessions = new Set<string>(
     (savedState && Array.isArray(savedState.expandedSessions)) ? savedState.expandedSessions as string[] : []
   );
+  const expandedTeams = new Set<string>(
+    (savedState && Array.isArray(savedState.expandedTeams)) ? savedState.expandedTeams as string[] : []
+  );
+
+  function saveState(): void {
+    vscode.setState({ archiveRange, expandedSessions: Array.from(expandedSessions), expandedTeams: Array.from(expandedTeams) });
+  }
 
   // ===== DELEGATED EVENT HANDLERS =====
   root.addEventListener('click', (e: MouseEvent) => {
@@ -146,7 +188,7 @@ const RANGE_MS: Record<string, number> = {
       } else {
         expandedSessions.add(sid);
       }
-      vscode.setState({ archiveRange, expandedSessions: Array.from(expandedSessions) });
+      saveState();
       if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
       return;
     }
@@ -174,6 +216,48 @@ const RANGE_MS: Record<string, number> = {
         btn.textContent = 'Cleanup';
         vscode.postMessage({ type: 'cleanup' });
       }
+      return;
+    }
+
+    // Team dismiss button
+    const teamDismissBtn = target.closest<HTMLElement>('[data-dismiss-team]');
+    if (teamDismissBtn) {
+      e.stopPropagation();
+      vscode.postMessage({ type: 'dismissTeam', teamId: teamDismissBtn.dataset.dismissTeam });
+      return;
+    }
+
+    // Team expand/collapse toggle
+    const teamToggleBtn = target.closest<HTMLElement>('[data-toggle-team]');
+    if (teamToggleBtn) {
+      e.stopPropagation();
+      const tid = teamToggleBtn.dataset.toggleTeam!;
+      if (expandedTeams.has(tid)) { expandedTeams.delete(tid); } else { expandedTeams.add(tid); }
+      saveState();
+      if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+      return;
+    }
+
+    // Team agent row click (focus session)
+    const teamAgentRow = target.closest<HTMLElement>('.team-agent[data-session-id]');
+    if (teamAgentRow) {
+      e.stopPropagation();
+      vscode.postMessage({ type: 'focusSession', sessionId: teamAgentRow.dataset.sessionId });
+      return;
+    }
+
+    // Team orchestrator click (focus session)
+    const teamOrch = target.closest<HTMLElement>('.team-orchestrator[data-session-id]');
+    if (teamOrch) {
+      e.stopPropagation();
+      vscode.postMessage({ type: 'focusSession', sessionId: teamOrch.dataset.sessionId });
+      return;
+    }
+
+    // Team archive compact row click (undismiss)
+    const teamArchiveRow = target.closest<HTMLElement>('.team-compact-row[data-team-id]');
+    if (teamArchiveRow) {
+      vscode.postMessage({ type: 'undismissTeam', teamId: teamArchiveRow.dataset.teamId });
       return;
     }
 
@@ -224,6 +308,7 @@ const RANGE_MS: Record<string, number> = {
       if (message.type === 'update') {
         lastUsage = message.usage || null;
         lastForeignWorkspaces = message.foreignWorkspaces ?? [];
+        lastTeams = message.teams ?? [];
         compactSettings = message.compactSettings ?? null;
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         render(sessions, message.waitingCount, message.workspacePath);
@@ -238,7 +323,7 @@ const RANGE_MS: Record<string, number> = {
 
   function setArchiveRange(range: string): void {
     archiveRange = range;
-    vscode.setState({ archiveRange: range, expandedSessions: Array.from(expandedSessions) });
+    saveState();
     // Tell the extension to load extended archive data if needed
     const rangeMs = RANGE_MS[range] ?? 86400000;
     vscode.postMessage({ type: 'archiveRange', rangeMs });
@@ -315,6 +400,9 @@ const RANGE_MS: Record<string, number> = {
       topBar.after(scrollWrap);
     }
 
+    // === Team section (before individual session cards) ===
+    renderTeamSection(scrollWrap, now);
+
     // === Card section ===
     let cardSection = scrollWrap.querySelector('.card-section') as HTMLElement | null;
     if (!cardSection) {
@@ -325,17 +413,20 @@ const RANGE_MS: Record<string, number> = {
       scrollWrap.appendChild(cardSection);
     }
 
-    if (cards.length === 0 && archived.length === 0) {
+    const activeTeams = lastTeams.filter(t => !t.dismissed);
+    const archivedTeams = lastTeams.filter(t => t.dismissed);
+
+    if (cards.length === 0 && archived.length === 0 && activeTeams.length === 0) {
       cardSection.innerHTML = '<div class="empty-state"><div class="icon">\u2298</div><div>No Claude Code sessions detected.</div><div class="hint">Sessions appear when you start Claude Code.</div></div>';
     } else {
       reconcileCards(cardSection, cards, now);
     }
 
     // === Archive section ===
-    renderArchiveSection(archived, now, cardSection);
+    renderArchiveSection(archived, archivedTeams, now, cardSection);
 
     // === Time-range bar ===
-    renderTimeRangeBar(archived.length > 0);
+    renderTimeRangeBar(archived.length > 0 || archivedTeams.length > 0);
 
     // === Foreign workspace rows (between time-range bar and usage) ===
     let foreignContainer = root.querySelector('.ws-foreign-rows') as HTMLElement | null;
@@ -490,11 +581,11 @@ const RANGE_MS: Record<string, number> = {
   }
 
   // ===== ARCHIVE SECTION =====
-  function renderArchiveSection(archived: PanelSession[], now: number, afterElement: HTMLElement): void {
+  function renderArchiveSection(archived: PanelSession[], archivedTeams: PanelTeam[], now: number, afterElement: HTMLElement): void {
     const scrollWrap = root.querySelector('.card-archive-scroll');
     let existingList = (scrollWrap || root).querySelector('.archive-list') as HTMLElement | null;
 
-    if (archived.length === 0) {
+    if (archived.length === 0 && archivedTeams.length === 0) {
       if (existingList) existingList.remove();
       return;
     }
@@ -523,6 +614,12 @@ const RANGE_MS: Record<string, number> = {
     }
 
     let archiveHtml = '';
+
+    // Team archive rows (always shown at top of archive)
+    for (const team of archivedTeams) {
+      archiveHtml += renderTeamCompactRow(team, now);
+    }
+
     for (const s of recentItems) {
       archiveHtml += renderCompactRow(s, now);
     }
@@ -726,6 +823,204 @@ const RANGE_MS: Record<string, number> = {
   }
 
   // ===== USAGE SECTION RENDERER =====
+  // ===== TEAM RENDERING =====
+  function renderTeamSection(scrollWrap: HTMLElement, now: number): void {
+    let teamSection = scrollWrap.querySelector('.team-section') as HTMLElement | null;
+    const activeTeams = lastTeams.filter(t => !t.dismissed);
+
+    if (activeTeams.length === 0) {
+      if (teamSection) teamSection.remove();
+      return;
+    }
+
+    if (!teamSection) {
+      teamSection = document.createElement('div');
+      teamSection.className = 'team-section';
+      // Insert before card-section
+      const cardSection = scrollWrap.querySelector('.card-section');
+      if (cardSection) {
+        scrollWrap.insertBefore(teamSection, cardSection);
+      } else {
+        scrollWrap.appendChild(teamSection);
+      }
+    }
+
+    let html = '<div class="team-section-header">Agent teams</div>';
+    for (const team of activeTeams) {
+      html += renderTeamGroup(team, now);
+    }
+    teamSection.innerHTML = html;
+  }
+
+  function renderTeamGroup(team: PanelTeam, now: number): string {
+    const orchStatus = team.orchestrator.status;
+    const hasWaiting = (team.counts['waiting'] || 0) > 0 || orchStatus === 'waiting';
+    const hasRunning = (team.counts['running'] || 0) > 0 || orchStatus === 'running';
+    const allDone = !hasWaiting && !hasRunning;
+
+    let groupClass = 'team-group';
+    if (hasWaiting) groupClass += ' team-waiting';
+    else if (allDone) groupClass += ' team-done';
+
+    const isExpanded = expandedTeams.has(team.teamId);
+
+    // Sort agents: waiting > running > done, then by spawnedAt
+    const sortedAgents = [...team.agents].sort((a, b) => {
+      const order: Record<string, number> = { waiting: 0, running: 1, done: 2, stale: 3 };
+      const aOrd = order[a.status] ?? 2;
+      const bOrd = order[b.status] ?? 2;
+      if (aOrd !== bOrd) return aOrd - bOrd;
+      return a.spawnedAt - b.spawnedAt;
+    });
+
+    const activeAgents = sortedAgents.filter(a => a.status === 'running' || a.status === 'waiting');
+    const doneAgents = sortedAgents.filter(a => a.status !== 'running' && a.status !== 'waiting');
+    const COMPACT_THRESHOLD = 5;
+    const shouldCompact = team.agents.length > COMPACT_THRESHOLD;
+
+    let html = '<div class="' + groupClass + '">';
+
+    // Orchestrator header
+    html += renderTeamOrchestrator(team, now);
+
+    // Agent summary (expandable)
+    if (team.agents.length > 0) {
+      const summaryParts: string[] = [];
+      const waiting = team.counts['waiting'] || 0;
+      const running = team.counts['running'] || 0;
+      const done = team.counts['done'] || 0;
+      if (waiting > 0) summaryParts.push('<span class="waiting-count">' + waiting + ' waiting</span>');
+      if (running > 0) summaryParts.push('<span class="running-count">' + running + ' running</span>');
+      if (done > 0) summaryParts.push('<span>' + done + ' done</span>');
+
+      html += '<div class="team-agent-summary" data-toggle-team="' + escapeHtml(team.teamId) + '">'
+        + '<span class="team-chevron' + (isExpanded ? ' expanded' : '') + '">&#x25B8;</span>'
+        + team.agents.length + ' agent' + (team.agents.length > 1 ? 's' : '') + ': '
+        + summaryParts.join(', ')
+        + '</div>';
+
+      // Agent list (always show active; show done when expanded or below threshold)
+      if (isExpanded || activeAgents.length > 0) {
+        html += '<div class="team-agent-list">';
+        for (const agent of activeAgents) {
+          html += renderTeamAgent(agent, now);
+        }
+        if (isExpanded || !shouldCompact) {
+          for (const agent of doneAgents) {
+            html += renderTeamAgent(agent, now);
+          }
+        }
+        html += '</div>';
+      }
+    }
+
+    html += '</div>';
+    return html;
+  }
+
+  function renderTeamOrchestrator(team: PanelTeam, now: number): string {
+    const o = team.orchestrator;
+    const statusLabel = o.status === 'running' ? 'Running'
+      : o.status === 'waiting' ? 'Waiting'
+      : o.status === 'done' ? 'Done'
+      : o.status;
+
+    const activityText = stripMarkdown(o.activity || 'No recent activity');
+
+    let metaHtml = '<div class="card-meta">';
+    metaHtml += '<span class="session-id-pill clickable" data-copy-id="' + escapeHtml(o.sessionId) + '" title="Copy session ID">' + escapeHtml(o.sessionId.slice(0, 8)) + '</span>';
+    if (o.modelLabel) {
+      const modelCls = 'model-pill' + (o.modelLabel === 'Sonnet' ? ' sonnet' : o.modelLabel === 'Haiku' ? ' haiku' : '');
+      metaHtml += '<span class="' + modelCls + '">' + escapeHtml(o.modelLabel) + '</span>';
+    }
+    metaHtml += '<span class="team-badge">orchestrator</span>';
+
+    // Dismiss button (only when team is done)
+    const canDismiss = !team.agents.some(a => a.status === 'running' || a.status === 'waiting')
+      && o.status !== 'running' && o.status !== 'waiting';
+    if (canDismiss) {
+      metaHtml += '<div class="card-actions"><button class="team-dismiss-btn" data-dismiss-team="' + escapeHtml(team.teamId) + '" title="Dismiss team" aria-label="Dismiss team">&times;</button></div>';
+    }
+    metaHtml += '</div>';
+
+    let contextBarHtml = '';
+    if (o.contextTokens && o.contextTokens > 0) {
+      const cw = compactSettings?.autoCompactWindow ?? 200000;
+      const cp = compactSettings?.autoCompactPct ?? 95;
+      const threshold = getCompactThreshold(cw, cp);
+      const pct = Math.min(100, Math.round(o.contextTokens / threshold * 100));
+      const fillClass = 'context-fill' + (pct >= 60 ? ' hot' : '');
+      contextBarHtml = '<div class="context-bar"><div class="' + fillClass + '" style="width:' + pct + '%"></div></div>';
+    }
+
+    return '<div class="team-orchestrator" data-session-id="' + escapeHtml(o.sessionId) + '">'
+      + '<div class="card-top"><span class="card-name">' + escapeHtml(team.name) + '</span>'
+      + '<span class="status-pill">' + statusLabel + '</span></div>'
+      + metaHtml
+      + '<div class="card-detail">' + escapeHtml(activityText) + '</div>'
+      + contextBarHtml
+      + '</div>';
+  }
+
+  function renderTeamAgent(agent: PanelTeamAgent, now: number): string {
+    const depthClass = agent.depth <= 3 ? 'depth-' + agent.depth : 'depth-3';
+    const dotClass = agent.status === 'waiting' ? 'waiting'
+      : agent.status === 'running' ? 'running'
+      : agent.exitStatus === 'failed' ? 'failed'
+      : agent.status === 'done' ? 'done'
+      : 'stale';
+
+    let statusHtml: string;
+    if (agent.status === 'waiting') {
+      statusHtml = '<span class="team-agent-status waiting-status">waiting</span>';
+    } else if (agent.status === 'running') {
+      statusHtml = '<span class="team-agent-status running-status"><span class="mini-spinner"></span></span>';
+    } else if (agent.exitStatus === 'failed') {
+      statusHtml = '<span class="team-agent-status failed-status">failed</span>';
+    } else {
+      const elapsed = agent.spawnedAt ? formatAge(now - agent.spawnedAt) : '';
+      statusHtml = '<span class="team-agent-status">' + (elapsed ? elapsed + ' · ' : '') + 'done</span>';
+    }
+
+    // Session subagent dots
+    let subagentDotsHtml = '';
+    if (agent.subagents && agent.subagents.length > 0) {
+      subagentDotsHtml = '<span class="team-agent-subagents">';
+      for (const sa of agent.subagents) {
+        const saDotClass = sa.waitingOnPermission ? 'waiting' : sa.running ? 'running' : 'done';
+        subagentDotsHtml += '<span class="team-agent-subagent-dot ' + saDotClass + '"></span>';
+      }
+      subagentDotsHtml += '</span>';
+    }
+
+    // Depth badge for deeper nesting
+    const depthBadge = agent.depth > 3 ? '<span class="team-depth-badge">d' + agent.depth + '</span>' : '';
+
+    const activityHtml = agent.activity
+      ? '<span class="team-agent-activity">' + escapeHtml(stripMarkdown(agent.activity)) + '</span>'
+      : '';
+
+    return '<div class="team-agent ' + depthClass + '" data-session-id="' + escapeHtml(agent.sessionId) + '">'
+      + '<div class="team-agent-dot ' + dotClass + '"></div>'
+      + '<div class="team-agent-content">'
+      + '<span class="team-agent-name">' + depthBadge + escapeHtml(agent.name) + '</span>'
+      + activityHtml
+      + subagentDotsHtml
+      + statusHtml
+      + '</div>'
+      + '</div>';
+  }
+
+  function renderTeamCompactRow(team: PanelTeam, _now: number): string {
+    const agentCount = team.agents.length;
+    const countLabel = agentCount + ' agent' + (agentCount !== 1 ? 's' : '');
+    return '<div class="team-compact-row" role="listitem" tabindex="0" data-team-id="' + escapeHtml(team.teamId) + '">'
+      + '<span class="team-badge">team</span>'
+      + '<span class="compact-name">' + escapeHtml(team.name) + '</span>'
+      + '<span class="compact-age">' + countLabel + '</span>'
+      + '</div>';
+  }
+
   function renderUsageSection(): void {
     // Always show the usage section — use ghost state when no data
     if (!lastUsage || !lastUsage.loaded) {

@@ -43,6 +43,8 @@ const TOOL_PROFILES = new Map<string, ToolProfile>([
   ['Read',          { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['Glob',          { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['Grep',          { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['Edit',          { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['Write',         { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['TodoWrite',     { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['ToolSearch',    { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['EnterPlanMode', { exempt: true,  slow: false, userInput: false, orchestration: false }],

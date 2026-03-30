@@ -4,7 +4,8 @@ import * as os from 'os';
 import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
-import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup } from './types.js';
+import { TeamDiscovery } from './teamDiscovery.js';
+import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot } from './types.js';
 
 /** Minimal log interface matching VS Code's LogOutputChannel */
 export interface Logger {
@@ -53,6 +54,8 @@ export class SessionDiscovery {
   private readonly log: Logger;
   /** Manages cross-workspace session discovery and polling */
   private foreignManager: ForeignWorkspaceManager;
+  /** Manages Cornice agent team discovery and polling */
+  private teamDiscovery: TeamDiscovery;
   /** Extended archive: lightweight snapshots for sessions older than SCAN_AGE_GATE_MS.
    *  Only populated when archiveRangeMs > SCAN_AGE_GATE_MS. Keyed by sessionId. */
   private extendedArchive: Map<string, SessionSnapshot> = new Map();
@@ -67,6 +70,7 @@ export class SessionDiscovery {
     this.metaFilePath = path.join(this.projectsDir, this.workspaceKey, 'session-meta.json');
     this.log = opts?.log ?? nullLogger;
     this.foreignManager = new ForeignWorkspaceManager(this.projectsDir, this.workspaceKey, this.log);
+    this.teamDiscovery = new TeamDiscovery(this.projectsDir, this.log);
   }
 
   // ── Meta persistence ──────────────────────────────────────────────
@@ -252,9 +256,10 @@ export class SessionDiscovery {
     // Load session metadata (with legacy migration)
     await this.loadMeta();
 
-    // Initial scan (local + foreign)
+    // Initial scan (local + foreign + teams)
     await this.scan();
     await this.foreignManager.scan();
+    await this.teamDiscovery.scan();
 
     // Start adaptive poll loop
     this.schedulePoll();
@@ -281,6 +286,7 @@ export class SessionDiscovery {
       const status = session.getStatus();
       if (status === 'running' || status === 'waiting') { return true; }
     }
+    if (this.teamDiscovery.hasActiveAgents()) { return true; }
     return false;
   }
 
@@ -295,13 +301,17 @@ export class SessionDiscovery {
     }
     this.sessions.clear();
     this.foreignManager.dispose();
+    this.teamDiscovery.dispose();
   }
 
   /** Get snapshots of all sessions, sorted by priority */
   getSnapshots(): SessionSnapshot[] {
     const now = Date.now();
     const snapshots: SessionSnapshot[] = [];
+    // Suppress sessions claimed by active (non-dismissed) teams
+    const teamClaimed = this.teamDiscovery.getClaimedSessionIds(this.sessionMeta);
     for (const session of this.sessions.values()) {
+      if (teamClaimed.has(session.getSessionId())) { continue; }
       const snapshot = session.getSnapshot();
       const meta = this.sessionMeta.get(snapshot.sessionId);
 
@@ -452,9 +462,46 @@ export class SessionDiscovery {
     return count;
   }
 
-  /** Get foreign workspace summaries. Delegates to ForeignWorkspaceManager. */
+  /** Get foreign workspace summaries. Delegates to ForeignWorkspaceManager.
+   *  Excludes sessions claimed by active teams to prevent double-counting. */
   getForeignWorkspaces(): WorkspaceGroup[] {
-    return this.foreignManager.getWorkspaces();
+    const teamClaimed = this.teamDiscovery.getClaimedSessionIds(this.sessionMeta);
+    return this.foreignManager.getWorkspaces(teamClaimed);
+  }
+
+  // ── Team API ──────────────────────────────────────────────────────
+
+  /** Get team snapshots for the webview. */
+  getTeamSnapshots(): TeamSnapshot[] {
+    return this.teamDiscovery.getTeamSnapshots(this.sessionMeta);
+  }
+
+  /** Dismiss a team (archive). Stored in sessionMeta keyed as team:<teamId>. */
+  dismissTeam(teamId: string): void {
+    const metaKey = `team:${teamId}`;
+    const meta = this.getOrCreateMeta(metaKey);
+    meta.dismissed = true;
+    this.metaDirty = true;
+    this.enqueueSave();
+  }
+
+  /** Undismiss a team. */
+  undismissTeam(teamId: string): void {
+    const metaKey = `team:${teamId}`;
+    const meta = this.getOrCreateMeta(metaKey);
+    meta.dismissed = false;
+    this.metaDirty = true;
+    this.enqueueSave();
+  }
+
+  /** Get JSONL path for a team agent session (for transcript viewing). */
+  getTeamSessionFilePath(sessionId: string): string | null {
+    return this.teamDiscovery.getSessionFilePath(sessionId);
+  }
+
+  /** Whether a team agent session is currently running. */
+  isTeamSessionRunning(sessionId: string): boolean {
+    return this.teamDiscovery.isSessionRunning(sessionId);
   }
 
   // ── Discovery and polling ─────────────────────────────────────────
@@ -662,6 +709,13 @@ export class SessionDiscovery {
       }
       const foreignChanged = await this.foreignManager.poll();
       if (foreignChanged) { changed = true; }
+
+      // Team discovery: scan periodically, poll team agents every cycle
+      if (this.teamDiscovery.shouldRescan()) {
+        await this.teamDiscovery.scan();
+      }
+      const teamChanged = await this.teamDiscovery.poll();
+      if (teamChanged) { changed = true; }
 
       // Poll performance log [v0.4]
       const updatedCount = updateResults.filter(r => r.hadNewData).length;

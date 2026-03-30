@@ -185,7 +185,7 @@ describe('SessionManager: permission detection', () => {
     const mgr = makeManager();
     await feed(mgr, [{
       type: 'assistant', timestamp: ts(),
-      message: { content: [{ type: 'tool_use', name: 'Edit', id: 'tu1' }] },
+      message: { content: [{ type: 'tool_use', name: 'SomeTool', id: 'tu1' }] },
     }]);
     expect(mgr.getStatus()).toBe('running');
 
@@ -228,7 +228,7 @@ describe('SessionManager: permission detection', () => {
     const mgr = makeManager();
     await feed(mgr, [{
       type: 'assistant', timestamp: ts(),
-      message: { content: [{ type: 'tool_use', name: 'Edit', id: 'tu1' }] },
+      message: { content: [{ type: 'tool_use', name: 'SomeTool', id: 'tu1' }] },
     }]);
     // Resolve the tool before permission timer fires
     vi.advanceTimersByTime(1_000);

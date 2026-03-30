@@ -143,11 +143,12 @@ export class ForeignWorkspaceManager {
   }
 
   /** Get foreign workspace summaries for the panel. */
-  getWorkspaces(): WorkspaceGroup[] {
+  getWorkspaces(excludeSessionIds?: Set<string>): WorkspaceGroup[] {
     const groups = new Map<string, Record<string, number>>();
     const confidences = new Map<string, StatusConfidence>();
 
     for (const session of this.sessions.values()) {
+      if (excludeSessionIds?.has(session.getSessionId())) { continue; }
       const snapshot = session.getSnapshot();
       const status = snapshot.status;
       if (status !== 'running' && status !== 'waiting' && status !== 'done') { continue; }

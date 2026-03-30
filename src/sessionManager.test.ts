@@ -130,7 +130,7 @@ describe('SessionManager state machine', () => {
   it('returns to running when user sends tool_result after permission wait', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);
-    await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
+    await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-1')]);
     // Permission timer → waiting
     vi.advanceTimersByTime(3_001);
     expect(mgr.getStatus()).toBe('waiting');
@@ -150,7 +150,7 @@ describe('SessionManager state machine', () => {
   it('transitions to waiting after permission timer fires (3s for normal tools)', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);
-    await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
+    await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-1')]);
     expect(mgr.getStatus()).toBe('running');
     vi.advanceTimersByTime(3_001);
     expect(mgr.getStatus()).toBe('waiting');
@@ -269,7 +269,7 @@ describe('SessionManager state machine', () => {
   it('demoteIfStale uses extended ceiling (10 min) for waiting sessions', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);
-    await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
+    await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-1')]);
     // Trigger permission timer → waiting
     vi.advanceTimersByTime(3_001);
     expect(mgr.getStatus()).toBe('waiting');
@@ -283,7 +283,7 @@ describe('SessionManager state machine', () => {
   it('demoteIfStale demotes waiting after extended ceiling (10 min)', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);
-    await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
+    await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-1')]);
     // Trigger permission timer → waiting
     vi.advanceTimersByTime(3_001);
     expect(mgr.getStatus()).toBe('waiting');
@@ -361,7 +361,7 @@ describe('SessionManager state machine', () => {
   it('clears "Waiting for permission" activity when session completes after permission', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);
-    await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
+    await feedRecords(mgr, [assistantToolUseRecord('SomeTool', 'tool-1')]);
     // Trigger permission timer → waiting
     vi.advanceTimersByTime(3_001);
     expect(mgr.getStatus()).toBe('waiting');
