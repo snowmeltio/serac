@@ -147,7 +147,7 @@ describe('SessionManager state machine', () => {
 
   // ── Permission timer ───────────────────────────────────────────
 
-  it('transitions to waiting after permission timer fires (20s for normal tools)', async () => {
+  it('transitions to waiting after permission timer fires (3s for normal tools)', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);
     await feedRecords(mgr, [assistantToolUseRecord('Edit', 'tool-1')]);
@@ -156,15 +156,15 @@ describe('SessionManager state machine', () => {
     expect(mgr.getStatus()).toBe('waiting');
   });
 
-  it('uses longer timer for slow tools (8s)', async () => {
+  it('uses longer timer for slow tools (6s)', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);
     await feedRecords(mgr, [assistantToolUseRecord('Bash', 'tool-1')]);
     expect(mgr.getStatus()).toBe('running');
-    vi.advanceTimersByTime(4_000);
-    expect(mgr.getStatus()).toBe('running'); // still running at 4s
     vi.advanceTimersByTime(5_000);
-    expect(mgr.getStatus()).toBe('waiting'); // triggers at 8s
+    expect(mgr.getStatus()).toBe('running'); // still running at 5s
+    vi.advanceTimersByTime(2_000);
+    expect(mgr.getStatus()).toBe('waiting'); // triggers at 6s
   });
 
   it('uses longer timer for MCP tools', async () => {

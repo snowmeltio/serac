@@ -317,7 +317,7 @@ describe('SessionManager sidechain tests', () => {
       // Subagent uses a non-exempt tool
       await feedRecords(mgr, [sidechainAssistantToolUse('Edit', 'sc-1', 'agent-1')]);
 
-      // Wait for subagent permission timer (20s for normal tools)
+      // Wait for subagent permission timer (3s for normal tools)
       vi.advanceTimersByTime(3_001);
 
       // Subagent should be marked as waiting on permission

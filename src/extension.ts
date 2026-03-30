@@ -1,9 +1,11 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { SessionDiscovery } from './sessionDiscovery.js';
 import { AgentPanelProvider } from './panelProvider.js';
 import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
+import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from './claudeSettings.js';
 
 export function activate(context: vscode.ExtensionContext) {
   const workspacePath: string | undefined = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -187,6 +189,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Start discovery and wire updates
   let lastSendTime = 0;
+  let compactSettings: CompactSettings = readCompactSettings();
   function sendUpdate() {
     const now = Date.now();
     if (now - lastSendTime < 200) { return; }
@@ -195,7 +198,7 @@ export function activate(context: vscode.ExtensionContext) {
     const waitingCount = discovery.getWaitingCount();
     const usage = usageProvider.getSnapshot();
     const foreignWorkspaces = discovery.getForeignWorkspaces();
-    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces);
+    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings);
 
     // Auto-focus new session created via "+ New" button
     if (pendingNewChatKnownIds) {
@@ -212,6 +215,17 @@ export function activate(context: vscode.ExtensionContext) {
     log.error('SessionDiscovery start failed:', err);
   });
   usageProvider.start(() => sendUpdate());
+
+  // Watch ~/.claude/settings.json for compact setting changes
+  const settingsPath = getClaudeSettingsPath();
+  const settingsWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(path.dirname(settingsPath)), path.basename(settingsPath)),
+  );
+  const reloadSettings = () => { compactSettings = readCompactSettings(); sendUpdate(); };
+  settingsWatcher.onDidChange(reloadSettings);
+  settingsWatcher.onDidCreate(reloadSettings);
+  settingsWatcher.onDidDelete(reloadSettings);
+  context.subscriptions.push(settingsWatcher);
 
   // Timestamp freshness timer (relative time labels in UI)
   const refreshTimer = setInterval(() => sendUpdate(), 5000);

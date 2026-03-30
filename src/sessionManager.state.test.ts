@@ -202,12 +202,12 @@ describe('SessionManager: permission detection', () => {
     }]);
     expect(mgr.getStatus()).toBe('running');
 
-    // At 4s: should still be running (slow tool delay is 8s)
-    vi.advanceTimersByTime(4_000);
+    // At 5s: should still be running (slow tool delay is 6s)
+    vi.advanceTimersByTime(5_000);
     expect(mgr.getStatus()).toBe('running');
 
-    // At 9s: should be waiting
-    vi.advanceTimersByTime(5_000);
+    // At 7s: should be waiting
+    vi.advanceTimersByTime(2_000);
     expect(mgr.getStatus()).toBe('waiting');
   });
 

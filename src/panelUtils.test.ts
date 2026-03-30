@@ -15,7 +15,9 @@ import {
   quotaClass,
   formatResetTime,
   sanitiseWorkspaceKey,
-  getContextLimit,
+  getModelCapacity,
+  getCompactThreshold,
+  formatTokenCount,
   PanelSession,
 } from './panelUtils.js';
 
@@ -333,23 +335,50 @@ describe('formatResetTime', () => {
   });
 });
 
-describe('getContextLimit', () => {
+describe('getModelCapacity', () => {
   it('returns 1M for Opus', () => {
-    expect(getContextLimit('Opus')).toBe(1_000_000);
+    expect(getModelCapacity('Opus')).toBe(1_000_000);
   });
   it('returns 1M for Opus 4.6', () => {
-    expect(getContextLimit('Opus 4.6')).toBe(1_000_000);
+    expect(getModelCapacity('Opus 4.6')).toBe(1_000_000);
   });
   it('returns 1M for Sonnet', () => {
-    expect(getContextLimit('Sonnet')).toBe(1_000_000);
+    expect(getModelCapacity('Sonnet')).toBe(1_000_000);
   });
   it('returns 200K for Haiku', () => {
-    expect(getContextLimit('Haiku')).toBe(200_000);
+    expect(getModelCapacity('Haiku')).toBe(200_000);
   });
-  it('returns 1M for unknown model', () => {
-    expect(getContextLimit('FutureModel')).toBe(1_000_000);
+  it('returns 200K for unknown model', () => {
+    expect(getModelCapacity('FutureModel')).toBe(200_000);
   });
-  it('returns 1M for undefined', () => {
-    expect(getContextLimit(undefined)).toBe(1_000_000);
+  it('returns 200K for undefined', () => {
+    expect(getModelCapacity(undefined)).toBe(200_000);
+  });
+});
+
+describe('getCompactThreshold', () => {
+  it('computes 95% of 200K', () => {
+    expect(getCompactThreshold(200_000, 95)).toBe(190_000);
+  });
+  it('computes 80% of 100K', () => {
+    expect(getCompactThreshold(100_000, 80)).toBe(80_000);
+  });
+  it('computes 100% of 500K', () => {
+    expect(getCompactThreshold(500_000, 100)).toBe(500_000);
+  });
+});
+
+describe('formatTokenCount', () => {
+  it('formats thousands as K', () => {
+    expect(formatTokenCount(190_000)).toBe('190K');
+  });
+  it('formats millions as M', () => {
+    expect(formatTokenCount(1_000_000)).toBe('1M');
+  });
+  it('rounds to nearest K', () => {
+    expect(formatTokenCount(167_500)).toBe('168K');
+  });
+  it('formats small counts as K', () => {
+    expect(formatTokenCount(500)).toBe('1K');
   });
 });

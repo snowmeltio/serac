@@ -188,20 +188,33 @@ export function debounceStatuses(
 
 // ===== Context window helpers =====
 
-/** Map model labels to context window sizes (tokens). Default 1M for unknown models. */
-const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+/** Model's theoretical maximum context window (tokens). */
+const MODEL_CAPACITY: Record<string, number> = {
   'Opus': 1_000_000,
   'Sonnet': 1_000_000,
   'Haiku': 200_000,
 };
-const DEFAULT_CONTEXT_LIMIT = 1_000_000;
+const DEFAULT_CAPACITY = 200_000;
 
-export function getContextLimit(modelLabel: string | undefined): number {
-  if (!modelLabel) return DEFAULT_CONTEXT_LIMIT;
-  for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
-    if (modelLabel.includes(key)) return limit;
+/** Return the model's theoretical maximum context window in tokens. */
+export function getModelCapacity(modelLabel: string | undefined): number {
+  if (!modelLabel) return DEFAULT_CAPACITY;
+  for (const [key, cap] of Object.entries(MODEL_CAPACITY)) {
+    if (modelLabel.includes(key)) return cap;
   }
-  return DEFAULT_CONTEXT_LIMIT;
+  return DEFAULT_CAPACITY;
+}
+
+/** Compute the effective token count at which Claude Code auto-compacts.
+ *  autoCompactWindow defaults to 200K; autoCompactPct defaults to 95. */
+export function getCompactThreshold(autoCompactWindow: number, autoCompactPct: number): number {
+  return Math.round(autoCompactWindow * (autoCompactPct / 100));
+}
+
+/** Format a token count as a human-readable label (e.g. 190000 → "190K", 1000000 → "1M"). */
+export function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000) + 'M';
+  return Math.round(n / 1000) + 'K';
 }
 
 // ===== Usage helpers =====

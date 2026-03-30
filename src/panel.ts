@@ -19,7 +19,9 @@ import {
   quotaClass,
   formatResetTime,
   sanitiseWorkspaceKey,
-  getContextLimit,
+  getModelCapacity,
+  getCompactThreshold,
+  formatTokenCount,
   PanelSession,
   UsageData,
 } from './panelUtils.js';
@@ -38,6 +40,10 @@ interface WorkspaceGroup {
   confidence?: string;
 }
 
+/** Compact settings shape (mirrors CompactSettings from claudeSettings.ts,
+ *  redefined here because the webview bundle cannot import extension-side modules). */
+interface PanelCompactSettings { autoCompactWindow: number; autoCompactPct: number }
+
 interface UpdateMessage {
   type: 'update';
   sessions: PanelSession[];
@@ -45,6 +51,7 @@ interface UpdateMessage {
   workspacePath: string;
   usage?: UsageData;
   foreignWorkspaces?: WorkspaceGroup[];
+  compactSettings?: PanelCompactSettings;
 }
 
 interface FocusMessage {
@@ -81,6 +88,7 @@ const RANGE_MS: Record<string, number> = {
   let lastNeedsInputCount = 0;
   let lastUsage: UsageData | null = null;
   let lastForeignWorkspaces: WorkspaceGroup[] | null = null;
+  let compactSettings: PanelCompactSettings | null = null;
 
   // Status debounce: tracks when each session entered waiting
   const needsInputSince: Record<string, number> = {};
@@ -216,6 +224,7 @@ const RANGE_MS: Record<string, number> = {
       if (message.type === 'update') {
         lastUsage = message.usage || null;
         lastForeignWorkspaces = message.foreignWorkspaces ?? [];
+        compactSettings = message.compactSettings ?? null;
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         render(sessions, message.waitingCount, message.workspacePath);
       } else if (message.type === 'focusSession') {
@@ -669,17 +678,20 @@ const RANGE_MS: Record<string, number> = {
     metaHtml += actionsHtml;
     metaHtml += '</div>';
 
-    // Context window fill bar — use CSS custom property instead of inline style
+    // Context window fill bar — tracks effective compact threshold, tooltip shows both
     let contextBarHtml = '';
     if (s.contextTokens && s.contextTokens > 0) {
-      const limit = getContextLimit(s.modelLabel);
-      const limitLabel = limit >= 1_000_000 ? (limit / 1_000_000) + 'M' : Math.round(limit / 1000) + 'K';
-      const pct = Math.min(100, Math.round((s.contextTokens / limit) * 100));
-      const tokenLabel = s.contextTokens >= 1000
-        ? Math.round(s.contextTokens / 1000) + 'K'
-        : s.contextTokens + '';
+      const cw = compactSettings?.autoCompactWindow ?? 200_000;
+      const cp = compactSettings?.autoCompactPct ?? 95;
+      const threshold = getCompactThreshold(cw, cp);
+      const capacity = getModelCapacity(s.modelLabel);
+      const pct = Math.min(100, Math.round((s.contextTokens / threshold) * 100));
+      const tokenLabel = formatTokenCount(s.contextTokens);
+      const thresholdLabel = formatTokenCount(threshold);
+      const capacityLabel = formatTokenCount(capacity);
       const fillClass = 'context-fill' + (pct >= 60 ? ' hot' : '');
-      contextBarHtml = '<div class="context-bar" title="Context: ' + tokenLabel + ' / ' + limitLabel + ' tokens (' + pct + '%)">'
+      const tooltip = 'Context: ' + tokenLabel + ' / ' + thresholdLabel + ' compact (' + pct + '%) \u2014 ' + capacityLabel + ' model';
+      contextBarHtml = '<div class="context-bar" title="' + escapeHtml(tooltip) + '">'
         + '<div class="' + fillClass + '" style="width:' + pct + '%"></div>'
         + '</div>';
     }
