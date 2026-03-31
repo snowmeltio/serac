@@ -14,7 +14,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
-import { parseTeamManifest } from './teamManifest.js';
+import { parseTeamManifest, parseAgentTeamsConfig } from './teamManifest.js';
 import type {
   TeamManifest, TeamSnapshot, TeamAgentSnapshot,
   SessionMeta, StatusConfidence, DisplayStatus,
@@ -73,33 +73,50 @@ export class TeamDiscovery {
     return false;
   }
 
-  /** Scan ~/.claude/teams/ for manifests and create SessionManagers. */
+  /** Scan ~/.claude/teams/ for manifests (flat .json files and subdirectory config.json). */
   async scan(): Promise<void> {
     const now = Date.now();
-    let files: string[];
+    let entries: string[];
     try {
-      files = await fs.promises.readdir(this.teamsDir);
+      entries = await fs.promises.readdir(this.teamsDir);
     } catch {
-      // Directory doesn't exist (Cornice hasn't created it yet) — not an error
+      // Directory doesn't exist yet — not an error
       return;
     }
 
     const seenTeamIds = new Set<string>();
 
-    for (const file of files) {
-      if (!file.endsWith('.json')) { continue; }
-
-      const filePath = path.join(this.teamsDir, file);
-      let fstat: fs.Stats;
+    for (const entry of entries) {
+      const entryPath = path.join(this.teamsDir, entry);
+      let entryStat: fs.Stats;
       try {
-        fstat = await fs.promises.stat(filePath);
+        entryStat = await fs.promises.stat(entryPath);
       } catch { continue; }
+
+      let teamId: string;
+      let filePath: string;
+      let fstat: fs.Stats;
+
+      if (entryStat.isDirectory()) {
+        // Agent Teams format: <team-name>/config.json
+        filePath = path.join(entryPath, 'config.json');
+        try {
+          fstat = await fs.promises.stat(filePath);
+        } catch { continue; } // No config.json in this directory
+        teamId = `at:${entry}`; // Prefix to avoid collision with Cornice sidecar IDs
+      } else if (entry.endsWith('.json')) {
+        // Cornice sidecar format: <id>.json
+        filePath = entryPath;
+        fstat = entryStat;
+        teamId = entry.replace('.json', '');
+      } else {
+        continue;
+      }
 
       // Age gate
       if (now - fstat.mtimeMs > TEAM_AGE_GATE_MS) { continue; }
 
       // Skip re-parse if mtime unchanged
-      const teamId = file.replace('.json', '');
       seenTeamIds.add(teamId);
       const lastMtime = this.manifestMtimes.get(teamId) ?? 0;
       if (fstat.mtimeMs === lastMtime && this.manifests.has(teamId)) { continue; }
@@ -108,27 +125,30 @@ export class TeamDiscovery {
       try {
         content = await fs.promises.readFile(filePath, 'utf-8');
       } catch {
-        this.log.warn(`[teams] Failed to read manifest: ${file}`);
+        this.log.warn(`[teams] Failed to read manifest: ${entry}`);
         continue;
       }
 
-      const manifest = parseTeamManifest(content);
+      // Try both parsers: Cornice sidecar first, then Agent Teams config
+      const manifest = parseTeamManifest(content) ?? parseAgentTeamsConfig(content, entry);
       if (!manifest) {
-        this.log.warn(`[teams] Skipping malformed manifest: ${file}`);
+        this.log.warn(`[teams] Skipping malformed manifest: ${entry}`);
         continue;
       }
 
       this.manifestMtimes.set(teamId, fstat.mtimeMs);
       this.manifests.set(teamId, manifest);
 
-      // Create SessionManagers for orchestrator + agents
+      // Create SessionManagers for orchestrator + agents with session IDs
       await this.ensureSessionManager(manifest.orchestrator.sessionId, manifest.orchestrator.cwd);
       for (const agent of manifest.agents) {
-        await this.ensureSessionManager(agent.sessionId, agent.cwd);
+        if (agent.sessionId) {
+          await this.ensureSessionManager(agent.sessionId, agent.cwd);
+        }
       }
     }
 
-    // Prune manifests for files that no longer exist
+    // Prune manifests for entries that no longer exist
     for (const teamId of [...this.manifests.keys()]) {
       if (!seenTeamIds.has(teamId)) {
         this.removeTeam(teamId);
@@ -168,7 +188,7 @@ export class TeamDiscovery {
     const teamSessionIds = new Set<string>();
     teamSessionIds.add(manifest.orchestrator.sessionId);
     for (const agent of manifest.agents) {
-      teamSessionIds.add(agent.sessionId);
+      if (agent.sessionId) { teamSessionIds.add(agent.sessionId); }
     }
 
     // Only dispose sessions not claimed by another team
@@ -176,7 +196,7 @@ export class TeamDiscovery {
     for (const [tid, m] of this.manifests) {
       if (tid === teamId) { continue; }
       otherTeamSessionIds.add(m.orchestrator.sessionId);
-      for (const a of m.agents) { otherTeamSessionIds.add(a.sessionId); }
+      for (const a of m.agents) { if (a.sessionId) { otherTeamSessionIds.add(a.sessionId); } }
     }
 
     for (const sid of teamSessionIds) {
@@ -257,7 +277,7 @@ export class TeamDiscovery {
         if (this.agents.has(manifest.orchestrator.sessionId)) { changed = true; }
       }
       for (const agent of manifest.agents) {
-        if (!this.agents.has(agent.sessionId)) {
+        if (agent.sessionId && !this.agents.has(agent.sessionId)) {
           await this.ensureSessionManager(agent.sessionId, agent.cwd);
           if (this.agents.has(agent.sessionId)) { changed = true; }
         }
@@ -283,14 +303,16 @@ export class TeamDiscovery {
       const counts: Record<string, number> = {};
 
       for (const entry of manifest.agents) {
-        const manager = this.agents.get(entry.sessionId);
+        const manager = entry.sessionId ? this.agents.get(entry.sessionId) : undefined;
         const snapshot = manager?.getSnapshot();
 
         let status: DisplayStatus;
         if (snapshot) {
           status = snapshot.status;
-        } else if (entry.completedAt !== null) {
+        } else if (entry.completedAt !== null || entry.isActive === false) {
           status = 'done';
+        } else if (entry.isActive === true) {
+          status = 'running';
         } else {
           status = 'running'; // JSONL not yet available, agent is starting
         }
@@ -363,7 +385,7 @@ export class TeamDiscovery {
       if (sessionMeta.get(metaKey)?.dismissed) { continue; }
       claimed.add(manifest.orchestrator.sessionId);
       for (const agent of manifest.agents) {
-        claimed.add(agent.sessionId);
+        if (agent.sessionId) { claimed.add(agent.sessionId); }
       }
     }
     return claimed;

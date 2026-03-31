@@ -36,6 +36,7 @@ declare function acquireVsCodeApi(): {
 interface WorkspaceGroup {
   workspaceKey: string;
   displayName: string;
+  cwd?: string | null;
   counts: Record<string, number>;
   confidence?: string;
 }
@@ -46,7 +47,7 @@ interface PanelCompactSettings { autoCompactWindow: number; autoCompactPct: numb
 
 /** Team agent snapshot (mirrors TeamAgentSnapshot from types.ts) */
 interface PanelTeamAgent {
-  sessionId: string;
+  sessionId: string | null;
   name: string;
   cwd: string;
   parentSessionId: string;
@@ -445,26 +446,7 @@ const RANGE_MS: Record<string, number> = {
     }
     if (foreignContainer) {
       if (lastForeignWorkspaces.length > 0) {
-        let rowsHtml = '<div class="ws-section-header">Other workspaces</div>';
-        for (let i = 0; i < lastForeignWorkspaces.length; i++) {
-          const ws = lastForeignWorkspaces[i];
-          const running = ws.counts['running'] || 0;
-          const waiting = ws.counts['waiting'] || 0;
-          const done = ws.counts['done'] || 0;
-          const wsStatus = waiting > 0 ? 'waiting' : running > 0 ? 'running' : done > 0 ? 'done' : 'idle';
-          const rowClass = 'ws-row' + (waiting > 0 ? ' ws-row-waiting' : '');
-          let countsHtml = '';
-          if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
-          if (running) countsHtml += '<span class="status-count running-count">' + running + 'R</span>';
-          if (done) countsHtml += '<span class="status-count done-count">' + done + 'D</span>';
-          const hasLiveSessions = running > 0 || waiting > 0;
-          rowsHtml += '<div class="' + rowClass + '"' + (hasLiveSessions ? ' data-confidence="' + (ws.confidence || 'medium') + '"' : '') + '>'
-            + '<span class="ws-status-dot ws-dot-' + wsStatus + '"></span>'
-            + '<span class="ws-name">' + escapeHtml(ws.displayName) + '</span>'
-            + '<div class="ws-counts">' + countsHtml + '</div>'
-            + '</div>';
-        }
-        foreignContainer.innerHTML = rowsHtml;
+        foreignContainer.innerHTML = renderForeignWorkspaceRows(lastForeignWorkspaces);
       } else {
         foreignContainer.innerHTML = '';
       }
@@ -809,6 +791,93 @@ const RANGE_MS: Record<string, number> = {
       + contextBarHtml;
   }
 
+  /** Render a single foreign workspace row (shared by grouped and ungrouped rendering). */
+  function renderWsRow(ws: WorkspaceGroup): string {
+    const running = ws.counts['running'] || 0;
+    const waiting = ws.counts['waiting'] || 0;
+    const done = ws.counts['done'] || 0;
+    const wsStatus = waiting > 0 ? 'waiting' : running > 0 ? 'running' : done > 0 ? 'done' : 'idle';
+    const rowClass = 'ws-row' + (waiting > 0 ? ' ws-row-waiting' : '');
+    let countsHtml = '';
+    if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
+    if (running) countsHtml += '<span class="status-count running-count">' + running + 'R</span>';
+    if (done) countsHtml += '<span class="status-count done-count">' + done + 'D</span>';
+    const hasLiveSessions = running > 0 || waiting > 0;
+    return '<div class="' + rowClass + '"' + (hasLiveSessions ? ' data-confidence="' + (ws.confidence || 'medium') + '"' : '') + '>'
+      + '<span class="ws-status-dot ws-dot-' + wsStatus + '"></span>'
+      + '<span class="ws-name">' + escapeHtml(ws.displayName) + '</span>'
+      + '<div class="ws-counts">' + countsHtml + '</div>'
+      + '</div>';
+  }
+
+  /** Abbreviate a path by replacing $HOME with ~. */
+  function tildeAbbrev(p: string): string {
+    const home = typeof process !== 'undefined' && process.env?.HOME;
+    if (home && p.startsWith(home)) { return '~' + p.slice(home.length); }
+    return p;
+  }
+
+  /** Group foreign workspaces by common parent directory. */
+  function renderForeignWorkspaceRows(workspaces: WorkspaceGroup[]): string {
+    let html = '<div class="ws-section-header">Other workspaces</div>';
+
+    // Derive parent directory from cwd for each workspace
+    const byParent = new Map<string, WorkspaceGroup[]>();
+    const noParent: WorkspaceGroup[] = [];
+
+    for (const ws of workspaces) {
+      if (ws.cwd) {
+        const trimmed = ws.cwd.endsWith('/') ? ws.cwd.slice(0, -1) : ws.cwd;
+        const parent = trimmed.slice(0, trimmed.lastIndexOf('/'));
+        if (parent) {
+          let list = byParent.get(parent);
+          if (!list) { list = []; byParent.set(parent, list); }
+          list.push(ws);
+          continue;
+        }
+      }
+      noParent.push(ws);
+    }
+
+    // Partition into groups (2+ siblings) and singletons
+    const groups: { parentPath: string; workspaces: WorkspaceGroup[]; hasActive: boolean }[] = [];
+    const singletons: WorkspaceGroup[] = [...noParent];
+
+    for (const [parent, wsList] of byParent) {
+      if (wsList.length >= 2) {
+        const hasActive = wsList.some(w => (w.counts['running'] || 0) > 0 || (w.counts['waiting'] || 0) > 0);
+        wsList.sort((a, b) => a.displayName.localeCompare(b.displayName));
+        groups.push({ parentPath: parent, workspaces: wsList, hasActive });
+      } else {
+        singletons.push(...wsList);
+      }
+    }
+
+    // Sort groups: active first, then alphabetically by parent path
+    groups.sort((a, b) => {
+      if (a.hasActive !== b.hasActive) { return a.hasActive ? -1 : 1; }
+      return a.parentPath.localeCompare(b.parentPath);
+    });
+
+    // Sort singletons alphabetically
+    singletons.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+    // Render grouped workspaces
+    for (const group of groups) {
+      html += '<div class="ws-group-header">' + escapeHtml(tildeAbbrev(group.parentPath) + '/') + '</div>';
+      for (const ws of group.workspaces) {
+        html += renderWsRow(ws);
+      }
+    }
+
+    // Render singletons (no group header)
+    for (const ws of singletons) {
+      html += renderWsRow(ws);
+    }
+
+    return html;
+  }
+
   function renderCompactRow(s: PanelSession, now: number): string {
     const age = formatAge(now - s.lastActivity);
     const displayName = getDisplayName(s);
@@ -1000,7 +1069,7 @@ const RANGE_MS: Record<string, number> = {
       ? '<span class="team-agent-activity">' + escapeHtml(stripMarkdown(agent.activity)) + '</span>'
       : '';
 
-    return '<div class="team-agent ' + depthClass + '" data-session-id="' + escapeHtml(agent.sessionId) + '">'
+    return '<div class="team-agent ' + depthClass + '"' + (agent.sessionId ? ' data-session-id="' + escapeHtml(agent.sessionId) + '"' : '') + '>'
       + '<div class="team-agent-dot ' + dotClass + '"></div>'
       + '<div class="team-agent-content">'
       + '<span class="team-agent-name">' + depthBadge + escapeHtml(agent.name) + '</span>'

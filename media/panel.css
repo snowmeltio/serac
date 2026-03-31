@@ -132,6 +132,14 @@ body {
   min-width: 0;
 }
 .ws-counts { display: flex; gap: 6px; flex-shrink: 0; }
+.ws-group-header {
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--vscode-descriptionForeground, #555555);
+  font-family: var(--vscode-editor-font-family, 'SF Mono', 'Fira Code', monospace);
+  padding: 6px 0 1px;
+  letter-spacing: 0.2px;
+}
 .top-bar-btn.cleanup-btn { background: rgba(255, 255, 255, 0.06); color: #888888; cursor: pointer; margin-right: 2px; transition: background 0.3s, color 0.3s, box-shadow 0.3s; min-width: 62px; }
 .top-bar-btn.cleanup-btn:hover { background: rgba(255, 255, 255, 0.1); color: #999999; }
 .top-bar-btn.cleanup-btn.confirming { background: rgba(var(--sm-salmon-red-rgb), 0.2); color: var(--sm-salmon-red); box-shadow: 0 0 0 1px rgba(var(--sm-salmon-red-rgb), 0.4); }

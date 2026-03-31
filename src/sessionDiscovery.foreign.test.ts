@@ -63,6 +63,7 @@ describe('SessionDiscovery: foreign workspaces', () => {
     for (const ws of foreign) {
       expect(ws).toHaveProperty('workspaceKey');
       expect(ws).toHaveProperty('displayName');
+      expect(ws).toHaveProperty('cwd');
       expect(ws).toHaveProperty('counts');
     }
     discovery.stop();
@@ -155,6 +156,25 @@ describe('SessionDiscovery: foreign workspaces', () => {
     const foreign = discovery.getForeignWorkspaces();
     expect(foreign.length).toBe(1);
     expect(foreign[0].displayName).toBe('2026-02 Fundraising OD');
+    expect(foreign[0].cwd).toBe('/Users/murray/Library/CloudStorage/Shared drives/2026-02 Fundraising OD');
+    discovery.stop();
+  });
+
+  it('returns null cwd when no cwd available in JSONL', async () => {
+    const discovery = makeDiscovery();
+    createJsonlFile(workspaceKey, 'local-session');
+
+    const record = JSON.stringify({
+      type: 'user',
+      timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'text', text: 'Hello' }] },
+    });
+    createJsonlFile('foreign-no-cwd-ws', 'foreign-no-cwd', record);
+    await discovery.start(() => {});
+
+    const foreign = discovery.getForeignWorkspaces();
+    expect(foreign.length).toBe(1);
+    expect(foreign[0].cwd).toBeNull();
     discovery.stop();
   });
 

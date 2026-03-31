@@ -185,31 +185,37 @@ export interface WorkspaceGroup {
   workspaceKey: string;
   /** Human-readable workspace name (derived from key) */
   displayName: string;
+  /** Full CWD path for parent-directory grouping (null if unknown) */
+  cwd: string | null;
   /** Status counts for this workspace */
   counts: Record<string, number>;
   /** Highest confidence across sessions in this workspace */
   confidence: StatusConfidence;
 }
 
-// ── Team types (Cornice orchestrator integration) ───────────────────
+// ── Team types (Cornice orchestrator + Agent Teams integration) ──────
 
 /** Exit status of a Cornice-spawned agent */
 export type AgentExitStatus = 'success' | 'failed' | 'cancelled';
 
-/** Agent entry in a Cornice team manifest */
+/** Agent entry in a team manifest (Cornice sidecar or Agent Teams config) */
 export interface TeamAgentEntry {
-  sessionId: string;
+  /** Claude Code session ID. Null for Agent Teams members without session tracking. */
+  sessionId: string | null;
   name: string;
   cwd: string;
   parentSessionId: string;
   depth: number;
-  spawnedAt: number;       // epoch ms (parsed from ISO)
+  spawnedAt: number;       // epoch ms (parsed from ISO or epoch)
   completedAt: number | null;
   exitStatus: AgentExitStatus | null;
+  /** Whether the agent is currently active (from Agent Teams isActive field) */
+  isActive: boolean | null;
 }
 
-/** Parsed team manifest (from ~/.claude/teams/<id>.json) */
+/** Parsed team manifest (from Cornice sidecar or Agent Teams config.json) */
 export interface TeamManifest {
+  /** Schema version (1 for Cornice sidecar, 0 for Agent Teams config) */
   version: number;
   orchestrator: {
     sessionId: string;
@@ -223,7 +229,8 @@ export interface TeamManifest {
 
 /** Snapshot of a team agent sent to webview (manifest + JSONL state merged) */
 export interface TeamAgentSnapshot {
-  sessionId: string;
+  /** Null when session ID is not available (e.g. Agent Teams members) */
+  sessionId: string | null;
   name: string;
   cwd: string;
   parentSessionId: string;
