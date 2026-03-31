@@ -178,6 +178,7 @@ export class ForeignWorkspaceManager {
       result.push({
         workspaceKey: key,
         displayName: ForeignWorkspaceManager.workspaceDisplayName(key, this.cwdCache.get(key)),
+        cwd: this.cwdCache.get(key) ?? null,
         counts,
         confidence: confidences.get(key) ?? 'low',
       });

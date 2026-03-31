@@ -176,7 +176,7 @@ describe('panel.ts integration', () => {
     sendUpdate({
       sessions: [makeSession()],
       foreignWorkspaces: [
-        { workspaceKey: '-other-ws', displayName: 'Other Project', counts: { running: 2, waiting: 1, done: 3 }, confidence: 'medium' },
+        { workspaceKey: '-other-ws', displayName: 'Other Project', cwd: '/other/project', counts: { running: 2, waiting: 1, done: 3 }, confidence: 'medium' },
       ],
     });
     const foreignRows = document.querySelector('.ws-foreign-rows');
@@ -185,6 +185,58 @@ describe('panel.ts integration', () => {
     expect(foreignRows!.textContent).toContain('1W');
     expect(foreignRows!.textContent).toContain('2R');
     expect(foreignRows!.textContent).toContain('3D');
+  });
+
+  it('groups sibling foreign workspaces under parent path header', () => {
+    sendUpdate({
+      sessions: [makeSession()],
+      foreignWorkspaces: [
+        { workspaceKey: '-ws-a', displayName: 'alpha', cwd: '/repos/snowmeltio/alpha', counts: { running: 1 }, confidence: 'medium' },
+        { workspaceKey: '-ws-b', displayName: 'beta', cwd: '/repos/snowmeltio/beta', counts: { done: 2 }, confidence: 'low' },
+        { workspaceKey: '-ws-c', displayName: 'solo', cwd: '/other/solo', counts: { done: 1 }, confidence: 'low' },
+      ],
+    });
+    const foreignRows = document.querySelector('.ws-foreign-rows');
+    expect(foreignRows).toBeTruthy();
+    // Should have a group header for /repos/snowmeltio/
+    const groupHeaders = foreignRows!.querySelectorAll('.ws-group-header');
+    expect(groupHeaders.length).toBe(1);
+    expect(groupHeaders[0].textContent).toContain('/repos/snowmeltio/');
+    // Siblings should be sorted alphabetically within the group
+    const rows = foreignRows!.querySelectorAll('.ws-row');
+    const names = Array.from(rows).map(r => r.querySelector('.ws-name')?.textContent);
+    expect(names).toEqual(['alpha', 'beta', 'solo']);
+  });
+
+  it('does not group singletons under a parent header', () => {
+    sendUpdate({
+      sessions: [makeSession()],
+      foreignWorkspaces: [
+        { workspaceKey: '-ws-a', displayName: 'alpha', cwd: '/path-a/alpha', counts: { done: 1 }, confidence: 'low' },
+        { workspaceKey: '-ws-b', displayName: 'beta', cwd: '/path-b/beta', counts: { done: 1 }, confidence: 'low' },
+      ],
+    });
+    const foreignRows = document.querySelector('.ws-foreign-rows');
+    const groupHeaders = foreignRows!.querySelectorAll('.ws-group-header');
+    expect(groupHeaders.length).toBe(0);
+  });
+
+  it('sorts active groups before inactive groups', () => {
+    sendUpdate({
+      sessions: [makeSession()],
+      foreignWorkspaces: [
+        { workspaceKey: '-ws-a', displayName: 'a-idle', cwd: '/idle-parent/a-idle', counts: { done: 1 }, confidence: 'low' },
+        { workspaceKey: '-ws-b', displayName: 'b-idle', cwd: '/idle-parent/b-idle', counts: { done: 1 }, confidence: 'low' },
+        { workspaceKey: '-ws-c', displayName: 'c-active', cwd: '/active-parent/c-active', counts: { running: 1 }, confidence: 'medium' },
+        { workspaceKey: '-ws-d', displayName: 'd-active', cwd: '/active-parent/d-active', counts: { done: 2 }, confidence: 'low' },
+      ],
+    });
+    const foreignRows = document.querySelector('.ws-foreign-rows');
+    const groupHeaders = foreignRows!.querySelectorAll('.ws-group-header');
+    expect(groupHeaders.length).toBe(2);
+    // Active group should come first
+    expect(groupHeaders[0].textContent).toContain('/active-parent/');
+    expect(groupHeaders[1].textContent).toContain('/idle-parent/');
   });
 
   it('renders new chat and cleanup buttons', () => {

@@ -99,6 +99,48 @@ function writeManifest(teamId: string, manifest: Record<string, unknown>): void 
   );
 }
 
+/** Write an Agent Teams config in subdirectory format */
+function writeAgentTeamsConfig(teamName: string, config: Record<string, unknown>): void {
+  const dir = path.join(teamsDir, teamName);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
+}
+
+function validAgentTeamsConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    name: 'test-team',
+    description: 'Test team',
+    createdAt: Date.now(),
+    leadAgentId: 'team-lead@test-team',
+    leadSessionId: 'lead-001',
+    members: [
+      {
+        agentId: 'team-lead@test-team',
+        name: 'team-lead',
+        agentType: 'team-lead',
+        model: 'opus',
+        joinedAt: Date.now(),
+        tmuxPaneId: '',
+        cwd: '/Users/test/repos/project',
+        subscriptions: [],
+      },
+      {
+        agentId: 'worker@test-team',
+        name: 'worker',
+        agentType: 'Explore',
+        model: 'haiku',
+        joinedAt: Date.now(),
+        tmuxPaneId: '%1',
+        cwd: '/Users/test/repos/project',
+        subscriptions: [],
+        backendType: 'tmux',
+        isActive: true,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 /** Create a dummy JSONL file so ensureSessionManager finds it */
 function createJsonl(sessionId: string, cwd: string): void {
   const workspaceKey = cwd.replace(/[^a-zA-Z0-9]/g, '-');
@@ -287,6 +329,77 @@ describe('TeamDiscovery', () => {
       await td.scan();
 
       expect(mockManagers.size).toBe(4);
+      td.dispose();
+    });
+
+    it('discovers Agent Teams configs in subdirectories', async () => {
+      const config = validAgentTeamsConfig();
+      writeAgentTeamsConfig('test-team', config);
+      createJsonl('lead-001', '/Users/test/repos/project');
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      // Lead session should have a SessionManager
+      expect(mockManagers.has('lead-001')).toBe(true);
+      td.dispose();
+    });
+
+    it('discovers both Cornice sidecars and Agent Teams configs', async () => {
+      writeManifest('team-1', validManifest());
+      createJsonl('orch-001', '/Users/test/repos/project');
+      createJsonl('agent-001', '/Users/test/repos/project');
+
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
+      createJsonl('lead-001', '/Users/test/repos/project');
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      // Both should be discovered
+      expect(mockManagers.has('orch-001')).toBe(true);
+      expect(mockManagers.has('agent-001')).toBe(true);
+      expect(mockManagers.has('lead-001')).toBe(true);
+      td.dispose();
+    });
+
+    it('uses at: prefix for Agent Teams teamIds', async () => {
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
+      createJsonl('lead-001', '/Users/test/repos/project');
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      const snapshots = td.getTeamSnapshots(emptyMeta());
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0].teamId).toBe('at:my-team');
+      td.dispose();
+    });
+
+    it('skips subdirectories without config.json', async () => {
+      const dir = path.join(teamsDir, 'empty-dir');
+      fs.mkdirSync(dir, { recursive: true });
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(mockManagers.size).toBe(0);
+      td.dispose();
+    });
+
+    it('prunes Agent Teams configs when directory is removed', async () => {
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
+      createJsonl('lead-001', '/Users/test/repos/project');
+
+      const td = makeDiscovery();
+      await td.scan();
+      expect(mockManagers.has('lead-001')).toBe(true);
+
+      // Remove the team directory
+      fs.rmSync(path.join(teamsDir, 'my-team'), { recursive: true });
+      await td.scan();
+
+      expect(mockManagers.get('lead-001')!.disposed).toBe(true);
       td.dispose();
     });
   });
