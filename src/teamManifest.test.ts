@@ -159,34 +159,44 @@ describe('parseTeamManifest', () => {
     expect(parseTeamManifest(JSON.stringify(obj))).toBeNull();
   });
 
-  it('rejects agent with path-traversal sessionId', () => {
+  it('skips agent with path-traversal sessionId (forward-compatible)', () => {
     const obj = validManifestObj();
     obj.agents[0].sessionId = '../../secret';
-    expect(parseTeamManifest(JSON.stringify(obj))).toBeNull();
+    const result = parseTeamManifest(JSON.stringify(obj));
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(0);
   });
 
-  it('rejects agent with depth 0', () => {
+  it('skips agent with depth 0 (forward-compatible)', () => {
     const obj = validManifestObj();
     (obj.agents[0] as Record<string, unknown>).depth = 0;
-    expect(parseTeamManifest(JSON.stringify(obj))).toBeNull();
+    const result = parseTeamManifest(JSON.stringify(obj));
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(0);
   });
 
-  it('rejects agent with non-integer depth', () => {
+  it('skips agent with non-integer depth (forward-compatible)', () => {
     const obj = validManifestObj();
     (obj.agents[0] as Record<string, unknown>).depth = 1.5;
-    expect(parseTeamManifest(JSON.stringify(obj))).toBeNull();
+    const result = parseTeamManifest(JSON.stringify(obj));
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(0);
   });
 
-  it('rejects agent with invalid exitStatus', () => {
+  it('skips agent with invalid exitStatus (forward-compatible)', () => {
     const obj = validManifestObj();
     obj.agents[0].exitStatus = 'exploded' as unknown as null;
-    expect(parseTeamManifest(JSON.stringify(obj))).toBeNull();
+    const result = parseTeamManifest(JSON.stringify(obj));
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(0);
   });
 
-  it('rejects agent with invalid completedAt date', () => {
+  it('skips agent with invalid completedAt date (forward-compatible)', () => {
     const obj = validManifestObj();
     obj.agents[0].completedAt = 'tomorrow' as unknown as null;
-    expect(parseTeamManifest(JSON.stringify(obj))).toBeNull();
+    const result = parseTeamManifest(JSON.stringify(obj));
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(0);
   });
 
   it('rejects missing updatedAt', () => {
@@ -231,6 +241,38 @@ describe('parseTeamManifest', () => {
     const result = parseTeamManifest(JSON.stringify(obj));
     expect(result).not.toBeNull();
     expect(result!.agents).toHaveLength(200);
+  });
+
+  it('skips bad agents but keeps valid ones (forward-compatible)', () => {
+    const obj = validManifestObj();
+    // First agent is valid
+    // Second agent has an invalid exitStatus
+    // Third agent is valid
+    obj.agents.push({
+      sessionId: 'agent-bad',
+      name: 'bad-agent',
+      cwd: '/Users/murray/repos/team-strategy-day',
+      parentSessionId: 'orch-abc123',
+      depth: 1,
+      spawnedAt: '2026-03-30T02:16:00Z',
+      completedAt: '2026-03-30T02:17:00Z' as unknown as null,
+      exitStatus: 'exploded' as unknown as null,
+    });
+    obj.agents.push({
+      sessionId: 'agent-good',
+      name: 'good-agent',
+      cwd: '/Users/murray/repos/team-strategy-day',
+      parentSessionId: 'orch-abc123',
+      depth: 1,
+      spawnedAt: '2026-03-30T02:16:30Z',
+      completedAt: null,
+      exitStatus: null,
+    });
+    const result = parseTeamManifest(JSON.stringify(obj));
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(2);
+    expect(result!.agents[0].sessionId).toBe('agent-def456');
+    expect(result!.agents[1].sessionId).toBe('agent-good');
   });
 
   it('sets isActive to null on Cornice agents', () => {

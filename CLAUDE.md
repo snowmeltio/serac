@@ -33,6 +33,29 @@ See `ARCHITECTURE.md` for the full data flow, source file map, status inference 
 - **panel.js** is the webview frontend (vanilla JS, no framework). It uses a keyed DOM reconciler with FLIP animations.
 - **Types** are centralised in `types.ts`.
 
+## Cornice integration (team manifests)
+
+Serac reads team manifests written by Cornice (`snowmeltio/cornice`) from `~/.claude/teams/<orchestrator-session-id>.json`.
+
+- **Schema source of truth:** `snowmeltio/cornice/schemas/team-manifest-schema.json`
+- **Vendored copy:** `schemas/team-manifest-schema.json` (documentation only, not a runtime dependency)
+- **Parser:** `teamManifest.ts:parseTeamManifest()`
+
+### Status mapping
+
+| Cornice `AgentStatus` | Manifest `exitStatus` | Serac display |
+|----------------------|----------------------|---------------|
+| `completed`          | `success`            | done          |
+| `failed`             | `failed`             | done          |
+| `stopped`            | `cancelled`          | done          |
+| `running`/`spawning` | `null`               | running       |
+
+### Compatibility rules
+
+- Serac silently rejects manifests with `version > MAX_SUPPORTED_VERSION` (currently 1)
+- Manifests older than 7 days are ignored (filtered in `teamDiscovery.ts`)
+- Malformed agent entries are skipped with a warning; the rest of the manifest is still parsed
+
 ## Style
 
 - TypeScript strict mode

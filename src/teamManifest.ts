@@ -3,6 +3,8 @@
  *
  * 1. **Cornice sidecar** — `~/.claude/teams/<orchestrator-session-id>.json`
  *    Schema: { version: 1, orchestrator, agents[], updatedAt }
+ *    Source of truth: snowmeltio/cornice/schemas/team-manifest-schema.json
+ *    Vendored copy: schemas/team-manifest-schema.json (documentation only, not a runtime dependency)
  *
  * 2. **Agent Teams config** — `~/.claude/teams/<team-name>/config.json`
  *    Schema: { name, leadSessionId, members[], createdAt }
@@ -35,6 +37,47 @@ function isValidCwd(value: unknown): value is string {
   if (value.includes('\0')) { return false; }
   if (!value.startsWith('/')) { return false; }
   return true;
+}
+
+/** Parse a single agent entry from a Cornice manifest, or return null if malformed. */
+function parseAgentEntry(entry: unknown): TeamAgentEntry | null {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { return null; }
+  const a = entry as Record<string, unknown>;
+
+  if (!isValidSessionId(a.sessionId)) { return null; }
+  if (typeof a.name !== 'string' || a.name.length === 0) { return null; }
+  if (!isValidCwd(a.cwd)) { return null; }
+  if (!isValidSessionId(a.parentSessionId)) { return null; }
+  if (typeof a.depth !== 'number' || a.depth < 1 || !Number.isInteger(a.depth)) { return null; }
+
+  const spawnedAt = parseIsoDate(a.spawnedAt);
+  if (spawnedAt === null) { return null; }
+
+  let completedAt: number | null = null;
+  if (a.completedAt !== null && a.completedAt !== undefined) {
+    completedAt = parseIsoDate(a.completedAt);
+    if (completedAt === null) { return null; }
+  }
+
+  let exitStatus: AgentExitStatus | null = null;
+  if (a.exitStatus !== null && a.exitStatus !== undefined) {
+    if (typeof a.exitStatus !== 'string' || !VALID_EXIT_STATUSES.has(a.exitStatus as AgentExitStatus)) {
+      return null;
+    }
+    exitStatus = a.exitStatus as AgentExitStatus;
+  }
+
+  return {
+    sessionId: a.sessionId as string,
+    name: a.name as string,
+    cwd: a.cwd as string,
+    parentSessionId: a.parentSessionId as string,
+    depth: a.depth,
+    spawnedAt,
+    completedAt,
+    exitStatus,
+    isActive: null,
+  };
 }
 
 /**
@@ -74,43 +117,13 @@ export function parseTeamManifest(content: string): TeamManifest | null {
 
   const agents: TeamAgentEntry[] = [];
   for (const entry of obj.agents) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) { return null; }
-    const a = entry as Record<string, unknown>;
-
-    if (!isValidSessionId(a.sessionId)) { return null; }
-    if (typeof a.name !== 'string' || a.name.length === 0) { return null; }
-    if (!isValidCwd(a.cwd)) { return null; }
-    if (!isValidSessionId(a.parentSessionId)) { return null; }
-    if (typeof a.depth !== 'number' || a.depth < 1 || !Number.isInteger(a.depth)) { return null; }
-
-    const spawnedAt = parseIsoDate(a.spawnedAt);
-    if (spawnedAt === null) { return null; }
-
-    let completedAt: number | null = null;
-    if (a.completedAt !== null && a.completedAt !== undefined) {
-      completedAt = parseIsoDate(a.completedAt);
-      if (completedAt === null) { return null; }
+    const parsed = parseAgentEntry(entry);
+    if (parsed === null) {
+      // Skip malformed agent entries rather than rejecting the entire manifest.
+      // This prevents one bad agent from hiding all the others.
+      continue;
     }
-
-    let exitStatus: AgentExitStatus | null = null;
-    if (a.exitStatus !== null && a.exitStatus !== undefined) {
-      if (typeof a.exitStatus !== 'string' || !VALID_EXIT_STATUSES.has(a.exitStatus as AgentExitStatus)) {
-        return null;
-      }
-      exitStatus = a.exitStatus as AgentExitStatus;
-    }
-
-    agents.push({
-      sessionId: a.sessionId as string,
-      name: a.name as string,
-      cwd: a.cwd as string,
-      parentSessionId: a.parentSessionId as string,
-      depth: a.depth,
-      spawnedAt,
-      completedAt,
-      exitStatus,
-      isActive: null,
-    });
+    agents.push(parsed);
   }
 
   // updatedAt
