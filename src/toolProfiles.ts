@@ -36,26 +36,42 @@ export interface ToolProfile {
 }
 
 const TOOL_PROFILES = new Map<string, ToolProfile>([
-  // Exempt + orchestration
-  ['Agent',         { exempt: true,  slow: false, userInput: false, orchestration: true }],
-  ['Task',          { exempt: true,  slow: false, userInput: false, orchestration: true }],
-  // Exempt (read-only, internal)
-  ['Read',          { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  ['Glob',          { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  ['Grep',          { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  ['Edit',          { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  ['Write',         { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  ['TodoWrite',     { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  ['ToolSearch',    { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  ['EnterPlanMode', { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  ['ExitPlanMode',  { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  // Slow (network/shell)
-  ['Bash',          { exempt: false, slow: true,  userInput: false, orchestration: false }],
-  ['WebSearch',     { exempt: false, slow: true,  userInput: false, orchestration: false }],
-  ['WebFetch',      { exempt: false, slow: true,  userInput: false, orchestration: false }],
-  ['Skill',         { exempt: false, slow: true,  userInput: false, orchestration: false }],
+  // Exempt + orchestration (Agent/Task spawns and Agent Teams coordination)
+  ['Agent',           { exempt: true,  slow: false, userInput: false, orchestration: true }],
+  ['Task',            { exempt: true,  slow: false, userInput: false, orchestration: true }],
+  ['TaskOutput',      { exempt: true,  slow: false, userInput: false, orchestration: true }],
+  ['TaskStop',        { exempt: true,  slow: false, userInput: false, orchestration: true }],
+  ['TeamCreate',      { exempt: true,  slow: false, userInput: false, orchestration: true }],
+  ['TeamDelete',      { exempt: true,  slow: false, userInput: false, orchestration: true }],
+  ['SendMessage',     { exempt: true,  slow: false, userInput: false, orchestration: true }],
+  // Exempt (read-only, internal, or instant local writes)
+  ['Read',            { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['Glob',            { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['Grep',            { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['Edit',            { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['Write',           { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['NotebookEdit',    { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['TodoWrite',       { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['ToolSearch',      { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['EnterPlanMode',   { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['ExitPlanMode',    { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['EnterWorktree',   { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['ExitWorktree',    { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  // Exempt (instant fire-and-forget — schedule/cron/notification primitives)
+  ['ScheduleWakeup',  { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['CronCreate',      { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['CronDelete',      { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['CronList',        { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['RemoteTrigger',   { exempt: true,  slow: false, userInput: false, orchestration: false }],
+  ['PushNotification',{ exempt: true,  slow: false, userInput: false, orchestration: false }],
+  // Slow (network/shell/streaming)
+  ['Bash',            { exempt: false, slow: true,  userInput: false, orchestration: false }],
+  ['WebSearch',       { exempt: false, slow: true,  userInput: false, orchestration: false }],
+  ['WebFetch',        { exempt: false, slow: true,  userInput: false, orchestration: false }],
+  ['Skill',           { exempt: false, slow: true,  userInput: false, orchestration: false }],
+  ['Monitor',         { exempt: false, slow: true,  userInput: false, orchestration: false }],
   // User input
-  ['AskUserQuestion', { exempt: false, slow: false, userInput: true, orchestration: false }],
+  ['AskUserQuestion', { exempt: false, slow: false, userInput: true,  orchestration: false }],
 ]);
 
 /** Default profiles for unknown tools */
