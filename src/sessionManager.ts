@@ -157,6 +157,7 @@ export class SessionManager {
     this.subagentTailers = new SubagentTailerManager({
       isDisposed: () => this.disposed,
       getSessionFilePath: () => this.state.filePath,
+      getAllSubagents: () => this.state.subagents,
     });
     this.state = {
       sessionId,
