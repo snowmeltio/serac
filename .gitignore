@@ -16,3 +16,6 @@ logo-concepts/
 .claude/shell-snapshots/
 .claude/transcripts/
 .claude/settings.local.json
+.claude/worktrees/
+
+.vscode/settings.json
