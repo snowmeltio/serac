@@ -32,6 +32,10 @@ export interface TailerContext {
   isDisposed(): boolean;
   /** Path to the parent session's JSONL file (used to derive subagents directory). */
   getSessionFilePath(): string;
+  /** All subagents currently tracked on the parent session.
+   *  Used by scanForFile dedup to avoid attaching the same JSONL to two subagents
+   *  when multiple are silent simultaneously. */
+  getAllSubagents(): SubagentInfo[];
 }
 
 export class SubagentTailerManager {
@@ -136,6 +140,7 @@ export class SubagentTailerManager {
 
     const sessionDir = this.ctx.getSessionFilePath().replace(/\.jsonl$/, '');
     const subagentsDir = path.join(sessionDir, 'subagents');
+    const siblings = this.ctx.getAllSubagents();
 
     if (subagent.agentId) {
       const subagentFile = path.join(subagentsDir, `agent-${subagent.agentId}.jsonl`);
@@ -144,15 +149,17 @@ export class SubagentTailerManager {
         subagent.tailer = new JsonlTailer(subagentFile);
         this.activeTailerCount++;
       } catch {
-        await this.scanForFile(subagent, subagentsDir);
+        await this.scanForFile(subagent, subagentsDir, siblings);
       }
     } else {
-      await this.scanForFile(subagent, subagentsDir);
+      await this.scanForFile(subagent, subagentsDir, siblings);
     }
   }
 
-  /** Scan subagents directory for JSONL files and try to match to a subagent.
-   *  Falls back to opening the most recently modified file if only one unmatched.
+  /** Scan subagents directory for JSONL files and attach the oldest unmatched
+   *  file to this subagent. Pairing relies on FIFO firing order of silence
+   *  timers — siblings that already hold a tailer are excluded so each
+   *  silent subagent claims a distinct file.
    *  @param allSubagents All subagents in the session (for tailed-file dedup). */
   private async scanForFile(
     subagent: SubagentInfo,
@@ -178,13 +185,31 @@ export class SubagentTailerManager {
         return match && !tailedAgentIds.has(match[1]);
       });
 
-      if (unmatched.length === 1) {
-        const filePath = path.join(subagentsDir, unmatched[0]);
-        subagent.tailer = new JsonlTailer(filePath);
-        this.activeTailerCount++;
-        const match = unmatched[0].match(/^agent-(.+)\.jsonl$/);
-        if (match) { subagent.agentId = match[1]; }
-      }
+      if (unmatched.length === 0) { return; }
+
+      // Pick the oldest unmatched file by birthtime (creation), falling back to
+      // mtime when birthtime is unavailable. Combined with FIFO silence-timer
+      // firing this gives a stable spawn-order → file pairing for parallel
+      // subagents that all silence-fire in the same poll cycle.
+      const stats = await Promise.all(
+        unmatched.map(async f => {
+          try {
+            const stat = await fs.promises.stat(path.join(subagentsDir, f));
+            const ts = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+            return { name: f, ts };
+          } catch {
+            return { name: f, ts: Number.MAX_SAFE_INTEGER };
+          }
+        }),
+      );
+      stats.sort((a, b) => a.ts - b.ts);
+      const chosen = stats[0].name;
+
+      const filePath = path.join(subagentsDir, chosen);
+      subagent.tailer = new JsonlTailer(filePath);
+      this.activeTailerCount++;
+      const match = chosen.match(/^agent-(.+)\.jsonl$/);
+      if (match) { subagent.agentId = match[1]; }
     } catch {
       // Directory doesn't exist or isn't readable
     }

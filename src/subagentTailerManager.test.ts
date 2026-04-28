@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import { SubagentTailerManager } from './subagentTailerManager.js';
 import type { TailerContext, SubagentRecordBatch } from './subagentTailerManager.js';
 import type { SubagentInfo, JsonlRecord } from './types.js';
@@ -28,6 +31,7 @@ function makeContext(overrides: Partial<TailerContext> = {}): TailerContext {
   return {
     isDisposed: () => false,
     getSessionFilePath: () => '/tmp/test-session.jsonl',
+    getAllSubagents: () => [],
     ...overrides,
   };
 }
@@ -183,6 +187,91 @@ describe('SubagentTailerManager', () => {
       expect(subs[1].tailer).toBeNull();
       expect(subs[0].silenceTimerId).toBeUndefined();
       expect(mgr.getActiveTailerCount()).toBe(0);
+    });
+  });
+
+  describe('multi-subagent scanForFile dedup', () => {
+    let tmpRoot: string;
+    let sessionFile: string;
+    let subagentsDir: string;
+
+    beforeEach(() => {
+      vi.useRealTimers(); // need real fs ops
+      tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'serac-tailer-'));
+      sessionFile = path.join(tmpRoot, 'session.jsonl');
+      fs.writeFileSync(sessionFile, '');
+      subagentsDir = path.join(tmpRoot, 'session', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    });
+
+    function writeAgentFile(name: string): void {
+      fs.writeFileSync(path.join(subagentsDir, name), '');
+    }
+
+    it('attaches distinct files to parallel silent subagents (FIFO by birthtime)', async () => {
+      // Three subagent JSONL files, written in order so birthtime is monotonic.
+      writeAgentFile('agent-aaa.jsonl');
+      // Small delay to keep birthtimes distinct on filesystems with coarse timestamps
+      await new Promise(r => setTimeout(r, 10));
+      writeAgentFile('agent-bbb.jsonl');
+      await new Promise(r => setTimeout(r, 10));
+      writeAgentFile('agent-ccc.jsonl');
+
+      const subs: SubagentInfo[] = [makeSubagent(), makeSubagent(), makeSubagent()];
+      const mgr = new SubagentTailerManager({
+        isDisposed: () => false,
+        getSessionFilePath: () => sessionFile,
+        getAllSubagents: () => subs,
+      });
+
+      // Open tailers in spawn order — each call should claim the oldest unmatched file.
+      await (mgr as any).openTailer(subs[0]);
+      await (mgr as any).openTailer(subs[1]);
+      await (mgr as any).openTailer(subs[2]);
+
+      const ids = subs.map(s => s.agentId).sort();
+      expect(ids).toEqual(['aaa', 'bbb', 'ccc']);
+      // No two subagents should hold the same tailer file
+      const paths = subs.map(s => s.tailer!.getFilePath());
+      expect(new Set(paths).size).toBe(3);
+      expect(mgr.getActiveTailerCount()).toBe(3);
+    });
+
+    it('still attaches when only one unmatched file remains', async () => {
+      writeAgentFile('agent-only.jsonl');
+      const sub = makeSubagent();
+      const mgr = new SubagentTailerManager({
+        isDisposed: () => false,
+        getSessionFilePath: () => sessionFile,
+        getAllSubagents: () => [sub],
+      });
+
+      await (mgr as any).openTailer(sub);
+      expect(sub.agentId).toBe('only');
+      expect(sub.tailer).not.toBeNull();
+    });
+
+    it('does nothing when no unmatched files remain', async () => {
+      writeAgentFile('agent-claimed.jsonl');
+      const claimed = makeSubagent({
+        tailer: { readNewRecords: vi.fn(), getFilePath: () => path.join(subagentsDir, 'agent-claimed.jsonl') } as any,
+        agentId: 'claimed',
+      });
+      const silent = makeSubagent();
+      const mgr = new SubagentTailerManager({
+        isDisposed: () => false,
+        getSessionFilePath: () => sessionFile,
+        getAllSubagents: () => [claimed, silent],
+      });
+      (mgr as any).activeTailerCount = 1;
+
+      await (mgr as any).openTailer(silent);
+      expect(silent.tailer).toBeNull();
+      expect(mgr.getActiveTailerCount()).toBe(1);
     });
   });
 });
