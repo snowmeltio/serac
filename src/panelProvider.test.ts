@@ -40,6 +40,8 @@ function makeSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot
     modelLabel: 'Opus',
     title: null,
     customTitle: '',
+    aiTitle: '',
+    confidence: 'high',
     ...overrides,
   };
 }

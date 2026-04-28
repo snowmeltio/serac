@@ -111,6 +111,15 @@ describe('getDisplayName', () => {
   it('falls back to title', () => {
     expect(getDisplayName(session({ title: 'Generated Title' }))).toBe('Generated Title');
   });
+  it('falls back to aiTitle when title is unset', () => {
+    expect(getDisplayName(session({ aiTitle: 'Auto-generated Title' }))).toBe('Auto-generated Title');
+  });
+  it('prefers customTitle over aiTitle', () => {
+    expect(getDisplayName(session({ customTitle: 'My Title', aiTitle: 'Auto Title' }))).toBe('My Title');
+  });
+  it('skips placeholder aiTitle', () => {
+    expect(getDisplayName(session({ aiTitle: 'Session abcdef12', topic: 'Real topic' }))).toBe('Real topic');
+  });
   it('falls back to topic', () => {
     expect(getDisplayName(session({ topic: 'Fix the bug' }))).toBe('Fix the bug');
   });

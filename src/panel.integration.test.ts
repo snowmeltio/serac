@@ -47,6 +47,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     modelLabel: 'Opus',
     title: null,
     customTitle: '',
+    aiTitle: '',
     confidence: 'high',
     ...overrides,
   };

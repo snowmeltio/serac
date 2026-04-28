@@ -179,12 +179,13 @@ export class SessionManager {
       firstUserMessages: [],
       firstAssistantResponse: '',
       customTitle: '',
+      aiTitle: '',
       userTurnCount: 0,
     };
   }
 
   /** Reset derived state (called on JSONL truncation to avoid corrupt accumulation) [H1]
-   *  Preserves topic and customTitle so display names survive compaction. */
+   *  Preserves topic, customTitle, and aiTitle so display names survive compaction. */
   private resetState(): void {
     const now = new Date();
     this.state.status = 'done';
@@ -193,8 +194,8 @@ export class SessionManager {
     this.state.userTurnCount = 0;
     this.state.firstUserMessages = [];
     this.state.firstAssistantResponse = '';
-    // Preserve customTitle and topic across compaction — clearing them causes
-    // the display name to fall back to the compacted summary text.
+    // Preserve customTitle, aiTitle, and topic across compaction — clearing
+    // them causes the display name to fall back to the compacted summary text.
     this.state.contextTokens = 0;
     this.state.modelId = '';
     this.state.lastActivity = now;
@@ -285,6 +286,7 @@ export class SessionManager {
       modelLabel: this.formatModelLabel(this.state.modelId),
       title: null,  // Populated by SessionDiscovery from session-meta.json
       customTitle: this.state.customTitle,
+      aiTitle: this.state.aiTitle,
       confidence: this.computeConfidence(),
     };
   }
@@ -484,6 +486,12 @@ export class SessionManager {
       case 'custom-title':
         if (record.customTitle && typeof record.customTitle === 'string') {
           this.state.customTitle = record.customTitle;
+          return true;
+        }
+        return false;
+      case 'ai-title':
+        if (record.aiTitle && typeof record.aiTitle === 'string') {
+          this.state.aiTitle = record.aiTitle;
           return true;
         }
         return false;

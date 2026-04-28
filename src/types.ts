@@ -83,6 +83,9 @@ export interface SessionState {
   firstAssistantResponse: string;
   /** Native custom title from JSONL custom-title record */
   customTitle: string;
+  /** Auto-generated title from JSONL `ai-title` records (Claude Code synthesises
+   *  these from the conversation; may be overwritten on later turns). */
+  aiTitle: string;
   /** Count of main-thread user turns (for title trigger) */
   userTurnCount: number;
 }
@@ -110,6 +113,8 @@ export interface SessionSnapshot {
   title: string | null;
   /** Native custom title set via Claude Code rename */
   customTitle: string;
+  /** Claude Code's auto-generated title from `ai-title` JSONL records */
+  aiTitle: string;
   /** How confident we are in the displayed status */
   confidence: StatusConfidence;
 }
@@ -302,11 +307,16 @@ export type WebviewCommand =
 export type JsonlRecordType =
   | 'user'
   | 'assistant'
+  | 'progress'
+  | 'system'
+  | 'queue-operation'
   | 'tool_result'
   | 'result'
   | 'custom-title'
+  | 'ai-title'
   | 'last-prompt'
   | 'summary'
+  | 'agent-name'
   | (string & {}); // allows any string but provides autocomplete for known types
 
 /** Raw JSONL record from Claude Code transcript files */
@@ -331,6 +341,10 @@ export interface JsonlRecord {
   subtype?: string;
   operation?: string;
   customTitle?: string;
+  /** Auto-generated title from `ai-title` records */
+  aiTitle?: string;
+  /** Auto-generated agent display name from `agent-name` records */
+  agentName?: string;
   [key: string]: unknown;
 }
 

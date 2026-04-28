@@ -17,6 +17,8 @@ export interface PanelSession {
   activity?: string;
   customTitle?: string;
   title?: string;
+  /** Auto-generated title from Claude Code's `ai-title` JSONL records. */
+  aiTitle?: string;
   slug?: string;
   cwd?: string;
   lastActivity: number;
@@ -94,6 +96,7 @@ export function formatSlug(slug: string): string {
 export function getDisplayName(s: PanelSession): string {
   if (s.customTitle && !isPlaceholderTitle(s.customTitle)) return s.customTitle;
   if (s.title && !isPlaceholderTitle(s.title)) return s.title;
+  if (s.aiTitle && !isPlaceholderTitle(s.aiTitle)) return s.aiTitle;
   if (s.topic) return s.topic;
   if (s.cwd) {
     const parts = s.cwd.split('/');

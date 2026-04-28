@@ -59,6 +59,16 @@ describe('ensureSessionMetadata', async () => {
     expect(fs.readFileSync(jsonl, 'utf-8')).toBe(before);
   });
 
+  it('skips when ai-title already exists in tail', async () => {
+    const jsonl = writeJsonl(sid, [
+      { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'Hello' }] } },
+      { type: 'ai-title', sessionId: sid, aiTitle: 'Auto-generated title' },
+    ]);
+    const before = fs.readFileSync(jsonl, 'utf-8');
+    await ensureSessionMetadata(sid, jsonl);
+    expect(fs.readFileSync(jsonl, 'utf-8')).toBe(before);
+  });
+
   it('strips IDE context tags from extracted text', async () => {
     const jsonl = writeJsonl(sid, [
       { type: 'user', message: { role: 'user', content: [
