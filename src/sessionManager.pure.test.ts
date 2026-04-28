@@ -171,8 +171,33 @@ describe('getToolProfile', () => {
   });
 
   it('returns slow profiles for all network tools', () => {
-    for (const name of ['WebSearch', 'WebFetch', 'Skill']) {
+    for (const name of ['WebSearch', 'WebFetch', 'Skill', 'Monitor']) {
       expect(getToolProfile(name).slow).toBe(true);
+    }
+  });
+
+  it('returns exempt+orchestration for Agent Teams primitives', () => {
+    for (const name of ['TaskOutput', 'TaskStop', 'TeamCreate', 'TeamDelete', 'SendMessage']) {
+      const p = getToolProfile(name);
+      expect(p.exempt).toBe(true);
+      expect(p.orchestration).toBe(true);
+    }
+  });
+
+  it('returns exempt for instant fire-and-forget primitives', () => {
+    for (const name of [
+      'ScheduleWakeup', 'CronCreate', 'CronDelete', 'CronList',
+      'RemoteTrigger', 'PushNotification',
+    ]) {
+      const p = getToolProfile(name);
+      expect(p.exempt).toBe(true);
+      expect(p.orchestration).toBe(false);
+    }
+  });
+
+  it('returns exempt for editor/notebook/worktree tools', () => {
+    for (const name of ['NotebookEdit', 'EnterWorktree', 'ExitWorktree']) {
+      expect(getToolProfile(name).exempt).toBe(true);
     }
   });
 });
