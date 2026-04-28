@@ -27,8 +27,6 @@ const TEAM_AGE_GATE_MS = 7 * 24 * 60 * 60 * 1000;
 const TEAM_SCAN_INTERVAL = 10;
 /** Batch size for concurrent session updates (shared FD budget) */
 const UPDATE_BATCH_SIZE = 50;
-/** Orphan detection: if all agents done for this long with no completedAt, infer team done */
-const ORPHAN_CEILING_MS = 3 * 60 * 1000;
 /** Confidence ranking for max-confidence aggregation */
 const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 
