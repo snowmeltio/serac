@@ -26,3 +26,5 @@ HANDOFF-PROMPT.md
 .locks/**
 logo-concepts/**
 CHANGELOG.md
+.claude/**
+AUDIT.md
