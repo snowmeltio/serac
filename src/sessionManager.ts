@@ -20,7 +20,8 @@
  * !running      → running       system: compact_boundary                 processSystemRecord() → setRunning()
  *
  * running       → waiting       AskUserQuestion tool_use                 processAssistantRecord()
- * running       → waiting       permission timer (3s/8s)                 resetPermissionTimer() timeout
+ * running       → waiting       permission timer (3s/6s, doubled to     resetPermissionTimer() timeout
+ *                                6s/12s if recent tool result <3s ago)
  * running       → waiting       all subagents blocked                    resetSubagentPermissionTimer() timeout
  * running       → waiting       computeDemotion + active tools (no subs) demoteIfStale()
  *
@@ -826,6 +827,8 @@ export class SessionManager {
       this.appendActivity('Processing');
       return true;
     }
+    // 'remove' = queued message removed without dispatch (user cancelled).
+    // No state change: session remains in whatever state the prior enqueue left it.
     return false;
   }
 

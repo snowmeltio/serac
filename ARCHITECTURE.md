@@ -40,37 +40,46 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | Status | Meaning | Visual |
 |--------|---------|--------|
 | `running` | Agent is actively processing | Blue border, spinner |
-| `needs-input` | Waiting for user (permission prompt or AskUserQuestion) | Orange border, pulsing pill |
+| `waiting` | Waiting for user (permission prompt or AskUserQuestion) | Orange border, pulsing pill |
 | `done` | Turn complete, not yet acknowledged by user | Teal border |
-| `stale` | Done + acknowledged + 10s elapsed; or idle + acknowledged | Grey border |
-| `idle` | Queued but not yet started | Grey border |
+| `stale` | Display-only: `done` + acknowledged + 10s elapsed | Grey border |
+| `idle` | Display-only: queued (`enqueue`) but not yet dequeued | Grey border |
 
 ### Transitions
 
 ```
-idle ──→ running          (user record arrives or queue-operation)
-running ──→ needs-input   (turn_duration with pending tools, or permission timer 20s/45s)
-running ──→ done          (turn_duration with no tools, or idle timer 5s, or hard ceiling 3min)
-needs-input ──→ running   (sidechain tool_result unblocks subagents)
-done ──→ stale            (acknowledged + 10s elapsed)
-idle ──→ stale            (acknowledged)
-stale ──→ running         (new activity resets acknowledged flag)
+done ──→ running          (user record arrives, dequeue, or compact_boundary)
+running ──→ waiting       (AskUserQuestion, permission timer 3s/6s, all subagents blocked)
+running ──→ done          (idle timer 5s, all-subagents-done, or hard ceiling 3min)
+waiting ──→ running       (sidechain tool_result unblocks subagents, user record)
+waiting ──→ done          (waiting hard ceiling 10min)
+any ──→ done              (queue-operation: enqueue, JSONL truncation)
+done ──→ stale            (display-only: acknowledged + 10s elapsed)
 ```
+
+Internal statuses are `running | waiting | done`. `stale` and `idle` are display-only labels applied in `SessionDiscovery.getSnapshots()` and `panel.ts`.
 
 ### Timer hierarchy
 
-1. **`turn_duration` system record** — authoritative signal that LLM finished its turn
-2. **Permission timer (20s/45s)** — heuristic for stuck permission prompts; 45s for slow tools (Bash, WebSearch, WebFetch, Skill, MCP)
-3. **Idle timer (5s)** — fires only if status is `running` AND no active non-orchestration tools
-4. **Hard ceiling (3 min)** — safety net; forces done regardless of state
+`turn_duration` system records were never observed in production JSONL and were removed as a state signal in v0.9. Status now derives from record cadence and tool-completion signals.
+
+1. **Tool completion signals** — `tool_result` blocks remove tools from `activeTools`; the all-subagents-done shortcut marks orchestrator turns complete immediately.
+2. **Permission timer** — heuristic for stuck permission prompts. Base delay **3s** for normal tools, **6s** for slow tools (Bash, WebSearch, WebFetch, Skill, MCP). Doubled (max **6s/12s**) if a tool result arrived within the last 3s, to absorb sequential auto-approved tools.
+3. **Idle timer (5s)** — fires only if status is `running` AND output has been seen in this turn AND no blocking subagents are active.
+4. **Extended thinking grace (30s)** — first 30s of a turn with no output yet uses PID-liveness check instead of demoting (covers slow first-token).
+5. **Hard ceiling (3 min running, 10 min waiting)** — safety net; forces done regardless of state. Covers laptop sleep, quota hits, abandoned permission prompts.
 
 ### Permission-exempt tools
 
-These tools never trigger permission wait detection: Task, Agent, TodoWrite, ToolSearch, Read, Glob, Grep, EnterPlanMode, ExitPlanMode.
+These tools never trigger permission wait detection: `Agent`, `Task`, `TodoWrite`, `ToolSearch`, `Read`, `Glob`, `Grep`, `Edit`, `Write`, `EnterPlanMode`, `ExitPlanMode`, `EnterWorktree`, `ExitWorktree`, `ScheduleWakeup`, `CronCreate`, `CronDelete`, `CronList`, `RemoteTrigger`, `PushNotification`, `TaskOutput`, `TaskStop`, `SendMessage`. See `toolProfiles.ts` for the canonical list.
 
 ### Subagent permission bubbling
 
-When a subagent's permission timer fires, it marks that subagent as `waitingOnPermission`. The parent only transitions to `needs-input` when ALL running subagents are blocked. Single-subagent blocks don't bubble up if other subagents are still progressing.
+Each subagent runs its own permission timer against `subagent.activeTools`. When it fires, the subagent is marked `waitingOnPermission`. The parent only transitions to `waiting` when **all** running subagents are blocked — a single-subagent block doesn't bubble if other subagents are still progressing.
+
+Subagents are further classified for demotion:
+- **Blocking subagent** — `parentToolUseId` is still in the parent's `activeTools` (parent waiting for the Task/Agent result). Suppresses parent demotion.
+- **Background subagent** — parent has moved on (`parentToolUseId` no longer in `activeTools`). Does NOT suppress demotion; parent can demote to `done` while the background subagent finishes.
 
 ## Usage model
 
