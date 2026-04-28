@@ -171,6 +171,23 @@ describe('Transition coverage: every known record type/subtype triggers a state 
     expect(changed).toBe(true);
   });
 
+  it('ai-title → true and surfaces on snapshot', async () => {
+    const mgr = makeManager();
+    const changed = await feedRecords(mgr, [{
+      type: 'ai-title', aiTitle: 'Build Service Architecture', timestamp: ts(),
+    }]);
+    expect(changed).toBe(true);
+    expect(mgr.getSnapshot().aiTitle).toBe('Build Service Architecture');
+  });
+
+  it('queue-operation: remove → false (no state change)', async () => {
+    const mgr = makeManager();
+    const changed = await feedRecords(mgr, [{
+      type: 'queue-operation', operation: 'remove', timestamp: ts(),
+    }]);
+    expect(changed).toBe(false);
+  });
+
   it('unknown record type → false (no state change)', async () => {
     const mgr = makeManager();
     const changed = await feedRecords(mgr, [{

@@ -25,10 +25,13 @@ export async function ensureSessionMetadata(sessionId: string, jsonlPath: string
       await fh.read(buf, 0, buf.length, tailStart);
       const tail = buf.toString('utf-8');
 
-      // Already has metadata — nothing to do
+      // Already has metadata — nothing to do.
+      // Includes `ai-title` (Claude Code's auto-generated title, shipped post-v0.3)
+      // so we don't overwrite a fresh AI-generated title with a stale first-user-text.
       if (tail.includes('"type":"custom-title"') || tail.includes('"type": "custom-title"') ||
-          tail.includes('"type":"last-prompt"') || tail.includes('"type": "last-prompt"') ||
-          tail.includes('"type":"summary"') || tail.includes('"type": "summary"')) {
+          tail.includes('"type":"ai-title"')     || tail.includes('"type": "ai-title"')     ||
+          tail.includes('"type":"last-prompt"')  || tail.includes('"type": "last-prompt"')  ||
+          tail.includes('"type":"summary"')      || tail.includes('"type": "summary"')) {
         return;
       }
     } finally {
