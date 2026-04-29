@@ -18,4 +18,4 @@ logo-concepts/
 .claude/settings.local.json
 .claude/worktrees/
 
-.vscode/settings.json
+.vscode/
