@@ -69,12 +69,21 @@ export class ForeignWorkspaceManager {
             } catch { continue; }
 
             const manager = new SessionManager(sessionId, filePath, dir);
-            this.sessions.set(compositeId, manager);
             try {
               await manager.update();
             } catch (err) {
               this.log.warn(`Foreign session update failed (${compositeId}):`, err);
             }
+            // Drop sessions whose meaningful activity (user/assistant turns) is past
+            // the gate even though mtime is recent. Claude Code backfills `ai-title`
+            // records to old sessions, bumping mtime without indicating real
+            // activity — without this check, scan() keeps re-adding what poll()
+            // evicts, causing the workspace to flicker.
+            if (now - manager.getLastActivity().getTime() > FOREIGN_AGE_GATE_MS) {
+              manager.dispose();
+              continue;
+            }
+            this.sessions.set(compositeId, manager);
           }
         } catch { /* unreadable directory */ }
       }
