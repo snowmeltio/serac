@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
-import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WebviewCommand, WorkspaceGroup, TeamSnapshot } from './types.js';
+import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, FooterSlotPayload } from './types.js';
 import type { CompactSettings } from './claudeSettings.js';
 import { parseWebviewCommand } from './validation.js';
 
@@ -29,6 +29,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private onDismissTeam: ((teamId: string) => void) | undefined;
   private onUndismissTeam: ((teamId: string) => void) | undefined;
   private onOpenWorkspace: ((cwd: string, sessionId?: string) => void) | undefined;
+  private onFooterSlotClick: ((slotId: string) => void) | undefined;
+  private getFooterSlotPayloads: (() => FooterSlotPayload[]) | undefined;
   private workspacePath = '';
 
   constructor(
@@ -75,6 +77,23 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.onOpenWorkspace = handler;
   }
 
+  /** Register the footer-slot bridge: a snapshot accessor (so the next
+   *  sendUpdate carries the latest payloads) and a click router that resolves
+   *  the slot's command and runs it. Both are wired by extension.ts. */
+  setFooterSlotBridge(
+    getPayloads: () => FooterSlotPayload[],
+    onClick: (slotId: string) => void,
+  ): void {
+    this.getFooterSlotPayloads = getPayloads;
+    this.onFooterSlotClick = onClick;
+  }
+
+  /** Trigger a redraw — used by the registry's onChange callback so that
+   *  registering/updating/disposing a slot re-pushes the update message. */
+  refresh(): void {
+    this.sendUpdate();
+  }
+
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
@@ -116,6 +135,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         this.onUndismissTeam(message.teamId);
       } else if (message.type === 'openWorkspace' && this.onOpenWorkspace) {
         this.onOpenWorkspace(message.cwd, message.sessionId);
+      } else if (message.type === 'footerSlotClick' && this.onFooterSlotClick) {
+        this.onFooterSlotClick(message.slotId);
       } else if (message.type === 'requestUpdate') {
         this.sendUpdate();
       }
@@ -155,6 +176,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private sendUpdate(): void {
     if (!this.view) { return; }
 
+    const footerSlots = this.getFooterSlotPayloads ? this.getFooterSlotPayloads() : [];
     const message: WebviewMessage = {
       type: 'update',
       sessions: this.sessions,
@@ -165,6 +187,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       foreignWaiting: this.foreignWaiting.length > 0 ? this.foreignWaiting : undefined,
       teams: this.teams.length > 0 ? this.teams : undefined,
       compactSettings: this.compactSettings,
+      footerSlots: footerSlots.length > 0 ? footerSlots : undefined,
     };
 
     this.view.webview.postMessage(message);

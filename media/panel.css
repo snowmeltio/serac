@@ -540,9 +540,30 @@ body {
 .usage-link { color: var(--sm-blizzard-light); text-decoration: none; }
 .usage-link:hover { text-decoration: underline; }
 .api-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
-.api-dot.connected { background: var(--sm-arctic-teal); }
-.api-dot.cached { background: var(--sm-frozen-peach); }
-.api-dot.disconnected { background: var(--sm-salmon-red); }
+.api-dot.connected, .api-dot.ok { background: var(--sm-arctic-teal); }
+.api-dot.cached, .api-dot.warn { background: var(--sm-frozen-peach); }
+.api-dot.disconnected, .api-dot.critical { background: var(--sm-salmon-red); }
+
+/* === FOOTER SLOTS (companion-registered usage-card extensions) === */
+.usage-slots { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.usage-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  font-size: 10px;
+  color: var(--vscode-editor-foreground, #cccccc);
+  border-radius: 3px;
+  min-width: 0;
+}
+.usage-slot-row.clickable { cursor: pointer; }
+.usage-slot-row.clickable:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04)); }
+.usage-slot-row.clickable:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue));
+  outline-offset: -1px;
+}
+.usage-slot-icon { flex-shrink: 0; width: 16px; text-align: center; font-size: 12px; line-height: 1; }
+.usage-slot-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* === TEAM GROUPS (Cornice agent teams) === */
 .team-section { padding: 0 6px 4px 6px; display: flex; flex-direction: column; gap: 5px; }

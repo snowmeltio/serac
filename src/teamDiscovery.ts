@@ -11,10 +11,10 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { parseTeamManifest, parseAgentTeamsConfig } from './teamManifest.js';
+import { claudeStateDir } from './paths.js';
 import type {
   TeamManifest, TeamSnapshot, TeamAgentSnapshot,
   SessionMeta, StatusConfidence, DisplayStatus,
@@ -45,7 +45,7 @@ export class TeamDiscovery {
     private readonly log: Logger,
   ) {
     this.projectsDir = projectsDir;
-    this.teamsDir = path.join(os.homedir(), '.claude', 'teams');
+    this.teamsDir = path.join(claudeStateDir(), 'teams');
   }
 
   /** Whether it's time for a full rescan (every Nth poll cycle). */

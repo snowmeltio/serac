@@ -1,10 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
 import { TeamDiscovery } from './teamDiscovery.js';
+import { claudeStateDir } from './paths.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot } from './types.js';
 
 /** Minimal log interface matching VS Code's LogOutputChannel */
@@ -65,7 +65,7 @@ export class SessionDiscovery {
   private extendedArchiveLoadedRange = 0;
 
   constructor(workspacePath: string, opts?: { projectsDir?: string; log?: Logger }) {
-    this.projectsDir = opts?.projectsDir ?? path.join(os.homedir(), '.claude', 'projects');
+    this.projectsDir = opts?.projectsDir ?? path.join(claudeStateDir(), 'projects');
     this.workspaceKey = sanitiseWorkspaceKey(workspacePath);
     this.metaFilePath = path.join(this.projectsDir, this.workspaceKey, 'session-meta.json');
     this.log = opts?.log ?? nullLogger;

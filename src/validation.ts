@@ -11,8 +11,12 @@ export function isValidSessionId(id: unknown): id is string {
 const VALID_COMMAND_TYPES = new Set([
   'focusSession', 'dismissSession', 'undismissSession', 'viewTranscript',
   'newChat', 'copyToClipboard', 'requestUpdate', 'cleanup', 'archiveRange',
-  'dismissTeam', 'undismissTeam', 'openWorkspace',
+  'dismissTeam', 'undismissTeam', 'openWorkspace', 'footerSlotClick',
 ]);
+
+/** Slot ids must mirror FooterSlotRegistry's regex (kept in sync there). */
+const SLOT_ID_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+
 
 /** Reject working directories that aren't an absolute filesystem path */
 function isValidCwd(p: unknown): p is string {
@@ -54,6 +58,13 @@ export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
     if (typeof msg.text !== 'string' || msg.text.length > 1000) { return null; }
     return { type: 'copyToClipboard', text: msg.text };
   }
+
+  // footerSlotClick needs a valid slotId
+  if (msg.type === 'footerSlotClick') {
+    if (typeof msg.slotId !== 'string' || !SLOT_ID_RE.test(msg.slotId)) { return null; }
+    return { type: 'footerSlotClick', slotId: msg.slotId };
+  }
+
 
   // openWorkspace requires an absolute cwd, optional sessionId
   if (msg.type === 'openWorkspace') {

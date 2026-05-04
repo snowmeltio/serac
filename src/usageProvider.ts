@@ -5,6 +5,7 @@ import * as https from 'https';
 import * as cp from 'child_process';
 import type { UsageSnapshot } from './types.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
+import { claudeStateDir, claudeKeychainService } from './paths.js';
 
 /** Shape of the Anthropic OAuth usage API response */
 interface UsageApiResponse {
@@ -48,9 +49,10 @@ export class UsageProvider {
   private apiCooldownMs = 0; // randomised each cycle
 
   constructor(workspacePath: string, opts?: { cachePath?: string }) {
-    this.projectsDir = path.join(os.homedir(), '.claude', 'projects');
+    const stateDir = claudeStateDir();
+    this.projectsDir = path.join(stateDir, 'projects');
     this.workspaceKey = sanitiseWorkspaceKey(workspacePath);
-    this.cachePath = opts?.cachePath ?? path.join(os.homedir(), '.claude', 'usage-cache.json');
+    this.cachePath = opts?.cachePath ?? path.join(stateDir, 'usage-cache.json');
     this.loadDiskCache();
   }
 
@@ -266,7 +268,7 @@ export class UsageProvider {
         const raw = await new Promise<string>((resolve, reject) => {
           cp.execFile(
             'security',
-            ['find-generic-password', '-a', username, '-s', 'Claude Code-credentials', '-w'],
+            ['find-generic-password', '-a', username, '-s', claudeKeychainService(), '-w'],
             { encoding: 'utf-8', timeout: 3000 },
             (err, stdout) => { err ? reject(err) : resolve(stdout.trim()); },
           );
