@@ -314,4 +314,26 @@ describe('Transition coverage: key state transitions', () => {
     ]);
     expect(mgr.getStatus()).toBe('running');
   });
+
+  it('out-of-order tool_result before tool_use does not leak activeTools', async () => {
+    // Claude Code's JSONL writer occasionally flushes tool_result before its
+    // tool_use record (file order reversed despite earlier wall-clock timestamp
+    // on tool_use). Without compensation, the late tool_use leaks into
+    // activeTools and demoteIfStale falsely flips the session to 'waiting'.
+    const mgr = makeManager();
+    await feedRecords(mgr, [
+      // tool_result arrives FIRST (out-of-order)
+      { type: 'user', timestamp: ts(),
+        message: { content: [{ type: 'tool_result', tool_use_id: 'leak1' }] } },
+      // tool_use arrives SECOND
+      { type: 'assistant', timestamp: ts(),
+        message: { content: [{ type: 'tool_use', name: 'Bash', id: 'leak1' }] } },
+    ]);
+
+    // No leaked tool: idle timer (5s) clears the session because activeTools
+    // is empty, and demoteIfStale never sees a phantom waiting state.
+    vi.advanceTimersByTime(35_000);
+    mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('done');
+  });
 });
