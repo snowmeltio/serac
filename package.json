@@ -42,7 +42,7 @@
         {
           "type": "webview",
           "id": "agentActivity.panel",
-          "name": "Session Monitor"
+          "name": "Serac"
         }
       ]
     },
