@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.3 (2026-05-04) — Other-workspaces pane bugfix
+
+### Fixed
+- **Other-workspaces flicker** — Workspaces (e.g. TSF OD) appeared and disappeared as the panel re-rendered, and active foreign agents (e.g. BHP) only surfaced briefly. Root cause was a race in `ForeignWorkspaceManager` between `scan()` populating `this.sessions` and `loadMeta()` populating `this.meta`: concurrent `getWorkspaces()` calls during await yields could observe sessions whose dismiss state was unloaded, intermittently filtering them out.
+- **Right-anchored W/R/D counts** — In the other-workspaces row, the `xxW yyR zzD` triplet is now laid out on a fixed 3-column grid with tabular numerals so columns align across rows regardless of digit width.
+
+### Changed
+- **Foreign workspace tracking simplified** — A workspace now appears in the panel iff it has at least one tracked JSONL within the age gate. Removed the dismiss filter, status filter, and team-claim exclusion (none were earning their complexity, and the dismiss/team paths were the source of the flicker race).
+- **Foreign age gate reduced** — 14d → 7d to match the local session age gate.
+- **Diagnostic logging stripped** — Removed `[foreign][diag]` log lines that were only useful while diagnosing the flicker.
+
 ## v1.2.0 (2026-04-29) — Anthropic-changes audit
 
 ### Fixed

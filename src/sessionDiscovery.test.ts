@@ -243,38 +243,6 @@ describe('SessionDiscovery', () => {
     discovery.stop();
   });
 
-  // ── Foreign workspace: local meta ──────────────────────────────
-
-  it('reads foreign meta from local projects directory', async () => {
-    // Create a foreign workspace with JSONL files and a local meta file
-    const foreignKey = 'foreign-ws-key';
-    const foreignDir = path.join(projectsDir, foreignKey);
-    fs.mkdirSync(foreignDir, { recursive: true });
-    const record = JSON.stringify({
-      type: 'user',
-      cwd: path.join(tmpDir, 'foreign-ws'),
-      timestamp: new Date().toISOString(),
-      message: { content: [{ type: 'text', text: 'Hello' }] },
-    });
-    fs.writeFileSync(path.join(foreignDir, 'fs-1.jsonl'), record + '\n');
-
-    // Write meta in the local projects dir (same location as JSONL files)
-    const metaContent = JSON.stringify({
-      sessions: { 'fs-1': { dismissed: true } },
-    });
-    fs.writeFileSync(path.join(foreignDir, 'session-meta.json'), metaContent);
-
-    const discovery = makeDiscovery();
-    createJsonlFile('local-session');
-    await discovery.start(() => {});
-
-    // Foreign workspace with all sessions dismissed should not appear
-    // (Foreign scan requires poll cycles, so just verify no crash)
-    const groups = discovery.getForeignWorkspaces();
-    expect(Array.isArray(groups)).toBe(true);
-    discovery.stop();
-  });
-
   // ── Extended archive (setArchiveRange) ────────────────────────
 
   it('loads extended archive entries for sessions older than 7 days', async () => {
