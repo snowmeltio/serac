@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.3.4 (2026-05-04) — Other-workspaces flicker, round 2
+
+### Fixed
+- **Workspace flicker from `ai-title` backfill** — `transcript-viewer` (and any workspace whose sessions have user/assistant turns past the 7d gate but a recent file mtime) flickered in/out at the foreign-scan cadence. Cause: `scan()` admitted sessions on file mtime, but `poll()` evicted them on `lastActivity`. Claude Code retroactively appends `ai-title` records (no timestamp) to old sessions, bumping mtime without indicating real activity, so the two checks disagreed and one cycle's add was the next cycle's evict. `scan()` now also drops sessions whose `getLastActivity()` is past the gate after the first `update()`, unifying the criterion with `poll()`.
+
 ## v1.3.3 (2026-05-04) — Other-workspaces pane bugfix
 
 ### Fixed

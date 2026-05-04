@@ -198,6 +198,32 @@ describe('SessionDiscovery: foreign workspaces', () => {
     discovery.stop();
   });
 
+  it('skips foreign sessions whose user/assistant activity is past the gate, even with recent mtime', async () => {
+    // Repro: Claude Code can append `ai-title` records (no timestamp) to old
+    // sessions, bumping mtime. Without the lastActivity gate, scan() keeps
+    // re-adding what poll() evicts → the workspace flickers in/out.
+    const discovery = makeDiscovery();
+    createJsonlFile(workspaceKey, 'local-session');
+
+    // User record from 10 days ago, then an ai-title record (no timestamp)
+    const oldRecord = JSON.stringify({
+      type: 'user',
+      timestamp: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+      message: { content: [{ type: 'text', text: 'old' }] },
+    });
+    const aiTitle = JSON.stringify({ type: 'ai-title', aiTitle: 'Old session' });
+    const filePath = path.join(projectsDir, 'stale-foreign-ws', 'old-session.jsonl');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, oldRecord + '\n' + aiTitle + '\n');
+    // mtime is "now" (just written) — within the 7d gate
+
+    await discovery.start(() => {});
+
+    const foreign = discovery.getForeignWorkspaces();
+    expect(foreign.find(w => w.workspaceKey === 'stale-foreign-ws')).toBeUndefined();
+    discovery.stop();
+  });
+
   it('uses date-prefix heuristic for key-derived names', async () => {
     const discovery = makeDiscovery();
     createJsonlFile(workspaceKey, 'local-session');
