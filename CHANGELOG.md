@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.5 (2026-05-04) — Foreign-waiting visual polish
+
+### Changed
+- Foreign-waiting section now sits under a thin separator border with extra padding under the cards, so the cross-window queue is visually distinct from local cards.
+- Foreign-waiting cards get a subtle frozen-peach tinted background and a frozen-peach card name, matching the existing section-header colour cue.
+
 ## v1.3.4 (2026-05-04) — Other-workspaces flicker, round 2
 
 ### Fixed
