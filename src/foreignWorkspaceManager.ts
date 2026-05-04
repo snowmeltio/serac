@@ -2,8 +2,10 @@
  * Manages discovery and polling of foreign (non-current) workspace sessions.
  *
  * Extracted from SessionDiscovery to separate cross-workspace monitoring
- * from local session management. Owns all foreign state: sessions, meta,
- * cwd cache, scan counter.
+ * from local session management. A workspace appears in the panel as soon as
+ * it has any tracked JSONL file within the age gate; counts (running/waiting/
+ * done) are aggregated for display but a workspace with all-idle sessions is
+ * still listed (with empty counts).
  */
 
 import * as fs from 'fs';
@@ -12,8 +14,8 @@ import { SessionManager } from './sessionManager.js';
 import type { SessionSnapshot, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 
-/** Age gate for foreign workspace scans: 14 days for slow-burn projects */
-const FOREIGN_AGE_GATE_MS = 14 * 24 * 60 * 60 * 1000;
+/** Age gate for foreign workspace tracking */
+const FOREIGN_AGE_GATE_MS = 7 * 24 * 60 * 60 * 1000;
 /** Full rescan every Nth poll cycle */
 const FOREIGN_SCAN_INTERVAL = 10;
 /** Confidence ranking for max-confidence aggregation */
@@ -21,7 +23,6 @@ const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 
 export class ForeignWorkspaceManager {
   private sessions: Map<string, SessionManager> = new Map();
-  private meta: Map<string, Record<string, { dismissed?: boolean }>> = new Map();
   private cwdCache: Map<string, string> = new Map();
   private scanCounter = 0;
 
@@ -41,7 +42,7 @@ export class ForeignWorkspaceManager {
     return false;
   }
 
-  /** Scan all workspace directories for foreign sessions. */
+  /** Scan all workspace directories for foreign sessions within the age gate. */
   async scan(): Promise<void> {
     const now = Date.now();
     try {
@@ -84,31 +85,10 @@ export class ForeignWorkspaceManager {
           this.cwdCache.set(snapshot.workspaceKey, snapshot.cwd);
         }
       }
-      await this.loadMeta();
     } catch { /* projectsDir doesn't exist */ }
   }
 
-  /** Load session-meta.json for foreign workspaces from local projects directory. */
-  private async loadMeta(): Promise<void> {
-    for (const wsKey of new Set([...this.sessions.values()].map(s => s.getSnapshot().workspaceKey))) {
-      const metaPath = path.join(this.projectsDir, wsKey, 'session-meta.json');
-      try {
-        const content = await fs.promises.readFile(metaPath, 'utf-8');
-        const parsed = JSON.parse(content);
-        const sessions = parsed?.sessions ?? parsed;
-        if (typeof sessions === 'object' && sessions !== null) {
-          this.meta.set(wsKey, sessions);
-          const entryCount = Object.keys(sessions).length;
-          const dismissedCount = Object.values(sessions).filter((s: unknown) => (s as { dismissed?: boolean })?.dismissed).length;
-          this.log.trace('[foreign] Loaded meta for %s: %d entries, %d dismissed', wsKey.slice(-40), entryCount, dismissedCount);
-        }
-      } catch (err) {
-        this.log.trace('[foreign] No local meta for %s: %s', wsKey.slice(-40), String(err));
-      }
-    }
-  }
-
-  /** Poll active foreign sessions. Evicts stale entries beyond age gate. */
+  /** Poll active foreign sessions. Evicts entries past the age gate. */
   async poll(): Promise<boolean> {
     let changed = false;
     const now = Date.now();
@@ -142,29 +122,22 @@ export class ForeignWorkspaceManager {
     return changed;
   }
 
-  /** Get foreign workspace summaries for the panel. */
-  getWorkspaces(excludeSessionIds?: Set<string>): WorkspaceGroup[] {
+  /** Get foreign workspace summaries for the panel.
+   *  Every workspace with at least one tracked session is included. Counts
+   *  (running/waiting/done) are aggregated for display; workspaces with no
+   *  active sessions render with empty counts. */
+  getWorkspaces(): WorkspaceGroup[] {
     const groups = new Map<string, Record<string, number>>();
     const confidences = new Map<string, StatusConfidence>();
 
     for (const session of this.sessions.values()) {
-      if (excludeSessionIds?.has(session.getSessionId())) { continue; }
       const snapshot = session.getSnapshot();
-      const status = snapshot.status;
-      if (status !== 'running' && status !== 'waiting' && status !== 'done') { continue; }
-
-      const wsMeta = this.meta.get(snapshot.workspaceKey);
-      if (wsMeta) {
-        const sessionMeta = wsMeta[snapshot.sessionId];
-        if (sessionMeta?.dismissed) { continue; }
-      }
-
       let counts = groups.get(snapshot.workspaceKey);
       if (!counts) {
         counts = {};
         groups.set(snapshot.workspaceKey, counts);
       }
-      counts[status] = (counts[status] || 0) + 1;
+      counts[snapshot.status] = (counts[snapshot.status] || 0) + 1;
 
       const capped: StatusConfidence = snapshot.confidence === 'high' ? 'medium' : snapshot.confidence;
       const existing = confidences.get(snapshot.workspaceKey) ?? 'low';
@@ -194,16 +167,11 @@ export class ForeignWorkspaceManager {
 
   /** Foreign sessions currently waiting on user input. cwd is filled from cwdCache
    *  when the session itself doesn't carry one (older JSONL records). */
-  getWaitingSnapshots(excludeSessionIds?: Set<string>): SessionSnapshot[] {
+  getWaitingSnapshots(): SessionSnapshot[] {
     const result: SessionSnapshot[] = [];
     for (const session of this.sessions.values()) {
-      if (excludeSessionIds?.has(session.getSessionId())) { continue; }
       if (session.getStatus() !== 'waiting') { continue; }
       const snapshot = session.getSnapshot();
-
-      const wsMeta = this.meta.get(snapshot.workspaceKey);
-      if (wsMeta?.[snapshot.sessionId]?.dismissed) { continue; }
-
       if (!snapshot.cwd) {
         const cached = this.cwdCache.get(snapshot.workspaceKey);
         if (cached) { snapshot.cwd = cached; }
@@ -221,7 +189,6 @@ export class ForeignWorkspaceManager {
       session.dispose();
     }
     this.sessions.clear();
-    this.meta.clear();
     this.cwdCache.clear();
   }
 

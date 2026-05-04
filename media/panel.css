@@ -102,7 +102,17 @@ body {
   flex: 1;
   min-width: 0;
 }
-.ws-counts { display: flex; gap: 6px; flex-shrink: 0; }
+.ws-counts {
+  display: grid;
+  grid-template-columns: repeat(3, 24px);
+  gap: 4px;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.ws-counts .status-count { text-align: right; }
+.ws-counts .waiting-count { grid-column: 1; }
+.ws-counts .running-count { grid-column: 2; }
+.ws-counts .done-count { grid-column: 3; }
 .ws-group-header {
   font-size: 9px;
   font-weight: 500;

@@ -466,17 +466,14 @@ export class SessionDiscovery {
     return count;
   }
 
-  /** Get foreign workspace summaries. Delegates to ForeignWorkspaceManager.
-   *  Excludes sessions claimed by active teams to prevent double-counting. */
+  /** Get foreign workspace summaries. Delegates to ForeignWorkspaceManager. */
   getForeignWorkspaces(): WorkspaceGroup[] {
-    const teamClaimed = this.teamDiscovery.getClaimedSessionIds(this.sessionMeta);
-    return this.foreignManager.getWorkspaces(teamClaimed);
+    return this.foreignManager.getWorkspaces();
   }
 
   /** Foreign sessions in the `waiting` state — surfaced inline at top of the panel. */
   getForeignWaitingSnapshots(): SessionSnapshot[] {
-    const teamClaimed = this.teamDiscovery.getClaimedSessionIds(this.sessionMeta);
-    return this.foreignManager.getWaitingSnapshots(teamClaimed);
+    return this.foreignManager.getWaitingSnapshots();
   }
 
   /** Resolve a CWD for a foreign workspace key (used when the panel passes back a workspaceKey). */
