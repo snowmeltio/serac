@@ -318,11 +318,17 @@ describe('quotaClass', () => {
   it('returns warn for high burn rate', () => {
     expect(quotaClass(45, 50)).toBe('warn');
   });
-  it('returns critical when over pace', () => {
+  it('returns critical at or above pace', () => {
+    expect(quotaClass(50, 50)).toBe('critical');
     expect(quotaClass(60, 50)).toBe('critical');
   });
-  it('returns ok when elapsed is 0', () => {
+  it('returns ok when elapsed is 0 and not capped', () => {
     expect(quotaClass(50, 0)).toBe('ok');
+  });
+  it('locks to critical at 100% quota regardless of elapsed', () => {
+    expect(quotaClass(100, 0)).toBe('critical');
+    expect(quotaClass(100, 96)).toBe('critical');
+    expect(quotaClass(105, 99)).toBe('critical');
   });
 });
 
