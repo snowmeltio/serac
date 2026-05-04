@@ -240,9 +240,10 @@ describe('panel.ts integration', () => {
     expect(groupHeaders[1].textContent).toContain('/idle-parent/');
   });
 
-  it('renders new chat and cleanup buttons', () => {
+  it('renders status summary without action buttons (actions live in title bar)', () => {
     sendUpdate({ sessions: [makeSession()] });
-    expect(document.getElementById('newChatBtn')).toBeTruthy();
-    expect(document.getElementById('cleanupBtn')).toBeTruthy();
+    expect(document.querySelector('.top-bar .status-summary')).toBeTruthy();
+    expect(document.getElementById('newChatBtn')).toBeNull();
+    expect(document.getElementById('cleanupBtn')).toBeNull();
   });
 });

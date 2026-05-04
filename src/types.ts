@@ -287,6 +287,10 @@ export type WebviewMessage =
       compactSettings?: import('./claudeSettings.js').CompactSettings;
       /** Companion-registered footer slots (rendered under the usage card) */
       footerSlots?: FooterSlotPayload[];
+      /** Count of local JSONL files older than the active scan window.
+       *  When sessions is empty but this is > 0, the panel reveals the
+       *  time-range bar so the user can widen the range to surface them. */
+      olderSessionCount?: number;
     }
   | {
       type: 'focusSession';
@@ -317,8 +321,8 @@ export interface FooterSlotSpec {
   label: string;
   /** Optional single glyph (max 4 codepoints). Companions pick their own icons. */
   icon?: string;
-  /** Optional coloured status dot rendered before the icon. Reuses the snowmelt
-   *  palette: arctic-teal/frozen-peach/salmon-red. */
+  /** Optional coloured status dot rendered before the icon: ok (teal),
+   *  warn (amber), critical (red). */
   status?: 'ok' | 'warn' | 'critical';
   /** VS Code command id invoked on click (no args). Omit for non-clickable. */
   command?: string;

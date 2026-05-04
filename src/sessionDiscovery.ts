@@ -63,6 +63,10 @@ export class SessionDiscovery {
   private archiveRangeMs = 86400000; // default 1d
   /** The range that extendedArchive was last populated for (avoids redundant rescans) */
   private extendedArchiveLoadedRange = 0;
+  /** Count of JSONL files in the local workspace dir older than SCAN_AGE_GATE_MS.
+   *  Surfaced to the panel so the time-range bar can be revealed even when the
+   *  active scan window is empty — gives the user an affordance to expand. */
+  private olderSessionCount = 0;
 
   constructor(workspacePath: string, opts?: { projectsDir?: string; log?: Logger }) {
     this.projectsDir = opts?.projectsDir ?? path.join(claudeStateDir(), 'projects');
@@ -532,6 +536,7 @@ export class SessionDiscovery {
   private async scanWorkspace(workspaceKey: string): Promise<void> {
     const workspacePath = path.join(this.projectsDir, workspaceKey);
     const now = Date.now();
+    let olderCount = 0;
 
     try {
       const files = await fs.promises.readdir(workspacePath);
@@ -546,7 +551,10 @@ export class SessionDiscovery {
           // loading hundreds of dormant sessions on startup
           try {
             const stat = await fs.promises.stat(filePath);
-            if (now - stat.mtimeMs > SessionDiscovery.SCAN_AGE_GATE_MS) { continue; }
+            if (now - stat.mtimeMs > SessionDiscovery.SCAN_AGE_GATE_MS) {
+              olderCount++;
+              continue;
+            }
           } catch { continue; }
 
           const manager = new SessionManager(sessionId, filePath, workspaceKey);
@@ -558,9 +566,17 @@ export class SessionDiscovery {
           await manager.update();
         }
       }
+      this.olderSessionCount = olderCount;
     } catch {
       // Skip unreadable directories
     }
+  }
+
+  /** Number of JSONL files in the local workspace older than the active
+   *  scan window (SCAN_AGE_GATE_MS). Used by the panel to reveal the
+   *  time-range bar when the active list is empty but older sessions exist. */
+  getOlderSessionCount(): number {
+    return this.olderSessionCount;
   }
 
   /** Maximum time (ms) a single poll cycle is allowed to run before aborting.

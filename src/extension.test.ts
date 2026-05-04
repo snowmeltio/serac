@@ -67,6 +67,7 @@ const mockDiscovery = {
   undismissTeam: vi.fn(),
   getTeamSessionFilePath: vi.fn().mockReturnValue(null),
   isTeamSessionRunning: vi.fn().mockReturnValue(false),
+  getOlderSessionCount: vi.fn().mockReturnValue(0),
 };
 
 const mockUsageProvider = {

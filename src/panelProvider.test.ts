@@ -188,6 +188,16 @@ describe('AgentPanelProvider', () => {
       expect(h.cleanup).toHaveBeenCalled();
     });
 
+    it('exposes registered newChat handler via getNewChatHandler', () => {
+      const h = setupWithHandlers();
+      expect(provider.getNewChatHandler()).toBe(h.newChat);
+    });
+
+    it('exposes registered cleanup handler via getCleanupHandler', () => {
+      const h = setupWithHandlers();
+      expect(provider.getCleanupHandler()).toBe(h.cleanup);
+    });
+
     it('routes requestUpdate to sendUpdate', () => {
       setupWithHandlers();
       webview.postMessage.mockClear();

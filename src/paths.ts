@@ -1,9 +1,7 @@
 /**
- * Resolves Claude Code's state directory and derived paths, honouring the
- * CLAUDE_CONFIG_DIR environment variable. Without it, Claude Code uses
- * ~/.claude/. With it set (e.g. ~/.claude-snowmelt), Claude Code reads
- * sessions, settings, OAuth credentials, etc. from that alternate root, and
- * Serac must follow.
+ * Resolves Claude Code's state directory and derived paths. Serac follows
+ * whichever environment Claude Code is using (CLAUDE_CONFIG_DIR if set,
+ * otherwise ~/.claude/).
  */
 import * as crypto from 'crypto';
 import * as fs from 'fs';
@@ -19,10 +17,7 @@ export function claudeStateDir(): string {
   return path.join(os.homedir(), '.claude');
 }
 
-/** Path to the Claude Code config file (.claude.json).
- *  Default profile uses sibling layout (~/.claude.json); alternates use inline
- *  layout (~/.claude-X/.claude.json). Mirrors `config_file()` in claude-account.
- *  Returns null if neither location contains the file. */
+/** Path to the Claude Code config file, or null if not found. */
 export function claudeConfigFile(): string | null {
   const dir = claudeStateDir();
   const sibling = `${dir}.json`;
@@ -32,11 +27,7 @@ export function claudeConfigFile(): string | null {
   return null;
 }
 
-/** macOS Keychain service name for the active profile's OAuth credentials.
- *  Claude Code uses 'Claude Code-credentials' for the default profile and
- *  'Claude Code-credentials-<sha256-prefix>' for alternates, where the prefix
- *  is the first 8 hex chars of sha256(absolute CLAUDE_CONFIG_DIR path).
- *  This was reverse-engineered from binary inspection — see W4-HANDOFF.md. */
+/** macOS Keychain service name for the active environment's credentials. */
 export function claudeKeychainService(): string {
   const env = process.env.CLAUDE_CONFIG_DIR;
   if (!env || env.length === 0) { return 'Claude Code-credentials'; }

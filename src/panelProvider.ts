@@ -19,6 +19,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private foreignWaiting: SessionSnapshot[] = [];
   private teams: TeamSnapshot[] = [];
   private compactSettings: CompactSettings | undefined;
+  private olderSessionCount = 0;
   private onFocusSession: ((sessionId: string) => void) | undefined;
   private onDismissSession: ((sessionId: string) => void) | undefined;
   private onUndismissSession: ((sessionId: string) => void) | undefined;
@@ -57,8 +58,16 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.onNewChat = handler;
   }
 
+  getNewChatHandler(): (() => void) | undefined {
+    return this.onNewChat;
+  }
+
   setCleanupHandler(handler: () => void): void {
     this.onCleanup = handler;
+  }
+
+  getCleanupHandler(): (() => void) | undefined {
+    return this.onCleanup;
   }
 
   setArchiveRangeHandler(handler: (rangeMs: number) => void): void {
@@ -147,7 +156,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /** Update the panel with new session data */
-  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[]): void {
+  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[], olderSessionCount?: number): void {
     this.sessions = sessions;
     this.waitingCount = waitingCount;
     this.workspacePath = workspacePath;
@@ -156,6 +165,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.foreignWaiting = foreignWaiting ?? [];
     this.teams = teams ?? [];
     this.compactSettings = compactSettings;
+    this.olderSessionCount = olderSessionCount ?? 0;
 
     // Update badge
     if (this.view) {
@@ -188,6 +198,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       teams: this.teams.length > 0 ? this.teams : undefined,
       compactSettings: this.compactSettings,
       footerSlots: footerSlots.length > 0 ? footerSlots : undefined,
+      olderSessionCount: this.olderSessionCount > 0 ? this.olderSessionCount : undefined,
     };
 
     this.view.webview.postMessage(message);

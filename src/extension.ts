@@ -264,6 +264,40 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     }),
   );
 
+  // Title-bar new chat — same handler as the old in-panel button
+  context.subscriptions.push(
+    vscode.commands.registerCommand('agentActivity.newChat', () => {
+      const handler = panelProvider.getNewChatHandler();
+      if (handler) { handler(); }
+    }),
+  );
+
+  // Title-bar cleanup uses a two-click arm/confirm pattern, matching the old
+  // in-panel button. The first click sets `serac.cleanupArming = true`, which
+  // the view/title `when` clauses use to swap the icon to a warning glyph; the
+  // second click runs cleanup. Auto-disarms after 3s so a forgotten armed icon
+  // doesn't lurk indefinitely.
+  let cleanupArmTimer: ReturnType<typeof setTimeout> | null = null;
+  function disarmCleanup() {
+    if (cleanupArmTimer) { clearTimeout(cleanupArmTimer); cleanupArmTimer = null; }
+    vscode.commands.executeCommand('setContext', 'serac.cleanupArming', false);
+  }
+  context.subscriptions.push(
+    vscode.commands.registerCommand('agentActivity.cleanup', () => {
+      vscode.commands.executeCommand('setContext', 'serac.cleanupArming', true);
+      if (cleanupArmTimer) { clearTimeout(cleanupArmTimer); }
+      cleanupArmTimer = setTimeout(disarmCleanup, 3000);
+    }),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('agentActivity.cleanupConfirm', () => {
+      disarmCleanup();
+      const handler = panelProvider.getCleanupHandler();
+      if (handler) { handler(); }
+    }),
+  );
+  context.subscriptions.push({ dispose: disarmCleanup });
+
   // Register focus command (for external use)
   context.subscriptions.push(
     vscode.commands.registerCommand('agentActivity.focusSession', (sessionId: string) => {
@@ -297,7 +331,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     const foreignWaiting = discovery.getForeignWaitingSnapshots();
     // Foreign waiting cards demand attention too, so they bump the badge.
     waitingCount += foreignWaiting.length;
-    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting);
+    const olderSessionCount = discovery.getOlderSessionCount();
+    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount);
 
     // Auto-focus new session created via "+ New" button
     if (pendingNewChatKnownIds) {

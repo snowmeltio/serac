@@ -228,6 +228,21 @@ describe('SessionDiscovery', () => {
     discovery.stop();
   });
 
+  it('age gate: counts older sessions skipped by the active scan', async () => {
+    const discovery = makeDiscovery();
+
+    const olderA = createJsonlFile('older-a');
+    const olderB = createJsonlFile('older-b');
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(olderA, tenDaysAgo, tenDaysAgo);
+    fs.utimesSync(olderB, tenDaysAgo, tenDaysAgo);
+    createJsonlFile('recent-session');
+
+    await discovery.start(() => {});
+    expect(discovery.getOlderSessionCount()).toBe(2);
+    discovery.stop();
+  });
+
   // ── Foreign workspace: local meta ──────────────────────────────
 
   it('reads foreign meta from local projects directory', async () => {

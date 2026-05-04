@@ -98,6 +98,7 @@ interface UpdateMessage {
   teams?: PanelTeam[];
   compactSettings?: PanelCompactSettings;
   footerSlots?: PanelFooterSlot[];
+  olderSessionCount?: number;
 }
 
 interface FocusMessage {
@@ -108,6 +109,7 @@ interface FocusMessage {
 type WebviewIncomingMessage = UpdateMessage | FocusMessage;
 
 const TRANSITION_MS = 300;
+const FOREIGN_SLIDE_MS = 220;
 // Range values in ms. 'all' uses 0 as sentinel (means no limit).
 const RANGE_MS: Record<string, number> = {
   '1d': 86400000,
@@ -138,6 +140,12 @@ const RANGE_MS: Record<string, number> = {
   let lastTeams: PanelTeam[] = [];
   let lastFooterSlots: PanelFooterSlot[] = [];
   let compactSettings: PanelCompactSettings | null = null;
+  let lastOlderSessionCount = 0;
+  let lastForeignHtml = '';
+  let lastForeignKeys = '';
+  let foreignAnimToken = 0;
+  let foreignAnimSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+  let foreignAnimEndHandler: ((ev: TransitionEvent) => void) | null = null;
 
   // Status debounce: tracks when each session entered waiting
   const needsInputSince: Record<string, number> = {};
@@ -212,32 +220,6 @@ const RANGE_MS: Record<string, number> = {
       }
       saveState();
       if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
-      return;
-    }
-
-    // New chat button
-    if (target.closest('#newChatBtn')) {
-      vscode.postMessage({ type: 'newChat' });
-      return;
-    }
-
-    // Cleanup button — confirm dialog replaces hover-to-arm
-    if (target.closest('#cleanupBtn')) {
-      const btn = target.closest<HTMLElement>('#cleanupBtn');
-      if (btn && !btn.classList.contains('confirming')) {
-        btn.classList.add('confirming');
-        btn.textContent = 'Confirm?';
-        const resetTimer = setTimeout(() => {
-          btn.classList.remove('confirming');
-          btn.textContent = 'Cleanup';
-        }, 3000);
-        btn.dataset.resetTimer = String(resetTimer);
-      } else if (btn && btn.classList.contains('confirming')) {
-        if (btn.dataset.resetTimer) clearTimeout(Number(btn.dataset.resetTimer));
-        btn.classList.remove('confirming');
-        btn.textContent = 'Cleanup';
-        vscode.postMessage({ type: 'cleanup' });
-      }
       return;
     }
 
@@ -357,6 +339,7 @@ const RANGE_MS: Record<string, number> = {
         lastTeams = message.teams ?? [];
         lastFooterSlots = message.footerSlots ?? [];
         compactSettings = message.compactSettings ?? null;
+        lastOlderSessionCount = message.olderSessionCount ?? 0;
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         render(sessions, message.waitingCount, message.workspacePath);
       } else if (message.type === 'focusSession') {
@@ -429,11 +412,7 @@ const RANGE_MS: Record<string, number> = {
       root.innerHTML = '';
       topBar = document.createElement('div');
       topBar.className = 'top-bar';
-      topBar.innerHTML = '<div class="top-bar-main"><div class="status-summary" aria-live="polite"></div>'
-        + '<div class="top-bar-actions">'
-        + '<button class="top-bar-btn cleanup-btn" id="cleanupBtn" title="Close all Claude Code tabs except one (hover 2s to arm)">Cleanup</button>'
-        + '<button class="top-bar-btn new-chat-btn" id="newChatBtn">+ New</button>'
-        + '</div></div>';
+      topBar.innerHTML = '<div class="status-summary" aria-live="polite"></div>';
       root.appendChild(topBar);
     }
     const summaryEl = topBar.querySelector('.status-summary');
@@ -467,7 +446,15 @@ const RANGE_MS: Record<string, number> = {
     const archivedTeams = lastTeams.filter(t => t.dismissed);
 
     if (cards.length === 0 && archived.length === 0 && activeTeams.length === 0) {
-      cardSection.innerHTML = '<div class="empty-state"><div class="icon">\u2298</div><div>No Claude Code sessions detected.</div><div class="hint">Sessions appear when you start Claude Code.</div></div>';
+      const hasOlder = lastOlderSessionCount > 0;
+      const headline = hasOlder
+        ? lastOlderSessionCount + ' older session' + (lastOlderSessionCount === 1 ? '' : 's') + ' beyond the 7-day window.'
+        : 'No Claude Code sessions detected.';
+      const hint = hasOlder
+        ? 'Widen the range below to load them.'
+        : 'Sessions appear when you start Claude Code.';
+      cardSection.innerHTML = '<div class="empty-state"><div class="icon">\u2298</div><div>'
+        + escapeHtml(headline) + '</div><div class="hint">' + escapeHtml(hint) + '</div></div>';
     } else {
       reconcileCards(cardSection, cards, now);
     }
@@ -476,7 +463,7 @@ const RANGE_MS: Record<string, number> = {
     renderArchiveSection(archived, archivedTeams, now, cardSection);
 
     // === Time-range bar ===
-    renderTimeRangeBar(archived.length > 0 || archivedTeams.length > 0);
+    renderTimeRangeBar(archived.length > 0 || archivedTeams.length > 0 || lastOlderSessionCount > 0);
 
     // === Foreign workspace rows (between time-range bar and usage) ===
     let foreignContainer = root.querySelector('.ws-foreign-rows') as HTMLElement | null;
@@ -494,11 +481,7 @@ const RANGE_MS: Record<string, number> = {
       root.insertBefore(foreignContainer, usageEl);
     }
     if (foreignContainer) {
-      if (lastForeignWorkspaces.length > 0) {
-        foreignContainer.innerHTML = renderForeignWorkspaceRows(lastForeignWorkspaces);
-      } else {
-        foreignContainer.innerHTML = '';
-      }
+      updateForeignContainer(foreignContainer);
     }
 
     } catch (err) {
@@ -931,6 +914,114 @@ const RANGE_MS: Record<string, number> = {
     return html;
   }
 
+  /** Update the foreign-workspaces container. Slides the height open/closed when
+   *  workspaces are added or removed. For in-place updates (counts or confidence
+   *  changing within the same set of workspaces) the innerHTML is swapped without
+   *  any height pinning so subpixel jitter can't trigger spurious animations. */
+  function updateForeignContainer(container: HTMLElement): void {
+    const wsList = lastForeignWorkspaces ?? [];
+    const newHtml = wsList.length > 0 ? renderForeignWorkspaceRows(wsList) : '';
+    if (newHtml === lastForeignHtml) { return; }
+
+    const newKeys = wsList.map((w) => w.workspaceKey).sort().join('|');
+    const setChanged = newKeys !== lastForeignKeys;
+
+    // In-place update: same workspace set, only counts or confidence shifted.
+    // Skip all height gymnastics — the row count is unchanged so the height is too.
+    if (!setChanged && newHtml !== '' && lastForeignHtml !== '') {
+      cancelForeignSlide(container);
+      clearForeignSlideStyles(container);
+      container.innerHTML = newHtml;
+      lastForeignHtml = newHtml;
+      return;
+    }
+
+    const fromHeight = container.getBoundingClientRect().height;
+    const reduceMotion = typeof window !== 'undefined'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (newHtml === '') {
+      if (fromHeight > 0 && !reduceMotion) {
+        cancelForeignSlide(container);
+        runForeignSlide(container, fromHeight, 0, () => { container.innerHTML = ''; });
+      } else {
+        cancelForeignSlide(container);
+        container.innerHTML = '';
+        clearForeignSlideStyles(container);
+      }
+      lastForeignHtml = newHtml;
+      lastForeignKeys = newKeys;
+      return;
+    }
+
+    if (reduceMotion) {
+      cancelForeignSlide(container);
+      container.innerHTML = newHtml;
+      clearForeignSlideStyles(container);
+      lastForeignHtml = newHtml;
+      lastForeignKeys = newKeys;
+      return;
+    }
+
+    // Set changed — pin to current height before swapping content so the new rows
+    // don't flash at their natural height before the slide starts.
+    cancelForeignSlide(container);
+    container.style.height = fromHeight + 'px';
+    container.style.overflow = 'hidden';
+    container.style.transition = 'none';
+    container.innerHTML = newHtml;
+    const toHeight = container.scrollHeight;
+    if (Math.abs(toHeight - fromHeight) < 1.5) {
+      clearForeignSlideStyles(container);
+    } else {
+      runForeignSlide(container, fromHeight, toHeight);
+    }
+    lastForeignHtml = newHtml;
+    lastForeignKeys = newKeys;
+  }
+
+  function clearForeignSlideStyles(el: HTMLElement): void {
+    el.style.height = '';
+    el.style.overflow = '';
+    el.style.transition = '';
+  }
+
+  function cancelForeignSlide(container: HTMLElement): void {
+    foreignAnimToken++;
+    if (foreignAnimSafetyTimer) {
+      clearTimeout(foreignAnimSafetyTimer);
+      foreignAnimSafetyTimer = null;
+    }
+    if (foreignAnimEndHandler) {
+      container.removeEventListener('transitionend', foreignAnimEndHandler);
+      foreignAnimEndHandler = null;
+    }
+  }
+
+  function runForeignSlide(el: HTMLElement, fromPx: number, toPx: number, onDone?: () => void): void {
+    el.style.height = fromPx + 'px';
+    el.style.overflow = 'hidden';
+    el.style.transition = 'none';
+    void el.offsetHeight; // force reflow so the next transition starts from fromPx
+    el.style.transition = `height ${FOREIGN_SLIDE_MS}ms ease-out`;
+    el.style.height = toPx + 'px';
+    const myToken = ++foreignAnimToken;
+    const finish = (): void => {
+      if (myToken !== foreignAnimToken) { return; }
+      foreignAnimToken++;
+      if (foreignAnimSafetyTimer) { clearTimeout(foreignAnimSafetyTimer); foreignAnimSafetyTimer = null; }
+      if (foreignAnimEndHandler) { el.removeEventListener('transitionend', foreignAnimEndHandler); foreignAnimEndHandler = null; }
+      clearForeignSlideStyles(el);
+      if (onDone) { onDone(); }
+    };
+    foreignAnimEndHandler = (ev: TransitionEvent): void => {
+      if (ev.propertyName === 'height' && ev.target === el) { finish(); }
+    };
+    el.addEventListener('transitionend', foreignAnimEndHandler);
+    foreignAnimSafetyTimer = setTimeout(finish, FOREIGN_SLIDE_MS + 80);
+  }
+
   function renderCompactRow(s: PanelSession, now: number): string {
     const age = formatAge(now - s.lastActivity);
     const displayName = getDisplayName(s);
@@ -1313,14 +1404,17 @@ const RANGE_MS: Record<string, number> = {
       html += '</div>';
     }
 
-    // Updated-ago footer
+    // Footer row: companion slots on the left, Updated-ago on the right
+    let footer = '';
     if (u.lastPoll) {
       const stateClass = u.apiConnected ? 'connected' : 'cached';
       const stateLabel = u.apiConnected ? '' : ' <span class="cached-tag">(cached)</span>';
-      html += '<div class="usage-updated"><span class="api-dot ' + stateClass + '" title="API ' + stateClass + '"></span>Updated ' + formatAgeCoarse(Date.now() - u.lastPoll) + ' ago' + stateLabel + '</div>';
+      footer += '<div class="usage-updated"><span class="api-dot ' + stateClass + '" title="API ' + stateClass + '"></span>Updated ' + formatAgeCoarse(Date.now() - u.lastPoll) + ' ago' + stateLabel + '</div>';
     }
-
-    html += renderFooterSlots(lastFooterSlots);
+    const slotsHtml = renderFooterSlots(lastFooterSlots);
+    if (footer || slotsHtml) {
+      html += '<div class="usage-footer">' + slotsHtml + footer + '</div>';
+    }
 
     section.innerHTML = html;
   }

@@ -10,16 +10,23 @@ Serac is a VS Code sidebar extension that shows all your Claude Code sessions as
 
 The sidebar is organised into vertical zones, top to bottom:
 
-1. **Top bar** — status summary counts (running, waiting, done) with colour-coded dots. Refresh, Cleanup, and + New buttons.
-2. **Active session cards** — one card per running, waiting, or recently completed session. Colour-coded left border (blue = running, peach = waiting, teal = done). Each card shows session name, status pill, elapsed time, context usage bar, and subagent tree.
-3. **Archive section** — dismissed sessions in a compact list with time-range filter (1d / 3d / 7d / 30d / all).
-4. **Usage quotas** — current session and weekly usage bars showing consumption against your plan limits. Sourced from the Anthropic OAuth API.
-5. **Other workspaces** — summary of Claude Code sessions running in other VS Code windows, with running/waiting/done counts per workspace.
+1. **View title bar** — `+ New`, `Cleanup`, and `Refresh` icons live alongside the panel title. Cleanup uses an arm/confirm two-click pattern (the icon swaps to a warning glyph; auto-disarms after 3s).
+2. **Status counts** — running / waiting / done totals with colour-coded dots. Hidden when there's nothing to show.
+3. **Active session cards** — one card per running, waiting, or recently completed session. Colour-coded left border (blue = running, peach = waiting, teal = done). Each card shows session name, status pill, elapsed time, context usage bar, and subagent tree. **Foreign-waiting cards** from other VS Code windows surface here too — click one to jump to that window and focus the specific session.
+4. **Archive section** — dismissed sessions in a compact list with time-range filter (1d / 3d / 7d / 30d / all). When the active list is empty but older JSONL files exist beyond the scan window, a banner reveals the time-range bar so you can widen the view in one click.
+5. **Usage quotas** — current session and weekly usage bars showing consumption against your plan limits. Sourced from the Anthropic OAuth API. The footer row hosts companion-registered status slots inline with "Updated X ago".
+6. **Other workspaces** — Claude Code sessions running in other VS Code windows, grouped by workspace with running/waiting/done counts. **Click any workspace row to jump directly into that window** (focuses an existing window if open, otherwise opens a new one).
 
 ## How to use
 
+### Cross-window navigation
+- **Click an "Other workspaces" row** to focus or open that VS Code window.
+- **Click a foreign-waiting card** in the active list to jump to that window *and* auto-focus the specific session that needs input.
+
+Existing windows are reused where possible; otherwise a new window opens for the target workspace.
+
 ### Starting a new session
-Click **+ New** in the top bar. This opens a fresh Claude Code editor panel. The session card appears in Serac when you send your first message.
+Click the **`+`** icon in the view title bar. This opens a fresh Claude Code editor panel. The session card appears in Serac when you send your first message.
 
 ### Focusing a session
 Click any active session card to open that Claude Code session in the editor. The card highlights briefly to confirm focus.
@@ -34,10 +41,10 @@ Click any row in the archive section to restore it to the active list and open i
 Hover over a session card or archive row to reveal the transcript button (scroll icon). Click it to render the full session log as readable markdown in a new editor tab.
 
 ### Cleanup
-Click **Cleanup** in the top bar, then click **Confirm?** within 3 seconds. This closes all Claude Code editor tabs except the one you're currently viewing. Useful when you've accumulated many open session tabs.
+Click the **trash** icon in the view title bar; it swaps to a warning glyph for 3 seconds. Click again to confirm. This closes all Claude Code editor tabs except the one you're currently viewing.
 
 ### Refresh
-Click the refresh icon in the top bar to force an immediate rescan of all sessions. Serac also polls automatically (500ms when sessions are active, 2s when idle).
+Click the refresh icon in the view title bar to force an immediate rescan. Serac also polls automatically (500ms when sessions are active, 2s when idle).
 
 ## Features
 

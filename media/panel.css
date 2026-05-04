@@ -33,28 +33,20 @@ body {
 .card-archive-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 .archive-list { flex-shrink: 0; }
 
-/* === TOP BAR === */
+/* === TOP BAR (slim status row; actions live in the WebviewView title bar) === */
 .top-bar {
   display: flex;
-  flex-direction: column;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--vscode-panel-border, #2d2d2d);
-  min-height: 28px;
+  align-items: center;
+  padding: 5px 12px 5px 20px;
+  margin-bottom: 4px;
+  border-top: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border, #2d2d2d));
+  border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border, var(--vscode-panel-border, #2d2d2d));
   position: sticky;
   top: 0;
   z-index: 20;
   background: var(--vscode-sideBar-background, #1e1e1e);
 }
-.top-bar-main {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.top-bar-actions {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-}
+.top-bar:empty { display: none; }
 
 .status-summary {
   font-size: 10px;
@@ -71,27 +63,6 @@ body {
 .status-count.running-count { color: var(--sm-blizzard-light); }
 .status-count.done-count { color: var(--sm-teal-bright); }
 .status-count.stale-count { color: #999999; }
-
-.top-bar-btn {
-  border: none;
-  background: rgba(var(--sm-blizzard-blue-rgb), 0.15);
-  color: var(--sm-blizzard-blue);
-  font-size: 10px;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition: background 0.1s;
-  height: 22px;
-  line-height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.top-bar-btn:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.3); }
-.top-bar-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
 
 /* Cross-workspace rows (L2/O3) */
 .ws-foreign-rows { padding: 4px 12px 6px 12px; border-top: 1px solid var(--vscode-panel-border, #2d2d2d); }
@@ -140,10 +111,6 @@ body {
   padding: 6px 0 1px;
   letter-spacing: 0.2px;
 }
-.top-bar-btn.cleanup-btn { background: rgba(255, 255, 255, 0.06); color: #888888; cursor: pointer; margin-right: 2px; transition: background 0.3s, color 0.3s, box-shadow 0.3s; min-width: 62px; }
-.top-bar-btn.cleanup-btn:hover { background: rgba(255, 255, 255, 0.1); color: #999999; }
-.top-bar-btn.cleanup-btn.confirming { background: rgba(var(--sm-salmon-red-rgb), 0.2); color: var(--sm-salmon-red); box-shadow: 0 0 0 1px rgba(var(--sm-salmon-red-rgb), 0.4); }
-.top-bar-btn.cleanup-btn.confirming:hover { background: rgba(var(--sm-salmon-red-rgb), 0.35); }
 .empty-state {
   padding: 20px 12px;
   text-align: center;
@@ -544,26 +511,49 @@ body {
 .api-dot.cached, .api-dot.warn { background: var(--sm-frozen-peach); }
 .api-dot.disconnected, .api-dot.critical { background: var(--sm-salmon-red); }
 
-/* === FOOTER SLOTS (companion-registered usage-card extensions) === */
-.usage-slots { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+/* === USAGE FOOTER (companion slots + Updated-ago, on one row) === */
+.usage-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  min-width: 0;
+  font-size: 9px;
+  line-height: 1;
+}
+.usage-footer .usage-updated {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 0;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  line-height: 1;
+}
+.usage-footer .usage-updated .api-dot { margin-right: 0; }
+
+/* Footer slots (companion-registered usage-card extensions) */
+.usage-slots { display: flex; flex-direction: row; flex-wrap: wrap; gap: 4px; flex: 1 1 auto; min-width: 0; }
 .usage-slot-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 4px;
-  font-size: 10px;
-  color: var(--vscode-editor-foreground, #cccccc);
+  gap: 3px;
+  padding: 0;
+  color: #777777;
   border-radius: 3px;
   min-width: 0;
+  line-height: 1;
 }
+.usage-slot-row .api-dot { margin-right: 0; }
 .usage-slot-row.clickable { cursor: pointer; }
-.usage-slot-row.clickable:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04)); }
+.usage-slot-row.clickable:hover { background: var(--vscode-list-hoverBackground, rgba(255,255,255,0.04)); color: var(--vscode-editor-foreground, #cccccc); }
 .usage-slot-row.clickable:focus-visible {
   outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue));
   outline-offset: -1px;
 }
-.usage-slot-icon { flex-shrink: 0; width: 16px; text-align: center; font-size: 12px; line-height: 1; }
-.usage-slot-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-slot-icon { flex-shrink: 0; width: 10px; text-align: center; line-height: 1; }
+.usage-slot-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1; }
 
 /* === TEAM GROUPS (Cornice agent teams) === */
 .team-section { padding: 0 6px 4px 6px; display: flex; flex-direction: column; gap: 5px; }
@@ -677,15 +667,6 @@ body.vscode-light .status-count.waiting-count { color: #c47a3a; }
 body.vscode-light .status-count.running-count { color: #4a6cd4; }
 body.vscode-light .status-count.done-count { color: #3a9a9d; }
 body.vscode-light .status-count.stale-count { color: #999999; }
-
-/* -- Top bar: buttons -- */
-body.vscode-light .top-bar-btn { background: rgba(var(--sm-blizzard-blue-rgb), 0.1); }
-body.vscode-light .top-bar-btn:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.2); }
-body.vscode-light .new-chat-btn { background: rgba(var(--sm-blizzard-blue-rgb), 0.1); }
-body.vscode-light .top-bar-btn.cleanup-btn { background: rgba(0, 0, 0, 0.05); color: #888888; }
-body.vscode-light .top-bar-btn.cleanup-btn:hover { background: rgba(0, 0, 0, 0.08); }
-body.vscode-light .top-bar-btn.cleanup-btn.confirming { background: rgba(var(--sm-salmon-red-rgb), 0.12); color: #d44; box-shadow: 0 0 0 1px rgba(var(--sm-salmon-red-rgb), 0.3); }
-body.vscode-light .top-bar-btn.cleanup-btn.confirming:hover { background: rgba(var(--sm-salmon-red-rgb), 0.2); }
 
 /* -- Cards: backgrounds & focus -- */
 body.vscode-light .card { background: var(--vscode-editor-background, #ffffff); }
