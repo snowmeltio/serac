@@ -147,6 +147,12 @@ export class SessionManager {
   private pidCaptureAttempted = false;
   /** Manages subagent JSONL tailers (silence timers, file discovery, polling). */
   private subagentTailers: SubagentTailerManager;
+  /** Tool_use IDs whose tool_result was processed before the tool_use record
+   *  (Claude Code occasionally flushes tool_result ahead of tool_use for fast
+   *  tools — same wall-clock millisecond, file order reversed). Without this
+   *  set, the late tool_use leaks into activeTools and never clears, causing
+   *  demoteIfStale to falsely flag the session as 'waiting' after 30s. */
+  private earlyToolResults: Set<string> = new Set();
 
   constructor(
     sessionId: string,
@@ -204,6 +210,7 @@ export class SessionManager {
     this.firstActivitySet = false;
     this.seenOutputInTurn = false;
     this.lastToolResultAt = 0;
+    this.earlyToolResults.clear();
     // Dispose all subagent resources before clearing
     this.subagentTailers.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
@@ -577,6 +584,12 @@ export class SessionManager {
       if (block.type === 'tool_result' && block.tool_use_id) {
         this.lastToolResultAt = Date.now();
         const toolName = this.state.activeTools.get(block.tool_use_id);
+        if (toolName === undefined) {
+          // tool_result arrived before its tool_use record (out-of-order JSONL writes).
+          // Track the id so the late tool_use is recognised as already complete.
+          this.earlyToolResults.add(block.tool_use_id);
+          continue;
+        }
         this.removeTool(this.state.activeTools, block.tool_use_id);
 
         // Check if this completes a subagent (Task tool)
@@ -654,6 +667,12 @@ export class SessionManager {
 
     for (const block of content) {
       if (block.type === 'tool_use' && block.id && block.name) {
+        // Out-of-order JSONL writes: tool_result may have been processed before
+        // its tool_use record. Skip tracking to avoid leaking activeTools.
+        if (this.earlyToolResults.has(block.id)) {
+          this.earlyToolResults.delete(block.id);
+          continue;
+        }
         hasToolUse = true;
         this.addTool(this.state.activeTools, block.id, block.name);
 
@@ -756,13 +775,21 @@ export class SessionManager {
             if (innerType === 'assistant') {
               for (const block of innerContent as JsonlContentBlock[]) {
                 if (block.type === 'tool_use' && block.id && block.name) {
+                  if (this.earlyToolResults.has(block.id)) {
+                    this.earlyToolResults.delete(block.id);
+                    continue;
+                  }
                   this.addTool(subagent.activeTools, block.id, block.name);
                 }
               }
             } else if (innerType === 'user') {
               for (const block of innerContent as JsonlContentBlock[]) {
                 if (block.type === 'tool_result' && block.tool_use_id) {
-                  this.removeTool(subagent.activeTools, block.tool_use_id);
+                  if (subagent.activeTools.has(block.tool_use_id)) {
+                    this.removeTool(subagent.activeTools, block.tool_use_id);
+                  } else {
+                    this.earlyToolResults.add(block.tool_use_id);
+                  }
                   subagent.toolsCompleted++;
                 }
               }
@@ -957,6 +984,10 @@ export class SessionManager {
     const content = record.message?.content || [];
     for (const block of content) {
       if (block.type === 'tool_use' && block.id && block.name) {
+        if (this.earlyToolResults.has(block.id)) {
+          this.earlyToolResults.delete(block.id);
+          continue;
+        }
         this.addTool(subagent.activeTools, block.id, block.name);
       }
     }
@@ -970,7 +1001,11 @@ export class SessionManager {
     const content = record.message?.content || [];
     for (const block of content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
-        this.removeTool(subagent.activeTools, block.tool_use_id);
+        if (subagent.activeTools.has(block.tool_use_id)) {
+          this.removeTool(subagent.activeTools, block.tool_use_id);
+        } else {
+          this.earlyToolResults.add(block.tool_use_id);
+        }
         subagent.toolsCompleted++;
       }
     }
