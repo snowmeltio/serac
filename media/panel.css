@@ -308,6 +308,54 @@ body {
 .card.foreign { opacity: 0.7; }
 .card.foreign:hover { opacity: 0.85; }
 
+/* Foreign-waiting cards live above local cards: re-prominent, with a switch-window hint */
+.foreign-waiting-section {
+  padding: 6px 6px 0 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.foreign-waiting-header {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  color: var(--sm-frozen-peach, #f5b087);
+  padding: 2px 2px 2px 2px;
+}
+.card.foreign-waiting { opacity: 1; }
+.card.foreign-waiting:hover { opacity: 1; box-shadow: 0 0 0 1px rgba(var(--sm-frozen-peach-rgb), 0.5); }
+.foreign-waiting-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 4px;
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground, #888888);
+}
+.foreign-waiting-ws {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--sm-frozen-peach, #f5b087);
+  font-weight: 500;
+}
+.foreign-waiting-arrow {
+  font-size: 11px;
+  opacity: 0.7;
+}
+.foreign-waiting-age {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+/* Clickable foreign workspace rows */
+.ws-row-clickable { cursor: pointer; }
+.ws-row-clickable:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.12); }
+.ws-row-clickable:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: 1px; }
+
 .card-meta {
   display: flex;
   align-items: center;
@@ -433,6 +481,8 @@ body {
 .action-btn:hover,
 .action-btn:focus-visible { opacity: 1 !important; background: rgba(255,255,255,0.08); }
 .action-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
+.action-btn.dismiss-btn-force:hover,
+.team-dismiss-btn.dismiss-btn-force:hover { background: rgba(229, 192, 123, 0.18); color: var(--vscode-editorWarning-foreground, #e5c07b); }
 
 /* Transcript button on compact archive rows */
 .compact-transcript { font-size: 10px; color: #888888; cursor: pointer; opacity: 0; transition: opacity 0.15s; padding: 0 2px; flex-shrink: 0; }

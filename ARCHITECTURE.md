@@ -69,6 +69,15 @@ Internal statuses are `running | waiting | done`. `stale` and `idle` are display
 4. **Extended thinking grace (30s)** — first 30s of a turn with no output yet uses PID-liveness check instead of demoting (covers slow first-token).
 5. **Hard ceiling (3 min running, 10 min waiting)** — safety net; forces done regardless of state. Covers laptop sleep, quota hits, abandoned permission prompts.
 
+### Out-of-order tool_use/tool_result
+
+Claude Code's JSONL writer occasionally flushes a `tool_result` record before its
+matching `tool_use` (file order reversed despite an earlier wall-clock timestamp on
+the `tool_use`). Without compensation, the late `tool_use` adds an entry to
+`activeTools` that nothing ever clears, and `demoteIfStale` falsely promotes the
+session to `'waiting'` after 30 s of silence. `SessionManager.earlyToolResults`
+tracks IDs whose `tool_result` arrived first, so the late `tool_use` can be skipped.
+
 ### Permission-exempt tools
 
 These tools never trigger permission wait detection: `Agent`, `Task`, `TodoWrite`, `ToolSearch`, `Read`, `Glob`, `Grep`, `Edit`, `Write`, `EnterPlanMode`, `ExitPlanMode`, `EnterWorktree`, `ExitWorktree`, `ScheduleWakeup`, `CronCreate`, `CronDelete`, `CronList`, `RemoteTrigger`, `PushNotification`, `TaskOutput`, `TaskStop`, `SendMessage`. See `toolProfiles.ts` for the canonical list.

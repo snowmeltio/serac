@@ -279,6 +279,8 @@ export type WebviewMessage =
       usage: UsageSnapshot | null;
       /** Foreign workspace summaries (empty when no other workspaces active) */
       foreignWorkspaces?: WorkspaceGroup[];
+      /** Foreign sessions waiting on user input — surfaced inline at top of the panel */
+      foreignWaiting?: SessionSnapshot[];
       /** Cornice agent team snapshots (empty when no teams active) */
       teams?: TeamSnapshot[];
       /** Claude Code auto-compact settings (from ~/.claude/settings.json env overrides) */
@@ -301,7 +303,8 @@ export type WebviewCommand =
   | { type: 'cleanup' }
   | { type: 'archiveRange'; rangeMs: number }
   | { type: 'dismissTeam'; teamId: string }
-  | { type: 'undismissTeam'; teamId: string };
+  | { type: 'undismissTeam'; teamId: string }
+  | { type: 'openWorkspace'; cwd: string; sessionId?: string };
 
 /** Known JSONL record types that the extension processes */
 export type JsonlRecordType =

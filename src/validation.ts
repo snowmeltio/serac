@@ -11,8 +11,17 @@ export function isValidSessionId(id: unknown): id is string {
 const VALID_COMMAND_TYPES = new Set([
   'focusSession', 'dismissSession', 'undismissSession', 'viewTranscript',
   'newChat', 'copyToClipboard', 'requestUpdate', 'cleanup', 'archiveRange',
-  'dismissTeam', 'undismissTeam',
+  'dismissTeam', 'undismissTeam', 'openWorkspace',
 ]);
+
+/** Reject working directories that aren't an absolute filesystem path */
+function isValidCwd(p: unknown): p is string {
+  if (typeof p !== 'string' || p.length === 0 || p.length > 4096) { return false; }
+  if (p.includes('\0')) { return false; }
+  // Must be absolute on POSIX or a Windows drive path
+  if (!(p.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(p))) { return false; }
+  return true;
+}
 
 /** Validate a raw webview message into a typed WebviewCommand, or return null */
 export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
@@ -44,6 +53,17 @@ export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
   if (msg.type === 'copyToClipboard') {
     if (typeof msg.text !== 'string' || msg.text.length > 1000) { return null; }
     return { type: 'copyToClipboard', text: msg.text };
+  }
+
+  // openWorkspace requires an absolute cwd, optional sessionId
+  if (msg.type === 'openWorkspace') {
+    if (!isValidCwd(msg.cwd)) { return null; }
+    const result: WebviewCommand = { type: 'openWorkspace', cwd: msg.cwd };
+    if (msg.sessionId !== undefined) {
+      if (!isValidSessionId(msg.sessionId)) { return null; }
+      result.sessionId = msg.sessionId;
+    }
+    return result;
   }
 
   // Simple commands (no payload)

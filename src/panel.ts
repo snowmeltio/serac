@@ -85,6 +85,7 @@ interface UpdateMessage {
   workspacePath: string;
   usage?: UsageData;
   foreignWorkspaces?: WorkspaceGroup[];
+  foreignWaiting?: PanelSession[];
   teams?: PanelTeam[];
   compactSettings?: PanelCompactSettings;
 }
@@ -123,6 +124,7 @@ const RANGE_MS: Record<string, number> = {
   let lastNeedsInputCount = 0;
   let lastUsage: UsageData | null = null;
   let lastForeignWorkspaces: WorkspaceGroup[] | null = null;
+  let lastForeignWaiting: PanelSession[] = [];
   let lastTeams: PanelTeam[] = [];
   let compactSettings: PanelCompactSettings | null = null;
 
@@ -269,6 +271,23 @@ const RANGE_MS: Record<string, number> = {
       return;
     }
 
+    // Foreign-waiting card click → open the other VS Code window (with focus hint)
+    const foreignWaitingCard = target.closest<HTMLElement>('.card.foreign-waiting');
+    if (foreignWaitingCard) {
+      const cwd = foreignWaitingCard.dataset.cwd;
+      const sid = foreignWaitingCard.dataset.sessionId;
+      if (cwd) { vscode.postMessage({ type: 'openWorkspace', cwd, sessionId: sid }); }
+      return;
+    }
+
+    // Foreign workspace row click → open that workspace
+    const wsRow = target.closest<HTMLElement>('.ws-row[data-cwd]');
+    if (wsRow) {
+      const cwd = wsRow.dataset.cwd;
+      if (cwd) { vscode.postMessage({ type: 'openWorkspace', cwd }); }
+      return;
+    }
+
     // Card click
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
     if (card) {
@@ -300,6 +319,12 @@ const RANGE_MS: Record<string, number> = {
     if (archiveRow) {
       e.preventDefault();
       archiveRow.click();
+      return;
+    }
+    const wsRow = target.closest<HTMLElement>('.ws-row[data-cwd]');
+    if (wsRow) {
+      e.preventDefault();
+      wsRow.click();
     }
   });
 
@@ -309,6 +334,7 @@ const RANGE_MS: Record<string, number> = {
       if (message.type === 'update') {
         lastUsage = message.usage || null;
         lastForeignWorkspaces = message.foreignWorkspaces ?? [];
+        lastForeignWaiting = message.foreignWaiting ?? [];
         lastTeams = message.teams ?? [];
         compactSettings = message.compactSettings ?? null;
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
@@ -400,6 +426,9 @@ const RANGE_MS: Record<string, number> = {
       scrollWrap.className = 'card-archive-scroll';
       topBar.after(scrollWrap);
     }
+
+    // === Foreign waiting band (other workspaces — needs you) ===
+    renderForeignWaitingSection(scrollWrap, now);
 
     // === Team section (before individual session cards) ===
     renderTeamSection(scrollWrap, now);
@@ -740,12 +769,13 @@ const RANGE_MS: Record<string, number> = {
       subagentHtml += '</div>';
     }
 
-    const canDismiss = s.status === 'done' || s.status === 'stale';
+    const isLive = s.status === 'running' || s.status === 'waiting';
+    const dismissTitle = isLive
+      ? 'Archive (use if status is stuck or hook hasn’t fired)'
+      : 'Dismiss';
     let actionsHtml = '<div class="card-actions">';
     actionsHtml += '<button class="action-btn transcript-btn" data-transcript-id="' + escapeHtml(s.sessionId) + '" title="View transcript" aria-label="View transcript">&#x1f4dc;</button>';
-    if (canDismiss) {
-      actionsHtml += '<button class="action-btn dismiss-btn" data-dismiss-id="' + escapeHtml(s.sessionId) + '" title="Dismiss" aria-label="Dismiss session">&times;</button>';
-    }
+    actionsHtml += '<button class="action-btn dismiss-btn' + (isLive ? ' dismiss-btn-force' : '') + '" data-dismiss-id="' + escapeHtml(s.sessionId) + '" title="' + escapeHtml(dismissTitle) + '" aria-label="Archive session">&times;</button>';
     actionsHtml += '</div>';
 
     let metaHtml = '<div class="card-meta">';
@@ -797,13 +827,16 @@ const RANGE_MS: Record<string, number> = {
     const waiting = ws.counts['waiting'] || 0;
     const done = ws.counts['done'] || 0;
     const wsStatus = waiting > 0 ? 'waiting' : running > 0 ? 'running' : done > 0 ? 'done' : 'idle';
-    const rowClass = 'ws-row' + (waiting > 0 ? ' ws-row-waiting' : '');
+    const rowClass = 'ws-row' + (waiting > 0 ? ' ws-row-waiting' : '') + (ws.cwd ? ' ws-row-clickable' : '');
     let countsHtml = '';
     if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
     if (running) countsHtml += '<span class="status-count running-count">' + running + 'R</span>';
     if (done) countsHtml += '<span class="status-count done-count">' + done + 'D</span>';
     const hasLiveSessions = running > 0 || waiting > 0;
-    return '<div class="' + rowClass + '"' + (hasLiveSessions ? ' data-confidence="' + (ws.confidence || 'medium') + '"' : '') + '>'
+    const cwdAttr = ws.cwd ? ' data-cwd="' + escapeHtml(ws.cwd) + '" tabindex="0" role="button" title="Open workspace in VS Code"' : '';
+    return '<div class="' + rowClass + '"'
+      + (hasLiveSessions ? ' data-confidence="' + (ws.confidence || 'medium') + '"' : '')
+      + cwdAttr + '>'
       + '<span class="ws-status-dot ws-dot-' + wsStatus + '"></span>'
       + '<span class="ws-name">' + escapeHtml(ws.displayName) + '</span>'
       + '<div class="ws-counts">' + countsHtml + '</div>'
@@ -889,6 +922,65 @@ const RANGE_MS: Record<string, number> = {
       + '<span class="compact-transcript" data-transcript-id="' + escapeHtml(s.sessionId) + '" title="View transcript">&#x1f4dc;</span>'
       + '<span class="compact-age">' + age + '</span>'
       + '</div>';
+  }
+
+  // ===== FOREIGN WAITING SECTION =====
+  /** Render foreign workspace sessions that need user input. Sits at the very top
+   *  of the panel (above teams + local cards) because waiting on input elsewhere
+   *  is the most attention-worthy state we can surface. Click → open that window. */
+  function renderForeignWaitingSection(scrollWrap: HTMLElement, now: number): void {
+    let section = scrollWrap.querySelector('.foreign-waiting-section') as HTMLElement | null;
+    const items = lastForeignWaiting.filter(s => !!s.cwd);
+
+    if (items.length === 0) {
+      if (section) section.remove();
+      return;
+    }
+
+    if (!section) {
+      section = document.createElement('div');
+      section.className = 'foreign-waiting-section';
+      // Ensure it lands above .team-section / .card-section
+      scrollWrap.insertBefore(section, scrollWrap.firstChild);
+    }
+
+    let html = '<div class="foreign-waiting-header">Other workspaces — waiting on you</div>';
+    for (const s of items) {
+      html += renderForeignWaitingCard(s, now);
+    }
+    section.innerHTML = html;
+  }
+
+  function renderForeignWaitingCard(s: PanelSession, now: number): string {
+    const displayName = stripMarkdown(getDisplayName(s));
+    const cwd = s.cwd || '';
+    const wsLabel = workspaceLabelFromCwd(cwd) || s.workspaceKey || '';
+    const activity = stripMarkdown(s.activity || 'Waiting for input');
+    const ageLabel = formatAge(now - s.lastActivity);
+
+    return '<div class="card waiting foreign foreign-waiting"'
+      + ' data-session-id="' + escapeHtml(s.sessionId) + '"'
+      + ' data-cwd="' + escapeHtml(cwd) + '"'
+      + ' role="button" tabindex="0"'
+      + ' aria-label="' + escapeHtml(displayName) + ' — waiting in ' + escapeHtml(wsLabel) + ' (click to switch window)">'
+      + '<div class="card-top">'
+      + '<span class="card-name">' + escapeHtml(displayName) + '</span>'
+      + '<span class="status-pill">Waiting</span>'
+      + '</div>'
+      + '<div class="foreign-waiting-meta">'
+      + '<span class="foreign-waiting-ws">' + escapeHtml(wsLabel) + '</span>'
+      + '<span class="foreign-waiting-arrow" title="Switch to this window">↗</span>'
+      + '<span class="foreign-waiting-age">' + ageLabel + '</span>'
+      + '</div>'
+      + '<div class="card-detail">' + escapeHtml(activity) + '</div>'
+      + '</div>';
+  }
+
+  /** Strip the trailing folder name from a cwd for display. */
+  function workspaceLabelFromCwd(cwd: string): string {
+    const trimmed = cwd.endsWith('/') ? cwd.slice(0, -1) : cwd;
+    const folder = trimmed.split('/').pop();
+    return folder || trimmed;
   }
 
   // ===== USAGE SECTION RENDERER =====
@@ -1004,12 +1096,12 @@ const RANGE_MS: Record<string, number> = {
     }
     metaHtml += '<span class="team-badge">orchestrator</span>';
 
-    // Dismiss button (only when team is done)
-    const canDismiss = !team.agents.some(a => a.status === 'running' || a.status === 'waiting')
-      && o.status !== 'running' && o.status !== 'waiting';
-    if (canDismiss) {
-      metaHtml += '<div class="card-actions"><button class="team-dismiss-btn" data-dismiss-team="' + escapeHtml(team.teamId) + '" title="Dismiss team" aria-label="Dismiss team">&times;</button></div>';
-    }
+    const teamLive = team.agents.some(a => a.status === 'running' || a.status === 'waiting')
+      || o.status === 'running' || o.status === 'waiting';
+    const teamDismissTitle = teamLive
+      ? 'Archive team (use if status is stuck or hook hasn’t fired)'
+      : 'Dismiss team';
+    metaHtml += '<div class="card-actions"><button class="team-dismiss-btn' + (teamLive ? ' dismiss-btn-force' : '') + '" data-dismiss-team="' + escapeHtml(team.teamId) + '" title="' + escapeHtml(teamDismissTitle) + '" aria-label="Archive team">&times;</button></div>';
     metaHtml += '</div>';
 
     let contextBarHtml = '';
@@ -1161,7 +1253,7 @@ const RANGE_MS: Record<string, number> = {
       html += '</div>';
 
       if (overQuota) {
-        const overLabel = u.extraUsageEnabled ? 'EXTRA USAGE' : 'RATE LIMITED';
+        const overLabel = u.extraUsageEnabled ? 'EXTRA USAGE' : 'LIMIT REACHED';
         html += '<div class="usage-status critical">' + overLabel + '</div>';
       }
     }

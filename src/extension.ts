@@ -1,3 +1,4 @@
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { SessionDiscovery } from './sessionDiscovery.js';
@@ -6,6 +7,8 @@ import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from './claudeSettings.js';
+import { sanitiseWorkspaceKey } from './panelUtils.js';
+import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } from './workspaceOpener.js';
 
 export function activate(context: vscode.ExtensionContext) {
   const workspacePath: string | undefined = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -184,6 +187,50 @@ export function activate(context: vscode.ExtensionContext) {
     sendUpdate();
   });
 
+  // Handle "open another workspace" — used by foreign waiting cards and ws rows.
+  // If a sessionId is supplied, drop a focus hint that the receiving Serac will
+  // pick up (either on activate or via its FileSystemWatcher) and open the card.
+  const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+  panelProvider.setOpenWorkspaceHandler(async (cwd: string, sessionId?: string) => {
+    if (sessionId) {
+      const targetWorkspaceKey = sanitiseWorkspaceKey(cwd);
+      try {
+        await writeFocusHint(projectsDir, targetWorkspaceKey, sessionId);
+      } catch (err) {
+        log.warn('Failed to write focus hint:', err);
+      }
+    }
+    try {
+      await openWorkspaceFolder(cwd);
+    } catch (err) {
+      log.warn('Failed to open workspace folder:', err);
+      vscode.window.showWarningMessage(`Failed to open workspace at ${cwd}.`);
+    }
+  });
+
+  // Receive side: when another Serac instance leaves us a focus hint, pick it up
+  // both on activate (in case we just launched) and via a FileSystemWatcher
+  // (already-running window).
+  const localWorkspaceKey = sanitiseWorkspaceKey(wsPath);
+  const localHintPath = focusHintPath(projectsDir, localWorkspaceKey);
+  async function applyFocusHint() {
+    const hint = await consumeFocusHint(localHintPath);
+    if (!hint) { return; }
+    // Surface the card and tell Claude Code to open the editor for that session.
+    panelProvider.focusSession(hint.sessionId);
+    vscode.commands.executeCommand(
+      'claude-vscode.editor.open', hint.sessionId, undefined, vscode.ViewColumn.One,
+    ).then(undefined, () => { /* extension may not be installed; the panel focus still helps */ });
+  }
+  // Run after the panel has had a moment to mount
+  setTimeout(() => { void applyFocusHint(); }, 800);
+  const hintWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(path.dirname(localHintPath)), path.basename(localHintPath)),
+  );
+  hintWatcher.onDidCreate(() => { void applyFocusHint(); });
+  hintWatcher.onDidChange(() => { void applyFocusHint(); });
+  context.subscriptions.push(hintWatcher);
+
   // Register refresh command
   context.subscriptions.push(
     vscode.commands.registerCommand('agentActivity.refresh', () => {
@@ -221,7 +268,10 @@ export function activate(context: vscode.ExtensionContext) {
     }
     const usage = usageProvider.getSnapshot();
     const foreignWorkspaces = discovery.getForeignWorkspaces();
-    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams);
+    const foreignWaiting = discovery.getForeignWaitingSnapshots();
+    // Foreign waiting cards demand attention too, so they bump the badge.
+    waitingCount += foreignWaiting.length;
+    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting);
 
     // Auto-focus new session created via "+ New" button
     if (pendingNewChatKnownIds) {
