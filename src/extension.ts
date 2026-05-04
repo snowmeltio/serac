@@ -1,7 +1,9 @@
-import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { SessionDiscovery } from './sessionDiscovery.js';
+import { claudeStateDir } from './paths.js';
+import { FooterSlotRegistry } from './footerSlots.js';
+import type { SeracExports } from './types.js';
 import { AgentPanelProvider } from './panelProvider.js';
 import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
@@ -10,9 +12,18 @@ import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } from './workspaceOpener.js';
 
-export function activate(context: vscode.ExtensionContext) {
+export function activate(context: vscode.ExtensionContext): SeracExports {
+  // Footer slot registry must be created up-front: companions resolve
+  // Serac's exports during their own activate(), and that may run before
+  // workspace folders are present.
+  const footerSlots = new FooterSlotRegistry();
+  const exports: SeracExports = {
+    apiVersion: 1,
+    registerUsageFooterSlot: (slotId, initial) => footerSlots.register(slotId, initial),
+  };
+
   const workspacePath: string | undefined = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!workspacePath) { return; }
+  if (!workspacePath) { return exports; }
   const wsPath: string = workspacePath;
 
   const log = vscode.window.createOutputChannel('Serac', { log: true });
@@ -190,7 +201,22 @@ export function activate(context: vscode.ExtensionContext) {
   // Handle "open another workspace" — used by foreign waiting cards and ws rows.
   // If a sessionId is supplied, drop a focus hint that the receiving Serac will
   // pick up (either on activate or via its FileSystemWatcher) and open the card.
-  const projectsDir = path.join(os.homedir(), '.claude', 'projects');
+  const projectsDir = path.join(claudeStateDir(), 'projects');
+  // Wire the footer-slot bridge: panelProvider snapshots payloads each tick,
+  // and forwards click events into VS Code's command bus.
+  panelProvider.setFooterSlotBridge(
+    () => footerSlots.getPayloads(),
+    (slotId: string) => {
+      const command = footerSlots.getCommand(slotId);
+      if (!command) { return; }
+      vscode.commands.executeCommand(command).then(undefined, err => {
+        log.warn(`Footer slot "${slotId}" command "${command}" failed:`, err);
+      });
+    },
+  );
+  // Re-render whenever a companion registers/updates/disposes a slot.
+  footerSlots.setOnChange(() => panelProvider.refresh());
+
   panelProvider.setOpenWorkspaceHandler(async (cwd: string, sessionId?: string) => {
     if (sessionId) {
       const targetWorkspaceKey = sanitiseWorkspaceKey(cwd);
@@ -289,7 +315,7 @@ export function activate(context: vscode.ExtensionContext) {
   });
   usageProvider.start(() => sendUpdate());
 
-  // Watch ~/.claude/settings.json for compact setting changes
+  // Watch settings.json (in active Claude state dir) for compact setting changes
   const settingsPath = getClaudeSettingsPath();
   const settingsWatcher = vscode.workspace.createFileSystemWatcher(
     new vscode.RelativePattern(vscode.Uri.file(path.dirname(settingsPath)), path.basename(settingsPath)),
@@ -313,6 +339,8 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Initial update after a short delay for panel to mount
   setTimeout(() => sendUpdate(), 500);
+
+  return exports;
 }
 
 export function deactivate() {}

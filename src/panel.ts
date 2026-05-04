@@ -78,6 +78,15 @@ interface PanelTeam {
   dismissed: boolean;
 }
 
+interface PanelFooterSlot {
+  slotId: string;
+  label: string;
+  icon?: string;
+  status?: 'ok' | 'warn' | 'critical';
+  hasCommand: boolean;
+  tooltip?: string;
+}
+
 interface UpdateMessage {
   type: 'update';
   sessions: PanelSession[];
@@ -88,6 +97,7 @@ interface UpdateMessage {
   foreignWaiting?: PanelSession[];
   teams?: PanelTeam[];
   compactSettings?: PanelCompactSettings;
+  footerSlots?: PanelFooterSlot[];
 }
 
 interface FocusMessage {
@@ -126,6 +136,7 @@ const RANGE_MS: Record<string, number> = {
   let lastForeignWorkspaces: WorkspaceGroup[] | null = null;
   let lastForeignWaiting: PanelSession[] = [];
   let lastTeams: PanelTeam[] = [];
+  let lastFooterSlots: PanelFooterSlot[] = [];
   let compactSettings: PanelCompactSettings | null = null;
 
   // Status debounce: tracks when each session entered waiting
@@ -160,6 +171,14 @@ const RANGE_MS: Record<string, number> = {
     if (transcriptBtn) {
       e.stopPropagation();
       vscode.postMessage({ type: 'viewTranscript', sessionId: transcriptBtn.dataset.transcriptId });
+      return;
+    }
+
+    // Footer slot click (companion-registered usage-card slot)
+    const footerSlot = target.closest<HTMLElement>('.usage-slot-row[data-slot-id]');
+    if (footerSlot && footerSlot.classList.contains('clickable')) {
+      e.stopPropagation();
+      vscode.postMessage({ type: 'footerSlotClick', slotId: footerSlot.dataset.slotId });
       return;
     }
 
@@ -336,6 +355,7 @@ const RANGE_MS: Record<string, number> = {
         lastForeignWorkspaces = message.foreignWorkspaces ?? [];
         lastForeignWaiting = message.foreignWaiting ?? [];
         lastTeams = message.teams ?? [];
+        lastFooterSlots = message.footerSlots ?? [];
         compactSettings = message.compactSettings ?? null;
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         render(sessions, message.waitingCount, message.workspacePath);
@@ -1300,7 +1320,34 @@ const RANGE_MS: Record<string, number> = {
       html += '<div class="usage-updated"><span class="api-dot ' + stateClass + '" title="API ' + stateClass + '"></span>Updated ' + formatAgeCoarse(Date.now() - u.lastPoll) + ' ago' + stateLabel + '</div>';
     }
 
+    html += renderFooterSlots(lastFooterSlots);
+
     section.innerHTML = html;
+  }
+
+  /** Render companion-registered slots under the usage card.
+   *  All companion-supplied strings go through escapeHtml — no HTML ever
+   *  reaches the DOM as-is. */
+  function renderFooterSlots(slots: PanelFooterSlot[]): string {
+    if (!slots || slots.length === 0) { return ''; }
+    let html = '<div class="usage-slots">';
+    for (const slot of slots) {
+      const cls = ['usage-slot-row'];
+      if (slot.hasCommand) { cls.push('clickable'); }
+      const role = slot.hasCommand ? ' role="button" tabindex="0"' : '';
+      const tooltip = slot.tooltip ? ' title="' + escapeHtml(slot.tooltip) + '"' : '';
+      html += '<div class="' + cls.join(' ') + '" data-slot-id="' + escapeHtml(slot.slotId) + '"' + role + tooltip + '>';
+      if (slot.status) {
+        html += '<span class="api-dot ' + slot.status + '" title="' + escapeHtml(slot.status) + '"></span>';
+      }
+      if (slot.icon) {
+        html += '<span class="usage-slot-icon">' + escapeHtml(slot.icon) + '</span>';
+      }
+      html += '<span class="usage-slot-label">' + escapeHtml(slot.label) + '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
   }
 
   // Request initial data

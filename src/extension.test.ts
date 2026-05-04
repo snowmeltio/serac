@@ -88,6 +88,8 @@ const mockPanelProvider = {
   setDismissTeamHandler: vi.fn(),
   setUndismissTeamHandler: vi.fn(),
   setOpenWorkspaceHandler: vi.fn(),
+  setFooterSlotBridge: vi.fn(),
+  refresh: vi.fn(),
 };
 
 vi.mock('./sessionDiscovery.js', () => ({
@@ -433,6 +435,80 @@ describe('extension', () => {
 
       expect(mockDiscovery.stop).toHaveBeenCalled();
       expect(mockUsageProvider.stop).toHaveBeenCalled();
+    });
+  });
+
+  describe('footer slot exports (A2)', () => {
+    it('returns a SeracExports object with apiVersion=1', () => {
+      const exports = activate(context as any);
+      expect(exports?.apiVersion).toBe(1);
+      expect(typeof exports?.registerUsageFooterSlot).toBe('function');
+    });
+
+    it('returns the exports surface even when no workspace folder is present', () => {
+      const orig = vscode.workspace.workspaceFolders;
+      (vscode.workspace as any).workspaceFolders = undefined;
+      try {
+        const exports = activate(context as any);
+        expect(exports?.apiVersion).toBe(1);
+        expect(typeof exports?.registerUsageFooterSlot).toBe('function');
+      } finally {
+        (vscode.workspace as any).workspaceFolders = orig;
+      }
+    });
+
+    it('registerUsageFooterSlot returns a handle and triggers panel refresh', () => {
+      const exports = activate(context as any);
+      mockPanelProvider.refresh.mockClear();
+      const handle = exports!.registerUsageFooterSlot('s1', { label: 'm@murray.sh' });
+      expect(typeof handle.update).toBe('function');
+      expect(typeof handle.dispose).toBe('function');
+      expect(mockPanelProvider.refresh).toHaveBeenCalledTimes(1);
+    });
+
+    it('wires the footer-slot bridge so payloads and clicks reach the registry', () => {
+      const exports = activate(context as any);
+      const bridgeArgs = mockPanelProvider.setFooterSlotBridge.mock.calls[0];
+      expect(bridgeArgs).toBeDefined();
+      const [getPayloads, onClick] = bridgeArgs as [() => unknown[], (id: string) => void];
+
+      // No slots → empty payload list
+      expect(getPayloads()).toEqual([]);
+
+      // Register a slot with a command and verify the bridge surfaces it
+      exports!.registerUsageFooterSlot('account', {
+        label: 'murray@snowmelt.io',
+        icon: '❄️',
+        status: 'warn',
+        command: 'snowmelt.openSwitcher',
+      });
+      const payloads = getPayloads() as Array<Record<string, unknown>>;
+      expect(payloads).toHaveLength(1);
+      expect(payloads[0]).toMatchObject({
+        slotId: 'account',
+        label: 'murray@snowmelt.io',
+        hasCommand: true,
+      });
+
+      // Click → command bus
+      const exec = vi.mocked(vscode.commands.executeCommand);
+      exec.mockClear();
+      // Fix the async return so the .then(undefined, …) chain in extension.ts settles
+      exec.mockReturnValue(Promise.resolve(undefined) as any);
+      onClick('account');
+      expect(exec).toHaveBeenCalledWith('snowmelt.openSwitcher');
+    });
+
+    it('drops clicks for unknown slot ids without invoking executeCommand', () => {
+      activate(context as any);
+      const [, onClick] = mockPanelProvider.setFooterSlotBridge.mock.calls[0] as [
+        unknown,
+        (id: string) => void,
+      ];
+      const exec = vi.mocked(vscode.commands.executeCommand);
+      exec.mockClear();
+      onClick('does-not-exist');
+      expect(exec).not.toHaveBeenCalled();
     });
   });
 });

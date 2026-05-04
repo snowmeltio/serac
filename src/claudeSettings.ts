@@ -1,10 +1,10 @@
 /**
- * Reads Claude Code compact-related settings from ~/.claude/settings.json.
+ * Reads Claude Code compact-related settings from <claudeStateDir>/settings.json.
  * Extension-side only (uses fs/os/path — not bundled into the webview).
  */
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
+import { claudeStateDir } from './paths.js';
 
 export interface CompactSettings {
   /** Effective context window in tokens (CLAUDE_CODE_AUTO_COMPACT_WINDOW, default 200K) */
@@ -19,7 +19,7 @@ const DEFAULTS: CompactSettings = {
 };
 
 export function getClaudeSettingsPath(): string {
-  return path.join(os.homedir(), '.claude', 'settings.json');
+  return path.join(claudeStateDir(), 'settings.json');
 }
 
 export function readCompactSettings(): CompactSettings {

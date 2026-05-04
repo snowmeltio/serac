@@ -123,6 +123,19 @@ describe('parseWebviewCommand', () => {
     expect(parseWebviewCommand([])).toBeNull();
     expect(parseWebviewCommand(0)).toBeNull();
   });
+
+  it('parses footerSlotClick with a valid slot id', () => {
+    const result = parseWebviewCommand({ type: 'footerSlotClick', slotId: 'snowmelt-account' });
+    expect(result).toEqual({ type: 'footerSlotClick', slotId: 'snowmelt-account' });
+  });
+
+  it('rejects footerSlotClick with a malformed slot id', () => {
+    expect(parseWebviewCommand({ type: 'footerSlotClick', slotId: '../etc' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'footerSlotClick', slotId: '' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'footerSlotClick', slotId: 1 })).toBeNull();
+    expect(parseWebviewCommand({ type: 'footerSlotClick' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'footerSlotClick', slotId: '1starts-with-digit' })).toBeNull();
+  });
 });
 
 describe('isValidSessionId — boundary and traversal cases', () => {

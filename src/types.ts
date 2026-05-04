@@ -285,6 +285,8 @@ export type WebviewMessage =
       teams?: TeamSnapshot[];
       /** Claude Code auto-compact settings (from ~/.claude/settings.json env overrides) */
       compactSettings?: import('./claudeSettings.js').CompactSettings;
+      /** Companion-registered footer slots (rendered under the usage card) */
+      footerSlots?: FooterSlotPayload[];
     }
   | {
       type: 'focusSession';
@@ -304,7 +306,55 @@ export type WebviewCommand =
   | { type: 'archiveRange'; rangeMs: number }
   | { type: 'dismissTeam'; teamId: string }
   | { type: 'undismissTeam'; teamId: string }
-  | { type: 'openWorkspace'; cwd: string; sessionId?: string };
+  | { type: 'openWorkspace'; cwd: string; sessionId?: string }
+  | { type: 'footerSlotClick'; slotId: string };
+
+// ─── Public extension API surface (returned by activate()) ──────────────
+
+/** Spec a companion submits when registering a footer slot. */
+export interface FooterSlotSpec {
+  /** Required. Plain text, truncated to 80 chars. Use for the account label. */
+  label: string;
+  /** Optional single glyph (max 4 codepoints). Companions pick their own icons. */
+  icon?: string;
+  /** Optional coloured status dot rendered before the icon. Reuses the snowmelt
+   *  palette: arctic-teal/frozen-peach/salmon-red. */
+  status?: 'ok' | 'warn' | 'critical';
+  /** VS Code command id invoked on click (no args). Omit for non-clickable. */
+  command?: string;
+  /** Optional native tooltip. */
+  tooltip?: string;
+}
+
+/** Handle returned by registerUsageFooterSlot. */
+export interface UsageFooterSlot {
+  /** Replace the slot's spec; re-renders on the next webview tick. */
+  update(spec: FooterSlotSpec): void;
+  /** Remove the slot. Subsequent update() calls are no-ops. */
+  dispose(): void;
+}
+
+/** Wire format for slot data pushed to the webview. The `command` field is
+ *  intentionally not forwarded — only `hasCommand` so the webview knows
+ *  whether to attach a click handler. */
+export interface FooterSlotPayload {
+  slotId: string;
+  label: string;
+  icon?: string;
+  status?: 'ok' | 'warn' | 'critical';
+  hasCommand: boolean;
+  tooltip?: string;
+}
+
+/** The object returned by Serac's `activate()`. Companions read this via
+ *  `vscode.extensions.getExtension('snowmeltio.serac-claude-code').exports`. */
+export interface SeracExports {
+  /** Numeric API version. v1 is the initial shape. */
+  readonly apiVersion: 1;
+  /** Register a slot under the usage card. Throws if slotId is malformed or
+   *  already registered. */
+  registerUsageFooterSlot(slotId: string, initial: FooterSlotSpec): UsageFooterSlot;
+}
 
 /** Known JSONL record types that the extension processes */
 export type JsonlRecordType =

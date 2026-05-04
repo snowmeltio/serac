@@ -292,4 +292,63 @@ describe('AgentPanelProvider', () => {
       provider.focusSession('test-id');
     });
   });
+
+  describe('footer slot bridge', () => {
+    it('includes footerSlots in update messages when payloads are present', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      const slot = { slotId: 's1', label: 'm@murray.sh', hasCommand: false };
+      provider.setFooterSlotBridge(() => [slot], () => {});
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview.postMessage.mockClear();
+      provider.updateSessions([], 0, '/ws', null);
+      expect(webview.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ footerSlots: [slot] }),
+      );
+    });
+
+    it('omits footerSlots when no payloads are registered', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.setFooterSlotBridge(() => [], () => {});
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview.postMessage.mockClear();
+      provider.updateSessions([], 0, '/ws', null);
+      const msg = webview.postMessage.mock.calls[0][0];
+      expect(msg.footerSlots).toBeUndefined();
+    });
+
+    it('routes footerSlotClick messages to the registered click handler', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      const onClick = vi.fn();
+      provider.setFooterSlotBridge(() => [], onClick);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview._fireMessage({ type: 'footerSlotClick', slotId: 'snowmelt-account' });
+      expect(onClick).toHaveBeenCalledWith('snowmelt-account');
+    });
+
+    it('rejects malformed footerSlotClick messages', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      const onClick = vi.fn();
+      provider.setFooterSlotBridge(() => [], onClick);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview._fireMessage({ type: 'footerSlotClick' });
+      webview._fireMessage({ type: 'footerSlotClick', slotId: '' });
+      webview._fireMessage({ type: 'footerSlotClick', slotId: '../etc' });
+      expect(onClick).not.toHaveBeenCalled();
+    });
+
+    it('refresh() sends a fresh update message', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview.postMessage.mockClear();
+      provider.refresh();
+      expect(webview.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'update' }),
+      );
+    });
+  });
 });
