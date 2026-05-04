@@ -16,6 +16,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private waitingCount = 0;
   private usage: UsageSnapshot | null = null;
   private foreignWorkspaces: WorkspaceGroup[] = [];
+  private foreignWaiting: SessionSnapshot[] = [];
   private teams: TeamSnapshot[] = [];
   private compactSettings: CompactSettings | undefined;
   private onFocusSession: ((sessionId: string) => void) | undefined;
@@ -27,6 +28,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private onArchiveRange: ((rangeMs: number) => void) | undefined;
   private onDismissTeam: ((teamId: string) => void) | undefined;
   private onUndismissTeam: ((teamId: string) => void) | undefined;
+  private onOpenWorkspace: ((cwd: string, sessionId?: string) => void) | undefined;
   private workspacePath = '';
 
   constructor(
@@ -69,6 +71,10 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.onUndismissTeam = handler;
   }
 
+  setOpenWorkspaceHandler(handler: (cwd: string, sessionId?: string) => void): void {
+    this.onOpenWorkspace = handler;
+  }
+
   resolveWebviewView(
     webviewView: vscode.WebviewView,
     _context: vscode.WebviewViewResolveContext,
@@ -108,6 +114,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         this.onDismissTeam(message.teamId);
       } else if (message.type === 'undismissTeam' && this.onUndismissTeam) {
         this.onUndismissTeam(message.teamId);
+      } else if (message.type === 'openWorkspace' && this.onOpenWorkspace) {
+        this.onOpenWorkspace(message.cwd, message.sessionId);
       } else if (message.type === 'requestUpdate') {
         this.sendUpdate();
       }
@@ -118,12 +126,13 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /** Update the panel with new session data */
-  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[]): void {
+  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[]): void {
     this.sessions = sessions;
     this.waitingCount = waitingCount;
     this.workspacePath = workspacePath;
     this.usage = usage;
     this.foreignWorkspaces = foreignWorkspaces ?? [];
+    this.foreignWaiting = foreignWaiting ?? [];
     this.teams = teams ?? [];
     this.compactSettings = compactSettings;
 
@@ -153,6 +162,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       workspacePath: this.workspacePath,
       usage: this.usage,
       foreignWorkspaces: this.foreignWorkspaces.length > 0 ? this.foreignWorkspaces : undefined,
+      foreignWaiting: this.foreignWaiting.length > 0 ? this.foreignWaiting : undefined,
       teams: this.teams.length > 0 ? this.teams : undefined,
       compactSettings: this.compactSettings,
     };

@@ -9,7 +9,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
-import type { StatusConfidence, WorkspaceGroup } from './types.js';
+import type { SessionSnapshot, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 
 /** Age gate for foreign workspace scans: 14 days for slow-burn projects */
@@ -184,6 +184,34 @@ export class ForeignWorkspaceManager {
       });
     }
     result.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    return result;
+  }
+
+  /** Get a CWD for a workspace key — uses the cached cwd from any session in that workspace. */
+  getCwdForWorkspace(workspaceKey: string): string | null {
+    return this.cwdCache.get(workspaceKey) ?? null;
+  }
+
+  /** Foreign sessions currently waiting on user input. cwd is filled from cwdCache
+   *  when the session itself doesn't carry one (older JSONL records). */
+  getWaitingSnapshots(excludeSessionIds?: Set<string>): SessionSnapshot[] {
+    const result: SessionSnapshot[] = [];
+    for (const session of this.sessions.values()) {
+      if (excludeSessionIds?.has(session.getSessionId())) { continue; }
+      if (session.getStatus() !== 'waiting') { continue; }
+      const snapshot = session.getSnapshot();
+
+      const wsMeta = this.meta.get(snapshot.workspaceKey);
+      if (wsMeta?.[snapshot.sessionId]?.dismissed) { continue; }
+
+      if (!snapshot.cwd) {
+        const cached = this.cwdCache.get(snapshot.workspaceKey);
+        if (cached) { snapshot.cwd = cached; }
+      }
+      result.push(snapshot);
+    }
+    // Newest waiting first so the most recent prompt sits at the top
+    result.sort((a, b) => b.lastActivity - a.lastActivity);
     return result;
   }
 

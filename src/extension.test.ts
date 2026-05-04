@@ -53,6 +53,8 @@ const mockDiscovery = {
   getSnapshots: vi.fn().mockReturnValue([]),
   getWaitingCount: vi.fn().mockReturnValue(0),
   getForeignWorkspaces: vi.fn().mockReturnValue([]),
+  getForeignWaitingSnapshots: vi.fn().mockReturnValue([]),
+  getForeignWorkspaceCwd: vi.fn().mockReturnValue(null),
   dismissSession: vi.fn(),
   undismissSession: vi.fn(),
   acknowledgeIfDone: vi.fn(),
@@ -85,6 +87,7 @@ const mockPanelProvider = {
   setArchiveRangeHandler: vi.fn(),
   setDismissTeamHandler: vi.fn(),
   setUndismissTeamHandler: vi.fn(),
+  setOpenWorkspaceHandler: vi.fn(),
 };
 
 vi.mock('./sessionDiscovery.js', () => ({

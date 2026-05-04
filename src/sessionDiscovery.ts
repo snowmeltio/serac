@@ -469,6 +469,17 @@ export class SessionDiscovery {
     return this.foreignManager.getWorkspaces(teamClaimed);
   }
 
+  /** Foreign sessions in the `waiting` state — surfaced inline at top of the panel. */
+  getForeignWaitingSnapshots(): SessionSnapshot[] {
+    const teamClaimed = this.teamDiscovery.getClaimedSessionIds(this.sessionMeta);
+    return this.foreignManager.getWaitingSnapshots(teamClaimed);
+  }
+
+  /** Resolve a CWD for a foreign workspace key (used when the panel passes back a workspaceKey). */
+  getForeignWorkspaceCwd(workspaceKey: string): string | null {
+    return this.foreignManager.getCwdForWorkspace(workspaceKey);
+  }
+
   // ── Team API ──────────────────────────────────────────────────────
 
   /** Get team snapshots for the webview. */
