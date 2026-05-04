@@ -232,9 +232,12 @@ export function getElapsedPct(resetMs: number | undefined, windowMs: number): nu
 }
 
 export function quotaClass(quotaPct: number, elapsedPct: number): string {
+  // Lock to critical at the cap — if you've used the whole quota, the bar
+  // shouldn't fade as the reset approaches. You're still capped.
+  if (quotaPct >= 100) return 'critical';
   if (!elapsedPct || elapsedPct <= 0) return 'ok';
   const burnRate = (quotaPct / elapsedPct) * 100;
-  if (burnRate >= 105) return 'critical';
+  if (burnRate >= 100) return 'critical';
   if (burnRate >= 85) return 'warn';
   if (burnRate >= 60) return 'good';
   return 'ok';
