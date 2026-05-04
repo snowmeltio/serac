@@ -287,7 +287,9 @@ body {
 
 /* Foreign-waiting cards live above local cards: re-prominent, with a switch-window hint */
 .foreign-waiting-section {
-  padding: 6px 6px 0 6px;
+  padding: 6px 6px 10px 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.06));
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -300,8 +302,9 @@ body {
   color: var(--sm-frozen-peach, #f5b087);
   padding: 2px 2px 2px 2px;
 }
-.card.foreign-waiting { opacity: 1; }
+.card.foreign-waiting { opacity: 1; background: rgba(var(--sm-frozen-peach-rgb), 0.06); }
 .card.foreign-waiting:hover { opacity: 1; box-shadow: 0 0 0 1px rgba(var(--sm-frozen-peach-rgb), 0.5); }
+.card.foreign-waiting .card-name { color: var(--sm-frozen-peach); }
 .foreign-waiting-meta {
   display: flex;
   align-items: center;
