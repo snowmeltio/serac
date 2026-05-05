@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.3.7 (2026-05-05) — Reset-time spacing consistency
+
+### Fixed
+- **Usage reset-time spacing** — `formatResetTime` rendered hours/minutes as `4h15m` but days/hours as `6d 15h`. Aligned the hours/minutes case to match: now `4h 15m`.
+
 ## v1.3.6 (2026-05-05) — Other-workspaces alignment + ship the v1.3.4 flicker fix
 
 ### Fixed

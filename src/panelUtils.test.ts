@@ -346,7 +346,7 @@ describe('formatResetTime', () => {
   });
   it('formats hours and minutes', () => {
     const result = formatResetTime(Date.now() + 90 * 60_000);
-    expect(result).toMatch(/^1h\d+m$/);
+    expect(result).toMatch(/^1h \d+m$/);
   });
 });
 
