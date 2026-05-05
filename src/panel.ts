@@ -829,7 +829,6 @@ const RANGE_MS: Record<string, number> = {
     const running = ws.counts['running'] || 0;
     const waiting = ws.counts['waiting'] || 0;
     const done = ws.counts['done'] || 0;
-    const wsStatus = waiting > 0 ? 'waiting' : running > 0 ? 'running' : done > 0 ? 'done' : 'idle';
     const rowClass = 'ws-row' + (waiting > 0 ? ' ws-row-waiting' : '') + (ws.cwd ? ' ws-row-clickable' : '');
     let countsHtml = '';
     if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
@@ -840,7 +839,6 @@ const RANGE_MS: Record<string, number> = {
     return '<div class="' + rowClass + '"'
       + (hasLiveSessions ? ' data-confidence="' + (ws.confidence || 'medium') + '"' : '')
       + cwdAttr + '>'
-      + '<span class="ws-status-dot ws-dot-' + wsStatus + '"></span>'
       + '<span class="ws-name">' + escapeHtml(ws.displayName) + '</span>'
       + '<div class="ws-counts">' + countsHtml + '</div>'
       + '</div>';

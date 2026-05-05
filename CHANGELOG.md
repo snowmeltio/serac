@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.6 (2026-05-05) — Other-workspaces alignment + ship the v1.3.4 flicker fix
+
+### Fixed
+- **`transcript-viewer` flicker, for real this time** — The v1.3.4 source fix never made it to a built artefact: `dist/extension.js` and `serac-claude-code-1.3.5.vsix` were both produced from a pre-fix tree. Rebuilt the bundle so the `getLastActivity()` gate in `ForeignWorkspaceManager.scan()` actually runs.
+
+### Changed
+- **Other-workspaces row indent** — Dropped the leading 6px status dot. For done/idle workspaces the dot was barely visible (30% opacity grey) but still cost 12px of layout, pushing names off the panel's 12px gutter shared with the time-range bar and usage section. Waiting state still gets the left border + frozen-peach background; running/done state is conveyed by the right-anchored W/R/D counts. Names now align with "Showing archived" and the usage labels.
+
 ## v1.3.5 (2026-05-04) — Foreign-waiting visual polish
 
 ### Changed
