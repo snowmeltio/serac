@@ -83,16 +83,6 @@ body {
 }
 .ws-row-waiting { background: rgba(var(--sm-frozen-peach-rgb), 0.15); padding: 2px 4px 2px 6px; margin: 0 -4px; border-left: 2px solid var(--sm-frozen-peach); border-radius: 0 3px 3px 0; }
 .ws-row-waiting .ws-name { color: var(--sm-frozen-peach); }
-.ws-status-dot {
-  display: inline-block;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.ws-dot-idle { background: var(--vscode-descriptionForeground, #555555); opacity: 0.3; }
-.ws-dot-running { background: var(--sm-blizzard-blue, #6185f7); }
-.ws-dot-waiting { background: var(--sm-frozen-peach, #f5b087); }
 .ws-name {
   color: var(--vscode-descriptionForeground, #888888);
   font-weight: 400;
