@@ -2,7 +2,7 @@
   "name": "serac-claude-code",
   "displayName": "Serac Session Monitor",
   "description": "Session monitor for Claude Code — status cards, subagent tracking, usage quotas, and transcript viewer in the VS Code sidebar",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",

@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.5.0 (2026-05-06) — Cross-workspace consolidation
+
+A focused simplification of how Serac surfaces sessions running outside the current VS Code window. The two cross-workspace sections added in v1.3-v1.4 (foreign-waiting cards and foreign-running strip) are gone; their job now belongs to richer "Other workspaces" rows. Sibling worktrees of the local repo graduate into the main card list with a worktree pill.
+
+### Added
+- **Sibling-worktree consolidation** — sessions running in any worktree of the local repo no longer appear as a separate "foreign" workspace. They flow into the main card list with a small worktree pill alongside the existing session-id and model pills, and clicking the card opens VS Code at that worktree's CWD. Repo detection is fs-only (`.git`/`commondir`); no `git` CLI shellout. New `gitWorktreeUtil.resolveRepoRoot` and `siblingWorktreeManager`.
+- **Repo-grouping in "Other workspaces"** — when 2+ unrelated other-repo workspaces share a `repoRoot`, they collapse under a single `repo/` header (full path on hover). Parent-directory grouping is preserved as the fallback for non-git directories.
+- **W/R/D/S chip cluster** on every "Other workspaces" row — Waiting (peach), Running (blue), Done (teal), Seen/stale (grey). Replaces the previous tiny right-aligned counts.
+- **Foreign done → stale promotion** — once a completed foreign session has been acknowledged in its own window and 10s has elapsed, its `D` chip moves to `S`, mirroring the local stale logic. Keeps the live `D` count meaningful.
+- **`Dismissed` header** above the archive list, so it reads as a deliberate section rather than an unlabelled tail.
+
+### Changed
+- **"Other workspaces" pane is capped** at ~8 rows tall and scrolls internally. A bottom-fade gradient appears only while content overflows, so the cue never lies about scrollability. The slide-open animation respects the cap so adding workspaces no longer flashes to natural height before clipping.
+- **Foreign-running rows** picked up a subtle blizzard-blue background tint (matching the section's blue accent) — they were nearly invisible against the panel background before, and the hover treatment didn't carry enough weight on its own. Light theme variant included.
+- **Foreign workspace counts now respect dismissal** — dismissed sessions in other workspaces drop out of the chip counts entirely. Workspaces with all-dismissed sessions still render with empty chip clusters so the workspace itself stays discoverable.
+
+### Removed
+- **"Waiting in other workspaces" full-card section** at the top of the panel — the W chip on the workspace row now carries this signal. The full-card promotion was too attention-grabbing for sessions you can't action without first switching windows anyway.
+- **"Running in other workspaces" compact strip** between local active and local done cards — duplicated the R chip on the workspace row. Same rationale.
+
+### Internal
+- New `panelUtils.ts` (`groupForeignWorkspaces`, `isFromOtherWorktree`) — pure functions extracted so the grouping logic is unit-testable in isolation.
+- `WorkspaceGroup` gains `repoRoot`; `SessionSnapshot` gains `worktreeRoot`/`worktreeLabel`.
+- `ForeignWorkspaceManager` accepts a sibling-keys provider and excludes those keys from its scan, so sibling worktrees stop appearing twice.
+- 23 new tests across `gitWorktreeUtil`, `panelUtils`, `foreignWorkspaceManager`, and `sessionDiscovery.foreign`.
+
 ## v1.4.0 (2026-05-06) — Foreign-running strip + waiting card hierarchy
 
 ### Added
