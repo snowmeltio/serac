@@ -1,6 +1,16 @@
 # Changelog
 
-## v1.3.7 (2026-05-05) — Reset-time spacing consistency
+## v1.4.0 (2026-05-06) — Foreign-running strip + waiting card hierarchy
+
+### Added
+- **Running in other workspaces** — new compact strip between local active and local done cards, listing foreign sessions currently running. Single-line rows (task name + workspace) so the strip stays small at narrow panel widths. Click a row to switch to that VS Code window. Section only renders when there's something to show.
+
+### Changed
+- **Waiting card hierarchy reworked** — section header reads *Waiting in other workspaces* (matches the new running strip below). Cards are now two clean lines: title + Waiting pill, then workspace + age. The reason line and the explicit `↗` switch-window glyph were dropped — clickability is implicit, consistent with every other card.
+- **Card section split** — local cards now render as two sections (active and done) so the foreign-running strip can sit between them. Sequence is now: foreign-waiting → local active (running/waiting/stale) → foreign-running → local done → archive.
+- **Focused card border-left no longer shifts colour** — focus is conveyed by background tint alone. Previously focused cards lightened the border (e.g. blizzard-blue → snow-blue) which read as a second status indicator competing with the underlying status colour.
+
+
 
 ### Fixed
 - **Usage reset-time spacing** — `formatResetTime` rendered hours/minutes as `4h15m` but days/hours as `6d 15h`. Aligned the hours/minutes case to match: now `4h 15m`.

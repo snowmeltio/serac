@@ -281,6 +281,8 @@ export type WebviewMessage =
       foreignWorkspaces?: WorkspaceGroup[];
       /** Foreign sessions waiting on user input — surfaced inline at top of the panel */
       foreignWaiting?: SessionSnapshot[];
+      /** Foreign sessions currently running — surfaced as a compact strip below local cards */
+      foreignRunning?: SessionSnapshot[];
       /** Cornice agent team snapshots (empty when no teams active) */
       teams?: TeamSnapshot[];
       /** Claude Code auto-compact settings (from ~/.claude/settings.json env overrides) */

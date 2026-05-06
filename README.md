@@ -12,16 +12,20 @@ The sidebar is organised into vertical zones, top to bottom:
 
 1. **View title bar** — `+ New`, `Cleanup`, and `Refresh` icons live alongside the panel title. Cleanup uses an arm/confirm two-click pattern (the icon swaps to a warning glyph; auto-disarms after 3s).
 2. **Status counts** — running / waiting / done totals with colour-coded dots. Hidden when there's nothing to show.
-3. **Active session cards** — one card per running, waiting, or recently completed session. Colour-coded left border (blue = running, peach = waiting, teal = done). Each card shows session name, status pill, elapsed time, context usage bar, and subagent tree. **Foreign-waiting cards** from other VS Code windows surface here too — click one to jump to that window and focus the specific session.
-4. **Archive section** — dismissed sessions in a compact list with time-range filter (1d / 3d / 7d / 30d / all). When the active list is empty but older JSONL files exist beyond the scan window, a banner reveals the time-range bar so you can widen the view in one click.
-5. **Usage quotas** — current session and weekly usage bars showing consumption against your plan limits. Sourced from the Anthropic OAuth API. The footer row hosts companion-registered status slots inline with "Updated X ago".
-6. **Other workspaces** — Claude Code sessions running in other VS Code windows, grouped by workspace with running/waiting/done counts. **Click any workspace row to jump directly into that window** (focuses an existing window if open, otherwise opens a new one).
+3. **Waiting in other workspaces** — full cards for foreign sessions blocked on user input. Title + Waiting pill on top; workspace + elapsed time below. Click the card to jump to that VS Code window and focus the specific session. Section only renders when there's something waiting.
+4. **Active session cards** — one card per local running, waiting, or stale session. Colour-coded left border (blue = running, peach = waiting). Each card shows session name, status pill, elapsed time, context usage bar, and subagent tree.
+5. **Running in other workspaces** — compact single-line strip listing foreign sessions currently running. Each row shows the task name and the workspace; click a row to switch to that window. Section only renders when something is running elsewhere.
+6. **Done session cards** — completed local sessions (teal border) sit below the foreign-running strip until dismissed.
+7. **Archive section** — dismissed sessions in a compact list with time-range filter (1d / 3d / 7d / 30d / all). When the active list is empty but older JSONL files exist beyond the scan window, a banner reveals the time-range bar so you can widen the view in one click.
+8. **Usage quotas** — current session and weekly usage bars showing consumption against your plan limits. Sourced from the Anthropic OAuth API. The footer row hosts companion-registered status slots inline with "Updated X ago".
+9. **Other workspaces** — Claude Code sessions running in other VS Code windows, grouped by workspace with running/waiting/done counts. **Click any workspace row to jump directly into that window** (focuses an existing window if open, otherwise opens a new one).
 
 ## How to use
 
 ### Cross-window navigation
 - **Click an "Other workspaces" row** to focus or open that VS Code window.
-- **Click a foreign-waiting card** in the active list to jump to that window *and* auto-focus the specific session that needs input.
+- **Click a foreign-waiting card** to jump to that window *and* auto-focus the specific session that needs input.
+- **Click a foreign-running row** to jump straight to a session running elsewhere.
 
 Existing windows are reused where possible; otherwise a new window opens for the target workspace.
 

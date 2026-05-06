@@ -7,6 +7,7 @@ media/panel.js
 media/panel.js.map
 logo-concepts/
 .locks/
+.local/
 
 # Internal dev artefacts — kept local, not published to the public repo
 .claude/

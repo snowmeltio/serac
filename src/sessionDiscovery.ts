@@ -476,6 +476,11 @@ export class SessionDiscovery {
     return this.foreignManager.getWaitingSnapshots();
   }
 
+  /** Foreign sessions in the `running` state — surfaced as a compact strip below local cards. */
+  getForeignRunningSnapshots(): SessionSnapshot[] {
+    return this.foreignManager.getRunningSnapshots();
+  }
+
   /** Resolve a CWD for a foreign workspace key (used when the panel passes back a workspaceKey). */
   getForeignWorkspaceCwd(workspaceKey: string): string | null {
     return this.foreignManager.getCwdForWorkspace(workspaceKey);
