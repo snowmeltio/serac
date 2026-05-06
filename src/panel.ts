@@ -432,7 +432,7 @@ const RANGE_MS: Record<string, number> = {
     if (counts.running > 0) summaryHtml += '<span class="status-count running-count">' + counts.running + ' running</span>';
     if (counts.done > 0) summaryHtml += '<span class="status-count done-count">' + counts.done + ' done</span>';
     if (counts.stale > 0) summaryHtml += '<span class="status-count stale-count">' + counts.stale + ' seen</span>';
-    if (!summaryHtml) summaryHtml = '<span class="status-count">No sessions</span>';
+    if (!summaryHtml) summaryHtml = '<span class="status-count">No active sessions</span>';
 
     let topBar = root.querySelector('.top-bar') as HTMLElement | null;
     if (!topBar) {
@@ -683,7 +683,7 @@ const RANGE_MS: Record<string, number> = {
       }
     }
 
-    let archiveHtml = '<div class="archive-header">Dismissed</div>';
+    let archiveHtml = '';
 
     // Team archive rows (always shown at top of archive)
     for (const team of archivedTeams) {
