@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.5.1 (2026-05-06) — Other workspaces polish
+
+Minor UI tidy-up on the v1.5.0 cross-workspace pane.
+
+### Changed
+- **"No sessions" → "No active sessions"** in the top-bar empty state, since the archive list below it is also "sessions".
+- **W/R/D/S chips on "Other workspaces" rows** are now flex-laid-out with auto width and tighter padding. Rows without chips no longer reserve space for an absent four-chip cluster, and present chips no longer hog enough horizontal real-estate to truncate workspace names.
+- **Chip vertical footprint** is reduced (line-height 1.2, no vertical padding) so chip-bearing rows match the height of chip-less rows.
+
+### Removed
+- **"Dismissed" header** above the archive list. The visual separation from the time-range bar is enough; the label was redundant.
+
 ## v1.5.0 (2026-05-06) — Cross-workspace consolidation
 
 A focused simplification of how Serac surfaces sessions running outside the current VS Code window. The two cross-workspace sections added in v1.3-v1.4 (foreign-waiting cards and foreign-running strip) are gone; their job now belongs to richer "Other workspaces" rows. Sibling worktrees of the local repo graduate into the main card list with a worktree pill.
