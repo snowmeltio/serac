@@ -28,4 +28,8 @@ logo-concepts/**
 CHANGELOG.md
 .claude/**
 AUDIT.md
+CLAUDE.md
 .local/**
+.gitignore
+.DS_Store
+**/.DS_Store
