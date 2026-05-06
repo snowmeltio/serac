@@ -11,6 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
+import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 
@@ -24,13 +25,24 @@ const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 export class ForeignWorkspaceManager {
   private sessions: Map<string, SessionManager> = new Map();
   private cwdCache: Map<string, string> = new Map();
+  private repoRootCache: Map<string, string | null> = new Map();
   private scanCounter = 0;
+  /** Returns the workspace keys that are sibling worktrees of the local repo
+   *  and should therefore NOT be tracked here as foreign. Provided by
+   *  SiblingWorktreeManager (defaults to an empty set). */
+  private getSiblingKeys: () => Set<string> = () => new Set();
 
   constructor(
     private readonly projectsDir: string,
     private readonly localWorkspaceKey: string,
     private readonly log: Logger,
   ) {}
+
+  /** Wire in the sibling-key provider. Called by SessionDiscovery once the
+   *  SiblingWorktreeManager has been constructed. */
+  setSiblingKeysProvider(provider: () => Set<string>): void {
+    this.getSiblingKeys = provider;
+  }
 
   /** Whether it's time for a full rescan (every Nth poll cycle). */
   shouldRescan(): boolean {
@@ -45,10 +57,17 @@ export class ForeignWorkspaceManager {
   /** Scan all workspace directories for foreign sessions within the age gate. */
   async scan(): Promise<void> {
     const now = Date.now();
+    const siblingKeys = this.getSiblingKeys();
     try {
       const dirs = await fs.promises.readdir(this.projectsDir);
       for (const dir of dirs) {
         if (dir === this.localWorkspaceKey) { continue; }
+        if (siblingKeys.has(dir)) {
+          // Sibling worktree of the local repo — owned by SiblingWorktreeManager.
+          // Drop any state we may have accumulated before the sibling set updated.
+          this.evictWorkspace(dir);
+          continue;
+        }
         const wsPath = path.join(this.projectsDir, dir);
         try {
           const stat = await fs.promises.stat(wsPath);
@@ -94,13 +113,64 @@ export class ForeignWorkspaceManager {
           this.cwdCache.set(snapshot.workspaceKey, snapshot.cwd);
         }
       }
+      // Resolve repoRoot once per cached cwd (drives repo grouping in the panel).
+      for (const [key, cwd] of this.cwdCache) {
+        if (this.repoRootCache.has(key)) { continue; }
+        try {
+          this.repoRootCache.set(key, await resolveRepoRoot(cwd));
+        } catch (err) {
+          this.repoRootCache.set(key, null);
+          this.log.warn(`Failed to resolve repoRoot for ${cwd}:`, err);
+        }
+      }
     } catch { /* projectsDir doesn't exist */ }
+  }
+
+  /** Drop all session/cache state for a workspace key. Used when a key
+   *  migrates into the sibling-worktree set mid-poll. */
+  private evictWorkspace(workspaceKey: string): void {
+    for (const [compositeId, session] of this.sessions) {
+      if (compositeId.startsWith(`${workspaceKey}/`)) {
+        session.dispose();
+        this.sessions.delete(compositeId);
+      }
+    }
+    this.cwdCache.delete(workspaceKey);
+    this.repoRootCache.delete(workspaceKey);
+  }
+
+  /** Per-workspace repo root accessor (used by SiblingWorktreeManager to
+   *  determine which workspace dirs are siblings of the local repo). */
+  getRepoRootForWorkspace(workspaceKey: string): string | null | undefined {
+    return this.repoRootCache.get(workspaceKey);
+  }
+
+  /** Snapshot of all known (workspaceKey, cwd) pairs — exposed so the
+   *  sibling manager can resolve repoRoots without re-reading JSONL. */
+  getKnownWorkspaceCwds(): Array<[string, string]> {
+    return Array.from(this.cwdCache.entries());
   }
 
   /** Poll active foreign sessions. Evicts entries past the age gate. */
   async poll(): Promise<boolean> {
     let changed = false;
     const now = Date.now();
+    const siblingKeys = this.getSiblingKeys();
+
+    // Evict any sessions that have migrated into the sibling set since the
+    // last poll — the sibling manager owns them now.
+    if (siblingKeys.size > 0) {
+      for (const [compositeId, session] of this.sessions) {
+        const key = compositeId.split('/', 1)[0];
+        if (siblingKeys.has(key)) {
+          session.dispose();
+          this.sessions.delete(compositeId);
+          this.cwdCache.delete(key);
+          this.repoRootCache.delete(key);
+          changed = true;
+        }
+      }
+    }
 
     for (const [compositeId, session] of this.sessions) {
       const status = session.getStatus();
@@ -163,6 +233,7 @@ export class ForeignWorkspaceManager {
         cwd: this.cwdCache.get(key) ?? null,
         counts,
         confidence: confidences.get(key) ?? 'low',
+        repoRoot: this.repoRootCache.get(key) ?? null,
       });
     }
     result.sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -216,6 +287,7 @@ export class ForeignWorkspaceManager {
     }
     this.sessions.clear();
     this.cwdCache.clear();
+    this.repoRootCache.clear();
   }
 
   /** Derive a human-readable name from a workspace CWD or sanitised key. */

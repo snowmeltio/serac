@@ -117,6 +117,11 @@ export interface SessionSnapshot {
   aiTitle: string;
   /** How confident we are in the displayed status */
   confidence: StatusConfidence;
+  /** When set, the session originates from a sibling worktree of the local
+   *  repo. Equals the worktree's CWD; clicking the card opens VS Code there. */
+  worktreeRoot?: string;
+  /** Display label for the originating worktree (basename of worktreeRoot). */
+  worktreeLabel?: string;
 }
 
 export interface SubagentSnapshot {
@@ -196,6 +201,9 @@ export interface WorkspaceGroup {
   counts: Record<string, number>;
   /** Highest confidence across sessions in this workspace */
   confidence: StatusConfidence;
+  /** Resolved git repository root for this workspace's CWD, or null when the
+   *  CWD isn't part of a git repo. Worktrees of the same repo share a value. */
+  repoRoot: string | null;
 }
 
 // ── Team types (Cornice orchestrator + Agent Teams integration) ──────

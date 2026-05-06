@@ -10,6 +10,9 @@ import {
   formatAgeCoarse,
   getStatusLabel,
   isForeignSession,
+  isFromOtherWorktree,
+  groupForeignWorkspaces,
+  GroupableWorkspace,
   debounceStatuses,
   getElapsedPct,
   quotaClass,
@@ -395,5 +398,96 @@ describe('formatTokenCount', () => {
   });
   it('formats small counts as K', () => {
     expect(formatTokenCount(500)).toBe('1K');
+  });
+});
+
+describe('isFromOtherWorktree', () => {
+  it('returns false when worktreeRoot equals localWorktreeRoot', () => {
+    const s = session({ worktreeRoot: '/home/u/repo' });
+    expect(isFromOtherWorktree(s, '/home/u/repo')).toBe(false);
+  });
+  it('returns true when worktreeRoot differs', () => {
+    const s = session({ worktreeRoot: '/home/u/repo-wt' });
+    expect(isFromOtherWorktree(s, '/home/u/repo')).toBe(true);
+  });
+  it('returns false when worktreeRoot is unset', () => {
+    expect(isFromOtherWorktree(session(), '/home/u/repo')).toBe(false);
+  });
+  it('returns false when localWorktreeRoot is empty', () => {
+    expect(isFromOtherWorktree(session({ worktreeRoot: '/x' }), '')).toBe(false);
+  });
+});
+
+describe('groupForeignWorkspaces', () => {
+  function ws(overrides: Partial<GroupableWorkspace> & { workspaceKey: string; displayName: string }): GroupableWorkspace {
+    return { counts: {}, ...overrides };
+  }
+
+  it('groups 2+ workspaces sharing a repoRoot under a repo header', () => {
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo' }),
+      ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo' }),
+    ];
+    const { groups, singletons } = groupForeignWorkspaces(list);
+    expect(singletons).toHaveLength(0);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].headerLabel).toBe('repo/');
+    expect(groups[0].headerTitle).toBe('/r/repo');
+    expect(groups[0].workspaces.map(w => w.workspaceKey)).toEqual(['a', 'b']);
+  });
+
+  it('does not repo-group a single workspace; falls back to singletons', () => {
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'lone', cwd: '/r/repo/wt', repoRoot: '/r/repo' }),
+    ];
+    const { groups, singletons } = groupForeignWorkspaces(list);
+    expect(groups).toHaveLength(0);
+    expect(singletons.map(w => w.workspaceKey)).toEqual(['a']);
+  });
+
+  it('falls back to parent-dir grouping when repoRoot is null', () => {
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'p1', cwd: '/scratch/p1', repoRoot: null }),
+      ws({ workspaceKey: 'b', displayName: 'p2', cwd: '/scratch/p2', repoRoot: null }),
+    ];
+    const { groups, singletons } = groupForeignWorkspaces(list);
+    expect(singletons).toHaveLength(0);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].headerLabel).toBe('/scratch/');
+  });
+
+  it('repo-grouping takes precedence over parent-dir grouping', () => {
+    const list = [
+      // Two repos in /code; one of them has a sibling worktree in /work
+      ws({ workspaceKey: 'a', displayName: 'repo-a-wt', cwd: '/work/repo-a-wt', repoRoot: '/code/repo-a' }),
+      ws({ workspaceKey: 'a2', displayName: 'repo-a', cwd: '/code/repo-a', repoRoot: '/code/repo-a' }),
+      ws({ workspaceKey: 'b', displayName: 'repo-b', cwd: '/code/repo-b', repoRoot: '/code/repo-b' }),
+    ];
+    const { groups, singletons } = groupForeignWorkspaces(list);
+    // The two repo-a entries form a repo group; repo-b is a singleton.
+    expect(groups).toHaveLength(1);
+    expect(groups[0].headerLabel).toBe('repo-a/');
+    expect(groups[0].workspaces.map(w => w.workspaceKey).sort()).toEqual(['a', 'a2']);
+    expect(singletons.map(w => w.workspaceKey)).toEqual(['b']);
+  });
+
+  it('sorts groups with active first, then alphabetically', () => {
+    const list = [
+      ws({ workspaceKey: 'z1', displayName: 'z1', cwd: '/r/zeta/z1', repoRoot: '/r/zeta' }),
+      ws({ workspaceKey: 'z2', displayName: 'z2', cwd: '/r/zeta/z2', repoRoot: '/r/zeta' }),
+      ws({ workspaceKey: 'a1', displayName: 'a1', cwd: '/r/alpha/a1', repoRoot: '/r/alpha', counts: { running: 1 } }),
+      ws({ workspaceKey: 'a2', displayName: 'a2', cwd: '/r/alpha/a2', repoRoot: '/r/alpha' }),
+    ];
+    const { groups } = groupForeignWorkspaces(list);
+    expect(groups.map(g => g.headerLabel)).toEqual(['alpha/', 'zeta/']);
+  });
+
+  it('applies tildeAbbrev to repo headerTitle', () => {
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'a', cwd: '/home/u/repo/a', repoRoot: '/home/u/repo' }),
+      ws({ workspaceKey: 'b', displayName: 'b', cwd: '/home/u/repo/b', repoRoot: '/home/u/repo' }),
+    ];
+    const { groups } = groupForeignWorkspaces(list, p => p.replace('/home/u', '~'));
+    expect(groups[0].headerTitle).toBe('~/repo');
   });
 });
