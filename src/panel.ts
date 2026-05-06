@@ -890,12 +890,15 @@ const RANGE_MS: Record<string, number> = {
   }
 
   /** Render a single foreign workspace row (shared by grouped and ungrouped rendering). */
-  function renderWsRow(ws: WorkspaceGroup): string {
+  function renderWsRow(ws: WorkspaceGroup, grouped: boolean = false): string {
     const running = ws.counts['running'] || 0;
     const waiting = ws.counts['waiting'] || 0;
     const done = ws.counts['done'] || 0;
     const seen = ws.counts['stale'] || 0;
-    const rowClass = 'ws-row' + (waiting > 0 ? ' ws-row-waiting' : '') + (ws.cwd ? ' ws-row-clickable' : '');
+    const rowClass = 'ws-row'
+      + (grouped ? ' ws-row-grouped' : '')
+      + (waiting > 0 ? ' ws-row-waiting' : '')
+      + (ws.cwd ? ' ws-row-clickable' : '');
     let countsHtml = '';
     if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
     if (running) countsHtml += '<span class="status-count running-count">' + running + 'R</span>';
@@ -929,7 +932,7 @@ const RANGE_MS: Record<string, number> = {
       const titleAttr = group.headerTitle ? ' title="' + escapeHtml(group.headerTitle) + '"' : '';
       html += '<div class="ws-group-header"' + titleAttr + '>' + escapeHtml(group.headerLabel) + '</div>';
       for (const ws of group.workspaces) {
-        html += renderWsRow(ws);
+        html += renderWsRow(ws, true);
       }
     }
 
