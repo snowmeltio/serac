@@ -13,7 +13,7 @@ import {
   formatAgeCoarse,
   getStatusLabel,
 
-  isForeignSession,
+  isFromOtherWorktree,
   debounceStatuses,
   getElapsedPct,
   quotaClass,
@@ -22,6 +22,7 @@ import {
   getModelCapacity,
   getCompactThreshold,
   formatTokenCount,
+  groupForeignWorkspaces,
   PanelSession,
   UsageData,
 } from './panelUtils.js';
@@ -39,6 +40,7 @@ interface WorkspaceGroup {
   cwd?: string | null;
   counts: Record<string, number>;
   confidence?: string;
+  repoRoot?: string | null;
 }
 
 /** Compact settings shape (mirrors CompactSettings from claudeSettings.ts,
@@ -306,6 +308,13 @@ const RANGE_MS: Record<string, number> = {
       const sid = card.dataset.sessionId!;
       const isLive = card.classList.contains('running') || card.classList.contains('waiting');
       const isForeign = card.dataset.foreign === 'true';
+      const cardCwd = card.dataset.cwd;
+      // Sibling/other-worktree card with a known CWD: open VS Code in that
+      // worktree (with a focus hint so the receiving window surfaces the session).
+      if (isForeign && cardCwd) {
+        vscode.postMessage({ type: 'openWorkspace', cwd: cardCwd, sessionId: sid });
+        return;
+      }
       if (isLive || !isForeign) {
         focusedSessionId = sid;
         vscode.postMessage({ type: 'focusSession', sessionId: sid });
@@ -585,14 +594,19 @@ const RANGE_MS: Record<string, number> = {
         el.classList.add('card', 'card-enter');
       }
 
-      const foreign = isForeignSession(s, workspaceKey);
-      el.className = 'card ' + s.status + (isFocused ? ' focused' : '') + (isNew ? ' card-enter' : '') + (foreign ? ' foreign' : '');
+      const otherWorktree = isFromOtherWorktree(s, workspacePath);
+      el.className = 'card ' + s.status + (isFocused ? ' focused' : '') + (isNew ? ' card-enter' : '') + (otherWorktree ? ' foreign' : '');
       el.setAttribute('role', 'listitem');
       el.setAttribute('tabindex', '0');
       el.setAttribute('aria-label', escapeHtml(stripMarkdown(getDisplayName(s))) + ' \u2014 ' + s.status);
-      el.dataset.foreign = foreign ? 'true' : 'false';
+      el.dataset.foreign = otherWorktree ? 'true' : 'false';
+      if (otherWorktree && s.worktreeRoot) {
+        el.dataset.cwd = s.worktreeRoot;
+      } else {
+        delete el.dataset.cwd;
+      }
       el.dataset.confidence = s.confidence || 'high';
-      el.innerHTML = renderCardInner(s, now, isFocused, foreign);
+      el.innerHTML = renderCardInner(s, now, isFocused, otherWorktree);
 
       // Place in correct order
       let desiredNext: HTMLElement | null = prevNode ? prevNode.nextElementSibling as HTMLElement | null : container.firstElementChild as HTMLElement | null;
@@ -853,11 +867,20 @@ const RANGE_MS: Record<string, number> = {
     const activityText = stripMarkdown(s.activity || 'No recent activity');
     const detailHtml = '<div class="card-detail">' + escapeHtml(activityText) + '</div>';
 
-    const foreignPill = foreign ? '<span class="foreign-pill" title="From another workspace — view only">view only</span>' : '';
+    // Worktree pill: shows the originating worktree's name when the card
+    // didn't come from the local CWD. Sibling worktrees of the local repo are
+    // tracked locally (not view-only); foreign cards only appear here when
+    // promoted via foreignWaiting/foreignRunning, which keep the cross-window
+    // open behaviour. Either way the pill is just an origin indicator.
+    const worktreePill = foreign && s.worktreeLabel
+      ? '<span class="worktree-pill" title="From worktree ' + escapeHtml(s.worktreeLabel)
+        + (s.worktreeRoot ? ' (' + escapeHtml(s.worktreeRoot) + ')' : '') + '">'
+        + escapeHtml(s.worktreeLabel) + '</span>'
+      : '';
 
     return '<div class="card-top">'
       + '<span class="card-name">' + escapeHtml(displayName) + '</span>'
-      + foreignPill
+      + worktreePill
       + '<span class="status-pill">' + statusLabel + '</span>'
       + '</div>'
       + metaHtml
@@ -893,65 +916,42 @@ const RANGE_MS: Record<string, number> = {
     return p;
   }
 
-  /** Group foreign workspaces by common parent directory. */
+  /** Group foreign workspaces by repository (when 2+ worktrees share a repo)
+   *  and then by common parent directory. Repo grouping takes precedence. */
   function renderForeignWorkspaceRows(workspaces: WorkspaceGroup[]): string {
     let html = '<div class="ws-section-header">Other workspaces</div>';
 
-    // Derive parent directory from cwd for each workspace
-    const byParent = new Map<string, WorkspaceGroup[]>();
-    const noParent: WorkspaceGroup[] = [];
+    const { groups, singletons } = groupForeignWorkspaces(workspaces, tildeAbbrev);
 
-    for (const ws of workspaces) {
-      if (ws.cwd) {
-        const trimmed = ws.cwd.endsWith('/') ? ws.cwd.slice(0, -1) : ws.cwd;
-        const parent = trimmed.slice(0, trimmed.lastIndexOf('/'));
-        if (parent) {
-          let list = byParent.get(parent);
-          if (!list) { list = []; byParent.set(parent, list); }
-          list.push(ws);
-          continue;
-        }
-      }
-      noParent.push(ws);
-    }
-
-    // Partition into groups (2+ siblings) and singletons
-    const groups: { parentPath: string; workspaces: WorkspaceGroup[]; hasActive: boolean }[] = [];
-    const singletons: WorkspaceGroup[] = [...noParent];
-
-    for (const [parent, wsList] of byParent) {
-      if (wsList.length >= 2) {
-        const hasActive = wsList.some(w => (w.counts['running'] || 0) > 0 || (w.counts['waiting'] || 0) > 0);
-        wsList.sort((a, b) => a.displayName.localeCompare(b.displayName));
-        groups.push({ parentPath: parent, workspaces: wsList, hasActive });
-      } else {
-        singletons.push(...wsList);
-      }
-    }
-
-    // Sort groups: active first, then alphabetically by parent path
-    groups.sort((a, b) => {
-      if (a.hasActive !== b.hasActive) { return a.hasActive ? -1 : 1; }
-      return a.parentPath.localeCompare(b.parentPath);
-    });
-
-    // Sort singletons alphabetically
-    singletons.sort((a, b) => a.displayName.localeCompare(b.displayName));
-
-    // Render grouped workspaces
     for (const group of groups) {
-      html += '<div class="ws-group-header">' + escapeHtml(tildeAbbrev(group.parentPath) + '/') + '</div>';
+      const titleAttr = group.headerTitle ? ' title="' + escapeHtml(group.headerTitle) + '"' : '';
+      html += '<div class="ws-group-header"' + titleAttr + '>' + escapeHtml(group.headerLabel) + '</div>';
       for (const ws of group.workspaces) {
         html += renderWsRow(ws);
       }
     }
 
-    // Render singletons (no group header)
     for (const ws of singletons) {
       html += renderWsRow(ws);
     }
 
     return html;
+  }
+
+  /** Read the CSS-resolved max-height for a container, or +Infinity when
+   *  no cap is set. Used to clamp slide-animation targets so the intermediate
+   *  height never overshoots what max-height will clip to. */
+  function getMaxHeight(el: HTMLElement): number {
+    const raw = window.getComputedStyle(el).maxHeight;
+    if (!raw || raw === 'none') { return Infinity; }
+    const parsed = parseFloat(raw);
+    return Number.isFinite(parsed) ? parsed : Infinity;
+  }
+
+  /** Toggle the `is-overflowing` class so the bottom-fade scroll cue only
+   *  appears when content actually overflows the cap. */
+  function updateOverflowState(container: HTMLElement): void {
+    container.classList.toggle('is-overflowing', container.scrollHeight > container.clientHeight + 1);
   }
 
   /** Update the foreign-workspaces container. Slides the height open/closed when
@@ -973,6 +973,7 @@ const RANGE_MS: Record<string, number> = {
       clearForeignSlideStyles(container);
       container.innerHTML = newHtml;
       lastForeignHtml = newHtml;
+      updateOverflowState(container);
       return;
     }
 
@@ -984,11 +985,15 @@ const RANGE_MS: Record<string, number> = {
     if (newHtml === '') {
       if (fromHeight > 0 && !reduceMotion) {
         cancelForeignSlide(container);
-        runForeignSlide(container, fromHeight, 0, () => { container.innerHTML = ''; });
+        runForeignSlide(container, fromHeight, 0, () => {
+          container.innerHTML = '';
+          updateOverflowState(container);
+        });
       } else {
         cancelForeignSlide(container);
         container.innerHTML = '';
         clearForeignSlideStyles(container);
+        updateOverflowState(container);
       }
       lastForeignHtml = newHtml;
       lastForeignKeys = newKeys;
@@ -1001,6 +1006,7 @@ const RANGE_MS: Record<string, number> = {
       clearForeignSlideStyles(container);
       lastForeignHtml = newHtml;
       lastForeignKeys = newKeys;
+      updateOverflowState(container);
       return;
     }
 
@@ -1011,11 +1017,15 @@ const RANGE_MS: Record<string, number> = {
     container.style.overflow = 'hidden';
     container.style.transition = 'none';
     container.innerHTML = newHtml;
-    const toHeight = container.scrollHeight;
+    // Clamp target height to the CSS cap so the slide doesn't briefly expand
+    // to scrollHeight (e.g. 400px) before max-height clips it back.
+    const cap = getMaxHeight(container);
+    const toHeight = Math.min(container.scrollHeight, cap);
     if (Math.abs(toHeight - fromHeight) < 1.5) {
       clearForeignSlideStyles(container);
+      updateOverflowState(container);
     } else {
-      runForeignSlide(container, fromHeight, toHeight);
+      runForeignSlide(container, fromHeight, toHeight, () => updateOverflowState(container));
     }
     lastForeignHtml = newHtml;
     lastForeignKeys = newKeys;
@@ -1065,11 +1075,11 @@ const RANGE_MS: Record<string, number> = {
   function renderCompactRow(s: PanelSession, now: number): string {
     const age = formatAge(now - s.lastActivity);
     const displayName = getDisplayName(s);
-    const foreign = isForeignSession(s, workspaceKey);
+    const foreign = isFromOtherWorktree(s, workspacePath);
 
     return '<div class="compact-row" role="listitem" tabindex="0" data-session-id="' + escapeHtml(s.sessionId) + '" data-foreign="' + (foreign ? 'true' : 'false') + '">'
       + '<span class="compact-name">' + escapeHtml(displayName) + '</span>'
-      + (foreign ? '<span class="foreign-pill compact-foreign">view only</span>' : '')
+      + (foreign && s.worktreeLabel ? '<span class="worktree-pill compact-worktree">' + escapeHtml(s.worktreeLabel) + '</span>' : '')
       + '<span class="compact-transcript" data-transcript-id="' + escapeHtml(s.sessionId) + '" title="View transcript">&#x1f4dc;</span>'
       + '<span class="compact-age">' + age + '</span>'
       + '</div>';

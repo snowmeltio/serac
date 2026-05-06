@@ -241,4 +241,94 @@ describe('SessionDiscovery: foreign workspaces', () => {
     expect(foreign[0].displayName).toBe('2026-02-Fundraising-OD');
     discovery.stop();
   });
+
+  it('populates repoRoot for foreign workspaces whose CWD is in a git repo', async () => {
+    // Create a real repo on disk that the foreign session's cwd points to.
+    const repoDir = path.join(tmpDir, 'real-repo');
+    fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
+    const realRepoDir = fs.realpathSync(repoDir);
+
+    const discovery = makeDiscovery();
+    createJsonlFile(workspaceKey, 'local-session');
+    const record = JSON.stringify({
+      type: 'user',
+      cwd: realRepoDir,
+      timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'text', text: 'Hello' }] },
+    });
+    createJsonlFile('foreign-with-repo', 'foreign-session', record);
+    await discovery.start(() => {});
+
+    const foreign = discovery.getForeignWorkspaces();
+    const fw = foreign.find((w) => w.workspaceKey === 'foreign-with-repo');
+    expect(fw).toBeTruthy();
+    expect(fw!.repoRoot).toBe(realRepoDir);
+    discovery.stop();
+  });
+
+  it('leaves repoRoot null when CWD is not part of a git repo', async () => {
+    const plainDir = path.join(tmpDir, 'plain');
+    fs.mkdirSync(plainDir, { recursive: true });
+    const realPlainDir = fs.realpathSync(plainDir);
+
+    const discovery = makeDiscovery();
+    createJsonlFile(workspaceKey, 'local-session');
+    const record = JSON.stringify({
+      type: 'user',
+      cwd: realPlainDir,
+      timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'text', text: 'Hello' }] },
+    });
+    createJsonlFile('foreign-plain', 'foreign-session', record);
+    await discovery.start(() => {});
+
+    const foreign = discovery.getForeignWorkspaces();
+    const fw = foreign.find((w) => w.workspaceKey === 'foreign-plain');
+    expect(fw).toBeTruthy();
+    expect(fw!.repoRoot).toBeNull();
+    discovery.stop();
+  });
+
+  it('promotes sibling worktrees out of the foreign list', async () => {
+    // Local workspace is a worktree; create a sibling worktree of the same repo.
+    // Both should resolve to the same repoRoot, so the sibling should be tracked
+    // by SiblingWorktreeManager (not surfaced via getForeignWorkspaces).
+    const repoDir = path.join(tmpDir, 'shared-repo');
+    fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
+    const realRepoDir = fs.realpathSync(repoDir);
+
+    // Make the local workspace's cwd point at the shared repo by recreating
+    // the workspace dir so SessionDiscovery's localCwd matches.
+    const localCwd = realRepoDir;
+    const localKey = localCwd.replace(/[^a-zA-Z0-9]/g, '-');
+
+    // Create a JSONL for the local workspace under that key.
+    const localRecord = JSON.stringify({
+      type: 'user',
+      cwd: localCwd,
+      timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'text', text: 'local' }] },
+    });
+    fs.mkdirSync(path.join(projectsDir, localKey), { recursive: true });
+    fs.writeFileSync(path.join(projectsDir, localKey, 'local.jsonl'), localRecord + '\n');
+
+    // Sibling worktree: cwd points to the same repo (treat the repo dir as the
+    // worktree CWD too — resolveRepoRoot returns the same root).
+    const siblingRecord = JSON.stringify({
+      type: 'user',
+      cwd: localCwd,
+      timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'text', text: 'sibling' }] },
+    });
+    fs.mkdirSync(path.join(projectsDir, 'sibling-key'), { recursive: true });
+    fs.writeFileSync(path.join(projectsDir, 'sibling-key', 's.jsonl'), siblingRecord + '\n');
+
+    const discovery = new SessionDiscovery(localCwd, { projectsDir });
+    await discovery.start(() => {});
+
+    // Sibling should not appear in foreign workspaces
+    const foreign = discovery.getForeignWorkspaces();
+    expect(foreign.find((w) => w.workspaceKey === 'sibling-key')).toBeUndefined();
+    discovery.stop();
+  });
 });

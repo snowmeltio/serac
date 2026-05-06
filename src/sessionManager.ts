@@ -153,6 +153,10 @@ export class SessionManager {
    *  set, the late tool_use leaks into activeTools and never clears, causing
    *  demoteIfStale to falsely flag the session as 'waiting' after 30s. */
   private earlyToolResults: Set<string> = new Set();
+  /** Origin worktree metadata, set by SiblingWorktreeManager so emitted
+   *  snapshots can be tagged for cross-worktree display. */
+  private worktreeRoot?: string;
+  private worktreeLabel?: string;
 
   constructor(
     sessionId: string,
@@ -296,7 +300,16 @@ export class SessionManager {
       customTitle: this.state.customTitle,
       aiTitle: this.state.aiTitle,
       confidence: this.computeConfidence(),
+      worktreeRoot: this.worktreeRoot,
+      worktreeLabel: this.worktreeLabel,
     };
+  }
+
+  /** Tag this session's snapshots with its originating worktree. Called by
+   *  SiblingWorktreeManager so the panel can render a worktree pill on the card. */
+  setWorktreeOrigin(root: string, label: string): void {
+    this.worktreeRoot = root;
+    this.worktreeLabel = label;
   }
 
   /** Compute status confidence based on age of last activity [#106].
