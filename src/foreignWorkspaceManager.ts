@@ -192,6 +192,23 @@ export class ForeignWorkspaceManager {
     return result;
   }
 
+  /** Foreign sessions currently running (model is working). Surfaced as a compact
+   *  strip below local cards; click to switch to that window. */
+  getRunningSnapshots(): SessionSnapshot[] {
+    const result: SessionSnapshot[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.getStatus() !== 'running') { continue; }
+      const snapshot = session.getSnapshot();
+      if (!snapshot.cwd) {
+        const cached = this.cwdCache.get(snapshot.workspaceKey);
+        if (cached) { snapshot.cwd = cached; }
+      }
+      result.push(snapshot);
+    }
+    result.sort((a, b) => b.lastActivity - a.lastActivity);
+    return result;
+  }
+
   /** Dispose all foreign sessions and clear state. */
   dispose(): void {
     for (const session of this.sessions.values()) {

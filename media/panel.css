@@ -177,11 +177,13 @@ body {
   opacity: 1 !important;
   box-shadow: 0 4px 8px rgba(0,0,0,0.3);
 }
-/* Status-tinted solid backgrounds for focused cards (dark) */
-.card.focused.running     { background: #1f2030; border-left-color: var(--sm-snow-blue); }
-.card.focused.waiting { background: #302520; border-left-color: var(--sm-light-orange); }
-.card.focused.done        { background: #1f2a2b; border-left-color: var(--sm-ice-blue); }
-.card.focused.stale       { background: #2a2a2a; border-left-color: #aaaaaa; }
+/* Status-tinted solid backgrounds for focused cards (dark). Border-left
+ * keeps its unfocused colour so focus reads as background only, not a
+ * second status indicator. */
+.card.focused.running { background: #1f2030; }
+.card.focused.waiting { background: #302520; }
+.card.focused.done    { background: #1f2a2b; }
+.card.focused.stale   { background: #2a2a2a; }
 
 
 .card.waiting { border-left-color: var(--sm-frozen-peach); }
@@ -312,13 +314,55 @@ body {
   color: var(--sm-frozen-peach, #f5b087);
   font-weight: 500;
 }
-.foreign-waiting-arrow {
-  font-size: 11px;
-  opacity: 0.7;
-}
 .foreign-waiting-age {
   font-variant-numeric: tabular-nums;
   opacity: 0.7;
+}
+
+/* Foreign-running strip — single-line rows between local active and local done. */
+.foreign-running-section {
+  padding: 4px 6px 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.foreign-running-section:empty { display: none; }
+.foreign-running-header {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  color: var(--sm-blizzard-light, #809df8);
+  padding: 2px 8px 4px;
+}
+.foreign-running-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  transition: background 0.1s;
+}
+.foreign-running-row:hover { background: var(--vscode-list-hoverBackground, #2a2a2a); }
+.foreign-running-row:focus-visible { outline: 2px solid var(--vscode-focusBorder, #007acc); outline-offset: -2px; }
+.foreign-running-name {
+  color: var(--vscode-foreground, #cccccc);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.foreign-running-ws {
+  color: var(--vscode-descriptionForeground, #888888);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: right;
 }
 
 /* Clickable foreign workspace rows */

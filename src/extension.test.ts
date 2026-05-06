@@ -54,6 +54,7 @@ const mockDiscovery = {
   getWaitingCount: vi.fn().mockReturnValue(0),
   getForeignWorkspaces: vi.fn().mockReturnValue([]),
   getForeignWaitingSnapshots: vi.fn().mockReturnValue([]),
+  getForeignRunningSnapshots: vi.fn().mockReturnValue([]),
   getForeignWorkspaceCwd: vi.fn().mockReturnValue(null),
   dismissSession: vi.fn(),
   undismissSession: vi.fn(),

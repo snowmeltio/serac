@@ -329,10 +329,11 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     const usage = usageProvider.getSnapshot();
     const foreignWorkspaces = discovery.getForeignWorkspaces();
     const foreignWaiting = discovery.getForeignWaitingSnapshots();
+    const foreignRunning = discovery.getForeignRunningSnapshots();
     // Foreign waiting cards demand attention too, so they bump the badge.
     waitingCount += foreignWaiting.length;
     const olderSessionCount = discovery.getOlderSessionCount();
-    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount);
+    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount, foreignRunning);
 
     // Auto-focus new session created via "+ New" button
     if (pendingNewChatKnownIds) {

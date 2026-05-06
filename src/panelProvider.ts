@@ -17,6 +17,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private usage: UsageSnapshot | null = null;
   private foreignWorkspaces: WorkspaceGroup[] = [];
   private foreignWaiting: SessionSnapshot[] = [];
+  private foreignRunning: SessionSnapshot[] = [];
   private teams: TeamSnapshot[] = [];
   private compactSettings: CompactSettings | undefined;
   private olderSessionCount = 0;
@@ -156,13 +157,14 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /** Update the panel with new session data */
-  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[], olderSessionCount?: number): void {
+  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[], olderSessionCount?: number, foreignRunning?: SessionSnapshot[]): void {
     this.sessions = sessions;
     this.waitingCount = waitingCount;
     this.workspacePath = workspacePath;
     this.usage = usage;
     this.foreignWorkspaces = foreignWorkspaces ?? [];
     this.foreignWaiting = foreignWaiting ?? [];
+    this.foreignRunning = foreignRunning ?? [];
     this.teams = teams ?? [];
     this.compactSettings = compactSettings;
     this.olderSessionCount = olderSessionCount ?? 0;
@@ -195,6 +197,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       usage: this.usage,
       foreignWorkspaces: this.foreignWorkspaces.length > 0 ? this.foreignWorkspaces : undefined,
       foreignWaiting: this.foreignWaiting.length > 0 ? this.foreignWaiting : undefined,
+      foreignRunning: this.foreignRunning.length > 0 ? this.foreignRunning : undefined,
       teams: this.teams.length > 0 ? this.teams : undefined,
       compactSettings: this.compactSettings,
       footerSlots: footerSlots.length > 0 ? footerSlots : undefined,

@@ -95,6 +95,7 @@ interface UpdateMessage {
   usage?: UsageData;
   foreignWorkspaces?: WorkspaceGroup[];
   foreignWaiting?: PanelSession[];
+  foreignRunning?: PanelSession[];
   teams?: PanelTeam[];
   compactSettings?: PanelCompactSettings;
   footerSlots?: PanelFooterSlot[];
@@ -137,6 +138,7 @@ const RANGE_MS: Record<string, number> = {
   let lastUsage: UsageData | null = null;
   let lastForeignWorkspaces: WorkspaceGroup[] | null = null;
   let lastForeignWaiting: PanelSession[] = [];
+  let lastForeignRunning: PanelSession[] = [];
   let lastTeams: PanelTeam[] = [];
   let lastFooterSlots: PanelFooterSlot[] = [];
   let compactSettings: PanelCompactSettings | null = null;
@@ -281,6 +283,15 @@ const RANGE_MS: Record<string, number> = {
       return;
     }
 
+    // Foreign-running compact row click → open the other VS Code window
+    const foreignRunningRow = target.closest<HTMLElement>('.foreign-running-row');
+    if (foreignRunningRow) {
+      const cwd = foreignRunningRow.dataset.cwd;
+      const sid = foreignRunningRow.dataset.sessionId;
+      if (cwd) { vscode.postMessage({ type: 'openWorkspace', cwd, sessionId: sid }); }
+      return;
+    }
+
     // Foreign workspace row click → open that workspace
     const wsRow = target.closest<HTMLElement>('.ws-row[data-cwd]');
     if (wsRow) {
@@ -322,6 +333,12 @@ const RANGE_MS: Record<string, number> = {
       archiveRow.click();
       return;
     }
+    const foreignRunningRow = target.closest<HTMLElement>('.foreign-running-row');
+    if (foreignRunningRow) {
+      e.preventDefault();
+      foreignRunningRow.click();
+      return;
+    }
     const wsRow = target.closest<HTMLElement>('.ws-row[data-cwd]');
     if (wsRow) {
       e.preventDefault();
@@ -336,6 +353,7 @@ const RANGE_MS: Record<string, number> = {
         lastUsage = message.usage || null;
         lastForeignWorkspaces = message.foreignWorkspaces ?? [];
         lastForeignWaiting = message.foreignWaiting ?? [];
+        lastForeignRunning = message.foreignRunning ?? [];
         lastTeams = message.teams ?? [];
         lastFooterSlots = message.footerSlots ?? [];
         compactSettings = message.compactSettings ?? null;
@@ -432,18 +450,23 @@ const RANGE_MS: Record<string, number> = {
     // === Team section (before individual session cards) ===
     renderTeamSection(scrollWrap, now);
 
-    // === Card section ===
-    let cardSection = scrollWrap.querySelector('.card-section') as HTMLElement | null;
+    // === Card section (running/waiting/stale) ===
+    let cardSection = scrollWrap.querySelector('.card-section:not(.done-section)') as HTMLElement | null;
     if (!cardSection) {
       cardSection = document.createElement('div');
       cardSection.className = 'card-section';
       cardSection.setAttribute('role', 'list');
-      cardSection.setAttribute('aria-label', 'Agent sessions');
+      cardSection.setAttribute('aria-label', 'Active sessions');
       scrollWrap.appendChild(cardSection);
     }
 
     const activeTeams = lastTeams.filter(t => !t.dismissed);
     const archivedTeams = lastTeams.filter(t => t.dismissed);
+
+    // Split local cards: active half (running/waiting/stale) goes above the
+    // foreign-running strip, completed half (done) goes below it.
+    const runningCards = cards.filter(c => c.status !== 'done');
+    const doneCards = cards.filter(c => c.status === 'done');
 
     if (cards.length === 0 && archived.length === 0 && activeTeams.length === 0) {
       const hasOlder = lastOlderSessionCount > 0;
@@ -456,11 +479,30 @@ const RANGE_MS: Record<string, number> = {
       cardSection.innerHTML = '<div class="empty-state"><div class="icon">\u2298</div><div>'
         + escapeHtml(headline) + '</div><div class="hint">' + escapeHtml(hint) + '</div></div>';
     } else {
-      reconcileCards(cardSection, cards, now);
+      reconcileCards(cardSection, runningCards, now);
+    }
+
+    // === Foreign-running strip (between local active and local done) ===
+    renderForeignRunningSection(scrollWrap, cardSection, now);
+
+    // === Done card section ===
+    let doneSection = scrollWrap.querySelector('.card-section.done-section') as HTMLElement | null;
+    if (!doneSection) {
+      doneSection = document.createElement('div');
+      doneSection.className = 'card-section done-section';
+      doneSection.setAttribute('role', 'list');
+      doneSection.setAttribute('aria-label', 'Completed sessions');
+    }
+    const doneAnchor = (scrollWrap.querySelector('.foreign-running-section') as HTMLElement | null) ?? cardSection;
+    if (doneSection.previousElementSibling !== doneAnchor) {
+      doneAnchor.after(doneSection);
+    }
+    if (cards.length > 0 || archived.length > 0 || activeTeams.length > 0) {
+      reconcileCards(doneSection, doneCards, now);
     }
 
     // === Archive section ===
-    renderArchiveSection(archived, archivedTeams, now, cardSection);
+    renderArchiveSection(archived, archivedTeams, now, doneSection);
 
     // === Time-range bar ===
     renderTimeRangeBar(archived.length > 0 || archivedTeams.length > 0 || lastOlderSessionCount > 0);
@@ -1053,7 +1095,7 @@ const RANGE_MS: Record<string, number> = {
       scrollWrap.insertBefore(section, scrollWrap.firstChild);
     }
 
-    let html = '<div class="foreign-waiting-header">Other workspaces — waiting on you</div>';
+    let html = '<div class="foreign-waiting-header">Waiting in other workspaces</div>';
     for (const s of items) {
       html += renderForeignWaitingCard(s, now);
     }
@@ -1064,7 +1106,6 @@ const RANGE_MS: Record<string, number> = {
     const displayName = stripMarkdown(getDisplayName(s));
     const cwd = s.cwd || '';
     const wsLabel = workspaceLabelFromCwd(cwd) || s.workspaceKey || '';
-    const activity = stripMarkdown(s.activity || 'Waiting for input');
     const ageLabel = formatAge(now - s.lastActivity);
 
     return '<div class="card waiting foreign foreign-waiting"'
@@ -1078,10 +1119,51 @@ const RANGE_MS: Record<string, number> = {
       + '</div>'
       + '<div class="foreign-waiting-meta">'
       + '<span class="foreign-waiting-ws">' + escapeHtml(wsLabel) + '</span>'
-      + '<span class="foreign-waiting-arrow" title="Switch to this window">↗</span>'
       + '<span class="foreign-waiting-age">' + ageLabel + '</span>'
       + '</div>'
-      + '<div class="card-detail">' + escapeHtml(activity) + '</div>'
+      + '</div>';
+  }
+
+  // ===== FOREIGN RUNNING SECTION =====
+  /** Render foreign workspace sessions that are currently running. Sits between
+   *  local cards and the archive — single-line rows so the strip stays compact
+   *  even at narrow panel widths. Click → open that window. */
+  function renderForeignRunningSection(scrollWrap: HTMLElement, anchor: HTMLElement, now: number): void {
+    let section = scrollWrap.querySelector('.foreign-running-section') as HTMLElement | null;
+    const items = lastForeignRunning.filter(s => !!s.cwd);
+
+    if (items.length === 0) {
+      if (section) section.remove();
+      return;
+    }
+
+    if (!section) {
+      section = document.createElement('div');
+      section.className = 'foreign-running-section';
+    }
+    if (section.previousElementSibling !== anchor) {
+      anchor.after(section);
+    }
+
+    let html = '<div class="foreign-running-header">Running in other workspaces</div>';
+    for (const s of items) {
+      html += renderForeignRunningRow(s, now);
+    }
+    section.innerHTML = html;
+  }
+
+  function renderForeignRunningRow(s: PanelSession, _now: number): string {
+    const displayName = stripMarkdown(getDisplayName(s));
+    const cwd = s.cwd || '';
+    const wsLabel = workspaceLabelFromCwd(cwd) || s.workspaceKey || '';
+
+    return '<div class="foreign-running-row"'
+      + ' data-session-id="' + escapeHtml(s.sessionId) + '"'
+      + ' data-cwd="' + escapeHtml(cwd) + '"'
+      + ' role="button" tabindex="0"'
+      + ' aria-label="' + escapeHtml(displayName) + ' — running in ' + escapeHtml(wsLabel) + ' (click to switch window)">'
+      + '<span class="foreign-running-name">' + escapeHtml(displayName) + '</span>'
+      + '<span class="foreign-running-ws">' + escapeHtml(wsLabel) + '</span>'
       + '</div>';
   }
 
