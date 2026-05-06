@@ -134,6 +134,7 @@ body {
   padding: 6px 0 1px;
   letter-spacing: 0.2px;
 }
+.ws-row-grouped { padding-left: 12px; }
 .empty-state {
   padding: 20px 12px;
   text-align: center;
