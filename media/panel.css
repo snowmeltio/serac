@@ -64,14 +64,14 @@ body {
 .status-count.done-count { color: var(--sm-teal-bright); }
 .status-count.stale-count { color: #999999; }
 
-/* Cross-workspace rows (L2/O3) — capped at ~8 rows, scroll internally */
+/* Cross-workspace rows. max-height keeps a long workspace list from pushing
+ * the rest of the panel offscreen — caps at ~12 rows then scrolls internally.
+ * panel.ts reads this via getComputedStyle so the slide animation stays in
+ * sync without a hardcoded JS constant. */
 .ws-foreign-rows {
-  --ws-foreign-row-h: 16px;
-  --ws-foreign-section-h: 22px;
-  --ws-foreign-cap: calc(var(--ws-foreign-section-h) + 8 * var(--ws-foreign-row-h) + 12px);
   padding: 4px 12px 6px 12px;
   border-top: 1px solid var(--vscode-panel-border, #2d2d2d);
-  max-height: var(--ws-foreign-cap);
+  max-height: 280px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -97,8 +97,6 @@ body {
   padding: 2px 0;
   border-radius: 3px;
 }
-.ws-row-waiting { background: rgba(var(--sm-frozen-peach-rgb), 0.15); padding: 2px 4px 2px 6px; margin: 0 -4px; border-left: 2px solid var(--sm-frozen-peach); border-radius: 0 3px 3px 0; }
-.ws-row-waiting .ws-name { color: var(--sm-frozen-peach); }
 .ws-name {
   color: var(--vscode-descriptionForeground, #888888);
   font-weight: 400;
@@ -110,15 +108,24 @@ body {
 }
 .ws-counts {
   display: grid;
-  grid-template-columns: repeat(3, 24px);
-  gap: 4px;
+  grid-template-columns: repeat(4, 26px);
+  gap: 3px;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums;
 }
-.ws-counts .status-count { text-align: right; }
-.ws-counts .waiting-count { grid-column: 1; }
-.ws-counts .running-count { grid-column: 2; }
-.ws-counts .done-count { grid-column: 3; }
+.ws-counts .status-count {
+  text-align: center;
+  border-radius: 3px;
+  padding: 1px 0;
+  line-height: 1.4;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: -0.1px;
+}
+.ws-counts .status-count.waiting-count { grid-column: 1; background: var(--sm-frozen-peach); color: #1e1e1e; }
+.ws-counts .status-count.running-count { grid-column: 2; background: var(--sm-blizzard-light); color: #ffffff; }
+.ws-counts .status-count.done-count    { grid-column: 3; background: var(--sm-teal-bright); color: #1e1e1e; }
+.ws-counts .status-count.stale-count   { grid-column: 4; background: #555555; color: #cccccc; }
 .ws-group-header {
   font-size: 9px;
   font-weight: 500;
@@ -370,6 +377,14 @@ body {
   color: var(--sm-blizzard-light, #809df8);
   padding: 2px 8px 4px;
 }
+.archive-header {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+  color: #888888;
+  padding: 6px 2px 4px;
+}
 .foreign-running-row {
   display: flex;
   align-items: center;
@@ -378,9 +393,10 @@ body {
   border-radius: 4px;
   cursor: pointer;
   font-size: 11px;
+  background: rgba(var(--sm-blizzard-blue-rgb), 0.08);
   transition: background 0.1s;
 }
-.foreign-running-row:hover { background: var(--vscode-list-hoverBackground, #2a2a2a); }
+.foreign-running-row:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.16); }
 .foreign-running-row:focus-visible { outline: 2px solid var(--vscode-focusBorder, #007acc); outline-offset: -2px; }
 .foreign-running-name {
   color: var(--vscode-foreground, #cccccc);
@@ -775,8 +791,14 @@ body.vscode-light .stale .status-pill { color: #666666; background: #e0e0e0; }
 
 /* -- Foreign pill -- */
 body.vscode-light .foreign-pill { color: #888888; background: rgba(0, 0, 0, 0.06); border-color: rgba(0, 0, 0, 0.12); }
-body.vscode-light .ws-row-waiting { background: rgba(var(--sm-frozen-peach-rgb), 0.12); }
-body.vscode-light .ws-row-waiting .ws-name { color: #c47a3a; }
+body.vscode-light .foreign-running-row { background: rgba(var(--sm-blizzard-blue-rgb), 0.10); }
+body.vscode-light .foreign-running-row:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.18); }
+
+/* -- Foreign workspace count chips (light) -- */
+body.vscode-light .ws-counts .status-count.waiting-count { background: var(--sm-frozen-peach); color: #4a2e16; }
+body.vscode-light .ws-counts .status-count.running-count { background: #4a6cd4; color: #ffffff; }
+body.vscode-light .ws-counts .status-count.done-count    { background: var(--sm-teal-bright); color: #1e1e1e; }
+body.vscode-light .ws-counts .status-count.stale-count   { background: #d0d0d0; color: #555555; }
 
 /* -- Model pills -- */
 body.vscode-light .model-pill.sonnet { color: #c47a3a; }

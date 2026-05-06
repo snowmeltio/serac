@@ -472,10 +472,10 @@ const RANGE_MS: Record<string, number> = {
     const activeTeams = lastTeams.filter(t => !t.dismissed);
     const archivedTeams = lastTeams.filter(t => t.dismissed);
 
-    // Split local cards: active half (running/waiting/stale) goes above the
-    // foreign-running strip, completed half (done) goes below it.
-    const runningCards = cards.filter(c => c.status !== 'done');
-    const doneCards = cards.filter(c => c.status === 'done');
+    // Split local cards: active half (running/waiting) goes above the
+    // foreign-running strip, completed half (done/stale) goes below it.
+    const runningCards = cards.filter(c => c.status === 'running' || c.status === 'waiting');
+    const doneCards = cards.filter(c => c.status === 'done' || c.status === 'stale');
 
     if (cards.length === 0 && archived.length === 0 && activeTeams.length === 0) {
       const hasOlder = lastOlderSessionCount > 0;
@@ -683,7 +683,7 @@ const RANGE_MS: Record<string, number> = {
       }
     }
 
-    let archiveHtml = '';
+    let archiveHtml = '<div class="archive-header">Dismissed</div>';
 
     // Team archive rows (always shown at top of archive)
     for (const team of archivedTeams) {
@@ -894,11 +894,13 @@ const RANGE_MS: Record<string, number> = {
     const running = ws.counts['running'] || 0;
     const waiting = ws.counts['waiting'] || 0;
     const done = ws.counts['done'] || 0;
+    const seen = ws.counts['stale'] || 0;
     const rowClass = 'ws-row' + (waiting > 0 ? ' ws-row-waiting' : '') + (ws.cwd ? ' ws-row-clickable' : '');
     let countsHtml = '';
     if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
     if (running) countsHtml += '<span class="status-count running-count">' + running + 'R</span>';
     if (done) countsHtml += '<span class="status-count done-count">' + done + 'D</span>';
+    if (seen) countsHtml += '<span class="status-count stale-count">' + seen + 'S</span>';
     const hasLiveSessions = running > 0 || waiting > 0;
     const cwdAttr = ws.cwd ? ' data-cwd="' + escapeHtml(ws.cwd) + '" tabindex="0" role="button" title="Open workspace in VS Code"' : '';
     return '<div class="' + rowClass + '"'
@@ -1086,102 +1088,22 @@ const RANGE_MS: Record<string, number> = {
   }
 
   // ===== FOREIGN WAITING SECTION =====
-  /** Render foreign workspace sessions that need user input. Sits at the very top
-   *  of the panel (above teams + local cards) because waiting on input elsewhere
-   *  is the most attention-worthy state we can surface. Click → open that window. */
-  function renderForeignWaitingSection(scrollWrap: HTMLElement, now: number): void {
-    let section = scrollWrap.querySelector('.foreign-waiting-section') as HTMLElement | null;
-    const items = lastForeignWaiting.filter(s => !!s.cwd);
-
-    if (items.length === 0) {
-      if (section) section.remove();
-      return;
-    }
-
-    if (!section) {
-      section = document.createElement('div');
-      section.className = 'foreign-waiting-section';
-      // Ensure it lands above .team-section / .card-section
-      scrollWrap.insertBefore(section, scrollWrap.firstChild);
-    }
-
-    let html = '<div class="foreign-waiting-header">Waiting in other workspaces</div>';
-    for (const s of items) {
-      html += renderForeignWaitingCard(s, now);
-    }
-    section.innerHTML = html;
-  }
-
-  function renderForeignWaitingCard(s: PanelSession, now: number): string {
-    const displayName = stripMarkdown(getDisplayName(s));
-    const cwd = s.cwd || '';
-    const wsLabel = workspaceLabelFromCwd(cwd) || s.workspaceKey || '';
-    const ageLabel = formatAge(now - s.lastActivity);
-
-    return '<div class="card waiting foreign foreign-waiting"'
-      + ' data-session-id="' + escapeHtml(s.sessionId) + '"'
-      + ' data-cwd="' + escapeHtml(cwd) + '"'
-      + ' role="button" tabindex="0"'
-      + ' aria-label="' + escapeHtml(displayName) + ' — waiting in ' + escapeHtml(wsLabel) + ' (click to switch window)">'
-      + '<div class="card-top">'
-      + '<span class="card-name">' + escapeHtml(displayName) + '</span>'
-      + '<span class="status-pill">Waiting</span>'
-      + '</div>'
-      + '<div class="foreign-waiting-meta">'
-      + '<span class="foreign-waiting-ws">' + escapeHtml(wsLabel) + '</span>'
-      + '<span class="foreign-waiting-age">' + ageLabel + '</span>'
-      + '</div>'
-      + '</div>';
+  /** Disabled: the foreign workspace row already flags waiting sessions with
+   *  the W count. The full-card promotion to the top of the panel was too
+   *  attention-grabbing for sessions the user can't action from this window.
+   *  Kept as a no-op (with teardown) so the call site doesn't have to change. */
+  function renderForeignWaitingSection(scrollWrap: HTMLElement, _now: number): void {
+    const section = scrollWrap.querySelector('.foreign-waiting-section');
+    if (section) section.remove();
   }
 
   // ===== FOREIGN RUNNING SECTION =====
-  /** Render foreign workspace sessions that are currently running. Sits between
-   *  local cards and the archive — single-line rows so the strip stays compact
-   *  even at narrow panel widths. Click → open that window. */
-  function renderForeignRunningSection(scrollWrap: HTMLElement, anchor: HTMLElement, now: number): void {
-    let section = scrollWrap.querySelector('.foreign-running-section') as HTMLElement | null;
-    const items = lastForeignRunning.filter(s => !!s.cwd);
-
-    if (items.length === 0) {
-      if (section) section.remove();
-      return;
-    }
-
-    if (!section) {
-      section = document.createElement('div');
-      section.className = 'foreign-running-section';
-    }
-    if (section.previousElementSibling !== anchor) {
-      anchor.after(section);
-    }
-
-    let html = '<div class="foreign-running-header">Running in other workspaces</div>';
-    for (const s of items) {
-      html += renderForeignRunningRow(s, now);
-    }
-    section.innerHTML = html;
-  }
-
-  function renderForeignRunningRow(s: PanelSession, _now: number): string {
-    const displayName = stripMarkdown(getDisplayName(s));
-    const cwd = s.cwd || '';
-    const wsLabel = workspaceLabelFromCwd(cwd) || s.workspaceKey || '';
-
-    return '<div class="foreign-running-row"'
-      + ' data-session-id="' + escapeHtml(s.sessionId) + '"'
-      + ' data-cwd="' + escapeHtml(cwd) + '"'
-      + ' role="button" tabindex="0"'
-      + ' aria-label="' + escapeHtml(displayName) + ' — running in ' + escapeHtml(wsLabel) + ' (click to switch window)">'
-      + '<span class="foreign-running-name">' + escapeHtml(displayName) + '</span>'
-      + '<span class="foreign-running-ws">' + escapeHtml(wsLabel) + '</span>'
-      + '</div>';
-  }
-
-  /** Strip the trailing folder name from a cwd for display. */
-  function workspaceLabelFromCwd(cwd: string): string {
-    const trimmed = cwd.endsWith('/') ? cwd.slice(0, -1) : cwd;
-    const folder = trimmed.split('/').pop();
-    return folder || trimmed;
+  /** Disabled: the foreign workspace row already shows running counts, so the
+   *  separate strip just duplicates the cue. Kept as a no-op (and tears down
+   *  any leftover DOM from older builds) so the call site doesn't have to know. */
+  function renderForeignRunningSection(scrollWrap: HTMLElement, _anchor: HTMLElement, _now: number): void {
+    const section = scrollWrap.querySelector('.foreign-running-section');
+    if (section) section.remove();
   }
 
   // ===== USAGE SECTION RENDERER =====
