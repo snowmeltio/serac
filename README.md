@@ -12,20 +12,17 @@ The sidebar is organised into vertical zones, top to bottom:
 
 1. **View title bar** — `+ New`, `Cleanup`, and `Refresh` icons live alongside the panel title. Cleanup uses an arm/confirm two-click pattern (the icon swaps to a warning glyph; auto-disarms after 3s).
 2. **Status counts** — running / waiting / done totals with colour-coded dots. Hidden when there's nothing to show.
-3. **Waiting in other workspaces** — full cards for foreign sessions blocked on user input. Title + Waiting pill on top; workspace + elapsed time below. Click the card to jump to that VS Code window and focus the specific session. Section only renders when there's something waiting.
-4. **Active session cards** — one card per local running, waiting, or stale session. Colour-coded left border (blue = running, peach = waiting). Each card shows session name, status pill, elapsed time, context usage bar, and subagent tree.
-5. **Running in other workspaces** — compact single-line strip listing foreign sessions currently running. Each row shows the task name and the workspace; click a row to switch to that window. Section only renders when something is running elsewhere.
-6. **Done session cards** — completed local sessions (teal border) sit below the foreign-running strip until dismissed.
-7. **Archive section** — dismissed sessions in a compact list with time-range filter (1d / 3d / 7d / 30d / all). When the active list is empty but older JSONL files exist beyond the scan window, a banner reveals the time-range bar so you can widen the view in one click.
-8. **Usage quotas** — current session and weekly usage bars showing consumption against your plan limits. Sourced from the Anthropic OAuth API. The footer row hosts companion-registered status slots inline with "Updated X ago".
-9. **Other workspaces** — Claude Code sessions running in other VS Code windows, grouped by workspace with running/waiting/done counts. **Click any workspace row to jump directly into that window** (focuses an existing window if open, otherwise opens a new one).
+3. **Active session cards** — one card per local running or waiting session. Colour-coded left border (blue = running, peach = waiting). Each card shows session name, status pill, session id, model, elapsed time, context usage bar, and subagent tree. Sessions running in a sibling worktree of the current repo flow into this list with a small worktree pill alongside the session id and model.
+4. **Done session cards** — completed local sessions (teal border) sit below the active cards until dismissed.
+5. **Archive section** — `Dismissed` header, then archived sessions in a compact list with time-range filter (1d / 3d / 7d / 30d / all). When the active list is empty but older JSONL files exist beyond the scan window, a banner reveals the time-range bar so you can widen the view in one click.
+6. **Other workspaces** — Claude Code sessions running in other VS Code windows. Each row shows the workspace name and a chip cluster: **W**aiting (peach), **R**unning (blue), **D**one (teal), **S**een/stale (grey). Sibling worktrees of an unrelated repo collapse under a single `repo/` header. The pane caps at ~8 rows and scrolls internally with a bottom-fade cue. **Click any row to jump directly into that window** (focuses an existing window if open, otherwise opens a new one).
+7. **Usage quotas** — current session and weekly usage bars showing consumption against your plan limits. Sourced from the Anthropic OAuth API. The footer row hosts companion-registered status slots inline with "Updated X ago".
 
 ## How to use
 
 ### Cross-window navigation
-- **Click an "Other workspaces" row** to focus or open that VS Code window.
-- **Click a foreign-waiting card** to jump to that window *and* auto-focus the specific session that needs input.
-- **Click a foreign-running row** to jump straight to a session running elsewhere.
+- **Click an "Other workspaces" row** to focus or open that VS Code window. The W/R/D/S chips on each row tell you what's happening there at a glance — a waiting (W) chip means a session in that window is blocked on you.
+- **Sibling worktrees of the local repo** appear as full cards in the main list (with a worktree pill); click as you would any local card.
 
 Existing windows are reused where possible; otherwise a new window opens for the target workspace.
 
@@ -79,9 +76,12 @@ Click the refresh icon in the view title bar to force an immediate rescan. Serac
 - Accessible from both active cards and archived sessions.
 
 ### Cross-workspace monitoring
-- **Foreign workspaces** — shows running/waiting/done counts for Claude Code sessions in other open VS Code windows.
-- **Dismissable** — individual foreign workspaces can be dismissed if not relevant.
-- **Stable naming** — workspace display names are cached to prevent flicker as sessions churn.
+- **Single consolidated pane** — all sessions running in other VS Code windows appear in one "Other workspaces" list, with W/R/D/S chips per workspace. No separate foreign-waiting cards or running strips clutter the main view.
+- **Sibling worktree consolidation** — sessions in any worktree of the *current* repo flow into the main card list with a worktree pill, so you don't have to context-switch to track them.
+- **Repo grouping** — when 2+ workspaces share a repo root (e.g. main checkout + linked worktrees of an unrelated repo), they collapse under a single `repo/` header.
+- **Done → Seen transitions** — once you've focused a completed session in its own window, its workspace's `D` chip moves to `S` (seen/stale) so the live `D` count stays meaningful.
+- **Dismissed sessions excluded** — dismissed sessions in other workspaces drop out of the chip counts.
+- **Capped + scrollable** — the pane shows ~8 rows then scrolls internally, with a bottom-fade cue that appears only when content overflows.
 
 ### Visual design
 - **FLIP animations** — smooth 300ms card reordering when session states change.
