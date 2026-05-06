@@ -64,9 +64,25 @@ body {
 .status-count.done-count { color: var(--sm-teal-bright); }
 .status-count.stale-count { color: #999999; }
 
-/* Cross-workspace rows (L2/O3) */
-.ws-foreign-rows { padding: 4px 12px 6px 12px; border-top: 1px solid var(--vscode-panel-border, #2d2d2d); }
+/* Cross-workspace rows (L2/O3) — capped at ~8 rows, scroll internally */
+.ws-foreign-rows {
+  --ws-foreign-row-h: 16px;
+  --ws-foreign-section-h: 22px;
+  --ws-foreign-cap: calc(var(--ws-foreign-section-h) + 8 * var(--ws-foreign-row-h) + 12px);
+  padding: 4px 12px 6px 12px;
+  border-top: 1px solid var(--vscode-panel-border, #2d2d2d);
+  max-height: var(--ws-foreign-cap);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
 .ws-foreign-rows:empty { display: none; }
+/* Bottom fade only while content overflows — the JS toggles is-overflowing
+ * after each render so the gradient never lies about scrollability. */
+.ws-foreign-rows.is-overflowing {
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 18px), transparent);
+          mask-image: linear-gradient(to bottom, black calc(100% - 18px), transparent);
+}
 .ws-section-header {
   font-size: 10px;
   font-weight: 600;
@@ -274,6 +290,25 @@ body {
   border: 1px solid rgba(153, 153, 153, 0.3);
 }
 .compact-foreign { font-size: 7px; padding: 0 4px; margin-right: 4px; }
+/* Worktree origin pill: a card from a sibling worktree (or any other-worktree
+ * card). Subtler than foreign-pill so the card itself stays the focus. */
+.worktree-pill {
+  font-size: 8px;
+  font-weight: 500;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 13px;
+  color: var(--sm-snow-blue);
+  background: rgba(var(--sm-blizzard-blue-rgb), 0.12);
+  border: 1px solid rgba(var(--sm-blizzard-blue-rgb), 0.3);
+  font-family: var(--vscode-editor-font-family, 'SF Mono', 'Fira Code', monospace);
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.compact-worktree { font-size: 7px; padding: 0 4px; margin-right: 4px; }
 .card.foreign { opacity: 0.7; }
 .card.foreign:hover { opacity: 0.85; }
 

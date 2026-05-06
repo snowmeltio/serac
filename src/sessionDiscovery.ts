@@ -3,6 +3,8 @@ import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
+import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
+import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import { TeamDiscovery } from './teamDiscovery.js';
 import { claudeStateDir } from './paths.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot } from './types.js';
@@ -52,8 +54,14 @@ export class SessionDiscovery {
   /** Age gate: skip JSONL files older than this during scan [Phase 6] */
   private static readonly SCAN_AGE_GATE_MS = 7 * 24 * 60 * 60 * 1000;
   private readonly log: Logger;
+  /** Local CWD path (root of the user's VS Code workspace). */
+  private readonly localCwd: string;
+  /** Display label for the local worktree (basename of localCwd). */
+  private readonly localWorktreeLabel: string;
   /** Manages cross-workspace session discovery and polling */
   private foreignManager: ForeignWorkspaceManager;
+  /** Manages sibling-worktree (same-repo, different CWD) session discovery */
+  private siblingManager: SiblingWorktreeManager;
   /** Manages Cornice agent team discovery and polling */
   private teamDiscovery: TeamDiscovery;
   /** Extended archive: lightweight snapshots for sessions older than SCAN_AGE_GATE_MS.
@@ -73,7 +81,11 @@ export class SessionDiscovery {
     this.workspaceKey = sanitiseWorkspaceKey(workspacePath);
     this.metaFilePath = path.join(this.projectsDir, this.workspaceKey, 'session-meta.json');
     this.log = opts?.log ?? nullLogger;
+    this.localCwd = workspacePath;
+    this.localWorktreeLabel = path.basename(workspacePath) || workspacePath;
     this.foreignManager = new ForeignWorkspaceManager(this.projectsDir, this.workspaceKey, this.log);
+    this.siblingManager = new SiblingWorktreeManager(this.projectsDir, this.workspaceKey, this.log);
+    this.foreignManager.setSiblingKeysProvider(() => this.siblingManager.getSiblingKeys());
     this.teamDiscovery = new TeamDiscovery(this.projectsDir, this.log);
   }
 
@@ -260,8 +272,20 @@ export class SessionDiscovery {
     // Load session metadata (with legacy migration)
     await this.loadMeta();
 
-    // Initial scan (local + foreign + teams)
+    // Resolve local repoRoot before any scanning so the sibling manager knows
+    // which other workspace dirs share our repo. Failure is non-fatal — we just
+    // run without sibling-worktree consolidation.
+    try {
+      const repoRoot = await resolveRepoRoot(this.localCwd);
+      this.siblingManager.setLocalRepoRoot(repoRoot);
+    } catch (err) {
+      this.log.warn('Failed to resolve local repoRoot:', err);
+    }
+
+    // Initial scan (local + sibling worktrees + foreign + teams).
+    // Sibling scan must run before foreign scan so foreign can exclude sibling keys.
     await this.scan();
+    await this.siblingManager.scan();
     await this.foreignManager.scan();
     await this.teamDiscovery.scan();
 
@@ -304,6 +328,7 @@ export class SessionDiscovery {
       session.dispose();
     }
     this.sessions.clear();
+    this.siblingManager.dispose();
     this.foreignManager.dispose();
     this.teamDiscovery.dispose();
   }
@@ -317,6 +342,10 @@ export class SessionDiscovery {
     for (const session of this.sessions.values()) {
       if (teamClaimed.has(session.getSessionId())) { continue; }
       const snapshot = session.getSnapshot();
+      // Tag local sessions with the local worktree so cards render
+      // consistently — the panel hides the pill when origin == local.
+      snapshot.worktreeRoot = this.localCwd;
+      snapshot.worktreeLabel = this.localWorktreeLabel;
       const meta = this.sessionMeta.get(snapshot.sessionId);
 
       snapshot.dismissed = meta?.dismissed ?? false;
@@ -337,6 +366,14 @@ export class SessionDiscovery {
       }
 
       snapshots.push(snapshot);
+    }
+
+    // Merge sibling-worktree sessions into the same feed. Sibling sessions
+    // already carry worktreeRoot/worktreeLabel; we don't apply local meta
+    // (dismissed/title) to them because that meta lives in the sibling's own
+    // session-meta.json and isn't ours to mutate.
+    for (const sib of this.siblingManager.getSnapshots()) {
+      snapshots.push(sib);
     }
 
     // Two-zone ordering: Active zone then Completed zone.
@@ -731,6 +768,14 @@ export class SessionDiscovery {
 
       // Flush any meta changes from scan (new sessions)
       await this.flushMeta();
+
+      // Sibling worktrees of the local repo: scan periodically, poll every cycle.
+      // Run before foreign manager so foreign can exclude any newly-discovered siblings.
+      if (this.siblingManager.shouldRescan()) {
+        await this.siblingManager.scan();
+      }
+      const siblingChanged = await this.siblingManager.poll();
+      if (siblingChanged) { changed = true; }
 
       // Cross-workspace: scan periodically, poll active foreign sessions every cycle
       if (this.foreignManager.shouldRescan()) {

@@ -28,6 +28,11 @@ export interface PanelSession {
   subagents?: PanelSubagent[];
   workspaceKey?: string;
   confidence?: PanelStatusConfidence;
+  /** CWD of the originating worktree (set for both local and sibling-worktree
+   *  sessions; null/absent for cards coming from unrelated workspaces). */
+  worktreeRoot?: string;
+  /** Display label (basename of worktreeRoot). */
+  worktreeLabel?: string;
 }
 
 export interface PanelSubagent {
@@ -159,6 +164,124 @@ export function getStatusLabel(s: PanelSession, now: number): string {
 export function isForeignSession(s: PanelSession, workspaceKey: string): boolean {
   if (workspaceKey && s.workspaceKey && s.workspaceKey !== workspaceKey) return true;
   return false;
+}
+
+/** True when a card originated from a worktree other than the local one
+ *  (could be a sibling worktree of the same repo, or a different repo). */
+export function isFromOtherWorktree(s: PanelSession, localWorktreeRoot: string): boolean {
+  if (!s.worktreeRoot) return false;
+  if (!localWorktreeRoot) return false;
+  return s.worktreeRoot !== localWorktreeRoot;
+}
+
+// ===== Foreign workspace grouping =====
+
+/** Minimal shape needed by the grouping logic; matches `WorkspaceGroup` from
+ *  types.ts but redeclared here so the webview bundle stays decoupled. */
+export interface GroupableWorkspace {
+  workspaceKey: string;
+  displayName: string;
+  cwd?: string | null;
+  counts: Record<string, number>;
+  confidence?: string;
+  repoRoot?: string | null;
+}
+
+export interface ForeignGroup<W extends GroupableWorkspace> {
+  /** Header label shown above the rows (e.g. `repo/` or `~/code/foo/`). */
+  headerLabel: string;
+  /** Optional tooltip (full path for repo groups). */
+  headerTitle?: string;
+  workspaces: W[];
+  /** Whether any workspace in this group has running/waiting sessions. */
+  hasActive: boolean;
+  /** Sort key — usually basename or directory tail. */
+  sortKey: string;
+}
+
+export interface GroupedForeignWorkspaces<W extends GroupableWorkspace> {
+  groups: ForeignGroup<W>[];
+  singletons: W[];
+}
+
+function workspaceHasActive(w: GroupableWorkspace): boolean {
+  return (w.counts['running'] || 0) > 0 || (w.counts['waiting'] || 0) > 0;
+}
+
+function basename(p: string): string {
+  const trimmed = p.endsWith('/') ? p.slice(0, -1) : p;
+  const idx = trimmed.lastIndexOf('/');
+  return idx === -1 ? trimmed : trimmed.slice(idx + 1);
+}
+
+/** Group foreign workspaces by repository (when 2+ share a repoRoot), then
+ *  by parent directory (when 2+ share a parent and weren't already consumed
+ *  by a repo group). Workspaces that don't fit any group are returned as
+ *  singletons. Pure function — no DOM. */
+export function groupForeignWorkspaces<W extends GroupableWorkspace>(
+  workspaces: W[],
+  tildeAbbrev: (p: string) => string = (p) => p,
+): GroupedForeignWorkspaces<W> {
+  const groups: ForeignGroup<W>[] = [];
+  const consumed = new Set<W>();
+
+  // 1. Repo groups: 2+ workspaces sharing a non-null repoRoot.
+  const byRepo = new Map<string, W[]>();
+  for (const w of workspaces) {
+    if (!w.repoRoot) { continue; }
+    let bucket = byRepo.get(w.repoRoot);
+    if (!bucket) { bucket = []; byRepo.set(w.repoRoot, bucket); }
+    bucket.push(w);
+  }
+  for (const [repoRoot, ws] of byRepo) {
+    if (ws.length < 2) { continue; }
+    ws.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    for (const w of ws) { consumed.add(w); }
+    const name = basename(repoRoot);
+    groups.push({
+      headerLabel: name + '/',
+      headerTitle: tildeAbbrev(repoRoot),
+      workspaces: ws,
+      hasActive: ws.some(workspaceHasActive),
+      sortKey: name,
+    });
+  }
+
+  // 2. Parent-directory groups for whatever's left (existing behaviour).
+  const byParent = new Map<string, W[]>();
+  for (const w of workspaces) {
+    if (consumed.has(w)) { continue; }
+    if (!w.cwd) { continue; }
+    const trimmed = w.cwd.endsWith('/') ? w.cwd.slice(0, -1) : w.cwd;
+    const idx = trimmed.lastIndexOf('/');
+    if (idx === -1) { continue; }
+    const parent = trimmed.slice(0, idx);
+    if (!parent) { continue; }
+    let bucket = byParent.get(parent);
+    if (!bucket) { bucket = []; byParent.set(parent, bucket); }
+    bucket.push(w);
+  }
+  for (const [parent, ws] of byParent) {
+    if (ws.length < 2) { continue; }
+    ws.sort((a, b) => a.displayName.localeCompare(b.displayName));
+    for (const w of ws) { consumed.add(w); }
+    groups.push({
+      headerLabel: tildeAbbrev(parent) + '/',
+      workspaces: ws,
+      hasActive: ws.some(workspaceHasActive),
+      sortKey: parent,
+    });
+  }
+
+  groups.sort((a, b) => {
+    if (a.hasActive !== b.hasActive) { return a.hasActive ? -1 : 1; }
+    return a.sortKey.localeCompare(b.sortKey);
+  });
+
+  const singletons = workspaces.filter((w) => !consumed.has(w));
+  singletons.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+  return { groups, singletons };
 }
 
 // ===== Status debounce =====
