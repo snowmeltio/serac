@@ -224,6 +224,75 @@ describe('SessionDiscovery: foreign workspaces', () => {
     discovery.stop();
   });
 
+  it('excludes dismissed foreign sessions from counts but still lists the workspace', async () => {
+    const discovery = makeDiscovery();
+    createJsonlFile(workspaceKey, 'local-session');
+
+    // Foreign session dated >30s ago so it demotes from running → done after the
+    // first poll cycle. Two sessions in the same workspace; one will be dismissed.
+    const oldRecord = (text: string) => JSON.stringify({
+      type: 'user',
+      timestamp: new Date(Date.now() - 60_000).toISOString(),
+      message: { content: [{ type: 'text', text }] },
+    });
+    createJsonlFile('foreign-mixed', 'kept-session', oldRecord('a'));
+    createJsonlFile('foreign-mixed', 'dropped-session', oldRecord('b'));
+
+    // Pre-write the foreign workspace's session-meta.json marking one dismissed
+    const metaPath = path.join(projectsDir, 'foreign-mixed', 'session-meta.json');
+    fs.writeFileSync(metaPath, JSON.stringify({
+      sessions: {
+        'dropped-session': { title: null, dismissed: true, acknowledged: false, acknowledgedAt: null, firstSeen: Date.now() },
+      },
+    }));
+
+    await discovery.start(() => {});
+    await new Promise(resolve => setTimeout(resolve, 700));
+
+    const foreign = discovery.getForeignWorkspaces();
+    const ws = foreign.find(w => w.workspaceKey === 'foreign-mixed');
+    expect(ws).toBeDefined();
+    // dismissed session removed from done count; only the other remains
+    expect(ws!.counts['done']).toBe(1);
+    discovery.stop();
+  });
+
+  it('promotes acknowledged foreign done sessions to stale (seen) after 10s', async () => {
+    const discovery = makeDiscovery();
+    createJsonlFile(workspaceKey, 'local-session');
+
+    const oldRecord = JSON.stringify({
+      type: 'user',
+      timestamp: new Date(Date.now() - 60_000).toISOString(),
+      message: { content: [{ type: 'text', text: 'hi' }] },
+    });
+    createJsonlFile('foreign-acked', 'acked-session', oldRecord);
+
+    // Acknowledged 11s ago → should land as stale
+    const metaPath = path.join(projectsDir, 'foreign-acked', 'session-meta.json');
+    fs.writeFileSync(metaPath, JSON.stringify({
+      sessions: {
+        'acked-session': {
+          title: null,
+          dismissed: false,
+          acknowledged: true,
+          acknowledgedAt: Date.now() - 11_000,
+          firstSeen: Date.now() - 60_000,
+        },
+      },
+    }));
+
+    await discovery.start(() => {});
+    await new Promise(resolve => setTimeout(resolve, 700));
+
+    const foreign = discovery.getForeignWorkspaces();
+    const ws = foreign.find(w => w.workspaceKey === 'foreign-acked');
+    expect(ws).toBeDefined();
+    expect(ws!.counts['stale']).toBe(1);
+    expect(ws!.counts['done']).toBeUndefined();
+    discovery.stop();
+  });
+
   it('uses date-prefix heuristic for key-derived names', async () => {
     const discovery = makeDiscovery();
     createJsonlFile(workspaceKey, 'local-session');

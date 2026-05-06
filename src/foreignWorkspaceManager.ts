@@ -4,15 +4,16 @@
  * Extracted from SessionDiscovery to separate cross-workspace monitoring
  * from local session management. A workspace appears in the panel as soon as
  * it has any tracked JSONL file within the age gate; counts (running/waiting/
- * done) are aggregated for display but a workspace with all-idle sessions is
- * still listed (with empty counts).
+ * done/stale) are aggregated for display but a workspace with all-idle sessions
+ * is still listed (with empty counts). Dismissed sessions are filtered out of
+ * the counts entirely.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
-import type { SessionSnapshot, StatusConfidence, WorkspaceGroup } from './types.js';
+import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 
 /** Age gate for foreign workspace tracking */
@@ -21,11 +22,15 @@ const FOREIGN_AGE_GATE_MS = 7 * 24 * 60 * 60 * 1000;
 const FOREIGN_SCAN_INTERVAL = 10;
 /** Confidence ranking for max-confidence aggregation */
 const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
+/** done → stale promotion delay (mirrors SessionDiscovery) */
+const STALE_PROMOTION_MS = 10_000;
 
 export class ForeignWorkspaceManager {
   private sessions: Map<string, SessionManager> = new Map();
   private cwdCache: Map<string, string> = new Map();
   private repoRootCache: Map<string, string | null> = new Map();
+  /** Cached per-workspace session meta (dismissed/acknowledged), refreshed during scan(). */
+  private metaCache: Map<string, Map<string, SessionMeta>> = new Map();
   private scanCounter = 0;
   /** Returns the workspace keys that are sibling worktrees of the local repo
    *  and should therefore NOT be tracked here as foreign. Provided by
@@ -123,6 +128,18 @@ export class ForeignWorkspaceManager {
           this.log.warn(`Failed to resolve repoRoot for ${cwd}:`, err);
         }
       }
+      // Refresh meta caches for every workspace we now track
+      const seenKeys = new Set<string>();
+      for (const session of this.sessions.values()) {
+        seenKeys.add(session.getSnapshot().workspaceKey);
+      }
+      for (const key of seenKeys) {
+        await this.loadMetaForWorkspace(key);
+      }
+      // Drop meta caches for workspaces we no longer track
+      for (const key of [...this.metaCache.keys()]) {
+        if (!seenKeys.has(key)) { this.metaCache.delete(key); }
+      }
     } catch { /* projectsDir doesn't exist */ }
   }
 
@@ -137,6 +154,7 @@ export class ForeignWorkspaceManager {
     }
     this.cwdCache.delete(workspaceKey);
     this.repoRootCache.delete(workspaceKey);
+    this.metaCache.delete(workspaceKey);
   }
 
   /** Per-workspace repo root accessor (used by SiblingWorktreeManager to
@@ -149,6 +167,26 @@ export class ForeignWorkspaceManager {
    *  sibling manager can resolve repoRoots without re-reading JSONL. */
   getKnownWorkspaceCwds(): Array<[string, string]> {
     return Array.from(this.cwdCache.entries());
+  }
+
+  /** Read a foreign workspace's session-meta.json into the cache. Silently
+   *  no-ops on missing file; warns on parse errors but leaves the prior cache
+   *  entry intact so a corrupt write doesn't briefly un-dismiss sessions. */
+  private async loadMetaForWorkspace(workspaceKey: string): Promise<void> {
+    const metaPath = path.join(this.projectsDir, workspaceKey, 'session-meta.json');
+    let content: string;
+    try {
+      content = await fs.promises.readFile(metaPath, 'utf-8');
+    } catch {
+      this.metaCache.set(workspaceKey, new Map());
+      return;
+    }
+    try {
+      const file: SessionMetaFile = JSON.parse(content);
+      this.metaCache.set(workspaceKey, new Map(Object.entries(file.sessions)));
+    } catch (err) {
+      this.log.warn(`Foreign session-meta.json parse failed (${workspaceKey}):`, err);
+    }
   }
 
   /** Poll active foreign sessions. Evicts entries past the age gate. */
@@ -167,6 +205,7 @@ export class ForeignWorkspaceManager {
           this.sessions.delete(compositeId);
           this.cwdCache.delete(key);
           this.repoRootCache.delete(key);
+          this.metaCache.delete(key);
           changed = true;
         }
       }
@@ -203,20 +242,36 @@ export class ForeignWorkspaceManager {
 
   /** Get foreign workspace summaries for the panel.
    *  Every workspace with at least one tracked session is included. Counts
-   *  (running/waiting/done) are aggregated for display; workspaces with no
-   *  active sessions render with empty counts. */
+   *  (running/waiting/done/stale) are aggregated for display; dismissed
+   *  sessions are excluded from counts. `done` is promoted to `stale` once the
+   *  user has acknowledged the session in its own workspace and 10s has
+   *  elapsed (mirrors SessionDiscovery's local stale logic). Workspaces with
+   *  no active sessions render with empty counts. */
   getWorkspaces(): WorkspaceGroup[] {
+    const now = Date.now();
     const groups = new Map<string, Record<string, number>>();
     const confidences = new Map<string, StatusConfidence>();
 
     for (const session of this.sessions.values()) {
       const snapshot = session.getSnapshot();
-      let counts = groups.get(snapshot.workspaceKey);
-      if (!counts) {
-        counts = {};
-        groups.set(snapshot.workspaceKey, counts);
+      const meta = this.metaCache.get(snapshot.workspaceKey)?.get(snapshot.sessionId);
+
+      // Ensure the workspace shows up even if every session is dismissed
+      if (!groups.has(snapshot.workspaceKey)) {
+        groups.set(snapshot.workspaceKey, {});
       }
-      counts[snapshot.status] = (counts[snapshot.status] || 0) + 1;
+      if (meta?.dismissed) { continue; }
+
+      let status = snapshot.status;
+      if (status === 'done' && meta?.acknowledged) {
+        const ackTime = meta.acknowledgedAt ?? 0;
+        if (now - ackTime > STALE_PROMOTION_MS) {
+          status = 'stale';
+        }
+      }
+
+      const counts = groups.get(snapshot.workspaceKey)!;
+      counts[status] = (counts[status] || 0) + 1;
 
       const capped: StatusConfidence = snapshot.confidence === 'high' ? 'medium' : snapshot.confidence;
       const existing = confidences.get(snapshot.workspaceKey) ?? 'low';
@@ -288,6 +343,7 @@ export class ForeignWorkspaceManager {
     this.sessions.clear();
     this.cwdCache.clear();
     this.repoRootCache.clear();
+    this.metaCache.clear();
   }
 
   /** Derive a human-readable name from a workspace CWD or sanitised key. */
