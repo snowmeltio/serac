@@ -146,15 +146,19 @@ export function formatAgeCoarse(ms: number): string {
 // ===== Status label =====
 
 export function getStatusLabel(s: PanelSession, now: number): string {
+  // Wrap the elapsed-time chunk so the pill's text-transform: uppercase
+  // doesn't capitalise the unit letters (h/m/s/d) \u2014 those should remain
+  // lowercase to match the rest of the UI.
+  const t = (ms: number) => '<span class="status-pill-time">' + formatAge(ms) + '</span>';
   // Low confidence: show elapsed time only, no status label [#106]
   if (s.confidence === 'low' && (s.status === 'running' || s.status === 'waiting')) {
-    return formatAge(now - s.lastActivity) + '\u2026';
+    return t(now - s.lastActivity) + '\u2026';
   }
   switch (s.status) {
     case 'waiting': return 'Waiting';
     case 'running': return 'Running';
-    case 'done': return 'Done \u00b7 ' + formatAge(now - s.lastActivity);
-    case 'stale': return 'Seen \u00b7 ' + formatAge(now - s.lastActivity);
+    case 'done': return 'Done \u00b7 ' + t(now - s.lastActivity);
+    case 'stale': return 'Seen \u00b7 ' + t(now - s.lastActivity);
     default: return s.status;
   }
 }

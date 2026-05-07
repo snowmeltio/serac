@@ -252,6 +252,9 @@ body {
   flex-shrink: 0;
   line-height: 14px;
 }
+/* Elapsed-time chunk inside the status pill stays lowercase, matching the
+ * rest of the UI (e.g. "DONE · 3h" rather than "DONE · 3H"). */
+.status-pill .status-pill-time { text-transform: none; letter-spacing: 0; }
 
 .waiting .status-pill { color: #1e1e1e; background: var(--sm-frozen-peach); animation: pill-pulse 2.5s ease-in-out infinite; }
 .running .status-pill { color: #ffffff; background: rgba(var(--sm-blizzard-blue-rgb), 0.6); }
@@ -797,7 +800,7 @@ body.vscode-light .foreign-running-row:hover { background: rgba(var(--sm-blizzar
 /* -- Foreign workspace count chips (light) -- */
 body.vscode-light .ws-counts .status-count.waiting-count { background: var(--sm-frozen-peach); color: #4a2e16; }
 body.vscode-light .ws-counts .status-count.running-count { background: #4a6cd4; color: #ffffff; }
-body.vscode-light .ws-counts .status-count.done-count    { background: var(--sm-teal-bright); color: #1e1e1e; }
+body.vscode-light .ws-counts .status-count.done-count    { background: var(--sm-teal-bright); color: #ffffff; }
 body.vscode-light .ws-counts .status-count.stale-count   { background: #d0d0d0; color: #555555; }
 
 /* -- Model pills -- */
