@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.5.2 (2026-05-07) — Status pill casing + light-mode chip contrast
+
+### Fixed
+- **Elapsed-time letters in status pills** stay lowercase (e.g. "DONE · 3h" rather than "DONE · 3H"). The pill's `text-transform: uppercase` was capitalising unit letters, making them inconsistent with the rest of the UI and visually conflating with the deliberate W/R/D/S status letters used in the "Other workspaces" chips.
+- **Light-mode "Done" chip** in the "Other workspaces" view now renders white text on teal, matching the running chip's white-on-blue treatment.
+
 ## v1.5.1 (2026-05-06) — Other workspaces polish
 
 Minor UI tidy-up on the v1.5.0 cross-workspace pane.

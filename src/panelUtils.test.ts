@@ -202,21 +202,21 @@ describe('getStatusLabel', () => {
     expect(getStatusLabel(session({ status: 'running', lastActivity: now }), now)).toBe('Running');
   });
   it('returns Done with age', () => {
-    expect(getStatusLabel(session({ status: 'done', lastActivity: now - 120_000 }), now)).toBe('Done · 2m');
+    expect(getStatusLabel(session({ status: 'done', lastActivity: now - 120_000 }), now)).toBe('Done · <span class="status-pill-time">2m</span>');
   });
   it('returns Seen with age for stale', () => {
-    expect(getStatusLabel(session({ status: 'stale', lastActivity: now - 3_600_000 }), now)).toBe('Seen · 1h');
+    expect(getStatusLabel(session({ status: 'stale', lastActivity: now - 3_600_000 }), now)).toBe('Seen · <span class="status-pill-time">1h</span>');
   });
   it('returns raw status for unknown', () => {
     expect(getStatusLabel(session({ status: 'mystery' as any, lastActivity: now }), now)).toBe('mystery');
   });
   it('returns elapsed-time-only for low-confidence running', () => {
     const label = getStatusLabel(session({ status: 'running', lastActivity: now - 60_000, confidence: 'low' }), now);
-    expect(label).toBe('1m\u2026');
+    expect(label).toBe('<span class="status-pill-time">1m</span>\u2026');
   });
   it('returns elapsed-time-only for low-confidence waiting', () => {
     const label = getStatusLabel(session({ status: 'waiting', lastActivity: now - 45_000, confidence: 'low' }), now);
-    expect(label).toBe('45s\u2026');
+    expect(label).toBe('<span class="status-pill-time">45s</span>\u2026');
   });
   it('returns normal label for high-confidence running', () => {
     expect(getStatusLabel(session({ status: 'running', lastActivity: now, confidence: 'high' }), now)).toBe('Running');
@@ -225,7 +225,7 @@ describe('getStatusLabel', () => {
     expect(getStatusLabel(session({ status: 'running', lastActivity: now, confidence: 'medium' }), now)).toBe('Running');
   });
   it('returns normal label for low-confidence done (terminal)', () => {
-    expect(getStatusLabel(session({ status: 'done', lastActivity: now - 60_000, confidence: 'low' }), now)).toBe('Done · 1m');
+    expect(getStatusLabel(session({ status: 'done', lastActivity: now - 60_000, confidence: 'low' }), now)).toBe('Done · <span class="status-pill-time">1m</span>');
   });
 });
 
