@@ -483,15 +483,20 @@ export class SessionDiscovery {
     }
   }
 
-  /** Get the JSONL file path for a session */
+  /** Get the JSONL file path for a session — falls back to sibling worktrees
+   *  so transcript view / editor focus works for cards from another worktree
+   *  of the same repo. */
   getSessionFilePath(sessionId: string): string | undefined {
-    return this.sessions.get(sessionId)?.getFilePath();
+    return this.sessions.get(sessionId)?.getFilePath()
+      ?? this.siblingManager.getSessionFilePath(sessionId);
   }
 
-  /** Check if a session is currently running */
+  /** Check if a session is currently running. Sibling-worktree sessions are
+   *  also considered, so click-to-focus skips metadata writes for live ones. */
   isSessionRunning(sessionId: string): boolean {
     const status = this.sessions.get(sessionId)?.getStatus();
-    return status === 'running' || status === 'waiting';
+    if (status === 'running' || status === 'waiting') { return true; }
+    return this.siblingManager.isSessionRunning(sessionId);
   }
 
   /** Count sessions waiting on user input */

@@ -241,6 +241,30 @@ export class SiblingWorktreeManager {
     return this.worktreeRootForKey.get(workspaceKey) ?? null;
   }
 
+  /** Find the JSONL file path for a sibling session by sessionId. Returns
+   *  undefined if the session isn't tracked by this manager. Used so the
+   *  panel can render a transcript or open the editor for a card whose
+   *  origin is a sibling worktree (kept inline in the local feed). */
+  getSessionFilePath(sessionId: string): string | undefined {
+    for (const [compositeId, session] of this.sessions) {
+      if (compositeId.endsWith('/' + sessionId)) {
+        return session.getFilePath();
+      }
+    }
+    return undefined;
+  }
+
+  /** Whether a sibling session is currently running (or waiting). */
+  isSessionRunning(sessionId: string): boolean {
+    for (const [compositeId, session] of this.sessions) {
+      if (compositeId.endsWith('/' + sessionId)) {
+        const status = session.getStatus();
+        return status === 'running' || status === 'waiting';
+      }
+    }
+    return false;
+  }
+
   /** Drop all sibling sessions and clear state. */
   dispose(): void {
     for (const session of this.sessions.values()) {

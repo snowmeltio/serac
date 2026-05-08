@@ -319,6 +319,28 @@ body {
   text-overflow: ellipsis;
 }
 .compact-worktree { font-size: 7px; padding: 0 4px; margin-right: 4px; }
+/* Worktree count chip: appears on aggregated repo rows in "Other workspaces"
+ * when one repo has multiple worktrees. Reads as "3wt" — keep it compact so it
+ * sits between the workspace name and the status counts without dominating. */
+.worktree-count-chip {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 0 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 14px;
+  color: var(--sm-snow-blue);
+  background: rgba(var(--sm-blizzard-blue-rgb), 0.14);
+  border: 1px solid rgba(var(--sm-blizzard-blue-rgb), 0.32);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.1px;
+}
+body.vscode-light .worktree-count-chip {
+  color: #4a6cd4;
+  background: rgba(74, 108, 212, 0.10);
+  border-color: rgba(74, 108, 212, 0.28);
+}
 .card.foreign { opacity: 0.7; }
 .card.foreign:hover { opacity: 0.85; }
 

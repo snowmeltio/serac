@@ -173,6 +173,40 @@ describe('panel.ts integration', () => {
     expect((focusMsg as any).sessionId).toBe(sess.sessionId);
   });
 
+  it('posts focusSession (not openWorkspace) when clicking a live sibling-worktree card', () => {
+    // workspacePath is '/test'; a sibling worktree lives at '/test-spike-a'.
+    // Card has worktreeRoot/worktreeLabel set, status running ⇒ live.
+    const sess = makeSession({
+      status: 'running',
+      worktreeRoot: '/test-spike-a',
+      worktreeLabel: 'test-spike-a',
+    });
+    sendUpdate({ sessions: [sess] });
+    const card = document.querySelector('.card') as HTMLElement;
+    expect(card.dataset.foreign).toBe('true');
+    card.click();
+    expect(postedMessages.some((m: any) => m.type === 'openWorkspace')).toBe(false);
+    const focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
+    expect(focusMsg).toBeTruthy();
+    expect((focusMsg as any).sessionId).toBe(sess.sessionId);
+  });
+
+  it('posts viewTranscript (not openWorkspace) when clicking a done sibling-worktree card', () => {
+    const sess = makeSession({
+      status: 'done',
+      worktreeRoot: '/test-spike-b',
+      worktreeLabel: 'test-spike-b',
+    });
+    sendUpdate({ sessions: [sess] });
+    const card = document.querySelector('.card') as HTMLElement;
+    expect(card.dataset.foreign).toBe('true');
+    card.click();
+    expect(postedMessages.some((m: any) => m.type === 'openWorkspace')).toBe(false);
+    const transcriptMsg = postedMessages.find((m: any) => m.type === 'viewTranscript');
+    expect(transcriptMsg).toBeTruthy();
+    expect((transcriptMsg as any).sessionId).toBe(sess.sessionId);
+  });
+
   it('renders foreign workspaces section', () => {
     sendUpdate({
       sessions: [makeSession()],
@@ -207,6 +241,32 @@ describe('panel.ts integration', () => {
     const rows = foreignRows!.querySelectorAll('.ws-row');
     const names = Array.from(rows).map(r => r.querySelector('.ws-name')?.textContent);
     expect(names).toEqual(['alpha', 'beta', 'solo']);
+  });
+
+  it('aggregates worktrees of the same repo into a single row with a worktree-count chip', () => {
+    sendUpdate({
+      sessions: [makeSession()],
+      foreignWorkspaces: [
+        { workspaceKey: '-ws-a', displayName: 'feat-a', cwd: '/repos/myrepo/feat-a', repoRoot: '/repos/myrepo', counts: { running: 1, done: 2 }, confidence: 'medium' },
+        { workspaceKey: '-ws-b', displayName: 'feat-b', cwd: '/repos/myrepo/feat-b', repoRoot: '/repos/myrepo', counts: { running: 1 }, confidence: 'medium' },
+        { workspaceKey: '-ws-c', displayName: 'main', cwd: '/repos/myrepo', repoRoot: '/repos/myrepo', counts: { done: 1 }, confidence: 'low' },
+      ],
+    });
+    const foreignRows = document.querySelector('.ws-foreign-rows');
+    expect(foreignRows).toBeTruthy();
+    // No group header — the three worktrees collapse to one synthetic row.
+    expect(foreignRows!.querySelectorAll('.ws-group-header').length).toBe(0);
+    const rows = foreignRows!.querySelectorAll('.ws-row');
+    expect(rows.length).toBe(1);
+    const row = rows[0];
+    expect(row.querySelector('.ws-name')?.textContent).toBe('myrepo');
+    const chip = row.querySelector('.worktree-count-chip');
+    expect(chip).toBeTruthy();
+    expect(chip!.textContent).toBe('3wt');
+    // Counts are summed across all worktrees
+    const counts = row.querySelector('.ws-counts')!.textContent;
+    expect(counts).toContain('2R');
+    expect(counts).toContain('3D');
   });
 
   it('does not group singletons under a parent header', () => {

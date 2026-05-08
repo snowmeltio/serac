@@ -189,6 +189,12 @@ export interface GroupableWorkspace {
   counts: Record<string, number>;
   confidence?: string;
   repoRoot?: string | null;
+  /** Set on synthetic rows produced by aggregating multiple worktrees of the
+   *  same repo. Counts are already summed; renderer shows a chip with this
+   *  number when > 1. Title attribute should list the member worktree paths. */
+  worktreeCount?: number;
+  /** Tooltip listing member worktree paths (only set on aggregated rows). */
+  worktreeMembersLabel?: string;
 }
 
 export interface ForeignGroup<W extends GroupableWorkspace> {
@@ -218,18 +224,59 @@ function basename(p: string): string {
   return idx === -1 ? trimmed : trimmed.slice(idx + 1);
 }
 
+/** Aggregate counts across a set of workspaces. Returns a Record where each
+ *  key sums to the total of that key across the input. Pure helper. */
+function sumCounts(workspaces: GroupableWorkspace[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const w of workspaces) {
+    for (const [k, v] of Object.entries(w.counts)) {
+      out[k] = (out[k] || 0) + v;
+    }
+  }
+  return out;
+}
+
+/** Pick the highest-priority confidence across a set of workspaces.
+ *  high > medium > low; any unset values are treated as 'medium'. */
+function aggregateConfidence(workspaces: GroupableWorkspace[]): string | undefined {
+  const order = { high: 3, medium: 2, low: 1 } as const;
+  let best: keyof typeof order | undefined;
+  for (const w of workspaces) {
+    const c = (w.confidence as keyof typeof order | undefined);
+    if (!c) { continue; }
+    if (!best || order[c] > order[best]) { best = c; }
+  }
+  return best;
+}
+
+/** Pick the cwd for an aggregated repo row. Prefer a member whose cwd matches
+ *  repoRoot exactly (the "main" worktree) so clicking opens the canonical
+ *  checkout; fall back to repoRoot itself, then to the first member's cwd. */
+function pickAggregatedCwd<W extends GroupableWorkspace>(repoRoot: string, members: W[]): string | null {
+  const main = members.find((m) => m.cwd === repoRoot);
+  if (main?.cwd) { return main.cwd; }
+  if (repoRoot) { return repoRoot; }
+  return members[0]?.cwd ?? null;
+}
+
 /** Group foreign workspaces by repository (when 2+ share a repoRoot), then
  *  by parent directory (when 2+ share a parent and weren't already consumed
- *  by a repo group). Workspaces that don't fit any group are returned as
- *  singletons. Pure function — no DOM. */
+ *  by a repo group).
+ *
+ *  Repo groups collapse to a single synthetic row (returned in `singletons`)
+ *  with summed counts and a `worktreeCount` field. Parent-directory groups
+ *  still render as a header + indented members (`groups`). Workspaces that
+ *  don't fit any group are returned as singletons unchanged. Pure function. */
 export function groupForeignWorkspaces<W extends GroupableWorkspace>(
   workspaces: W[],
   tildeAbbrev: (p: string) => string = (p) => p,
 ): GroupedForeignWorkspaces<W> {
   const groups: ForeignGroup<W>[] = [];
   const consumed = new Set<W>();
+  const aggregated: W[] = [];
 
-  // 1. Repo groups: 2+ workspaces sharing a non-null repoRoot.
+  // 1. Repo groups: 2+ workspaces sharing a non-null repoRoot collapse into
+  // one synthetic row with summed counts and a worktree count chip.
   const byRepo = new Map<string, W[]>();
   for (const w of workspaces) {
     if (!w.repoRoot) { continue; }
@@ -242,13 +289,24 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
     ws.sort((a, b) => a.displayName.localeCompare(b.displayName));
     for (const w of ws) { consumed.add(w); }
     const name = basename(repoRoot);
-    groups.push({
-      headerLabel: name + '/',
-      headerTitle: tildeAbbrev(repoRoot),
-      workspaces: ws,
-      hasActive: ws.some(workspaceHasActive),
-      sortKey: name,
-    });
+    const aggregatedCwd = pickAggregatedCwd(repoRoot, ws);
+    const membersLabel = ws.map((m) => tildeAbbrev(m.cwd ?? m.displayName)).join('\n');
+    // Use the first member as the prototype so any extra fields (workspaceKey,
+    // etc.) come along with sensible defaults; then override the aggregate-
+    // specific bits.
+    const proto = ws[0];
+    const synthetic = {
+      ...proto,
+      workspaceKey: 'repo:' + repoRoot,
+      displayName: name,
+      cwd: aggregatedCwd,
+      counts: sumCounts(ws),
+      confidence: aggregateConfidence(ws) ?? proto.confidence,
+      repoRoot,
+      worktreeCount: ws.length,
+      worktreeMembersLabel: membersLabel,
+    } as W;
+    aggregated.push(synthetic);
   }
 
   // 2. Parent-directory groups for whatever's left (existing behaviour).
@@ -282,7 +340,8 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
     return a.sortKey.localeCompare(b.sortKey);
   });
 
-  const singletons = workspaces.filter((w) => !consumed.has(w));
+  const remaining = workspaces.filter((w) => !consumed.has(w));
+  const singletons = [...aggregated, ...remaining];
   singletons.sort((a, b) => a.displayName.localeCompare(b.displayName));
 
   return { groups, singletons };
