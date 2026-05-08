@@ -302,20 +302,15 @@ const RANGE_MS: Record<string, number> = {
       return;
     }
 
-    // Card click
+    // Card click. Sibling-worktree cards (data-foreign=true with a worktree
+    // cwd) fall through to the same focus/transcript logic as local cards —
+    // the session lives in this repo's worktrees, so we view it inline rather
+    // than spawning a new VS Code window.
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
     if (card) {
       const sid = card.dataset.sessionId!;
       const isLive = card.classList.contains('running') || card.classList.contains('waiting');
-      const isForeign = card.dataset.foreign === 'true';
-      const cardCwd = card.dataset.cwd;
-      // Sibling/other-worktree card with a known CWD: open VS Code in that
-      // worktree (with a focus hint so the receiving window surfaces the session).
-      if (isForeign && cardCwd) {
-        vscode.postMessage({ type: 'openWorkspace', cwd: cardCwd, sessionId: sid });
-        return;
-      }
-      if (isLive || !isForeign) {
+      if (isLive) {
         focusedSessionId = sid;
         vscode.postMessage({ type: 'focusSession', sessionId: sid });
         if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
@@ -895,8 +890,12 @@ const RANGE_MS: Record<string, number> = {
     const waiting = ws.counts['waiting'] || 0;
     const done = ws.counts['done'] || 0;
     const seen = ws.counts['stale'] || 0;
+    const wtCount = ws.worktreeCount ?? 0;
+    const wtMembers = ws.worktreeMembersLabel ?? '';
+    const isAggregated = wtCount > 1;
     const rowClass = 'ws-row'
       + (grouped ? ' ws-row-grouped' : '')
+      + (isAggregated ? ' ws-row-aggregated' : '')
       + (waiting > 0 ? ' ws-row-waiting' : '')
       + (ws.cwd ? ' ws-row-clickable' : '');
     let countsHtml = '';
@@ -905,11 +904,18 @@ const RANGE_MS: Record<string, number> = {
     if (done) countsHtml += '<span class="status-count done-count">' + done + 'D</span>';
     if (seen) countsHtml += '<span class="status-count stale-count">' + seen + 'S</span>';
     const hasLiveSessions = running > 0 || waiting > 0;
-    const cwdAttr = ws.cwd ? ' data-cwd="' + escapeHtml(ws.cwd) + '" tabindex="0" role="button" title="Open workspace in VS Code"' : '';
+    const wtChip = isAggregated
+      ? '<span class="worktree-count-chip" title="' + escapeHtml(wtMembers) + '">' + wtCount + 'wt</span>'
+      : '';
+    const titleText = isAggregated
+      ? wtCount + ' worktrees:\n' + wtMembers
+      : 'Open workspace in VS Code';
+    const cwdAttr = ws.cwd ? ' data-cwd="' + escapeHtml(ws.cwd) + '" tabindex="0" role="button" title="' + escapeHtml(titleText) + '"' : '';
     return '<div class="' + rowClass + '"'
       + (hasLiveSessions ? ' data-confidence="' + (ws.confidence || 'medium') + '"' : '')
       + cwdAttr + '>'
       + '<span class="ws-name">' + escapeHtml(ws.displayName) + '</span>'
+      + wtChip
       + '<div class="ws-counts">' + countsHtml + '</div>'
       + '</div>';
   }

@@ -204,6 +204,12 @@ export interface WorkspaceGroup {
   /** Resolved git repository root for this workspace's CWD, or null when the
    *  CWD isn't part of a git repo. Worktrees of the same repo share a value. */
   repoRoot: string | null;
+  /** Set on synthetic rows produced by aggregating multiple worktrees of the
+   *  same repo (created in panelUtils.groupForeignWorkspaces, never sent
+   *  directly by the extension). Counts on such rows are already summed. */
+  worktreeCount?: number;
+  /** Tooltip listing member worktree paths (only set on aggregated rows). */
+  worktreeMembersLabel?: string;
 }
 
 // ── Team types (Cornice orchestrator + Agent Teams integration) ──────
