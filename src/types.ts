@@ -49,8 +49,15 @@ export interface SessionState {
   sessionId: string;
   /** Human-readable slug from the session (e.g. "rippling-bouncing-pie") */
   slug: string;
-  /** Working directory of the session */
+  /** Working directory of the session — tracks the latest `cwd` record, so it
+   *  drifts when the agent `cd`s mid-session. */
   cwd: string;
+  /** Initial working directory at session start, captured from the first JSONL
+   *  record whose cwd round-trips to this workspaceKey. Stable across `cd`s,
+   *  so the foreign-workspace pane can anchor display names and click-through
+   *  to the workspace dir rather than a transient subfolder. Empty until the
+   *  first matching record arrives. */
+  initialCwd: string;
   /** Workspace path key (the sanitised directory name under ~/.claude/projects/) */
   workspaceKey: string;
   /** File path to the JSONL transcript */
@@ -95,6 +102,10 @@ export interface SessionSnapshot {
   sessionId: string;
   slug: string;
   cwd: string;
+  /** Initial cwd that round-trips to workspaceKey (see SessionState.initialCwd).
+   *  Empty/absent when no record has matched yet — consumers should fall back
+   *  to `cwd` only for *display* purposes, never for routing/click-through. */
+  initialCwd?: string;
   workspaceKey: string;
   topic: string;
   status: DisplayStatus;
@@ -212,6 +223,27 @@ export interface WorkspaceGroup {
   worktreeMembersLabel?: string;
 }
 
+/** A row in the Worktrees pane: one worktree of the current repo. Built in
+ *  extension.ts from `discoverWorktrees()` + session counts; the panel just
+ *  renders. Includes worktrees with no CC history (counts all zero) so the
+ *  pane stays a faithful map of the repo's worktrees. */
+export interface WorktreeRow {
+  /** Absolute path to the worktree's working tree (canonical). */
+  path: string;
+  /** Branch name when HEAD is a symbolic ref; null when detached. */
+  branch: string | null;
+  /** Display label — branch name when available, else the dir basename. */
+  displayName: string;
+  /** Status counts (waiting/running/done/stale) for sessions in this worktree. */
+  counts: Record<string, number>;
+  /** Highest status confidence across this worktree's sessions. */
+  confidence: StatusConfidence;
+  /** True when this is the worktree the user has VS Code open in. */
+  isCurrent: boolean;
+  /** True for the main checkout (where `.git` is a directory). */
+  isMain: boolean;
+}
+
 // ── Team types (Cornice orchestrator + Agent Teams integration) ──────
 
 /** Exit status of a Cornice-spawned agent */
@@ -307,6 +339,10 @@ export type WebviewMessage =
        *  When sessions is empty but this is > 0, the panel reveals the
        *  time-range bar so the user can widen the range to surface them. */
       olderSessionCount?: number;
+      /** Worktrees of the current repo. Includes the main checkout and every
+       *  linked worktree (even ones with no CC history). Empty/undefined when
+       *  the workspace isn't a git repo or has no linked worktrees. */
+      worktrees?: WorktreeRow[];
     }
   | {
       type: 'focusSession';

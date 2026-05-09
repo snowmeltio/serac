@@ -10,7 +10,6 @@ import {
   formatAgeCoarse,
   getStatusLabel,
   isForeignSession,
-  isFromOtherWorktree,
   groupForeignWorkspaces,
   GroupableWorkspace,
   debounceStatuses,
@@ -401,23 +400,6 @@ describe('formatTokenCount', () => {
   });
 });
 
-describe('isFromOtherWorktree', () => {
-  it('returns false when worktreeRoot equals localWorktreeRoot', () => {
-    const s = session({ worktreeRoot: '/home/u/repo' });
-    expect(isFromOtherWorktree(s, '/home/u/repo')).toBe(false);
-  });
-  it('returns true when worktreeRoot differs', () => {
-    const s = session({ worktreeRoot: '/home/u/repo-wt' });
-    expect(isFromOtherWorktree(s, '/home/u/repo')).toBe(true);
-  });
-  it('returns false when worktreeRoot is unset', () => {
-    expect(isFromOtherWorktree(session(), '/home/u/repo')).toBe(false);
-  });
-  it('returns false when localWorktreeRoot is empty', () => {
-    expect(isFromOtherWorktree(session({ worktreeRoot: '/x' }), '')).toBe(false);
-  });
-});
-
 describe('groupForeignWorkspaces', () => {
   function ws(overrides: Partial<GroupableWorkspace> & { workspaceKey: string; displayName: string }): GroupableWorkspace {
     return { counts: {}, ...overrides };
@@ -437,6 +419,32 @@ describe('groupForeignWorkspaces', () => {
     expect(agg.workspaceKey).toBe('repo:/r/repo');
     expect(agg.worktreeCount).toBe(2);
     expect(agg.counts).toEqual({ running: 2, done: 2 });
+  });
+
+  it('worktreeCount + members tooltip include every tracked worktree, regardless of dismissal state', () => {
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo', counts: { running: 1 } }),
+      ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo', counts: { done: 2 } }),
+      // c has no live sessions — all dismissed (foreign manager zeroes counts).
+      // The chip is a stable "this repo has N worktrees" fact, so c still counts.
+      ws({ workspaceKey: 'c', displayName: 'feat-c', cwd: '/r/repo/feat-c', repoRoot: '/r/repo', counts: {} }),
+    ];
+    const { singletons } = groupForeignWorkspaces(list);
+    const agg = singletons[0];
+    expect(agg.worktreeCount).toBe(3);
+    expect(agg.worktreeMembersLabel).toContain('/r/repo/feat-a');
+    expect(agg.worktreeMembersLabel).toContain('/r/repo/feat-b');
+    expect(agg.worktreeMembersLabel).toContain('/r/repo/feat-c');
+  });
+
+  it('worktreeCount still reflects total members when every worktree has only dismissed sessions', () => {
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo', counts: {} }),
+      ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo', counts: {} }),
+    ];
+    const { singletons } = groupForeignWorkspaces(list);
+    expect(singletons).toHaveLength(1);
+    expect(singletons[0].worktreeCount).toBe(2);
   });
 
   it('aggregated row prefers the main worktree cwd (cwd === repoRoot) over a worktree path', () => {
@@ -482,9 +490,9 @@ describe('groupForeignWorkspaces', () => {
   it('repo-aggregation takes precedence over parent-dir grouping', () => {
     const list = [
       // Two repos in /code; one of them has a sibling worktree in /work
-      ws({ workspaceKey: 'a', displayName: 'repo-a-wt', cwd: '/work/repo-a-wt', repoRoot: '/code/repo-a' }),
-      ws({ workspaceKey: 'a2', displayName: 'repo-a', cwd: '/code/repo-a', repoRoot: '/code/repo-a' }),
-      ws({ workspaceKey: 'b', displayName: 'repo-b', cwd: '/code/repo-b', repoRoot: '/code/repo-b' }),
+      ws({ workspaceKey: 'a', displayName: 'repo-a-wt', cwd: '/work/repo-a-wt', repoRoot: '/code/repo-a', counts: { running: 1 } }),
+      ws({ workspaceKey: 'a2', displayName: 'repo-a', cwd: '/code/repo-a', repoRoot: '/code/repo-a', counts: { done: 1 } }),
+      ws({ workspaceKey: 'b', displayName: 'repo-b', cwd: '/code/repo-b', repoRoot: '/code/repo-b', counts: { done: 1 } }),
     ];
     const { groups, singletons } = groupForeignWorkspaces(list);
     // repo-a aggregates to one synthetic row; repo-b is a singleton.
@@ -510,8 +518,8 @@ describe('groupForeignWorkspaces', () => {
 
   it('aggregated row exposes a members tooltip listing each worktree path', () => {
     const list = [
-      ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo' }),
-      ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo' }),
+      ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo', counts: { done: 1 } }),
+      ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo', counts: { done: 1 } }),
     ];
     const { singletons } = groupForeignWorkspaces(list);
     expect(singletons[0].worktreeMembersLabel).toContain('/r/repo/feat-a');
@@ -520,8 +528,8 @@ describe('groupForeignWorkspaces', () => {
 
   it('applies tildeAbbrev to the members tooltip on aggregated rows', () => {
     const list = [
-      ws({ workspaceKey: 'a', displayName: 'a', cwd: '/home/u/repo/a', repoRoot: '/home/u/repo' }),
-      ws({ workspaceKey: 'b', displayName: 'b', cwd: '/home/u/repo/b', repoRoot: '/home/u/repo' }),
+      ws({ workspaceKey: 'a', displayName: 'a', cwd: '/home/u/repo/a', repoRoot: '/home/u/repo', counts: { done: 1 } }),
+      ws({ workspaceKey: 'b', displayName: 'b', cwd: '/home/u/repo/b', repoRoot: '/home/u/repo', counts: { done: 1 } }),
     ];
     const { singletons } = groupForeignWorkspaces(list, p => p.replace('/home/u', '~'));
     expect(singletons[0].worktreeMembersLabel).toContain('~/repo/a');

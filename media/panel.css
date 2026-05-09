@@ -77,6 +77,51 @@ body {
   scrollbar-width: thin;
 }
 .ws-foreign-rows:empty { display: none; }
+/* Worktrees pane: sits directly above .ws-foreign-rows and mirrors its
+ * height-cap + scroll behaviour, so a long worktree list doesn't push the
+ * panel offscreen. Hidden when empty (no linked worktrees) so single-worktree
+ * repos look identical to today. */
+.ws-worktree-rows {
+  padding: 4px 12px 6px 12px;
+  border-top: 1px solid var(--vscode-panel-border, #2d2d2d);
+  max-height: 280px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+.ws-worktree-rows:empty { display: none; }
+.ws-row-current { cursor: default; }
+.ws-row-current .ws-name { color: var(--vscode-editor-foreground, #cccccc); }
+/* "You are here" pin: sits after the worktree name on the current row only
+ * (so non-current rows don't need a reserved left column). Fixed height keeps
+ * the pin row from inflating taller than rows without a glyph. */
+.ws-current-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--vscode-descriptionForeground, #888888);
+}
+/* Quiet outline chip marking the main checkout. Sits after the branch name
+ * because the main checkout's branch can change — the chip is the stable
+ * "this is the home worktree" marker regardless of what's checked out. */
+.ws-main-chip {
+  font-size: 9px;
+  font-weight: 400;
+  padding: 0 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.2;
+  color: var(--vscode-descriptionForeground, #888888);
+  background: transparent;
+  border: 1px solid currentColor;
+  opacity: 0.75;
+  text-transform: lowercase;
+  letter-spacing: 0.2px;
+}
 /* Bottom fade only while content overflows — the JS toggles is-overflowing
  * after each render so the gradient never lies about scrollability. */
 .ws-foreign-rows.is-overflowing {
@@ -103,13 +148,14 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
 }
 .ws-counts {
   display: flex;
   gap: 3px;
   flex-shrink: 0;
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
 .ws-counts .status-count {
@@ -300,46 +346,27 @@ body {
   border: 1px solid rgba(153, 153, 153, 0.3);
 }
 .compact-foreign { font-size: 7px; padding: 0 4px; margin-right: 4px; }
-/* Worktree origin pill: a card from a sibling worktree (or any other-worktree
- * card). Subtler than foreign-pill so the card itself stays the focus. */
-.worktree-pill {
-  font-size: 8px;
-  font-weight: 500;
-  padding: 1px 5px;
-  border-radius: 3px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  line-height: 13px;
-  color: var(--sm-snow-blue);
-  background: rgba(var(--sm-blizzard-blue-rgb), 0.12);
-  border: 1px solid rgba(var(--sm-blizzard-blue-rgb), 0.3);
-  font-family: var(--vscode-editor-font-family, 'SF Mono', 'Fira Code', monospace);
-  max-width: 12em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.compact-worktree { font-size: 7px; padding: 0 4px; margin-right: 4px; }
 /* Worktree count chip: appears on aggregated repo rows in "Other workspaces"
- * when one repo has multiple worktrees. Reads as "3wt" — keep it compact so it
- * sits between the workspace name and the status counts without dominating. */
+ * when one repo has multiple worktrees. Reads as "3wt". Sits to the RIGHT of
+ * the workspace name as a quiet point of fact — not a primary identifier. */
 .worktree-count-chip {
-  font-size: 9px;
-  font-weight: 600;
-  padding: 0 5px;
+  text-align: center;
   border-radius: 3px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  line-height: 14px;
-  color: var(--sm-snow-blue);
-  background: rgba(var(--sm-blizzard-blue-rgb), 0.14);
-  border: 1px solid rgba(var(--sm-blizzard-blue-rgb), 0.32);
+  padding: 0 4px;
+  line-height: 1.2;
+  font-weight: 400;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.1px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: var(--vscode-descriptionForeground, #888888);
+  background: transparent;
+  border: 1px solid currentColor;
+  opacity: 0.75;
 }
 body.vscode-light .worktree-count-chip {
-  color: #4a6cd4;
-  background: rgba(74, 108, 212, 0.10);
-  border-color: rgba(74, 108, 212, 0.28);
+  color: #777777;
 }
 .card.foreign { opacity: 0.7; }
 .card.foreign:hover { opacity: 0.85; }
@@ -443,8 +470,21 @@ body.vscode-light .worktree-count-chip {
 
 /* Clickable foreign workspace rows */
 .ws-row-clickable { cursor: pointer; }
-.ws-row-clickable:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.12); }
+/* Neutral grey hover — blue is overloaded across the panel, so reserve it for
+ * status/identity cues. Falls back to a low-alpha grey when VS Code's list
+ * hover variable isn't defined. */
+.ws-row-clickable:hover { background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06)); }
+body.vscode-light .ws-row-clickable:hover { background: var(--vscode-list-hoverBackground, rgba(0, 0, 0, 0.05)); }
 .ws-row-clickable:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: 1px; }
+
+/* Waiting rows in the Worktrees + Other workspaces panes wash peach so a
+ * waiting agent stands out at a glance even when the row is collapsed. The
+ * tint stays low-alpha so the row text/counts remain readable, and it
+ * stacks under :hover so the row still highlights on pointer-over. */
+.ws-row-waiting { background: rgba(var(--sm-frozen-peach-rgb), 0.10); }
+.ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach-rgb), 0.18); }
+body.vscode-light .ws-row-waiting { background: rgba(var(--sm-frozen-peach-rgb), 0.18); }
+body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach-rgb), 0.28); }
 
 .card-meta {
   display: flex;

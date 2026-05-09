@@ -87,3 +87,74 @@ export async function resolveRepoRoot(cwd: string): Promise<string | null> {
     return null;
   }
 }
+
+export interface WorktreeInfo {
+  /** Absolute path of the worktree's working tree (canonical/realpath). */
+  path: string;
+  /** Branch name if HEAD is a symbolic ref (`refs/heads/<branch>`); null when detached. */
+  branch: string | null;
+  /** True for the main checkout (where `.git` is a directory). */
+  isMain: boolean;
+}
+
+/** Enumerate every worktree of the repo rooted at `repoRoot` by reading
+ *  `<repoRoot>/.git/worktrees/*`. Includes the main checkout itself. Returns
+ *  empty when `repoRoot` isn't a git repo or `.git` isn't a directory (i.e.
+ *  caller passed a linked worktree path; resolveRepoRoot first). */
+export async function discoverWorktrees(repoRoot: string): Promise<WorktreeInfo[]> {
+  if (!repoRoot) { return []; }
+
+  const gitDir = path.join(repoRoot, '.git');
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.stat(gitDir);
+  } catch {
+    return [];
+  }
+  if (!stat.isDirectory()) { return []; }
+
+  const mainBranch = await readHeadBranch(path.join(gitDir, 'HEAD'));
+  const result: WorktreeInfo[] = [{ path: repoRoot, branch: mainBranch, isMain: true }];
+
+  const worktreesDir = path.join(gitDir, 'worktrees');
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(worktreesDir, { withFileTypes: true });
+  } catch {
+    return result;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) { continue; }
+    const wtMetaDir = path.join(worktreesDir, entry.name);
+    const gitdirFile = path.join(wtMetaDir, 'gitdir');
+    let wtPath: string;
+    try {
+      const raw = (await fs.promises.readFile(gitdirFile, 'utf-8')).trim();
+      // gitdir contents: <wt-path>/.git — the working tree is its parent.
+      wtPath = path.dirname(raw);
+    } catch {
+      continue;
+    }
+    try {
+      wtPath = await fs.promises.realpath(wtPath);
+    } catch {
+      // Worktree dir was removed but the metadata stub remains — skip it.
+      continue;
+    }
+    const branch = await readHeadBranch(path.join(wtMetaDir, 'HEAD'));
+    result.push({ path: wtPath, branch, isMain: false });
+  }
+
+  return result;
+}
+
+async function readHeadBranch(headPath: string): Promise<string | null> {
+  try {
+    const raw = (await fs.promises.readFile(headPath, 'utf-8')).trim();
+    const m = /^ref:\s+refs\/heads\/(.+)$/.exec(raw);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}

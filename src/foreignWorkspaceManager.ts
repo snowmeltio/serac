@@ -111,11 +111,18 @@ export class ForeignWorkspaceManager {
           }
         } catch { /* unreadable directory */ }
       }
-      // Cache cwd per workspace key (stable display names)
+      // Cache cwd per workspace key (stable display names). Prefer
+      // `initialCwd` — the first cwd that round-trips to the workspaceKey —
+      // so the row label and click-through anchor to the workspace dir even
+      // if the agent `cd`-ed into a subfolder mid-session. Fall back to
+      // `cwd` only when no record has matched yet (older sessions, edge
+      // cases) so we never end up with a blank label.
       for (const session of this.sessions.values()) {
         const snapshot = session.getSnapshot();
-        if (snapshot.cwd && !this.cwdCache.has(snapshot.workspaceKey)) {
-          this.cwdCache.set(snapshot.workspaceKey, snapshot.cwd);
+        if (this.cwdCache.has(snapshot.workspaceKey)) { continue; }
+        const cwd = snapshot.initialCwd || snapshot.cwd;
+        if (cwd) {
+          this.cwdCache.set(snapshot.workspaceKey, cwd);
         }
       }
       // Resolve repoRoot once per cached cwd (drives repo grouping in the panel).
@@ -262,10 +269,18 @@ export class ForeignWorkspaceManager {
       }
       if (meta?.dismissed) { continue; }
 
+      // Stale rollover: prefer the source workspace's acknowledgedAt when the
+      // user has actually acknowledged. Fall back to lastActivity so unattended
+      // workspaces (closed VSCode, headless agent) still decay instead of
+      // sticking on `done` indefinitely.
       let status = snapshot.status;
-      if (status === 'done' && meta?.acknowledged) {
-        const ackTime = meta.acknowledgedAt ?? 0;
-        if (now - ackTime > STALE_PROMOTION_MS) {
+      if (status === 'done') {
+        if (meta?.acknowledged) {
+          const ackTime = meta.acknowledgedAt ?? 0;
+          if (now - ackTime > STALE_PROMOTION_MS) {
+            status = 'stale';
+          }
+        } else if (now - snapshot.lastActivity > STALE_PROMOTION_MS) {
           status = 'stale';
         }
       }
