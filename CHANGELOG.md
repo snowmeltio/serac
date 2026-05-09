@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.6.0 (2026-05-09) — Worktrees pane + same-repo aggregation
+
+A focused release on the multi-worktree workflow. The new Worktrees pane maps every worktree of the current repo with live W/R/D/S chips, and "Other workspaces" rows for unrelated repos with multiple worktrees collapse to a single synthetic row instead of an indented list.
+
+### Added
+- **Worktrees pane** — a new section above "Other workspaces" lists every worktree of the current repo (including the main checkout), with live W/R/D/S chip counts sourced from local + sibling sessions. The current worktree is pinned at the top; clicking any other row opens VS Code at that worktree. Worktrees with no Claude Code history still appear, so the pane is a faithful map of `git worktree list` rather than a list of "places I've chatted." Hidden when the repo has only one worktree.
+- **Inline sibling-session click-through** — clicking a sibling-worktree card no longer spawns a new VS Code window. It falls through to the same focusSession / view-transcript path used by local cards, so transcript view works for sessions that live in another worktree of the same repo.
+- **`initialCwd` field** on session snapshots — captures the first JSONL `cwd` that round-trips to the workspace key. Stable across mid-session `cd`s, so foreign-workspace display names and click-through anchor to the workspace dir rather than a transient subfolder.
+
+### Changed
+- **"Other workspaces" rows for a repo with multiple worktrees** collapse to a single synthetic row (e.g. "serac  3wt") with summed counts and a tooltip listing the member paths. Previously each worktree got its own indented row under a `serac/` header, which became noisy beyond two worktrees.
+
+### Fixed
+- **Sibling-worktree rows previously stuck on a `D` chip indefinitely** once a session finished. The done → stale transition is now driven by `lastActivity` for sibling sessions (no cross-workspace meta read needed), so chips fade to `S` 10 seconds after the session ends — matching the local row's behaviour.
+- **"Other workspaces" chips for unattended workspaces** (closed VS Code, headless agents) similarly stuck on `D` because the source workspace never wrote an `acknowledgedAt`. The acknowledgement-driven rollover stays primary; a `lastActivity` fallback now catches sessions that nobody ever opens.
+
 ## v1.5.2 (2026-05-07) — Status pill casing + light-mode chip contrast
 
 ### Fixed
