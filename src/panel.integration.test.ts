@@ -173,38 +173,34 @@ describe('panel.ts integration', () => {
     expect((focusMsg as any).sessionId).toBe(sess.sessionId);
   });
 
-  it('posts focusSession (not openWorkspace) when clicking a live sibling-worktree card', () => {
-    // workspacePath is '/test'; a sibling worktree lives at '/test-spike-a'.
-    // Card has worktreeRoot/worktreeLabel set, status running ⇒ live.
-    const sess = makeSession({
+  it('does not render sibling-worktree sessions as cards (Worktrees pane handles them)', () => {
+    const localSess = makeSession({ sessionId: 'local-1', status: 'running' });
+    const siblingSess = makeSession({
+      sessionId: 'sib-1',
       status: 'running',
       worktreeRoot: '/test-spike-a',
       worktreeLabel: 'test-spike-a',
     });
-    sendUpdate({ sessions: [sess] });
-    const card = document.querySelector('.card') as HTMLElement;
-    expect(card.dataset.foreign).toBe('true');
-    card.click();
-    expect(postedMessages.some((m: any) => m.type === 'openWorkspace')).toBe(false);
-    const focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
-    expect(focusMsg).toBeTruthy();
-    expect((focusMsg as any).sessionId).toBe(sess.sessionId);
+    sendUpdate({ sessions: [localSess, siblingSess] });
+    const cards = document.querySelectorAll('.card');
+    expect(cards).toHaveLength(1);
+    expect((cards[0] as HTMLElement).dataset.sessionId).toBe('local-1');
   });
 
-  it('posts viewTranscript (not openWorkspace) when clicking a done sibling-worktree card', () => {
+  it('keeps sessions whose worktreeRoot equals the current workspace (current workspace is a worktree)', () => {
+    // workspacePath defaults to '/test'. When the current workspace IS a
+    // worktree, its sessions carry worktreeRoot = workspacePath. Those are
+    // local and must stay in the main card list.
     const sess = makeSession({
-      status: 'done',
-      worktreeRoot: '/test-spike-b',
-      worktreeLabel: 'test-spike-b',
+      sessionId: 'local-wt',
+      status: 'running',
+      worktreeRoot: '/test',
+      worktreeLabel: 'test',
     });
     sendUpdate({ sessions: [sess] });
-    const card = document.querySelector('.card') as HTMLElement;
-    expect(card.dataset.foreign).toBe('true');
-    card.click();
-    expect(postedMessages.some((m: any) => m.type === 'openWorkspace')).toBe(false);
-    const transcriptMsg = postedMessages.find((m: any) => m.type === 'viewTranscript');
-    expect(transcriptMsg).toBeTruthy();
-    expect((transcriptMsg as any).sessionId).toBe(sess.sessionId);
+    const cards = document.querySelectorAll('.card');
+    expect(cards).toHaveLength(1);
+    expect((cards[0] as HTMLElement).dataset.sessionId).toBe('local-wt');
   });
 
   it('renders foreign workspaces section', () => {

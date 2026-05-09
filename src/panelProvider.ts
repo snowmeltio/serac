@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
-import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, FooterSlotPayload } from './types.js';
+import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, FooterSlotPayload, WorktreeRow } from './types.js';
 import type { CompactSettings } from './claudeSettings.js';
 import { parseWebviewCommand } from './validation.js';
 
@@ -21,6 +21,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private teams: TeamSnapshot[] = [];
   private compactSettings: CompactSettings | undefined;
   private olderSessionCount = 0;
+  private worktrees: WorktreeRow[] | undefined;
   private onFocusSession: ((sessionId: string) => void) | undefined;
   private onDismissSession: ((sessionId: string) => void) | undefined;
   private onUndismissSession: ((sessionId: string) => void) | undefined;
@@ -157,7 +158,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /** Update the panel with new session data */
-  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[], olderSessionCount?: number, foreignRunning?: SessionSnapshot[]): void {
+  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[], olderSessionCount?: number, foreignRunning?: SessionSnapshot[], worktrees?: WorktreeRow[]): void {
     this.sessions = sessions;
     this.waitingCount = waitingCount;
     this.workspacePath = workspacePath;
@@ -168,6 +169,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.teams = teams ?? [];
     this.compactSettings = compactSettings;
     this.olderSessionCount = olderSessionCount ?? 0;
+    this.worktrees = worktrees;
 
     // Update badge
     if (this.view) {
@@ -202,6 +204,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       compactSettings: this.compactSettings,
       footerSlots: footerSlots.length > 0 ? footerSlots : undefined,
       olderSessionCount: this.olderSessionCount > 0 ? this.olderSessionCount : undefined,
+      worktrees: this.worktrees && this.worktrees.length > 0 ? this.worktrees : undefined,
     };
 
     this.view.webview.postMessage(message);

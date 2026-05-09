@@ -10,6 +10,7 @@ import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from './claudeSettings.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
+import { buildWorktreeRows } from './worktreeRows.js';
 import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } from './workspaceOpener.js';
 
 export function activate(context: vscode.ExtensionContext): SeracExports {
@@ -234,6 +235,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     }
   });
 
+
   // Receive side: when another Serac instance leaves us a focus hint, pick it up
   // both on activate (in case we just launched) and via a FileSystemWatcher
   // (already-running window).
@@ -333,7 +335,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     // Foreign waiting cards demand attention too, so they bump the badge.
     waitingCount += foreignWaiting.length;
     const olderSessionCount = discovery.getOlderSessionCount();
-    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount, foreignRunning);
+    const worktrees = buildWorktreeRows(discovery.getDiscoveredWorktrees(), sessions, wsPath);
+    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount, foreignRunning, worktrees);
 
     // Auto-focus new session created via "+ New" button
     if (pendingNewChatKnownIds) {

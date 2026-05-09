@@ -4,7 +4,7 @@ import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
-import { resolveRepoRoot } from './gitWorktreeUtil.js';
+import { resolveRepoRoot, discoverWorktrees, type WorktreeInfo } from './gitWorktreeUtil.js';
 import { TeamDiscovery } from './teamDiscovery.js';
 import { claudeStateDir } from './paths.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot } from './types.js';
@@ -58,6 +58,15 @@ export class SessionDiscovery {
   private readonly localCwd: string;
   /** Display label for the local worktree (basename of localCwd). */
   private readonly localWorktreeLabel: string;
+  /** Resolved git repo root for the local CWD, set during initialise() once
+   *  resolveRepoRoot completes. Null when the workspace isn't in a git repo. */
+  private localRepoRoot: string | null = null;
+  /** Cached worktree enumeration for the local repo. Refreshed on start and
+   *  every WORKTREE_REFRESH_MS thereafter. Empty when no repo or no linked
+   *  worktrees. Read by extension.ts to build the Worktrees pane. */
+  private discoveredWorktrees: WorktreeInfo[] = [];
+  private worktreeRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+  private static readonly WORKTREE_REFRESH_MS = 60_000;
   /** Manages cross-workspace session discovery and polling */
   private foreignManager: ForeignWorkspaceManager;
   /** Manages sibling-worktree (same-repo, different CWD) session discovery */
@@ -277,10 +286,17 @@ export class SessionDiscovery {
     // run without sibling-worktree consolidation.
     try {
       const repoRoot = await resolveRepoRoot(this.localCwd);
+      this.localRepoRoot = repoRoot;
       this.siblingManager.setLocalRepoRoot(repoRoot);
     } catch (err) {
       this.log.warn('Failed to resolve local repoRoot:', err);
     }
+
+    // Worktree enumeration is independent of session discovery — a worktree
+    // is real even when no CC chats exist in it. Initial sweep, then poll
+    // periodically; cheap (just reads .git/worktrees/*).
+    await this.refreshDiscoveredWorktrees();
+    this.scheduleWorktreeRefresh();
 
     // Initial scan (local + sibling worktrees + foreign + teams).
     // Sibling scan must run before foreign scan so foreign can exclude sibling keys.
@@ -324,6 +340,10 @@ export class SessionDiscovery {
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
     }
+    if (this.worktreeRefreshTimer) {
+      clearTimeout(this.worktreeRefreshTimer);
+      this.worktreeRefreshTimer = undefined;
+    }
     for (const session of this.sessions.values()) {
       session.dispose();
     }
@@ -331,6 +351,41 @@ export class SessionDiscovery {
     this.siblingManager.dispose();
     this.foreignManager.dispose();
     this.teamDiscovery.dispose();
+  }
+
+  /** Re-enumerate worktrees of the local repo. No-op when no repoRoot. Fires
+   *  the change callback when the set changes so the panel re-renders. */
+  private async refreshDiscoveredWorktrees(): Promise<void> {
+    if (!this.localRepoRoot) {
+      this.discoveredWorktrees = [];
+      return;
+    }
+    let next: WorktreeInfo[] = [];
+    try {
+      next = await discoverWorktrees(this.localRepoRoot);
+    } catch (err) {
+      this.log.warn('discoverWorktrees failed:', err);
+      return;
+    }
+    if (worktreeSetChanged(this.discoveredWorktrees, next)) {
+      this.discoveredWorktrees = next;
+      this.onChangeCallback?.();
+    } else {
+      this.discoveredWorktrees = next;
+    }
+  }
+
+  private scheduleWorktreeRefresh(): void {
+    if (this.disposed) { return; }
+    this.worktreeRefreshTimer = setTimeout(() => {
+      if (this.disposed) { return; }
+      void this.refreshDiscoveredWorktrees().finally(() => this.scheduleWorktreeRefresh());
+    }, SessionDiscovery.WORKTREE_REFRESH_MS);
+  }
+
+  /** Snapshot of the worktree enumeration. Includes the main checkout. */
+  getDiscoveredWorktrees(): WorktreeInfo[] {
+    return this.discoveredWorktrees;
   }
 
   /** Get snapshots of all sessions, sorted by priority */
@@ -371,8 +426,13 @@ export class SessionDiscovery {
     // Merge sibling-worktree sessions into the same feed. Sibling sessions
     // already carry worktreeRoot/worktreeLabel; we don't apply local meta
     // (dismissed/title) to them because that meta lives in the sibling's own
-    // session-meta.json and isn't ours to mutate.
+    // session-meta.json and isn't ours to mutate. The done→stale rollover uses
+    // lastActivity as the time anchor (rather than acknowledgedAt) so the
+    // Worktrees pane decays correctly without cross-workspace meta reads.
     for (const sib of this.siblingManager.getSnapshots()) {
+      if (sib.status === 'done' && now - sib.lastActivity > 10_000) {
+        sib.status = 'stale';
+      }
       snapshots.push(sib);
     }
 
@@ -481,6 +541,12 @@ export class SessionDiscovery {
     } catch (err) {
       this.log.warn('[archive] Failed to read workspace directory %s: %s', wsDir, err);
     }
+  }
+
+  /** Resolved local repoRoot, or null when not in a git repo. Used by the
+   *  panel to derive the repo basename for label-stripping. */
+  getLocalRepoRoot(): string | null {
+    return this.localRepoRoot;
   }
 
   /** Get the JSONL file path for a session — falls back to sibling worktrees
@@ -812,4 +878,15 @@ export class SessionDiscovery {
       this.log.error('pollInner error:', err);
     }
   }
+}
+
+/** Compare two worktree lists for set equality (order-insensitive, branch-aware). */
+function worktreeSetChanged(a: WorktreeInfo[], b: WorktreeInfo[]): boolean {
+  if (a.length !== b.length) { return true; }
+  const key = (w: WorktreeInfo) => `${w.path}\0${w.branch ?? ''}`;
+  const aKeys = new Set(a.map(key));
+  for (const w of b) {
+    if (!aKeys.has(key(w))) { return true; }
+  }
+  return false;
 }

@@ -170,14 +170,6 @@ export function isForeignSession(s: PanelSession, workspaceKey: string): boolean
   return false;
 }
 
-/** True when a card originated from a worktree other than the local one
- *  (could be a sibling worktree of the same repo, or a different repo). */
-export function isFromOtherWorktree(s: PanelSession, localWorktreeRoot: string): boolean {
-  if (!s.worktreeRoot) return false;
-  if (!localWorktreeRoot) return false;
-  return s.worktreeRoot !== localWorktreeRoot;
-}
-
 // ===== Foreign workspace grouping =====
 
 /** Minimal shape needed by the grouping logic; matches `WorkspaceGroup` from
@@ -191,9 +183,11 @@ export interface GroupableWorkspace {
   repoRoot?: string | null;
   /** Set on synthetic rows produced by aggregating multiple worktrees of the
    *  same repo. Counts are already summed; renderer shows a chip with this
-   *  number when > 1. Title attribute should list the member worktree paths. */
+   *  number when > 1. Reflects every worktree of the repo that's tracked,
+   *  regardless of whether its sessions are dismissed — the chip is a fact
+   *  about the repo's shape, not about live work. */
   worktreeCount?: number;
-  /** Tooltip listing member worktree paths (only set on aggregated rows). */
+  /** Tooltip listing every member worktree path (only set on aggregated rows). */
   worktreeMembersLabel?: string;
 }
 
@@ -290,6 +284,10 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
     for (const w of ws) { consumed.add(w); }
     const name = basename(repoRoot);
     const aggregatedCwd = pickAggregatedCwd(repoRoot, ws);
+    // Worktree count + tooltip reflect every tracked worktree of the repo,
+    // including ones whose sessions are all dismissed. The chip is a stable
+    // "this repo has N worktrees" indicator — it shouldn't drop in and out as
+    // you archive sessions.
     const membersLabel = ws.map((m) => tildeAbbrev(m.cwd ?? m.displayName)).join('\n');
     // Use the first member as the prototype so any extra fields (workspaceKey,
     // etc.) come along with sensible defaults; then override the aggregate-

@@ -12,8 +12,6 @@ import {
   formatAge,
   formatAgeCoarse,
   getStatusLabel,
-
-  isFromOtherWorktree,
   debounceStatuses,
   getElapsedPct,
   quotaClass,
@@ -89,6 +87,16 @@ interface PanelFooterSlot {
   tooltip?: string;
 }
 
+interface PanelWorktreeRow {
+  path: string;
+  branch: string | null;
+  displayName: string;
+  counts: Record<string, number>;
+  confidence: string;
+  isCurrent: boolean;
+  isMain: boolean;
+}
+
 interface UpdateMessage {
   type: 'update';
   sessions: PanelSession[];
@@ -102,6 +110,7 @@ interface UpdateMessage {
   compactSettings?: PanelCompactSettings;
   footerSlots?: PanelFooterSlot[];
   olderSessionCount?: number;
+  worktrees?: PanelWorktreeRow[];
 }
 
 interface FocusMessage {
@@ -139,6 +148,8 @@ const RANGE_MS: Record<string, number> = {
   let lastNeedsInputCount = 0;
   let lastUsage: UsageData | null = null;
   let lastForeignWorkspaces: WorkspaceGroup[] | null = null;
+  let lastWorktrees: PanelWorktreeRow[] = [];
+  let lastWorktreesHtml = '';
   let lastForeignWaiting: PanelSession[] = [];
   let lastForeignRunning: PanelSession[] = [];
   let lastTeams: PanelTeam[] = [];
@@ -302,21 +313,15 @@ const RANGE_MS: Record<string, number> = {
       return;
     }
 
-    // Card click. Sibling-worktree cards (data-foreign=true with a worktree
-    // cwd) fall through to the same focus/transcript logic as local cards —
-    // the session lives in this repo's worktrees, so we view it inline rather
-    // than spawning a new VS Code window.
+    // Card click. Cards in the main list are always local (sibling-worktree
+    // sessions are filtered out — accessed via the Worktrees pane), so the
+    // click always opens the Claude Code companion editor for that session.
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
     if (card) {
       const sid = card.dataset.sessionId!;
-      const isLive = card.classList.contains('running') || card.classList.contains('waiting');
-      if (isLive) {
-        focusedSessionId = sid;
-        vscode.postMessage({ type: 'focusSession', sessionId: sid });
-        if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
-      } else {
-        vscode.postMessage({ type: 'viewTranscript', sessionId: sid });
-      }
+      focusedSessionId = sid;
+      vscode.postMessage({ type: 'focusSession', sessionId: sid });
+      if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
       return;
     }
   });
@@ -362,6 +367,7 @@ const RANGE_MS: Record<string, number> = {
         lastFooterSlots = message.footerSlots ?? [];
         compactSettings = message.compactSettings ?? null;
         lastOlderSessionCount = message.olderSessionCount ?? 0;
+        lastWorktrees = message.worktrees ?? [];
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         render(sessions, message.waitingCount, message.workspacePath);
       } else if (message.type === 'focusSession') {
@@ -409,7 +415,17 @@ const RANGE_MS: Record<string, number> = {
     }
     lastSessions = sessions;
     lastNeedsInputCount = waitingCount;
-    sessions = sessions.filter(s => !isGhost(s));
+    // Main card list is local-only. Sibling-worktree sessions (worktreeRoot
+    // points elsewhere) are reached through the Worktrees pane — clicking a
+    // row switches windows. Sessions whose worktreeRoot equals the current
+    // workspace path ARE local (the current workspace is itself a worktree)
+    // and stay in the list.
+    const wsRootNorm = workspacePath.replace(/\/+$/, '');
+    sessions = sessions.filter(s => {
+      if (isGhost(s)) { return false; }
+      if (!s.worktreeRoot) { return true; }
+      return s.worktreeRoot.replace(/\/+$/, '') === wsRootNorm;
+    });
 
     const counts: Record<string, number> = { 'waiting': 0, running: 0, done: 0, stale: 0, archived: 0 };
     for (const s of sessions) {
@@ -511,6 +527,15 @@ const RANGE_MS: Record<string, number> = {
     // === Time-range bar ===
     renderTimeRangeBar(archived.length > 0 || archivedTeams.length > 0 || lastOlderSessionCount > 0);
 
+    // === Worktrees pane (sits above Other workspaces) ===
+    let worktreesContainer = root.querySelector('.ws-worktree-rows') as HTMLElement | null;
+    if (!worktreesContainer) {
+      worktreesContainer = document.createElement('div');
+      worktreesContainer.className = 'ws-worktree-rows';
+      root.appendChild(worktreesContainer);
+    }
+    updateWorktreesContainer(worktreesContainer);
+
     // === Foreign workspace rows (between time-range bar and usage) ===
     let foreignContainer = root.querySelector('.ws-foreign-rows') as HTMLElement | null;
     if (!foreignContainer) {
@@ -521,10 +546,15 @@ const RANGE_MS: Record<string, number> = {
 
     // === Usage section (always last) ===
     renderUsageSection();
-    // Ensure foreign rows stay above usage section
+    // Order: worktrees → foreign → usage. Re-parent if needed.
     const usageEl = root.querySelector('.usage-section');
-    if (usageEl && foreignContainer.nextElementSibling !== usageEl) {
-      root.insertBefore(foreignContainer, usageEl);
+    if (usageEl) {
+      if (foreignContainer.nextElementSibling !== usageEl) {
+        root.insertBefore(foreignContainer, usageEl);
+      }
+      if (worktreesContainer.nextElementSibling !== foreignContainer) {
+        root.insertBefore(worktreesContainer, foreignContainer);
+      }
     }
     if (foreignContainer) {
       updateForeignContainer(foreignContainer);
@@ -589,19 +619,12 @@ const RANGE_MS: Record<string, number> = {
         el.classList.add('card', 'card-enter');
       }
 
-      const otherWorktree = isFromOtherWorktree(s, workspacePath);
-      el.className = 'card ' + s.status + (isFocused ? ' focused' : '') + (isNew ? ' card-enter' : '') + (otherWorktree ? ' foreign' : '');
+      el.className = 'card ' + s.status + (isFocused ? ' focused' : '') + (isNew ? ' card-enter' : '');
       el.setAttribute('role', 'listitem');
       el.setAttribute('tabindex', '0');
       el.setAttribute('aria-label', escapeHtml(stripMarkdown(getDisplayName(s))) + ' \u2014 ' + s.status);
-      el.dataset.foreign = otherWorktree ? 'true' : 'false';
-      if (otherWorktree && s.worktreeRoot) {
-        el.dataset.cwd = s.worktreeRoot;
-      } else {
-        delete el.dataset.cwd;
-      }
       el.dataset.confidence = s.confidence || 'high';
-      el.innerHTML = renderCardInner(s, now, isFocused, otherWorktree);
+      el.innerHTML = renderCardInner(s, now, isFocused);
 
       // Place in correct order
       let desiredNext: HTMLElement | null = prevNode ? prevNode.nextElementSibling as HTMLElement | null : container.firstElementChild as HTMLElement | null;
@@ -766,7 +789,7 @@ const RANGE_MS: Record<string, number> = {
   }
 
   // ===== CARD INNER HTML =====
-  function renderCardInner(s: PanelSession, now: number, isFocused: boolean, foreign: boolean): string {
+  function renderCardInner(s: PanelSession, now: number, isFocused: boolean): string {
     const statusLabel = getStatusLabel(s, now);
     const displayName = stripMarkdown(getDisplayName(s));
 
@@ -862,20 +885,8 @@ const RANGE_MS: Record<string, number> = {
     const activityText = stripMarkdown(s.activity || 'No recent activity');
     const detailHtml = '<div class="card-detail">' + escapeHtml(activityText) + '</div>';
 
-    // Worktree pill: shows the originating worktree's name when the card
-    // didn't come from the local CWD. Sibling worktrees of the local repo are
-    // tracked locally (not view-only); foreign cards only appear here when
-    // promoted via foreignWaiting/foreignRunning, which keep the cross-window
-    // open behaviour. Either way the pill is just an origin indicator.
-    const worktreePill = foreign && s.worktreeLabel
-      ? '<span class="worktree-pill" title="From worktree ' + escapeHtml(s.worktreeLabel)
-        + (s.worktreeRoot ? ' (' + escapeHtml(s.worktreeRoot) + ')' : '') + '">'
-        + escapeHtml(s.worktreeLabel) + '</span>'
-      : '';
-
     return '<div class="card-top">'
       + '<span class="card-name">' + escapeHtml(displayName) + '</span>'
-      + worktreePill
       + '<span class="status-pill">' + statusLabel + '</span>'
       + '</div>'
       + metaHtml
@@ -907,9 +918,9 @@ const RANGE_MS: Record<string, number> = {
     const wtChip = isAggregated
       ? '<span class="worktree-count-chip" title="' + escapeHtml(wtMembers) + '">' + wtCount + 'wt</span>'
       : '';
-    const titleText = isAggregated
-      ? wtCount + ' worktrees:\n' + wtMembers
-      : 'Open workspace in VS Code';
+    // Row tooltip is just the full path (cwd or repoRoot) on one line — the
+    // members list lives on the wt chip's tooltip when this row aggregates.
+    const titleText = ws.cwd ? tildeAbbrev(ws.cwd) : '';
     const cwdAttr = ws.cwd ? ' data-cwd="' + escapeHtml(ws.cwd) + '" tabindex="0" role="button" title="' + escapeHtml(titleText) + '"' : '';
     return '<div class="' + rowClass + '"'
       + (hasLiveSessions ? ' data-confidence="' + (ws.confidence || 'medium') + '"' : '')
@@ -925,6 +936,70 @@ const RANGE_MS: Record<string, number> = {
     const home = typeof process !== 'undefined' && process.env?.HOME;
     if (home && p.startsWith(home)) { return '~' + p.slice(home.length); }
     return p;
+  }
+
+  /** Render one row of the Worktrees pane. Reuses .ws-row classes for visual
+   *  consistency with foreign rows. The current worktree gets data-current so
+   *  CSS can mark it; clicking any non-current row sends openWorkspace. */
+  function renderWorktreeRow(wt: PanelWorktreeRow): string {
+    const running = wt.counts['running'] || 0;
+    const waiting = wt.counts['waiting'] || 0;
+    const done = wt.counts['done'] || 0;
+    const seen = wt.counts['stale'] || 0;
+    const hasLive = running > 0 || waiting > 0;
+    let countsHtml = '';
+    if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
+    if (running) countsHtml += '<span class="status-count running-count">' + running + 'R</span>';
+    if (done) countsHtml += '<span class="status-count done-count">' + done + 'D</span>';
+    if (seen) countsHtml += '<span class="status-count stale-count">' + seen + 'S</span>';
+
+    const cls = 'ws-row ws-row-worktree'
+      + (waiting > 0 ? ' ws-row-waiting' : '')
+      + (wt.isCurrent ? ' ws-row-current' : ' ws-row-clickable');
+    // Tooltip is the full worktree path (with $HOME tilde-abbreviated). Keeps
+    // it on one line; "Switch to" / "Current worktree" prefixes were redundant
+    // when the path itself is shown.
+    const branchHint = wt.branch ? '' : ' (detached)';
+    const titleText = tildeAbbrev(wt.path) + branchHint
+      + (wt.isCurrent ? ' (current)' : '');
+    const cwdAttr = wt.isCurrent
+      ? ''
+      : ' data-cwd="' + escapeHtml(wt.path) + '" tabindex="0" role="button"';
+    // Pin sits AFTER the name (before the optional `main` chip), so non-current
+    // rows don't need a placeholder column on the left. Inline SVG keeps the
+    // icon themable via currentColor and avoids a webfont fetch under our
+    // restrictive CSP.
+    const pinSlot = wt.isCurrent
+      ? '<span class="ws-current-pin" title="You are here" aria-label="You are here">'
+        + '<svg viewBox="0 0 24 24" width="9" height="11" fill="currentColor" aria-hidden="true">'
+        + '<path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z"/>'
+        + '</svg></span>'
+      : '';
+    const mainChip = wt.isMain
+      ? '<span class="ws-main-chip" title="Main checkout">main</span>'
+      : '';
+    return '<div class="' + cls + '"'
+      + (hasLive ? ' data-confidence="' + escapeHtml(wt.confidence) + '"' : '')
+      + cwdAttr
+      + ' title="' + escapeHtml(titleText) + '">'
+      + '<span class="ws-name">' + escapeHtml(wt.displayName) + '</span>'
+      + pinSlot
+      + mainChip
+      + '<div class="ws-counts">' + countsHtml + '</div>'
+      + '</div>';
+  }
+
+  function renderWorktreesPane(rows: PanelWorktreeRow[]): string {
+    let html = '<div class="ws-section-header">Worktrees</div>';
+    for (const wt of rows) { html += renderWorktreeRow(wt); }
+    return html;
+  }
+
+  function updateWorktreesContainer(container: HTMLElement): void {
+    const html = lastWorktrees.length > 0 ? renderWorktreesPane(lastWorktrees) : '';
+    if (html === lastWorktreesHtml) { return; }
+    container.innerHTML = html;
+    lastWorktreesHtml = html;
   }
 
   /** Group foreign workspaces by repository (when 2+ worktrees share a repo)
@@ -1086,11 +1161,8 @@ const RANGE_MS: Record<string, number> = {
   function renderCompactRow(s: PanelSession, now: number): string {
     const age = formatAge(now - s.lastActivity);
     const displayName = getDisplayName(s);
-    const foreign = isFromOtherWorktree(s, workspacePath);
-
-    return '<div class="compact-row" role="listitem" tabindex="0" data-session-id="' + escapeHtml(s.sessionId) + '" data-foreign="' + (foreign ? 'true' : 'false') + '">'
+    return '<div class="compact-row" role="listitem" tabindex="0" data-session-id="' + escapeHtml(s.sessionId) + '">'
       + '<span class="compact-name">' + escapeHtml(displayName) + '</span>'
-      + (foreign && s.worktreeLabel ? '<span class="worktree-pill compact-worktree">' + escapeHtml(s.worktreeLabel) + '</span>' : '')
       + '<span class="compact-transcript" data-transcript-id="' + escapeHtml(s.sessionId) + '" title="View transcript">&#x1f4dc;</span>'
       + '<span class="compact-age">' + age + '</span>'
       + '</div>';

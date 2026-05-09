@@ -160,6 +160,45 @@ describe('SessionDiscovery: foreign workspaces', () => {
     discovery.stop();
   });
 
+  it('anchors display name to workspace dir even when session cd-ed into a subfolder', async () => {
+    // Repro: a session opens at /Users/murray/projects/foo, then `cd`-s into
+    // /Users/murray/projects/foo/deliverables/v0.9-build. Without anchoring,
+    // the latest cwd wins and the row labels itself "v0.9-build" instead of
+    // "foo". Click-through inherits the same wrong cwd.
+    const discovery = makeDiscovery();
+    createJsonlFile(workspaceKey, 'local-session');
+
+    const wsCwd = '/Users/murray/projects/foo';
+    const subCwd = '/Users/murray/projects/foo/deliverables/v0.9-build';
+    const wsKey = wsCwd.replace(/[^a-zA-Z0-9]/g, '-');
+
+    const r1 = JSON.stringify({
+      type: 'user',
+      cwd: wsCwd,
+      timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'text', text: 'start' }] },
+    });
+    const r2 = JSON.stringify({
+      type: 'user',
+      cwd: subCwd,
+      timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'text', text: 'cd-ed' }] },
+    });
+    const filePath = path.join(projectsDir, wsKey, 'roving-session.jsonl');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, r1 + '\n' + r2 + '\n');
+
+    await discovery.start(() => {});
+
+    const foreign = discovery.getForeignWorkspaces();
+    expect(foreign.length).toBe(1);
+    expect(foreign[0].displayName).toBe('foo');
+    expect(foreign[0].cwd).toBe(wsCwd);
+    // Click-through resolves to the workspace dir, not the subfolder
+    expect(discovery.getForeignWorkspaceCwd(wsKey)).toBe(wsCwd);
+    discovery.stop();
+  });
+
   it('returns null cwd when no cwd available in JSONL', async () => {
     const discovery = makeDiscovery();
     createJsonlFile(workspaceKey, 'local-session');
@@ -252,8 +291,11 @@ describe('SessionDiscovery: foreign workspaces', () => {
     const foreign = discovery.getForeignWorkspaces();
     const ws = foreign.find(w => w.workspaceKey === 'foreign-mixed');
     expect(ws).toBeDefined();
-    // dismissed session removed from done count; only the other remains
-    expect(ws!.counts['done']).toBe(1);
+    // dismissed session removed entirely; only the other remains. With
+    // lastActivity 60s ago and no acknowledgement, the kept session decays
+    // to stale via the unattended-workspace fallback.
+    const total = (ws!.counts['done'] ?? 0) + (ws!.counts['stale'] ?? 0);
+    expect(total).toBe(1);
     discovery.stop();
   });
 

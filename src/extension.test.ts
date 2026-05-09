@@ -69,6 +69,8 @@ const mockDiscovery = {
   getTeamSessionFilePath: vi.fn().mockReturnValue(null),
   isTeamSessionRunning: vi.fn().mockReturnValue(false),
   getOlderSessionCount: vi.fn().mockReturnValue(0),
+  getLocalRepoRoot: vi.fn().mockReturnValue(null),
+  getDiscoveredWorktrees: vi.fn().mockReturnValue([]),
 };
 
 const mockUsageProvider = {

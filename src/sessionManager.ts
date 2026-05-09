@@ -83,6 +83,7 @@ import { JsonlTailer } from './jsonlTailer.js';
 import { SubagentTailerManager } from './subagentTailerManager.js';
 import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType } from './jsonlValidator.js';
 import { computeDemotion, getToolProfile, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS } from './toolProfiles.js';
+import { sanitiseWorkspaceKey } from './panelUtils.js';
 // Re-export for backward compatibility (tests import from sessionManager)
 export { computeDemotion, getToolProfile } from './toolProfiles.js';
 export type { ToolProfile } from './toolProfiles.js';
@@ -174,6 +175,7 @@ export class SessionManager {
       sessionId,
       slug: sessionId.slice(0, 8),
       cwd: '',
+      initialCwd: '',
       workspaceKey,
       filePath,
       status: 'done',
@@ -272,6 +274,7 @@ export class SessionManager {
       sessionId: this.state.sessionId,
       slug: this.state.slug,
       cwd: this.state.cwd,
+      initialCwd: this.state.initialCwd,
       workspaceKey: this.state.workspaceKey,
       topic: this.state.topic,
       status: this.state.status,
@@ -483,6 +486,13 @@ export class SessionManager {
     }
     if (record.cwd) {
       this.state.cwd = record.cwd;
+      // Capture the first cwd that resolves back to this workspaceKey — that's
+      // the canonical workspace dir, immune to mid-session `cd`s. Earlier
+      // records may already point at a subfolder (sanitisation collapses
+      // separators, so subfolder cwds produce a different key).
+      if (!this.state.initialCwd && sanitiseWorkspaceKey(record.cwd) === this.state.workspaceKey) {
+        this.state.initialCwd = record.cwd;
+      }
     }
     if (record.sessionId && record.sessionId !== this.state.sessionId) {
       return false;
