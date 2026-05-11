@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.6.1 (2026-05-11) — Disable foreign-workspace grouping
+
+### Changed
+- **"Other workspaces" now renders every workspace as a flat, alphabetically sorted row.** The repo-aggregation chip (`serac  4wt`) and the parent-directory nesting (e.g. `~/repos/snowmeltio/` → cornice/firn) are both off — they made the list inconsistent in practice (one repo's worktrees collapse, an adjacent repo's siblings expand). The `groupForeignWorkspaces` utility and its tests stay in place; this is a call-site bypass, not a removal.
+
 ## v1.6.0 (2026-05-09) — Worktrees pane + same-repo aggregation
 
 A focused release on the multi-worktree workflow. The new Worktrees pane maps every worktree of the current repo with live W/R/D/S chips, and "Other workspaces" rows for unrelated repos with multiple worktrees collapse to a single synthetic row instead of an indented list.
