@@ -20,7 +20,6 @@ import {
   getModelCapacity,
   getCompactThreshold,
   formatTokenCount,
-  groupForeignWorkspaces,
   PanelSession,
   UsageData,
 } from './panelUtils.js';
@@ -1002,25 +1001,15 @@ const RANGE_MS: Record<string, number> = {
     lastWorktreesHtml = html;
   }
 
-  /** Group foreign workspaces by repository (when 2+ worktrees share a repo)
-   *  and then by common parent directory. Repo grouping takes precedence. */
+  /** Render every foreign workspace as a flat row. Grouping (repo aggregation
+   *  and parent-dir nesting) is disabled for now — see groupForeignWorkspaces
+   *  in panelUtils.ts if reinstating. */
   function renderForeignWorkspaceRows(workspaces: WorkspaceGroup[]): string {
     let html = '<div class="ws-section-header">Other workspaces</div>';
-
-    const { groups, singletons } = groupForeignWorkspaces(workspaces, tildeAbbrev);
-
-    for (const group of groups) {
-      const titleAttr = group.headerTitle ? ' title="' + escapeHtml(group.headerTitle) + '"' : '';
-      html += '<div class="ws-group-header"' + titleAttr + '>' + escapeHtml(group.headerLabel) + '</div>';
-      for (const ws of group.workspaces) {
-        html += renderWsRow(ws, true);
-      }
-    }
-
-    for (const ws of singletons) {
+    const sorted = [...workspaces].sort((a, b) => a.displayName.localeCompare(b.displayName));
+    for (const ws of sorted) {
       html += renderWsRow(ws);
     }
-
     return html;
   }
 
