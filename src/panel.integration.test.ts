@@ -218,7 +218,10 @@ describe('panel.ts integration', () => {
     expect(foreignRows!.textContent).toContain('3D');
   });
 
-  it('groups sibling foreign workspaces under parent path header', () => {
+  // Grouping disabled at the panel layer for now — see renderForeignWorkspaceRows
+  // in panel.ts. The underlying groupForeignWorkspaces utility + its unit tests
+  // are still in place; re-enable the call site to restore these tests.
+  it.skip('groups sibling foreign workspaces under parent path header', () => {
     sendUpdate({
       sessions: [makeSession()],
       foreignWorkspaces: [
@@ -239,7 +242,7 @@ describe('panel.ts integration', () => {
     expect(names).toEqual(['alpha', 'beta', 'solo']);
   });
 
-  it('aggregates worktrees of the same repo into a single row with a worktree-count chip', () => {
+  it.skip('aggregates worktrees of the same repo into a single row with a worktree-count chip', () => {
     sendUpdate({
       sessions: [makeSession()],
       foreignWorkspaces: [
@@ -278,7 +281,7 @@ describe('panel.ts integration', () => {
     expect(groupHeaders.length).toBe(0);
   });
 
-  it('sorts active groups before inactive groups', () => {
+  it.skip('sorts active groups before inactive groups', () => {
     sendUpdate({
       sessions: [makeSession()],
       foreignWorkspaces: [
