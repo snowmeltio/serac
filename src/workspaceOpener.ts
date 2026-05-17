@@ -19,30 +19,34 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { spawn } from 'child_process';
 
-/** Hints older than this are ignored on read (and deleted). */
-export const FOCUS_HINT_TTL_MS = 60_000;
+// 90 s covers cold VS Code starts on slow machines (60 s was occasionally too tight)
+// while still being short enough that a forgotten click doesn't surprise users later.
+export const FOCUS_HINT_TTL_MS = 90_000;
 
 export interface FocusHint {
   sessionId: string;
   requestedAt: number;
 }
 
-/** Locate the `code`/`cursor` CLI shipped with the running editor.
+/** Locate the `code`/`cursor`/`windsurf` CLI shipped with the running editor.
  *  Derived from process.execPath so it works for VS Code, Cursor, Windsurf, etc. */
 function locateCli(): string | null {
   try {
     const execDir = path.dirname(process.execPath);
     const candidates: string[] = [];
     if (process.platform === 'darwin') {
-      // /Applications/<App>.app/Contents/MacOS/Electron → ../Resources/app/bin/code
+      // /Applications/<App>.app/Contents/MacOS/Electron → ../Resources/app/bin/<cli>
       candidates.push(path.join(execDir, '..', 'Resources', 'app', 'bin', 'code'));
       candidates.push(path.join(execDir, '..', 'Resources', 'app', 'bin', 'cursor'));
+      candidates.push(path.join(execDir, '..', 'Resources', 'app', 'bin', 'windsurf'));
     } else if (process.platform === 'win32') {
       candidates.push(path.join(execDir, 'bin', 'code.cmd'));
       candidates.push(path.join(execDir, 'bin', 'cursor.cmd'));
+      candidates.push(path.join(execDir, 'bin', 'windsurf.cmd'));
     } else {
       candidates.push(path.join(execDir, 'bin', 'code'));
       candidates.push(path.join(execDir, 'bin', 'cursor'));
+      candidates.push(path.join(execDir, 'bin', 'windsurf'));
     }
     for (const c of candidates) {
       try {
@@ -111,24 +115,35 @@ export async function writeFocusHint(
   await fs.promises.writeFile(hintPath, JSON.stringify(hint), 'utf-8');
 }
 
+// In-process guard: prevents the FileSystemWatcher and the on-activate setTimeout
+// from both processing the same hint file. Node's event loop is single-threaded, so
+// checking the Set before the first `await` and adding to it are effectively atomic.
+const _consumingPaths = new Set<string>();
+
 /** Read and consume (delete) a focus-hint file. Returns null if absent or stale. */
 export async function consumeFocusHint(hintPath: string): Promise<FocusHint | null> {
-  let raw: string;
+  if (_consumingPaths.has(hintPath)) { return null; }
+  _consumingPaths.add(hintPath);
   try {
-    raw = await fs.promises.readFile(hintPath, 'utf-8');
-  } catch {
-    return null;
-  }
-  // Always delete — even invalid/stale hints shouldn't linger
-  fs.promises.unlink(hintPath).catch(() => { /* best effort */ });
-  try {
-    const parsed = JSON.parse(raw) as FocusHint;
-    if (typeof parsed?.sessionId !== 'string' || typeof parsed?.requestedAt !== 'number') {
+    let raw: string;
+    try {
+      raw = await fs.promises.readFile(hintPath, 'utf-8');
+    } catch {
       return null;
     }
-    if (Date.now() - parsed.requestedAt > FOCUS_HINT_TTL_MS) { return null; }
-    return parsed;
-  } catch {
-    return null;
+    // Always delete — even invalid/stale hints shouldn't linger
+    fs.promises.unlink(hintPath).catch(() => { /* best effort */ });
+    try {
+      const parsed = JSON.parse(raw) as FocusHint;
+      if (typeof parsed?.sessionId !== 'string' || typeof parsed?.requestedAt !== 'number') {
+        return null;
+      }
+      if (Date.now() - parsed.requestedAt > FOCUS_HINT_TTL_MS) { return null; }
+      return parsed;
+    } catch {
+      return null;
+    }
+  } finally {
+    _consumingPaths.delete(hintPath);
   }
 }
