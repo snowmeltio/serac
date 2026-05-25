@@ -206,6 +206,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  position: relative;
 }
 
 .card {
@@ -220,7 +221,7 @@ body {
 }
 
 .card.card-enter { opacity: 0; transform: translateY(-10px); }
-.card.card-leave { opacity: 0; transform: translateY(10px); pointer-events: none; }
+.card.card-leave { opacity: 0; transform: translateX(-40px); pointer-events: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .card { transition: none; }

@@ -591,13 +591,32 @@ const RANGE_MS: Record<string, number> = {
     // 2. Build new ID set
     const newIds = new Set(cards.map(c => c.sessionId));
 
-    // 3. Mark removed cards for exit animation
+    // 3. Mark removed cards for exit animation.
+    //    Take them out of flex flow (position: absolute) so siblings reflow
+    //    upward immediately; the FLIP step below then animates that reflow.
+    //    The card-leave class is added on the next frame so the browser
+    //    registers the pre-leave state and the transform/opacity transition
+    //    actually animates.
     existing.forEach(el => {
       const htmlEl = el as HTMLElement;
       const id = htmlEl.dataset.sessionId;
       if (id && !newIds.has(id) && !htmlEl.classList.contains('card-leave')) {
-        htmlEl.classList.add('card-leave');
-        setTimeout(() => { if (htmlEl.parentNode) htmlEl.parentNode.removeChild(htmlEl); }, TRANSITION_MS);
+        const topPx = htmlEl.offsetTop;
+        const leftPx = htmlEl.offsetLeft;
+        const widthPx = htmlEl.offsetWidth;
+        const heightPx = htmlEl.offsetHeight;
+        htmlEl.style.transition = 'none';
+        htmlEl.style.transform = '';
+        htmlEl.style.top = topPx + 'px';
+        htmlEl.style.left = leftPx + 'px';
+        htmlEl.style.width = widthPx + 'px';
+        htmlEl.style.height = heightPx + 'px';
+        htmlEl.style.position = 'absolute';
+        requestAnimationFrame(() => {
+          htmlEl.style.transition = '';
+          htmlEl.classList.add('card-leave');
+        });
+        setTimeout(() => { if (htmlEl.parentNode) htmlEl.parentNode.removeChild(htmlEl); }, TRANSITION_MS + 50);
       }
     });
 
