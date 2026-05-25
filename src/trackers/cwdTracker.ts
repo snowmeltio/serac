@@ -29,7 +29,7 @@ export interface CwdTracker {
   dispose(): void;
 }
 
-export class JsonlDerivedCwdTracker implements CwdTracker {
+class JsonlDerivedCwdTracker implements CwdTracker {
   private cwd = '';
   private initialCwd = '';
 

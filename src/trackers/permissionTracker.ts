@@ -54,7 +54,7 @@ export interface TimerPermissionTrackerOptions {
   now?: () => number;
 }
 
-export class TimerPermissionTracker implements PermissionTracker {
+class TimerPermissionTracker implements PermissionTracker {
   private timerId: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
   private readonly now: () => number;
