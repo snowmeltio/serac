@@ -1,15 +1,14 @@
 /**
  * CompactBoundaryTracker — owns "compaction is happening" signals for a session.
  *
- * Spike extraction (Path C / Option B): the JSONL variant fires on
- * `system.subtype === 'compact_boundary'`. The hook variant (future PR) will
- * fire on `SessionStart(source: "compact")` events from Claude Code hooks
- * — confirmed in spike capture 2026-05-12 that `/compact` keeps session_id
- * and transcript_path stable and emits exactly this event.
+ * JSONL variant fires on `system.subtype === 'compact_boundary'` records.
+ * The hook variant (Phase 4) will fire on `SessionStart(source: "compact")`
+ * events — confirmed in spike capture 2026-05-12 that `/compact` keeps
+ * session_id and transcript_path stable and emits exactly this event.
  *
- * Behaviour preserved verbatim from sessionManager.ts:840-846:
- *   - If status is not 'running', set it to running
- *   - Append "Compacting context" to the activity line
+ * Effect on the host:
+ *   - If status is not 'running', set it to running.
+ *   - Append "Compacting context" to the activity line.
  *
  * State: `lastCompactAt` (ms) — populated for future use (panel display,
  * debouncing repeated compact events, hook/JSONL reconciliation). Current
@@ -46,8 +45,16 @@ export class JsonlDerivedCompactBoundaryTracker implements CompactBoundaryTracke
   dispose(): void { /* no resources */ }
 }
 
-/** Future seam: returns the hook variant when hooks are wired, JSONL-derived
- *  otherwise. For now, always returns the JSONL-derived variant. */
+/** Construct the variant appropriate for the current environment.
+ *
+ *  Today: always returns `JsonlDerivedCompactBoundaryTracker`, which fires on
+ *  `system.subtype === 'compact_boundary'` records in the JSONL stream.
+ *
+ *  Why the factory exists *before* a second variant does: Phase 4 will
+ *  introduce a hook variant fed by `SessionStart(source: "compact")`
+ *  events — confirmed in spike capture 2026-05-12 that `/compact` keeps
+ *  session_id stable and emits this event. When that lands, the factory's
+ *  body grows a feature-flag branch; the call site remains unchanged. */
 export function makeCompactBoundaryTracker(
   host: CompactBoundaryTrackerHost,
 ): CompactBoundaryTracker {
