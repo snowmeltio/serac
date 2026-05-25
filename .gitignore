@@ -14,3 +14,7 @@ logo-concepts/
 .vscode/
 CLAUDE.md
 AUDIT.md
+AUDIT_PROMPT.md
+PLAN-PATH-C.md
+HOOK-MONITORING.md
+spike/
