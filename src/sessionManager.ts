@@ -221,7 +221,7 @@ export class SessionManager {
     // Dispose all subagent resources before clearing
     this.subagentTailers.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
-      subagent.permissionTracker?.dispose();
+      subagent.permissionTracker.dispose();
     }
     this.state.subagents = [];
     this.clearSessionTimers();
@@ -417,7 +417,7 @@ export class SessionManager {
       subagent.running = false;
       subagent.waitingOnPermission = false;
       this.clearTools(subagent.activeTools);
-      subagent.permissionTracker?.dispose();
+      subagent.permissionTracker.dispose();
     }
     this.clearSessionTimers();
   }
@@ -465,7 +465,7 @@ export class SessionManager {
     this.permissionTracker.dispose();
     this.subagentTailers.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
-      subagent.permissionTracker?.dispose();
+      subagent.permissionTracker.dispose();
     }
   }
 
@@ -610,7 +610,7 @@ export class SessionManager {
             // Extract result preview from tool_result content
             subagent.resultPreview = SessionManager.extractResultPreview(block);
             // Clean up permission tracker + tailer resources on completion
-            subagent.permissionTracker?.dispose();
+            subagent.permissionTracker.dispose();
             this.subagentTailers.disposeSubagent(subagent);
           }
         }
@@ -683,43 +683,13 @@ export class SessionManager {
           // Cap subagent tracking to prevent unbounded growth
           if (!alreadyTracked && this.state.subagents.length < 50) {
             const description = this.extractAgentDescription(block);
-            const subagent: SubagentInfo = {
-              parentToolUseId: block.id,
-              description,
-              running: true,
-              waitingOnPermission: false,
-              lastActivity: new Date(),
-              activeTools: new Map(),
-              permissionTracker: undefined,
-              acknowledged: false,
-              tailer: null,
-              silenceTimerId: undefined,
-              agentId: null,
-              startedAt: new Date(),
-              resultPreview: null,
-              toolsCompleted: 0,
-            };
-            subagent.permissionTracker = makePermissionTracker({
-              getActiveTools: () => subagent.activeTools,
-              getLastToolResultAt: () => this.lastToolResultAt,
-              onWaitingFired: () => {
-                if (!subagent.running || subagent.activeTools.size === 0) { return; }
-                subagent.waitingOnPermission = true;
-                // Bubble to parent only when ALL running subagents are blocked.
-                if (this.state.status === 'running' && this.allRunningSubagentsBlocked()) {
-                  this.state.status = 'waiting';
-                  this.appendActivity('Subagent waiting for permission');
-                }
-              },
-            });
-
-            // [Phase 2] Record agentId from resume input.
+            // [Phase 2] Pre-extract agentId from resume input so createSubagent
+            // returns a fully-formed struct (no post-construction mutation).
             const input = block.input as Record<string, unknown> | undefined;
             const resumeId = input?.resume;
-            if (typeof resumeId === 'string') {
-              subagent.agentId = resumeId;
-            }
+            const agentId = typeof resumeId === 'string' ? resumeId : null;
 
+            const subagent = this.createSubagent(block.id, description, agentId);
             this.state.subagents.push(subagent);
             this.subagentTailers.startSilenceTimer(subagent);
           }
@@ -809,7 +779,7 @@ export class SessionManager {
             }
           }
 
-          subagent.permissionTracker?.reschedule();
+          subagent.permissionTracker.reschedule();
 
           // [Phase 2] Record agentId mapping and cancel silence timer.
           // agent_progress.data.agentId maps to the subagent JSONL filename.
@@ -891,6 +861,55 @@ export class SessionManager {
   private allRunningSubagentsBlocked(): boolean {
     const running = this.state.subagents.filter(s => s.running);
     return running.length > 0 && running.every(s => s.waitingOnPermission);
+  }
+
+  /** Construct a fully-formed SubagentInfo, including its PermissionTracker.
+   *  Centralised so `permissionTracker` can be non-optional in the type system —
+   *  no spawn path can produce a partial subagent.
+   *
+   *  Construction order: the tracker's host closures reference `subagent`,
+   *  but the subagent literal references `tracker`. We resolve this by
+   *  building `activeTools` first (a stable Map reference shared by both),
+   *  declaring `subagent` with a forward declaration, then assigning. The
+   *  closure body only executes when the timer fires — well after assignment. */
+  private createSubagent(parentToolUseId: string, description: string, agentId: string | null): SubagentInfo {
+    const activeTools = new Map<string, string>();
+    let subagent!: SubagentInfo;  // definite-assignment: filled below before any closure runs
+    const tracker = makePermissionTracker({
+      getActiveTools: () => activeTools,
+      getLastToolResultAt: () => this.lastToolResultAt,
+      onWaitingFired: () => this.bubbleSubagentWaitingIfAllBlocked(subagent),
+    });
+    subagent = {
+      parentToolUseId,
+      description,
+      running: true,
+      waitingOnPermission: false,
+      lastActivity: new Date(),
+      activeTools,
+      permissionTracker: tracker,
+      acknowledged: false,
+      tailer: null,
+      silenceTimerId: undefined,
+      agentId,
+      startedAt: new Date(),
+      resultPreview: null,
+      toolsCompleted: 0,
+    };
+    return subagent;
+  }
+
+  /** Subagent's PermissionTracker fired. Mark this subagent as blocked, and
+   *  bubble "waiting" up to the parent session only when ALL running subagents
+   *  are blocked. Centralises the policy so it's discoverable from a stack
+   *  trace and testable via `sessionManager.bubble.test.ts`. */
+  private bubbleSubagentWaitingIfAllBlocked(subagent: SubagentInfo): void {
+    if (!subagent.running || subagent.activeTools.size === 0) { return; }
+    subagent.waitingOnPermission = true;
+    if (this.state.status === 'running' && this.allRunningSubagentsBlocked()) {
+      this.state.status = 'waiting';
+      this.appendActivity('Subagent waiting for permission');
+    }
   }
 
   /** Fix 4: All subagents completed and only Agent/Task tool IDs remain */
@@ -1004,7 +1023,7 @@ export class SessionManager {
         this.addTool(subagent.activeTools, block.id, block.name);
       }
     }
-    subagent.permissionTracker?.reschedule();
+    subagent.permissionTracker.reschedule();
   }
 
   /** Apply a user record to a subagent: remove tools, increment toolsCompleted,
@@ -1026,7 +1045,7 @@ export class SessionManager {
     if (subagent.waitingOnPermission) {
       subagent.waitingOnPermission = false;
     }
-    subagent.permissionTracker?.cancel();
+    subagent.permissionTracker.cancel();
     // Re-evaluate parent status
     if (this.state.status === 'waiting') {
       const parentHasNonExempt = [...this.state.activeTools.values()].some(
