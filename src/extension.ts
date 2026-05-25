@@ -443,13 +443,22 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // the view/title `when` clauses use to swap the icon to a warning glyph; the
   // second click runs cleanup. Auto-disarms after 3s so a forgotten armed icon
   // doesn't lurk indefinitely.
+  //
+  // Cooldown: the icon swaps under the cursor on arm, so a rapid double-click
+  // would fire confirm immediately on the second hit. Block confirm for
+  // CLEANUP_CONFIRM_COOLDOWN_MS after arming with a brief status-bar nudge.
+  // The cooldown is shorter than the 3 s auto-disarm so the user still has
+  // ~2.5 s of intentional-confirm window.
+  const CLEANUP_CONFIRM_COOLDOWN_MS = 500;
   let cleanupArmTimer: ReturnType<typeof setTimeout> | null = null;
+  let cleanupArmedAt = 0;
   function disarmCleanup() {
     if (cleanupArmTimer) { clearTimeout(cleanupArmTimer); cleanupArmTimer = null; }
     vscode.commands.executeCommand('setContext', 'serac.cleanupArming', false);
   }
   context.subscriptions.push(
     vscode.commands.registerCommand('agentActivity.cleanup', () => {
+      cleanupArmedAt = Date.now();
       vscode.commands.executeCommand('setContext', 'serac.cleanupArming', true);
       if (cleanupArmTimer) { clearTimeout(cleanupArmTimer); }
       cleanupArmTimer = setTimeout(disarmCleanup, 3000);
@@ -457,6 +466,13 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   );
   context.subscriptions.push(
     vscode.commands.registerCommand('agentActivity.cleanupConfirm', () => {
+      if (Date.now() - cleanupArmedAt < CLEANUP_CONFIRM_COOLDOWN_MS) {
+        vscode.window.setStatusBarMessage(
+          'Serac: cleanup just armed — wait a moment before confirming.',
+          1_500,
+        );
+        return;
+      }
       disarmCleanup();
       const handler = panelProvider.getCleanupHandler();
       if (handler) { handler(); }
