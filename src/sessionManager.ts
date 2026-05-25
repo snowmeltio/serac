@@ -85,6 +85,7 @@ import { computeDemotion, getToolProfile, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEE
 import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
 import { makeSubagentLifecycleTracker, type SubagentLifecycleTracker } from './trackers/subagentLifecycleTracker.js';
+import { makeCompactBoundaryTracker, type CompactBoundaryTracker } from './trackers/compactBoundaryTracker.js';
 // Re-export for backward compatibility (tests import from sessionManager)
 export { computeDemotion, getToolProfile } from './toolProfiles.js';
 export type { ToolProfile } from './toolProfiles.js';
@@ -143,6 +144,9 @@ export class SessionManager {
   private cwdTracker: CwdTracker;
   /** Session-level permission timer. Hook variant (Phase 4) subscribes to PermissionRequest. */
   private permissionTracker: PermissionTracker;
+  /** Tracks compact boundaries. Spike: extracted from processSystemRecord's
+   *  compact_boundary branch. Hook variant will fire on SessionStart(source:"compact"). */
+  private compactBoundaryTracker: CompactBoundaryTracker;
   /** Tool_use IDs whose tool_result was processed before the tool_use record
    *  (Claude Code occasionally flushes tool_result ahead of tool_use for fast
    *  tools — same wall-clock millisecond, file order reversed). Without this
@@ -175,6 +179,14 @@ export class SessionManager {
           this.state.status = 'waiting';
           this.appendActivity('Waiting for permission');
         }
+      },
+    });
+    this.compactBoundaryTracker = makeCompactBoundaryTracker({
+      onCompactDetected: () => {
+        if (this.state.status !== 'running') {
+          this.setRunning();
+        }
+        this.appendActivity('Compacting context');
       },
     });
     this.state = {
@@ -496,7 +508,7 @@ export class SessionManager {
       case 'progress':
         return this.processProgressRecord(record);
       case 'system':
-        return this.processSystemRecord(record);
+        return this.processSystemRecord(record, timestamp);
       case 'queue-operation':
         return this.processQueueOperation(record, timestamp);
       case 'custom-title':
@@ -807,13 +819,10 @@ export class SessionManager {
     return false;
   }
 
-  private processSystemRecord(record: JsonlRecord): boolean {
+  private processSystemRecord(record: JsonlRecord, timestamp: Date): boolean {
     // Context compaction: session is still active, keep it running and reset idle timer
     if (record.subtype === 'compact_boundary') {
-      if (this.state.status !== 'running') {
-        this.setRunning();
-      }
-      this.appendActivity('Compacting context');
+      this.compactBoundaryTracker.onCompactBoundary(timestamp.getTime());
       return true;
     }
 
