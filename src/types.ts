@@ -163,6 +163,13 @@ export interface SessionMeta {
   acknowledgedAt: number | null;
   /** Epoch ms when the extension first detected this session */
   firstSeen: number;
+  /** Cached auto-generated title from JSONL `ai-title` records. Persisted so
+   *  the display name survives the 7-day archive cutoff, when the lightweight
+   *  scanner stops parsing JSONL. Absent = never observed. */
+  aiTitle?: string;
+  /** Cached native custom title from JSONL `custom-title` records. Same
+   *  rationale as aiTitle. */
+  customTitle?: string;
 }
 
 /** Shape of the session-meta.json file on disk */
