@@ -410,10 +410,9 @@ describe('groupForeignWorkspaces', () => {
       ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo', counts: { running: 1, done: 2 } }),
       ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo', counts: { running: 1 } }),
     ];
-    const { groups, singletons } = groupForeignWorkspaces(list);
-    expect(groups).toHaveLength(0);
-    expect(singletons).toHaveLength(1);
-    const agg = singletons[0];
+    const rows = groupForeignWorkspaces(list);
+    expect(rows).toHaveLength(1);
+    const agg = rows[0];
     expect(agg.displayName).toBe('repo');
     expect(agg.repoRoot).toBe('/r/repo');
     expect(agg.workspaceKey).toBe('repo:/r/repo');
@@ -429,8 +428,8 @@ describe('groupForeignWorkspaces', () => {
       // The chip is a stable "this repo has N worktrees" fact, so c still counts.
       ws({ workspaceKey: 'c', displayName: 'feat-c', cwd: '/r/repo/feat-c', repoRoot: '/r/repo', counts: {} }),
     ];
-    const { singletons } = groupForeignWorkspaces(list);
-    const agg = singletons[0];
+    const rows = groupForeignWorkspaces(list);
+    const agg = rows[0];
     expect(agg.worktreeCount).toBe(3);
     expect(agg.worktreeMembersLabel).toContain('/r/repo/feat-a');
     expect(agg.worktreeMembersLabel).toContain('/r/repo/feat-b');
@@ -442,9 +441,9 @@ describe('groupForeignWorkspaces', () => {
       ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo', counts: {} }),
       ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo', counts: {} }),
     ];
-    const { singletons } = groupForeignWorkspaces(list);
-    expect(singletons).toHaveLength(1);
-    expect(singletons[0].worktreeCount).toBe(2);
+    const rows = groupForeignWorkspaces(list);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].worktreeCount).toBe(2);
   });
 
   it('aggregated row prefers the main worktree cwd (cwd === repoRoot) over a worktree path', () => {
@@ -452,8 +451,8 @@ describe('groupForeignWorkspaces', () => {
       ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo' }),
       ws({ workspaceKey: 'main', displayName: 'repo', cwd: '/r/repo', repoRoot: '/r/repo' }),
     ];
-    const { singletons } = groupForeignWorkspaces(list);
-    expect(singletons[0].cwd).toBe('/r/repo');
+    const rows = groupForeignWorkspaces(list);
+    expect(rows[0].cwd).toBe('/r/repo');
   });
 
   it('aggregated row falls back to repoRoot when no member has cwd === repoRoot', () => {
@@ -461,59 +460,55 @@ describe('groupForeignWorkspaces', () => {
       ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/work/feat-a', repoRoot: '/r/repo' }),
       ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/work/feat-b', repoRoot: '/r/repo' }),
     ];
-    const { singletons } = groupForeignWorkspaces(list);
-    expect(singletons[0].cwd).toBe('/r/repo');
+    const rows = groupForeignWorkspaces(list);
+    expect(rows[0].cwd).toBe('/r/repo');
   });
 
-  it('does not aggregate a single workspace; passes through as singleton', () => {
+  it('does not aggregate a single workspace; passes through unchanged', () => {
     const list = [
       ws({ workspaceKey: 'a', displayName: 'lone', cwd: '/r/repo/wt', repoRoot: '/r/repo' }),
     ];
-    const { groups, singletons } = groupForeignWorkspaces(list);
-    expect(groups).toHaveLength(0);
-    expect(singletons).toHaveLength(1);
-    expect(singletons[0].workspaceKey).toBe('a');
-    expect(singletons[0].worktreeCount).toBeUndefined();
+    const rows = groupForeignWorkspaces(list);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].workspaceKey).toBe('a');
+    expect(rows[0].worktreeCount).toBeUndefined();
   });
 
-  it('falls back to parent-dir grouping when repoRoot is null', () => {
+  it('passes workspaces with null repoRoot through as flat rows (no parent-dir grouping)', () => {
     const list = [
       ws({ workspaceKey: 'a', displayName: 'p1', cwd: '/scratch/p1', repoRoot: null }),
       ws({ workspaceKey: 'b', displayName: 'p2', cwd: '/scratch/p2', repoRoot: null }),
     ];
-    const { groups, singletons } = groupForeignWorkspaces(list);
-    expect(singletons).toHaveLength(0);
-    expect(groups).toHaveLength(1);
-    expect(groups[0].headerLabel).toBe('/scratch/');
+    const rows = groupForeignWorkspaces(list);
+    expect(rows.map(r => r.workspaceKey)).toEqual(['a', 'b']);
+    expect(rows.every(r => r.worktreeCount === undefined)).toBe(true);
   });
 
-  it('repo-aggregation takes precedence over parent-dir grouping', () => {
+  it('aggregates same-repo worktrees while leaving siblings with different repoRoots flat', () => {
     const list = [
       // Two repos in /code; one of them has a sibling worktree in /work
       ws({ workspaceKey: 'a', displayName: 'repo-a-wt', cwd: '/work/repo-a-wt', repoRoot: '/code/repo-a', counts: { running: 1 } }),
       ws({ workspaceKey: 'a2', displayName: 'repo-a', cwd: '/code/repo-a', repoRoot: '/code/repo-a', counts: { done: 1 } }),
       ws({ workspaceKey: 'b', displayName: 'repo-b', cwd: '/code/repo-b', repoRoot: '/code/repo-b', counts: { done: 1 } }),
     ];
-    const { groups, singletons } = groupForeignWorkspaces(list);
-    // repo-a aggregates to one synthetic row; repo-b is a singleton.
-    expect(groups).toHaveLength(0);
-    const agg = singletons.find(s => s.repoRoot === '/code/repo-a');
+    const rows = groupForeignWorkspaces(list);
+    const agg = rows.find(r => r.repoRoot === '/code/repo-a');
     expect(agg).toBeDefined();
     expect(agg!.worktreeCount).toBe(2);
-    const lone = singletons.find(s => s.workspaceKey === 'b');
+    const lone = rows.find(r => r.workspaceKey === 'b');
     expect(lone).toBeDefined();
     expect(lone!.worktreeCount).toBeUndefined();
   });
 
-  it('aggregated singletons sort alphabetically with other singletons', () => {
+  it('aggregated rows sort alphabetically with other rows', () => {
     const list = [
       ws({ workspaceKey: 'z1', displayName: 'zeta-1', cwd: '/r/zeta/z1', repoRoot: '/r/zeta' }),
       ws({ workspaceKey: 'z2', displayName: 'zeta-2', cwd: '/r/zeta/z2', repoRoot: '/r/zeta' }),
       ws({ workspaceKey: 'm', displayName: 'middle', cwd: '/scratch/middle', repoRoot: null }),
     ];
-    const { singletons } = groupForeignWorkspaces(list);
+    const rows = groupForeignWorkspaces(list);
     // 'middle' < 'zeta' so the lone workspace sorts before the aggregated row.
-    expect(singletons.map(s => s.displayName)).toEqual(['middle', 'zeta']);
+    expect(rows.map(r => r.displayName)).toEqual(['middle', 'zeta']);
   });
 
   it('aggregated row exposes a members tooltip listing each worktree path', () => {
@@ -521,9 +516,9 @@ describe('groupForeignWorkspaces', () => {
       ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo', counts: { done: 1 } }),
       ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo', counts: { done: 1 } }),
     ];
-    const { singletons } = groupForeignWorkspaces(list);
-    expect(singletons[0].worktreeMembersLabel).toContain('/r/repo/feat-a');
-    expect(singletons[0].worktreeMembersLabel).toContain('/r/repo/feat-b');
+    const rows = groupForeignWorkspaces(list);
+    expect(rows[0].worktreeMembersLabel).toContain('/r/repo/feat-a');
+    expect(rows[0].worktreeMembersLabel).toContain('/r/repo/feat-b');
   });
 
   it('applies tildeAbbrev to the members tooltip on aggregated rows', () => {
@@ -531,8 +526,8 @@ describe('groupForeignWorkspaces', () => {
       ws({ workspaceKey: 'a', displayName: 'a', cwd: '/home/u/repo/a', repoRoot: '/home/u/repo', counts: { done: 1 } }),
       ws({ workspaceKey: 'b', displayName: 'b', cwd: '/home/u/repo/b', repoRoot: '/home/u/repo', counts: { done: 1 } }),
     ];
-    const { singletons } = groupForeignWorkspaces(list, p => p.replace('/home/u', '~'));
-    expect(singletons[0].worktreeMembersLabel).toContain('~/repo/a');
-    expect(singletons[0].worktreeMembersLabel).toContain('~/repo/b');
+    const rows = groupForeignWorkspaces(list, p => p.replace('/home/u', '~'));
+    expect(rows[0].worktreeMembersLabel).toContain('~/repo/a');
+    expect(rows[0].worktreeMembersLabel).toContain('~/repo/b');
   });
 });

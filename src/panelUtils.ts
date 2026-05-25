@@ -191,27 +191,6 @@ export interface GroupableWorkspace {
   worktreeMembersLabel?: string;
 }
 
-export interface ForeignGroup<W extends GroupableWorkspace> {
-  /** Header label shown above the rows (e.g. `repo/` or `~/code/foo/`). */
-  headerLabel: string;
-  /** Optional tooltip (full path for repo groups). */
-  headerTitle?: string;
-  workspaces: W[];
-  /** Whether any workspace in this group has running/waiting sessions. */
-  hasActive: boolean;
-  /** Sort key — usually basename or directory tail. */
-  sortKey: string;
-}
-
-export interface GroupedForeignWorkspaces<W extends GroupableWorkspace> {
-  groups: ForeignGroup<W>[];
-  singletons: W[];
-}
-
-function workspaceHasActive(w: GroupableWorkspace): boolean {
-  return (w.counts['running'] || 0) > 0 || (w.counts['waiting'] || 0) > 0;
-}
-
 function basename(p: string): string {
   const trimmed = p.endsWith('/') ? p.slice(0, -1) : p;
   const idx = trimmed.lastIndexOf('/');
@@ -253,24 +232,21 @@ function pickAggregatedCwd<W extends GroupableWorkspace>(repoRoot: string, membe
   return members[0]?.cwd ?? null;
 }
 
-/** Group foreign workspaces by repository (when 2+ share a repoRoot), then
- *  by parent directory (when 2+ share a parent and weren't already consumed
- *  by a repo group).
+/** Collapse 2+ workspaces that share a non-null `repoRoot` into a single
+ *  synthetic row (summed counts, worktreeCount chip, members tooltip). Other
+ *  workspaces pass through unchanged. Result is sorted alphabetically by
+ *  displayName. Pure function.
  *
- *  Repo groups collapse to a single synthetic row (returned in `singletons`)
- *  with summed counts and a `worktreeCount` field. Parent-directory groups
- *  still render as a header + indented members (`groups`). Workspaces that
- *  don't fit any group are returned as singletons unchanged. Pure function. */
+ *  Parent-directory grouping was tried and removed: nesting unrelated repos
+ *  that happened to share a parent (e.g. cornice/firn) was more confusing
+ *  than helpful. */
 export function groupForeignWorkspaces<W extends GroupableWorkspace>(
   workspaces: W[],
   tildeAbbrev: (p: string) => string = (p) => p,
-): GroupedForeignWorkspaces<W> {
-  const groups: ForeignGroup<W>[] = [];
+): W[] {
   const consumed = new Set<W>();
   const aggregated: W[] = [];
 
-  // 1. Repo groups: 2+ workspaces sharing a non-null repoRoot collapse into
-  // one synthetic row with summed counts and a worktree count chip.
   const byRepo = new Map<string, W[]>();
   for (const w of workspaces) {
     if (!w.repoRoot) { continue; }
@@ -285,13 +261,9 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
     const name = basename(repoRoot);
     const aggregatedCwd = pickAggregatedCwd(repoRoot, ws);
     // Worktree count + tooltip reflect every tracked worktree of the repo,
-    // including ones whose sessions are all dismissed. The chip is a stable
-    // "this repo has N worktrees" indicator — it shouldn't drop in and out as
-    // you archive sessions.
+    // including ones whose sessions are all dismissed — the chip is a stable
+    // "this repo has N worktrees" fact, not a count of live work.
     const membersLabel = ws.map((m) => tildeAbbrev(m.cwd ?? m.displayName)).join('\n');
-    // Use the first member as the prototype so any extra fields (workspaceKey,
-    // etc.) come along with sensible defaults; then override the aggregate-
-    // specific bits.
     const proto = ws[0];
     const synthetic = {
       ...proto,
@@ -307,42 +279,10 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
     aggregated.push(synthetic);
   }
 
-  // 2. Parent-directory groups for whatever's left (existing behaviour).
-  const byParent = new Map<string, W[]>();
-  for (const w of workspaces) {
-    if (consumed.has(w)) { continue; }
-    if (!w.cwd) { continue; }
-    const trimmed = w.cwd.endsWith('/') ? w.cwd.slice(0, -1) : w.cwd;
-    const idx = trimmed.lastIndexOf('/');
-    if (idx === -1) { continue; }
-    const parent = trimmed.slice(0, idx);
-    if (!parent) { continue; }
-    let bucket = byParent.get(parent);
-    if (!bucket) { bucket = []; byParent.set(parent, bucket); }
-    bucket.push(w);
-  }
-  for (const [parent, ws] of byParent) {
-    if (ws.length < 2) { continue; }
-    ws.sort((a, b) => a.displayName.localeCompare(b.displayName));
-    for (const w of ws) { consumed.add(w); }
-    groups.push({
-      headerLabel: tildeAbbrev(parent) + '/',
-      workspaces: ws,
-      hasActive: ws.some(workspaceHasActive),
-      sortKey: parent,
-    });
-  }
-
-  groups.sort((a, b) => {
-    if (a.hasActive !== b.hasActive) { return a.hasActive ? -1 : 1; }
-    return a.sortKey.localeCompare(b.sortKey);
-  });
-
   const remaining = workspaces.filter((w) => !consumed.has(w));
-  const singletons = [...aggregated, ...remaining];
-  singletons.sort((a, b) => a.displayName.localeCompare(b.displayName));
-
-  return { groups, singletons };
+  const result = [...aggregated, ...remaining];
+  result.sort((a, b) => a.displayName.localeCompare(b.displayName));
+  return result;
 }
 
 // ===== Status debounce =====

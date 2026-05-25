@@ -218,31 +218,7 @@ describe('panel.ts integration', () => {
     expect(foreignRows!.textContent).toContain('3D');
   });
 
-  // Grouping disabled at the panel layer for now — see renderForeignWorkspaceRows
-  // in panel.ts. The underlying groupForeignWorkspaces utility + its unit tests
-  // are still in place; re-enable the call site to restore these tests.
-  it.skip('groups sibling foreign workspaces under parent path header', () => {
-    sendUpdate({
-      sessions: [makeSession()],
-      foreignWorkspaces: [
-        { workspaceKey: '-ws-a', displayName: 'alpha', cwd: '/repos/snowmeltio/alpha', counts: { running: 1 }, confidence: 'medium' },
-        { workspaceKey: '-ws-b', displayName: 'beta', cwd: '/repos/snowmeltio/beta', counts: { done: 2 }, confidence: 'low' },
-        { workspaceKey: '-ws-c', displayName: 'solo', cwd: '/other/solo', counts: { done: 1 }, confidence: 'low' },
-      ],
-    });
-    const foreignRows = document.querySelector('.ws-foreign-rows');
-    expect(foreignRows).toBeTruthy();
-    // Should have a group header for /repos/snowmeltio/
-    const groupHeaders = foreignRows!.querySelectorAll('.ws-group-header');
-    expect(groupHeaders.length).toBe(1);
-    expect(groupHeaders[0].textContent).toContain('/repos/snowmeltio/');
-    // Siblings should be sorted alphabetically within the group
-    const rows = foreignRows!.querySelectorAll('.ws-row');
-    const names = Array.from(rows).map(r => r.querySelector('.ws-name')?.textContent);
-    expect(names).toEqual(['alpha', 'beta', 'solo']);
-  });
-
-  it.skip('aggregates worktrees of the same repo into a single row with a worktree-count chip', () => {
+  it('aggregates worktrees of the same repo into a single row with a worktree-count chip', () => {
     sendUpdate({
       sessions: [makeSession()],
       foreignWorkspaces: [
@@ -253,8 +229,6 @@ describe('panel.ts integration', () => {
     });
     const foreignRows = document.querySelector('.ws-foreign-rows');
     expect(foreignRows).toBeTruthy();
-    // No group header — the three worktrees collapse to one synthetic row.
-    expect(foreignRows!.querySelectorAll('.ws-group-header').length).toBe(0);
     const rows = foreignRows!.querySelectorAll('.ws-row');
     expect(rows.length).toBe(1);
     const row = rows[0];
@@ -262,13 +236,12 @@ describe('panel.ts integration', () => {
     const chip = row.querySelector('.worktree-count-chip');
     expect(chip).toBeTruthy();
     expect(chip!.textContent).toBe('3wt');
-    // Counts are summed across all worktrees
     const counts = row.querySelector('.ws-counts')!.textContent;
     expect(counts).toContain('2R');
     expect(counts).toContain('3D');
   });
 
-  it('does not group singletons under a parent header', () => {
+  it('does not collapse unrelated workspaces that just share a parent dir', () => {
     sendUpdate({
       sessions: [makeSession()],
       foreignWorkspaces: [
@@ -277,26 +250,10 @@ describe('panel.ts integration', () => {
       ],
     });
     const foreignRows = document.querySelector('.ws-foreign-rows');
-    const groupHeaders = foreignRows!.querySelectorAll('.ws-group-header');
-    expect(groupHeaders.length).toBe(0);
-  });
-
-  it.skip('sorts active groups before inactive groups', () => {
-    sendUpdate({
-      sessions: [makeSession()],
-      foreignWorkspaces: [
-        { workspaceKey: '-ws-a', displayName: 'a-idle', cwd: '/idle-parent/a-idle', counts: { done: 1 }, confidence: 'low' },
-        { workspaceKey: '-ws-b', displayName: 'b-idle', cwd: '/idle-parent/b-idle', counts: { done: 1 }, confidence: 'low' },
-        { workspaceKey: '-ws-c', displayName: 'c-active', cwd: '/active-parent/c-active', counts: { running: 1 }, confidence: 'medium' },
-        { workspaceKey: '-ws-d', displayName: 'd-active', cwd: '/active-parent/d-active', counts: { done: 2 }, confidence: 'low' },
-      ],
-    });
-    const foreignRows = document.querySelector('.ws-foreign-rows');
-    const groupHeaders = foreignRows!.querySelectorAll('.ws-group-header');
-    expect(groupHeaders.length).toBe(2);
-    // Active group should come first
-    expect(groupHeaders[0].textContent).toContain('/active-parent/');
-    expect(groupHeaders[1].textContent).toContain('/idle-parent/');
+    const rows = foreignRows!.querySelectorAll('.ws-row');
+    expect(rows.length).toBe(2);
+    const names = Array.from(rows).map(r => r.querySelector('.ws-name')?.textContent);
+    expect(names).toEqual(['alpha', 'beta']);
   });
 
   it('renders status summary without action buttons (actions live in title bar)', () => {
