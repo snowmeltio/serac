@@ -5,6 +5,7 @@ import {
   SLOW_PERMISSION_DELAY_MS,
   TOOL_RECENCY_MS,
 } from './permissionTracker.js';
+import { HookEventRouter } from '../hookEventRouter.js';
 
 function makeHost(opts: {
   tools?: Map<string, string>;
@@ -205,5 +206,80 @@ describe('PermissionTracker', () => {
     t.reschedule();
     vi.advanceTimersByTime(PERMISSION_DELAY_MS + 100);
     expect(h.getFired()).toBe(1);
+  });
+});
+
+describe('PermissionTracker (hook overlay)', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const SID = 'session-uuid-hook';
+
+  function setup(initialTools: Map<string, string> = new Map([['tu1', 'SomeTool']])) {
+    const router = new HookEventRouter();
+    const h = makeHost({ tools: initialTools });
+    const t = makePermissionTracker(h.host, { hookRouter: router, sessionId: SID });
+    return { router, host: h, tracker: t };
+  }
+
+  it('fires immediately on PermissionRequest (no 3-6s wait)', () => {
+    const { router, host, tracker } = setup();
+    tracker.reschedule();   // timer would fire in 3s
+    router.onHookEvent(SID, 'PermissionRequest', { tool_use_id: 'tu1' });
+    expect(host.getFired()).toBe(1);  // hook beat the timer
+    tracker.dispose();
+  });
+
+  it('hook fires fast; timer still fires later as fallback (host idempotency handles it)', () => {
+    const { router, host, tracker } = setup();
+    tracker.reschedule();
+    router.onHookEvent(SID, 'PermissionRequest', { tool_use_id: 'tu1' });
+    expect(host.getFired()).toBe(1);
+    vi.advanceTimersByTime(PERMISSION_DELAY_MS + 100);
+    // Timer fires too — host's idempotency guard absorbs the duplicate.
+    expect(host.getFired()).toBe(2);
+    tracker.dispose();
+  });
+
+  it('does not fire when hook arrives but activeTools is empty', () => {
+    const { router, host, tracker } = setup(new Map());
+    router.onHookEvent(SID, 'PermissionRequest', {});
+    expect(host.getFired()).toBe(0);
+    tracker.dispose();
+  });
+
+  it('ignores PermissionRequest for other sessions', () => {
+    const { router, host, tracker } = setup();
+    tracker.reschedule();
+    router.onHookEvent('different-session', 'PermissionRequest', {});
+    expect(host.getFired()).toBe(0);
+    tracker.dispose();
+  });
+
+  it('dispose unsubscribes; later hook events do nothing', () => {
+    const { router, host, tracker } = setup();
+    tracker.dispose();
+    router.onHookEvent(SID, 'PermissionRequest', {});
+    expect(host.getFired()).toBe(0);
+  });
+
+  it('falls back to timer when no hook arrives (silent-hook fallback path)', () => {
+    const { host, tracker } = setup();
+    tracker.reschedule();
+    vi.advanceTimersByTime(PERMISSION_DELAY_MS + 100);
+    expect(host.getFired()).toBe(1);
+    tracker.dispose();
+  });
+
+  it('factory without sessionId returns the timer-only variant', () => {
+    const router = new HookEventRouter();
+    const h = makeHost({ tools: new Map([['tu1', 'SomeTool']]) });
+    const t = makePermissionTracker(h.host, { hookRouter: router });   // no sessionId
+    router.onHookEvent('any', 'PermissionRequest', {});
+    expect(h.getFired()).toBe(0);   // hook variant didn't construct
+    t.reschedule();
+    vi.advanceTimersByTime(PERMISSION_DELAY_MS + 100);
+    expect(h.getFired()).toBe(1);   // timer still works
+    t.dispose();
   });
 });

@@ -12,6 +12,7 @@
  */
 
 import { sanitiseWorkspaceKey } from '../panelUtils.js';
+import type { HookEventRouter } from '../hookEventRouter.js';
 
 export interface CwdState {
   /** Most recent cwd field from any JSONL record. */
@@ -50,20 +51,65 @@ class JsonlDerivedCwdTracker implements CwdTracker {
   dispose(): void { /* no resources */ }
 }
 
+/**
+ * Hook-overlay variant. Wraps a `JsonlDerivedCwdTracker` and routes
+ * `SessionStart` + `UserPromptSubmit` hook payloads through its `onCwd`
+ * method — every cwd path stays in one place (initialCwd matching,
+ * sticky behaviour, sanitisation against workspaceKey).
+ *
+ * Why compose: both event streams (hooks + JSONL `processUserRecord`)
+ * may deliver cwd; the JSONL stream still fires from inside SessionManager
+ * via the existing `onCwd` calls. Letting both feed the same fallback
+ * keeps the cwd-state logic single-sourced.
+ *
+ * Defensive parsing: `cwd` and `hook_event_name` are the only fields read,
+ * both typed as `string`; anything else is ignored.
+ */
+class HookCwdTracker implements CwdTracker {
+  private readonly fallback: JsonlDerivedCwdTracker;
+  private readonly unsubscribers: Array<() => void> = [];
+  private disposed = false;
+
+  constructor(workspaceKey: string, sessionId: string, router: HookEventRouter) {
+    this.fallback = new JsonlDerivedCwdTracker(workspaceKey);
+    const handle = (event: unknown) => {
+      if (this.disposed) { return; }
+      if (typeof event !== 'object' || event === null) { return; }
+      const cwd = (event as Record<string, unknown>).cwd;
+      if (typeof cwd === 'string') { this.fallback.onCwd(cwd); }
+    };
+    this.unsubscribers.push(router.register(sessionId, 'SessionStart', handle));
+    this.unsubscribers.push(router.register(sessionId, 'UserPromptSubmit', handle));
+  }
+
+  onCwd(cwd: string | undefined): void { this.fallback.onCwd(cwd); }
+  getState(): Readonly<CwdState> { return this.fallback.getState(); }
+
+  dispose(): void {
+    if (this.disposed) { return; }
+    this.disposed = true;
+    for (const u of this.unsubscribers) { u(); }
+    this.fallback.dispose();
+  }
+}
+
+export interface CwdTrackerFactoryOptions {
+  /** Hook router for the owning workspace. */
+  hookRouter?: HookEventRouter;
+  /** Session UUID. Required for hook subscription. */
+  sessionId?: string;
+}
+
 /** Construct the variant appropriate for the current environment.
  *
- *  Today: always returns `JsonlDerivedCwdTracker` — no other variant exists.
- *
- *  Why the factory exists *before* a second variant does: Phase 4 of the
- *  hook-monitoring work will introduce `HookDerivedCwdTracker`, populated from
- *  Claude Code's `SessionStart`/`UserPromptSubmit` hook events. When that
- *  lands, the factory's body grows a feature-flag branch; every call site at
- *  the SessionManager remains unchanged. Without the factory, every spawn
- *  site (currently two: session-level and per-subagent in PermissionTracker)
- *  would need to learn about the variant decision.
- *
- *  This is a deliberate one-line layer of indirection, not pretend
- *  abstraction. Removing it now would force a wider diff in Phase 4. */
-export function makeCwdTracker(workspaceKey: string): CwdTracker {
+ *  - hookRouter + sessionId → `HookCwdTracker` (overlay)
+ *  - otherwise → `JsonlDerivedCwdTracker` */
+export function makeCwdTracker(
+  workspaceKey: string,
+  opts: CwdTrackerFactoryOptions = {},
+): CwdTracker {
+  if (opts.hookRouter && opts.sessionId) {
+    return new HookCwdTracker(workspaceKey, opts.sessionId, opts.hookRouter);
+  }
   return new JsonlDerivedCwdTracker(workspaceKey);
 }
