@@ -89,6 +89,10 @@ export const window = {
 export const workspace = {
   workspaceFolders: [{ uri: Uri.file('/test/workspace'), name: 'workspace', index: 0 }],
   openTextDocument: vi.fn().mockResolvedValue({ uri: Uri.file('/test/doc') }),
+  getConfiguration: vi.fn((_section?: string) => ({
+    get: vi.fn(<T,>(_key: string, defaultValue?: T) => defaultValue),
+  })),
+  onDidChangeConfiguration: vi.fn((_cb: (...args: unknown[]) => void) => ({ dispose: vi.fn() })),
 };
 
 // --- commands ---

@@ -26,6 +26,10 @@ vi.mock('vscode', () => {
         onDidDelete: vi.fn(),
         dispose: vi.fn(),
       })),
+      getConfiguration: vi.fn((_section?: string) => ({
+        get: vi.fn(<T,>(_key: string, defaultValue?: T) => defaultValue),
+      })),
+      onDidChangeConfiguration: vi.fn((_cb: (...args: unknown[]) => void) => ({ dispose: vi.fn() })),
     },
     window: {
       createOutputChannel: vi.fn(() => ({
