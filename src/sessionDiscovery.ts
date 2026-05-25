@@ -8,6 +8,7 @@ import { resolveRepoRoot, discoverWorktrees, type WorktreeInfo } from './gitWork
 import { TeamDiscovery } from './teamDiscovery.js';
 import { claudeStateDir } from './paths.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot } from './types.js';
+import type { HookEventRouter } from './hookEventRouter.js';
 
 /** Minimal log interface matching VS Code's LogOutputChannel */
 export interface Logger {
@@ -85,13 +86,21 @@ export class SessionDiscovery {
    *  active scan window is empty — gives the user an affordance to expand. */
   private olderSessionCount = 0;
 
-  constructor(workspacePath: string, opts?: { projectsDir?: string; log?: Logger }) {
+  /** Hook-event router for the local workspace's own sessions. Passed
+   *  through to SessionManager construction at line ~670. Undefined when
+   *  no router is provided (tests, foreign-only contexts). Foreign and
+   *  sibling worktrees' SessionManagers do NOT receive this — those
+   *  sessions are owned by their own VS Code window's leader. */
+  private readonly hookRouter?: HookEventRouter;
+
+  constructor(workspacePath: string, opts?: { projectsDir?: string; log?: Logger; hookRouter?: HookEventRouter }) {
     this.projectsDir = opts?.projectsDir ?? path.join(claudeStateDir(), 'projects');
     this.workspaceKey = sanitiseWorkspaceKey(workspacePath);
     this.metaFilePath = path.join(this.projectsDir, this.workspaceKey, 'session-meta.json');
     this.log = opts?.log ?? nullLogger;
     this.localCwd = workspacePath;
     this.localWorktreeLabel = path.basename(workspacePath) || workspacePath;
+    this.hookRouter = opts?.hookRouter;
     this.foreignManager = new ForeignWorkspaceManager(this.projectsDir, this.workspaceKey, this.log);
     this.siblingManager = new SiblingWorktreeManager(this.projectsDir, this.workspaceKey, this.log);
     this.foreignManager.setSiblingKeysProvider(() => this.siblingManager.getSiblingKeys());
@@ -667,7 +676,7 @@ export class SessionDiscovery {
             }
           } catch { continue; }
 
-          const manager = new SessionManager(sessionId, filePath, workspaceKey);
+          const manager = new SessionManager(sessionId, filePath, workspaceKey, { hookRouter: this.hookRouter });
           this.sessions.set(sessionId, manager);
           // Ensure meta entry exists for newly discovered sessions
           this.getOrCreateMeta(sessionId);
