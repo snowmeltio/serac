@@ -86,6 +86,7 @@ import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
 import { makeSubagentLifecycleTracker, type SubagentLifecycleTracker } from './trackers/subagentLifecycleTracker.js';
 import { makeCompactBoundaryTracker, type CompactBoundaryTracker } from './trackers/compactBoundaryTracker.js';
+import type { HookEventRouter } from './hookEventRouter.js';
 // Re-export for backward compatibility (tests import from sessionManager)
 export { computeDemotion, getToolProfile } from './toolProfiles.js';
 export type { ToolProfile } from './toolProfiles.js';
@@ -151,6 +152,11 @@ export class SessionManager {
    *  Non-invasive: default no-op. Used by the replay harness to verify a
    *  captured transition stream is reproducible from JSONL. */
   private readonly onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void;
+  /** Optional hook-event router. Held but unused in PR-C — PR-D will switch
+   *  tracker construction (permission/cwd/subagent/compact) to hook variants
+   *  that subscribe via this router. Undefined when not available (foreign
+   *  workspaces, sibling worktrees owned by another window, tests). */
+  private readonly hookRouter?: HookEventRouter;
   /** Tool_use IDs whose tool_result was processed before the tool_use record
    *  (Claude Code occasionally flushes tool_result ahead of tool_use for fast
    *  tools — same wall-clock millisecond, file order reversed). Without this
@@ -166,10 +172,14 @@ export class SessionManager {
     sessionId: string,
     filePath: string,
     workspaceKey: string,
-    opts: { onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void } = {},
+    opts: {
+      onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void;
+      hookRouter?: HookEventRouter;
+    } = {},
   ) {
     const now = new Date();
     this.onTransition = opts.onTransition;
+    this.hookRouter = opts.hookRouter;
     this.tailer = new JsonlTailer(filePath);
     this.subagentLifecycle = makeSubagentLifecycleTracker({
       isDisposed: () => this.disposed,
