@@ -14,6 +14,7 @@ import { buildWorktreeRows } from './worktreeRows.js';
 import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } from './workspaceOpener.js';
 import { HookEventRouter } from './hookEventRouter.js';
 import { startHookIngress, type IngressHandle } from './hookIngress/index.js';
+import { applyForwarderPatch, removeForwarderPatch } from './hookSettings/patcher.js';
 
 export function activate(context: vscode.ExtensionContext): SeracExports {
   // Footer slot registry must be created up-front: companions resolve
@@ -45,19 +46,60 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // session state via JSONL tailing. Foreign-workspace views are unaffected
   // — they have always been JSONL-only.
   let ingressHandle: IngressHandle | undefined;
+  const forwarderPath = vscode.Uri.joinPath(context.extensionUri, 'bin', 'serac-hook-forward.cjs').fsPath;
+
+  const hooksEnabled = () =>
+    vscode.workspace.getConfiguration('serac.hooks').get<boolean>('enabled') ?? false;
+
+  const tryPatch = () => {
+    if (!ingressHandle?.isLeader || !hooksEnabled()) { return; }
+    try {
+      const result = applyForwarderPatch(wsPath, forwarderPath);
+      if (result.changed) { log.info(`hook settings patched: ${result.settingsPath}`); }
+    } catch (err) {
+      log.error(`hook settings patch failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+  const tryUnpatch = () => {
+    try {
+      const result = removeForwarderPatch(wsPath);
+      if (result.changed) { log.info(`hook settings unpatched: ${result.settingsPath}`); }
+    } catch (err) {
+      log.error(`hook settings unpatch failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   startHookIngress(wsPath, hookRouter, {
     onError: (err, ctx) => log.warn(`hook ingress ${ctx}: ${err.message}`),
   }).then(handle => {
     ingressHandle = handle;
     if (handle.isLeader) {
       log.info(`hook ingress: leader, socket=${handle.socketPath}`);
+      tryPatch();
     } else {
       log.debug('hook ingress: follower (another window owns this workspace)');
     }
   }).catch(err => {
     log.error(`hook ingress failed to start: ${err instanceof Error ? err.message : String(err)}`);
   });
-  context.subscriptions.push({ dispose: () => { ingressHandle?.dispose(); } });
+
+  // Live-toggle the patch when the user flips `serac.hooks.enabled`.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (!e.affectsConfiguration('serac.hooks.enabled')) { return; }
+      if (hooksEnabled()) { tryPatch(); } else { tryUnpatch(); }
+    }),
+  );
+
+  context.subscriptions.push({
+    dispose: () => {
+      // Order matters: unpatch settings while the socket is still bound, so a
+      // hook event in flight isn't routed to a vanished socket. Then close
+      // the socket. The leader-only patch path means followers no-op here.
+      if (ingressHandle?.isLeader) { tryUnpatch(); }
+      ingressHandle?.dispose();
+    },
+  });
 
   const discovery = new SessionDiscovery(wsPath, { log });
   const usageProvider = new UsageProvider(wsPath);
