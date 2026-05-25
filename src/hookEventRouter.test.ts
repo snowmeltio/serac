@@ -110,4 +110,55 @@ describe('HookEventRouter', () => {
     expect(received).toEqual([]);
     off();
   });
+
+  // === PR-E: debug observer ===
+
+  it('debug observer fires once per routed event (after phantom filter)', () => {
+    const r = new HookEventRouter();
+    const observed: Array<{ sessionId: string; eventType: string; event: unknown }> = [];
+    r.setDebugObserver((sessionId, eventType, event) => observed.push({ sessionId, eventType, event }));
+    r.onHookEvent('s1', 'PreToolUse', { tool: 'Bash' });
+    r.onHookEvent('s1', 'PermissionRequest', { tool_use_id: 'tu1' });
+    expect(observed).toHaveLength(2);
+    expect(observed[0].eventType).toBe('PreToolUse');
+    expect(observed[1].eventType).toBe('PermissionRequest');
+  });
+
+  it('debug observer does not fire for phantom SubagentStop', () => {
+    const r = new HookEventRouter();
+    let fired = 0;
+    r.setDebugObserver(() => { fired++; });
+    r.onHookEvent('s', 'SubagentStop', { agent_type: '' });  // phantom
+    expect(fired).toBe(0);
+    r.onHookEvent('s', 'SubagentStop', { agent_type: 'general-purpose' });
+    expect(fired).toBe(1);
+  });
+
+  it('debug observer errors are isolated — routing still proceeds', () => {
+    const r = new HookEventRouter();
+    r.setDebugObserver(() => { throw new Error('boom'); });
+    const received: unknown[] = [];
+    r.register('s', 'E', e => received.push(e));
+    r.onHookEvent('s', 'E', { x: 1 });
+    expect(received).toEqual([{ x: 1 }]);
+  });
+
+  it('setDebugObserver(undefined) clears the observer', () => {
+    const r = new HookEventRouter();
+    let fired = 0;
+    r.setDebugObserver(() => { fired++; });
+    r.onHookEvent('s', 'E', null);
+    expect(fired).toBe(1);
+    r.setDebugObserver(undefined);
+    r.onHookEvent('s', 'E', null);
+    expect(fired).toBe(1);   // unchanged
+  });
+
+  it('debug observer fires for events that have no matching subscriber too', () => {
+    const r = new HookEventRouter();
+    let fired = 0;
+    r.setDebugObserver(() => { fired++; });
+    r.onHookEvent('no-subscriber', 'E', {});
+    expect(fired).toBe(1);
+  });
 });

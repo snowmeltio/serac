@@ -5,6 +5,7 @@ import {
   type SubagentLifecycleTrackerHost,
 } from './subagentLifecycleTracker.js';
 import type { SubagentInfo } from '../types.js';
+import { HookEventRouter } from '../hookEventRouter.js';
 
 function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
   return {
@@ -104,5 +105,87 @@ describe('JsonlDerivedSubagentLifecycleTracker', () => {
     expect(sub.silenceTimerId).toBeDefined();
     t.onComplete(sub);
     expect(sub.silenceTimerId).toBeUndefined();
+  });
+});
+
+describe('SubagentLifecycleTracker (hook overlay)', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const SID = 'parent-session-uuid';
+
+  it('SubagentStop with matching agent_id calls onComplete via fallback', () => {
+    const sub = makeSubagent({ agentId: 'agent-xyz' });
+    const host = makeHost({ allSubagents: [sub] });
+    const router = new HookEventRouter();
+    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
+    t.onSpawn(sub);
+    expect(sub.silenceTimerId).toBeDefined();
+    router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-xyz', agent_type: 'general-purpose' });
+    expect(sub.silenceTimerId).toBeUndefined();
+    expect(sub.agentId).toBeNull();   // onComplete clears it
+  });
+
+  it('SubagentStop with no agent_id is ignored', () => {
+    const sub = makeSubagent({ agentId: 'agent-abc' });
+    const host = makeHost({ allSubagents: [sub] });
+    const router = new HookEventRouter();
+    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
+    t.onSpawn(sub);
+    router.onHookEvent(SID, 'SubagentStop', { agent_type: 'general-purpose' });
+    expect(sub.silenceTimerId).toBeDefined();   // unchanged
+  });
+
+  it('SubagentStop for unknown agent_id (not in subagents list) is a no-op', () => {
+    const sub = makeSubagent({ agentId: 'agent-known' });
+    const host = makeHost({ allSubagents: [sub] });
+    const router = new HookEventRouter();
+    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
+    t.onSpawn(sub);
+    router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-unknown' });
+    expect(sub.silenceTimerId).toBeDefined();   // unchanged
+  });
+
+  it('phantom SubagentStop (agent_type === "") is filtered at the router and never fires', () => {
+    const sub = makeSubagent({ agentId: 'agent-real' });
+    const host = makeHost({ allSubagents: [sub] });
+    const router = new HookEventRouter();
+    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
+    t.onSpawn(sub);
+    router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-real', agent_type: '' });
+    expect(sub.silenceTimerId).toBeDefined();   // unchanged — filtered phantom
+  });
+
+  it('SubagentStop for other sessions is ignored', () => {
+    const sub = makeSubagent({ agentId: 'agent-x' });
+    const host = makeHost({ allSubagents: [sub] });
+    const router = new HookEventRouter();
+    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
+    t.onSpawn(sub);
+    router.onHookEvent('different-session', 'SubagentStop', { agent_id: 'agent-x', agent_type: 'general-purpose' });
+    expect(sub.silenceTimerId).toBeDefined();   // unchanged
+  });
+
+  it('delegates onSpawn/onProgress/onComplete unchanged to the JSONL fallback', () => {
+    const sub = makeSubagent();
+    const host = makeHost({ allSubagents: [sub] });
+    const router = new HookEventRouter();
+    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
+    t.onSpawn(sub);
+    expect(sub.silenceTimerId).toBeDefined();
+    t.onProgress(sub);
+    expect(sub.silenceTimerId).toBeUndefined();
+  });
+
+  it('factory without sessionId returns the JSONL-only variant (no hook subscription)', () => {
+    const sub = makeSubagent({ agentId: 'agent-x' });
+    const host = makeHost({ allSubagents: [sub] });
+    const router = new HookEventRouter();
+    const t = makeSubagentLifecycleTracker(host, { hookRouter: router });   // no sessionId
+    t.onSpawn(sub);
+    router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-x', agent_type: 'general-purpose' });
+    // Hook would have cleared silenceTimerId, but the JSONL-only variant
+    // didn't subscribe — timer is still in place.
+    expect(sub.silenceTimerId).toBeDefined();
   });
 });
