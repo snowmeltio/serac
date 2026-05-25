@@ -20,9 +20,9 @@
  * !running      → running       system: compact_boundary                 processSystemRecord() → setRunning()
  *
  * running       → waiting       AskUserQuestion tool_use                 processAssistantRecord()
- * running       → waiting       permission timer (3s/6s, doubled to     resetPermissionTimer() timeout
+ * running       → waiting       permission timer (3s/6s, doubled to     PermissionTracker fire (session)
  *                                6s/12s if recent tool result <3s ago)
- * running       → waiting       all subagents blocked                    resetSubagentPermissionTimer() timeout
+ * running       → waiting       all subagents blocked                    PermissionTracker fire (subagent, bubbles)
  * running       → waiting       computeDemotion + active tools (no subs) demoteIfStale()
  *
  * running       → done          idle timer (output seen, 5s idle)         resetIdleTimer() timeout
@@ -84,25 +84,14 @@ import { SubagentTailerManager } from './subagentTailerManager.js';
 import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType } from './jsonlValidator.js';
 import { computeDemotion, getToolProfile, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS } from './toolProfiles.js';
 import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
+import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
 // Re-export for backward compatibility (tests import from sessionManager)
 export { computeDemotion, getToolProfile } from './toolProfiles.js';
 export type { ToolProfile } from './toolProfiles.js';
 
 /** Idle threshold: if no new data for 5s after a turn, mark as idle/done */
 const IDLE_DELAY_MS = 5000;
-/** Permission-wait threshold: if tools are active but no progress after this delay.
- *  Calibrated from JSONL analysis: auto-approved Edit/Write resolves in <1s,
- *  so 3s gives comfortable margin. This timer is the primary permission detection
- *  mechanism (no authoritative signal exists in current Claude Code JSONL output). */
-const PERMISSION_DELAY_MS = 3_000;
-/** Extended threshold for slow tools (Bash auto-approve resolves in <4s;
- *  MCP tools need network round-trip). 6s covers execution + network
- *  while keeping worst-case doubled delay at 12s (down from 16s). */
-const SLOW_PERMISSION_DELAY_MS = 6_000;
-/** Recency window: only double permission delay if a tool result arrived
- *  within this window. Prevents stale flag from inflating delay on permission
- *  prompts that appear long after the last tool completed. */
-const TOOL_RECENCY_MS = 3_000;
+/** Permission timer constants moved to trackers/permissionTracker.ts. */
 /** Topic extraction patterns [A3]:
  *  HANDOFF_PATTERN — matches "HANDOFF-PROMPT: <title>" or "HANDOFF-PROMPT <title>"
  *  CONTINUE_PATTERN — matches "Continuing: /path/to/project" from /continue prompts */
@@ -150,6 +139,8 @@ export class SessionManager {
   private subagentTailers: SubagentTailerManager;
   /** Tracks cwd / initialCwd. Spike: extracted from inline `processRecord` block. */
   private cwdTracker: CwdTracker;
+  /** Session-level permission timer. Spike: extracted from resetPermissionTimer + schedulePermissionTimer. */
+  private permissionTracker: PermissionTracker;
   /** Tool_use IDs whose tool_result was processed before the tool_use record
    *  (Claude Code occasionally flushes tool_result ahead of tool_use for fast
    *  tools — same wall-clock millisecond, file order reversed). Without this
@@ -174,6 +165,16 @@ export class SessionManager {
       getAllSubagents: () => this.state.subagents,
     });
     this.cwdTracker = makeCwdTracker(workspaceKey);
+    this.permissionTracker = makePermissionTracker({
+      getActiveTools: () => this.state.activeTools,
+      getLastToolResultAt: () => this.lastToolResultAt,
+      onWaitingFired: () => {
+        if (this.state.status === 'running' && this.state.activeTools.size > 0) {
+          this.state.status = 'waiting';
+          this.appendActivity('Waiting for permission');
+        }
+      },
+    });
     this.state = {
       sessionId,
       slug: sessionId.slice(0, 8),
@@ -186,7 +187,6 @@ export class SessionManager {
       lastActivity: now,
       firstActivity: now,
       idleTimerId: undefined,
-      permissionTimerId: undefined,
       topic: '',
       contextTokens: 0,
       modelId: '',
@@ -221,10 +221,7 @@ export class SessionManager {
     // Dispose all subagent resources before clearing
     this.subagentTailers.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
-      if (subagent.permissionTimerId) {
-        clearTimeout(subagent.permissionTimerId);
-        subagent.permissionTimerId = undefined;
-      }
+      subagent.permissionTracker?.dispose();
     }
     this.state.subagents = [];
     this.clearSessionTimers();
@@ -415,15 +412,12 @@ export class SessionManager {
       this.state.activity = '';
     }
     this.clearTools(this.state.activeTools);
-    // Mark all subagents as completed and clean up their timers
+    // Mark all subagents as completed and clean up their trackers
     for (const subagent of this.state.subagents) {
       subagent.running = false;
       subagent.waitingOnPermission = false;
       this.clearTools(subagent.activeTools);
-      if (subagent.permissionTimerId) {
-        clearTimeout(subagent.permissionTimerId);
-        subagent.permissionTimerId = undefined;
-      }
+      subagent.permissionTracker?.dispose();
     }
     this.clearSessionTimers();
   }
@@ -462,18 +456,16 @@ export class SessionManager {
    *  handled separately by disposeSubagent(). Centralises timer ownership [A5]. */
   private clearSessionTimers(): void {
     if (this.state.idleTimerId) { clearTimeout(this.state.idleTimerId); this.state.idleTimerId = undefined; }
-    if (this.state.permissionTimerId) { clearTimeout(this.state.permissionTimerId); this.state.permissionTimerId = undefined; }
+    this.permissionTracker.cancel();
   }
 
   dispose(): void {
     this.disposed = true;
     this.clearSessionTimers();
+    this.permissionTracker.dispose();
     this.subagentTailers.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
-      if (subagent.permissionTimerId) {
-        clearTimeout(subagent.permissionTimerId);
-        subagent.permissionTimerId = undefined;
-      }
+      subagent.permissionTracker?.dispose();
     }
   }
 
@@ -617,11 +609,8 @@ export class SessionManager {
             this.clearTools(subagent.activeTools);
             // Extract result preview from tool_result content
             subagent.resultPreview = SessionManager.extractResultPreview(block);
-            // Clean up permission timer + tailer resources on completion
-            if (subagent.permissionTimerId) {
-              clearTimeout(subagent.permissionTimerId);
-              subagent.permissionTimerId = undefined;
-            }
+            // Clean up permission tracker + tailer resources on completion
+            subagent.permissionTracker?.dispose();
             this.subagentTailers.disposeSubagent(subagent);
           }
         }
@@ -635,10 +624,7 @@ export class SessionManager {
     this.lastToolResultAt = 0;
     this.setRunning();
     // Cancel any pending permission timer — tool results have arrived
-    if (this.state.permissionTimerId) {
-      clearTimeout(this.state.permissionTimerId);
-      this.state.permissionTimerId = undefined;
-    }
+    this.permissionTracker.cancel();
 
     // [F2] Check AFTER status = 'running' so markSessionDone() isn't overwritten.
     // If all subagents are done and only Agent/Task tool IDs remain in activeTools,
@@ -704,7 +690,7 @@ export class SessionManager {
               waitingOnPermission: false,
               lastActivity: new Date(),
               activeTools: new Map(),
-              permissionTimerId: undefined,
+              permissionTracker: undefined,
               acknowledged: false,
               tailer: null,
               silenceTimerId: undefined,
@@ -713,6 +699,19 @@ export class SessionManager {
               resultPreview: null,
               toolsCompleted: 0,
             };
+            subagent.permissionTracker = makePermissionTracker({
+              getActiveTools: () => subagent.activeTools,
+              getLastToolResultAt: () => this.lastToolResultAt,
+              onWaitingFired: () => {
+                if (!subagent.running || subagent.activeTools.size === 0) { return; }
+                subagent.waitingOnPermission = true;
+                // Bubble to parent only when ALL running subagents are blocked.
+                if (this.state.status === 'running' && this.allRunningSubagentsBlocked()) {
+                  this.state.status = 'waiting';
+                  this.appendActivity('Subagent waiting for permission');
+                }
+              },
+            });
 
             // [Phase 2] Record agentId from resume input.
             const input = block.input as Record<string, unknown> | undefined;
@@ -748,7 +747,7 @@ export class SessionManager {
         this.appendActivity('Waiting for your response');
       } else {
         this.setRunning();
-        this.resetPermissionTimer();
+        this.permissionTracker.reschedule();
       }
     } else {
       // Text-only response — could be finishing
@@ -810,7 +809,7 @@ export class SessionManager {
             }
           }
 
-          this.resetSubagentPermissionTimer(subagent);
+          subagent.permissionTracker?.reschedule();
 
           // [Phase 2] Record agentId mapping and cancel silence timer.
           // agent_progress.data.agentId maps to the subagent JSONL filename.
@@ -823,13 +822,13 @@ export class SessionManager {
         }
       }
       // Reset permission timer — we're getting progress
-      this.resetPermissionTimer();
+      this.permissionTracker.reschedule();
       return true;
     }
 
     if (dataType === 'hook_progress' || dataType === 'bash_progress' || dataType === 'mcp_progress') {
       // Tool is making progress — reset permission timer
-      this.resetPermissionTimer();
+      this.permissionTracker.reschedule();
       return true;
     }
 
@@ -1005,7 +1004,7 @@ export class SessionManager {
         this.addTool(subagent.activeTools, block.id, block.name);
       }
     }
-    this.resetSubagentPermissionTimer(subagent);
+    subagent.permissionTracker?.reschedule();
   }
 
   /** Apply a user record to a subagent: remove tools, increment toolsCompleted,
@@ -1027,10 +1026,7 @@ export class SessionManager {
     if (subagent.waitingOnPermission) {
       subagent.waitingOnPermission = false;
     }
-    if (subagent.permissionTimerId) {
-      clearTimeout(subagent.permissionTimerId);
-      subagent.permissionTimerId = undefined;
-    }
+    subagent.permissionTracker?.cancel();
     // Re-evaluate parent status
     if (this.state.status === 'waiting') {
       const parentHasNonExempt = [...this.state.activeTools.values()].some(
@@ -1040,57 +1036,6 @@ export class SessionManager {
         this.setRunning();
       }
     }
-  }
-
-  private resetSubagentPermissionTimer(subagent: SubagentInfo): void {
-    if (subagent.permissionTimerId) { clearTimeout(subagent.permissionTimerId); }
-
-    subagent.permissionTimerId = this.schedulePermissionTimer(subagent.activeTools, () => {
-      if (subagent.running && subagent.activeTools.size > 0) {
-        subagent.waitingOnPermission = true;
-        // Only bubble to parent if ALL running subagents are blocked.
-        if (this.state.status === 'running' && this.allRunningSubagentsBlocked()) {
-          this.state.status = 'waiting';
-          this.appendActivity('Subagent waiting for permission');
-        }
-      }
-    });
-  }
-
-  private resetPermissionTimer(): void {
-    if (this.state.permissionTimerId) { clearTimeout(this.state.permissionTimerId); }
-
-    this.state.permissionTimerId = this.schedulePermissionTimer(this.state.activeTools, () => {
-      if (this.state.status === 'running' && this.state.activeTools.size > 0) {
-        this.state.status = 'waiting';
-        this.appendActivity('Waiting for permission');
-      }
-    });
-  }
-
-  /** Shared permission timer scheduling. Returns timer ID or undefined if no non-exempt tools.
-   *  When a tool result arrived recently (within TOOL_RECENCY_MS), doubles the delay to
-   *  reduce false "waiting" on tool-heavy turns with brief inter-tool silence [#106/Phase 4].
-   *  Unlike the previous boolean flag, recency-based doubling decays naturally so permission
-   *  prompts arriving after a gap are detected at base speed. */
-  private schedulePermissionTimer(
-    tools: Map<string, string>,
-    onExpired: () => void,
-  ): ReturnType<typeof setTimeout> | undefined {
-    const toolNames = [...tools.values()];
-    const hasNonExempt = toolNames.some(name => !getToolProfile(name).exempt);
-    if (!hasNonExempt || tools.size === 0) { return undefined; }
-
-    const hasSlow = toolNames.some(name => getToolProfile(name).slow);
-    let delay = hasSlow ? SLOW_PERMISSION_DELAY_MS : PERMISSION_DELAY_MS;
-    // Only double if a tool result arrived recently — avoids stale inflation
-    const recentToolResult = this.lastToolResultAt > 0 && (Date.now() - this.lastToolResultAt < TOOL_RECENCY_MS);
-    if (recentToolResult) { delay *= 2; }
-
-    return setTimeout(() => {
-      if (this.disposed) { return; }
-      onExpired();
-    }, delay);
   }
 
   private extractAgentDescription(block: JsonlContentBlock): string {
