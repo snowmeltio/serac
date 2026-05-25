@@ -70,6 +70,16 @@
       {
         "command": "agentActivity.focusSession",
         "title": "Focus Claude Code Session"
+      },
+      {
+        "command": "agentActivity.enableHooks",
+        "title": "Enable Hook Mode",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "agentActivity.disableHooks",
+        "title": "Disable Hook Mode",
+        "icon": "$(zap)"
       }
     ],
     "menus": {
@@ -93,6 +103,16 @@
           "command": "agentActivity.refresh",
           "when": "view == agentActivity.panel",
           "group": "navigation@3"
+        },
+        {
+          "command": "agentActivity.enableHooks",
+          "when": "view == agentActivity.panel && !serac.hooksEnabled",
+          "group": "navigation@4"
+        },
+        {
+          "command": "agentActivity.disableHooks",
+          "when": "view == agentActivity.panel && serac.hooksEnabled",
+          "group": "navigation@4"
         }
       ],
       "commandPalette": [

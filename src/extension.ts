@@ -92,6 +92,36 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   const hooksEnabled = () =>
     vscode.workspace.getConfiguration('serac.hooks').get<boolean>('enabled') ?? false;
 
+  // Mirror the setting into a `when`-clause context var so the header
+  // button can swap icon/title in-place. Refreshed on every config change
+  // by the onDidChangeConfiguration handler below.
+  const syncHooksContext = () => {
+    void vscode.commands.executeCommand('setContext', 'serac.hooksEnabled', hooksEnabled());
+  };
+  syncHooksContext();
+
+  // Header-bar commands: workspace-scoped toggle of serac.hooks.enabled.
+  // Workspace target matches how the settings patch is scoped — flipping in
+  // one window of a workspace affects every window opened on it.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('agentActivity.enableHooks', async () => {
+      await vscode.workspace.getConfiguration('serac.hooks')
+        .update('enabled', true, vscode.ConfigurationTarget.Workspace);
+      vscode.window.showInformationMessage(
+        'Serac hook mode enabled for this workspace. Restart Claude Code so it picks up the patched settings.json.',
+        'Got it',
+      );
+    }),
+    vscode.commands.registerCommand('agentActivity.disableHooks', async () => {
+      await vscode.workspace.getConfiguration('serac.hooks')
+        .update('enabled', false, vscode.ConfigurationTarget.Workspace);
+      vscode.window.setStatusBarMessage(
+        'Serac hook mode disabled — Serac-managed settings.json entries removed.',
+        5_000,
+      );
+    }),
+  );
+
   const tryPatch = () => {
     if (!ingressHandle?.isLeader || !hooksEnabled()) { return; }
     try {
@@ -126,10 +156,13 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     log.error(`hook ingress failed to start: ${err instanceof Error ? err.message : String(err)}`);
   });
 
-  // Live-toggle the patch when the user flips `serac.hooks.enabled`.
+  // Live-toggle the patch and refresh the header-button context var when
+  // the user flips `serac.hooks.enabled` (via our button, the settings UI,
+  // or any other source).
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
       if (!e.affectsConfiguration('serac.hooks.enabled')) { return; }
+      syncHooksContext();
       if (hooksEnabled()) { tryPatch(); } else { tryUnpatch(); }
     }),
   );
