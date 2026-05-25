@@ -23,8 +23,8 @@ export interface SubagentInfo {
   lastActivity: Date;
   /** Active tool_use IDs within this subagent (from sidechain records) */
   activeTools: Map<string, string>;
-  /** Timer ID for subagent permission-wait detection */
-  permissionTimerId: ReturnType<typeof setTimeout> | undefined;
+  /** Permission-wait tracker for this subagent (timer-derived; hook-driven in future). */
+  permissionTracker: import('./trackers/permissionTracker.js').PermissionTracker | undefined;
   /** Whether the user has acknowledged this subagent (triggers pruning when done) */
   acknowledged: boolean;
   /** [Phase 2] Targeted JSONL tailer for silent subagent detection.
@@ -67,8 +67,6 @@ export interface SessionState {
   firstActivity: Date;
   /** Timer ID for idle detection */
   idleTimerId: ReturnType<typeof setTimeout> | undefined;
-  /** Timer ID for permission-wait detection */
-  permissionTimerId: ReturnType<typeof setTimeout> | undefined;
   /** Topic extracted from the first user message */
   topic: string;
   /** Total context tokens from the most recent assistant message */
