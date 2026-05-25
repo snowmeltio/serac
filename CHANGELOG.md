@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.6.2 (2026-05-25) — Archive titles + repo aggregation back + smoother dismiss
+
+### Fixed
+- **Archived sessions past the 7-day window now show real labels** instead of falling back to the hex session id. The lightweight archive scanner never parsed JSONL, so `aiTitle`/`customTitle` were lost on the way to `getDisplayName()`. Both fields are now persisted into `session-meta.json` (forward-filled from active sessions, one-time stream-read backfill for already-archived ones), then read back in the lightweight snapshot. First time you expand the archive range after upgrading, expect a one-off scan of old JSONLs; after that the meta cache makes it free.
+
+### Changed
+- **"Other workspaces" repo aggregation re-enabled** — 2+ workspaces sharing a `repoRoot` collapse to a single synthetic row with summed counts and a `Nwt` chip (e.g. all `serac-spike-*` worktrees fold into one `serac` row when viewed from elsewhere). The parent-directory grouping that shipped alongside it in v1.6.0 stays permanently removed: nesting unrelated repos that just happened to share a parent dir was more confusing than helpful. v1.6.1 disabled both; this release brings back only the half that was actually useful.
+- **Card dismiss animation now slides left** instead of fading downward, with a FLIP-style reflow so siblings move up immediately and the leaving card animates over the gap rather than after it.
+
 ## v1.6.1 (2026-05-11) — Disable foreign-workspace grouping
 
 ### Changed
