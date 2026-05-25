@@ -3,14 +3,8 @@
  * / completion) and the targeted-tailer fallback used when progress relay is
  * silent.
  *
- * Spike extraction (Path C / Option B): wrap (do not rewrite) the existing
- * SubagentTailerManager so the lifecycle contract is consumed through a
- * tracker interface. Once hook events are wired in a follow-up PR, the hook
- * variant of this tracker will publish lifecycle transitions from the
- * `SubagentStart` / `SubagentStop` events; the JSONL variant remains the
- * authoritative fallback.
- *
- * Behaviour preserved verbatim from sessionManager.ts:
+ * The JSONL variant wraps (does not rewrite) the existing
+ * SubagentTailerManager. The lifecycle methods delegate as follows:
  *   - onSpawn               → SubagentTailerManager.startSilenceTimer
  *   - onProgress            → SubagentTailerManager.cancelProgressSilence
  *   - onComplete            → SubagentTailerManager.disposeSubagent
@@ -18,7 +12,11 @@
  *   - getActiveTailerCount  → SubagentTailerManager.getActiveTailerCount
  *   - disposeAll            → SubagentTailerManager.disposeAll
  *
- * Hook-variant filter rule (future, not implemented here): ignore phantom
+ * The hook variant (Phase 4) publishes lifecycle transitions from
+ * `SubagentStart` / `SubagentStop` events; the JSONL variant remains the
+ * authoritative fallback.
+ *
+ * Hook-variant filter rule (Phase 4, not implemented here): ignore phantom
  * `SubagentStop` events with `agent_type === ""` — these come from background
  * title-generation subagents (confirmed in spike capture 2026-05-12).
  */
@@ -87,8 +85,16 @@ export class JsonlDerivedSubagentLifecycleTracker implements SubagentLifecycleTr
   }
 }
 
-/** Future seam: returns the hook variant when hooks are wired, JSONL-derived
- *  otherwise. For now, always returns the JSONL-derived variant. */
+/** Construct the variant appropriate for the current environment.
+ *
+ *  Today: always returns `JsonlDerivedSubagentLifecycleTracker`, which wraps
+ *  the existing `SubagentTailerManager`.
+ *
+ *  Why the factory exists *before* a second variant does: Phase 4 will
+ *  introduce `HookSubagentLifecycleTracker`, driven by Claude Code's
+ *  `SubagentStart` / `SubagentStop` events. When that lands, the factory's
+ *  body grows a feature-flag branch; the single call site at the
+ *  SessionManager constructor remains unchanged. */
 export function makeSubagentLifecycleTracker(
   host: SubagentLifecycleTrackerHost,
 ): SubagentLifecycleTracker {
