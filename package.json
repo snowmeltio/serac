@@ -113,6 +113,11 @@
           "type": "boolean",
           "default": false,
           "description": "Register Serac's Claude Code hook forwarder in this workspace's .claude/settings.json. When enabled, permission-wait detection becomes hook-driven (sub-second) instead of heuristic (3-6 seconds). Each workspace opts in independently; disabling cleanly removes Serac-managed entries."
+        },
+        "serac.hooks.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log every inbound hook event to the 'Serac (Hooks)' output channel. Useful for debugging hook flow when serac.hooks.enabled is on. Off by default — leader-bound and liveness-warning lines log regardless."
         }
       }
     }

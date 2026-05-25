@@ -282,4 +282,51 @@ describe('PermissionTracker (hook overlay)', () => {
     expect(h.getFired()).toBe(1);   // timer still works
     t.dispose();
   });
+
+  // === PR-E: parent filters out subagent events; subagent filters by agent_id ===
+
+  it('parent tracker ignores PermissionRequest with agent_id (avoids false bubble)', () => {
+    const { router, host, tracker } = setup();
+    router.onHookEvent(SID, 'PermissionRequest', { agent_id: 'subagent-xyz' });
+    expect(host.getFired()).toBe(0);
+    tracker.dispose();
+  });
+
+  it('parent tracker fires on PermissionRequest with no agent_id (parent event)', () => {
+    const { router, host, tracker } = setup();
+    router.onHookEvent(SID, 'PermissionRequest', { /* no agent_id */ });
+    expect(host.getFired()).toBe(1);
+    tracker.dispose();
+  });
+
+  it('subagent tracker fires only when agent_id matches', () => {
+    const router = new HookEventRouter();
+    const host = makeHost({ tools: new Map([['tu1', 'Bash']]) });
+    const tracker = makePermissionTracker(host.host, {
+      hookRouter: router, sessionId: SID, agentId: 'subagent-123',
+    });
+
+    router.onHookEvent(SID, 'PermissionRequest', { agent_id: 'subagent-123' });
+    expect(host.getFired()).toBe(1);
+
+    router.onHookEvent(SID, 'PermissionRequest', { agent_id: 'subagent-OTHER' });
+    expect(host.getFired()).toBe(1);   // unchanged
+
+    router.onHookEvent(SID, 'PermissionRequest', { /* no agent_id, parent event */ });
+    expect(host.getFired()).toBe(1);   // unchanged
+
+    tracker.dispose();
+  });
+
+  it('subagent tracker also has timer fallback (silent-hook path)', () => {
+    const router = new HookEventRouter();
+    const host = makeHost({ tools: new Map([['tu1', 'Bash']]) });
+    const tracker = makePermissionTracker(host.host, {
+      hookRouter: router, sessionId: SID, agentId: 'subagent-abc',
+    });
+    tracker.reschedule();
+    vi.advanceTimersByTime(SLOW_PERMISSION_DELAY_MS + 100);
+    expect(host.getFired()).toBe(1);
+    tracker.dispose();
+  });
 });

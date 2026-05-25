@@ -46,6 +46,11 @@ export interface HookEventRouterOptions {
   now?: () => number;
 }
 
+/** Fires once per event after phantom filtering. Used by the extension for
+ *  observability (output-channel logging) and liveness (last-event timestamp).
+ *  Errors thrown by the observer are isolated — they do not block routing. */
+export type HookEventObserver = (sessionId: string, eventType: string, event: unknown) => void;
+
 export class HookEventRouter {
   /** sessionId → list of subscribers (allows multiple per event type). */
   private readonly subscribers = new Map<string, SubscriberEntry[]>();
@@ -54,10 +59,18 @@ export class HookEventRouter {
   private readonly bufferTtlMs: number;
   private readonly now: () => number;
   private disposed = false;
+  private observer: HookEventObserver | undefined;
 
   constructor(opts: HookEventRouterOptions = {}) {
     this.bufferTtlMs = opts.bufferTtlMs ?? DEFAULT_BUFFER_TTL_MS;
     this.now = opts.now ?? Date.now;
+  }
+
+  /** Install a debug observer. Fires once per inbound event (after phantom
+   *  filtering, before subscriber dispatch). Replaces any prior observer.
+   *  Pass `undefined` to clear. */
+  setDebugObserver(observer: HookEventObserver | undefined): void {
+    this.observer = observer;
   }
 
   /** Register a subscriber for (sessionId, eventType). Returns an
@@ -107,6 +120,10 @@ export class HookEventRouter {
   onHookEvent(sessionId: string, eventType: string, event: unknown): void {
     if (this.disposed) { return; }
     if (this.isPhantomSubagentStop(eventType, event)) { return; }
+
+    if (this.observer) {
+      try { this.observer(sessionId, eventType, event); } catch { /* observer errors are isolated */ }
+    }
 
     const list = this.subscribers.get(sessionId);
     const matches = list?.filter(e => e.eventType === eventType) ?? [];
