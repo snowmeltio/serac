@@ -137,9 +137,9 @@ export class SessionManager {
   private pidCaptureAttempted = false;
   /** Manages subagent JSONL tailers (silence timers, file discovery, polling). */
   private subagentTailers: SubagentTailerManager;
-  /** Tracks cwd / initialCwd. Spike: extracted from inline `processRecord` block. */
+  /** Tracks cwd / initialCwd. Hook variant (Phase 4) populates from SessionStart. */
   private cwdTracker: CwdTracker;
-  /** Session-level permission timer. Spike: extracted from resetPermissionTimer + schedulePermissionTimer. */
+  /** Session-level permission timer. Hook variant (Phase 4) subscribes to PermissionRequest. */
   private permissionTracker: PermissionTracker;
   /** Tool_use IDs whose tool_result was processed before the tool_use record
    *  (Claude Code occasionally flushes tool_result ahead of tool_use for fast
