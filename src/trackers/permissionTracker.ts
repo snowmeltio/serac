@@ -107,6 +107,18 @@ class TimerPermissionTracker implements PermissionTracker {
  * authoritative fallback and adds a `PermissionRequest` subscription
  * for low-latency wake-up.
  *
+ * Routing model (confirmed 2026-05-25 subagent spike):
+ *   All hook events for a session tree fire under the parent's session_id;
+ *   subagent events carry an additional `agent_id` field. This tracker
+ *   subscribes by parent session_id and filters by agent_id presence:
+ *     - Parent tracker (no agentId passed): fires only when `agent_id` is
+ *       absent on the payload. Otherwise a subagent's permission request
+ *       would prematurely flip the parent to `waiting` without going
+ *       through the bubble policy.
+ *     - Subagent tracker (agentId passed): fires only when payload's
+ *       `agent_id === agentId`. Per-subagent acceleration that flows
+ *       through the existing bubble-policy code at the host.
+ *
  * Why compose (not replace): Claude Code's hook stream has known
  * silence modes — `permissions.deny` rule auto-rejects emit `PreToolUse`
  * but no `PermissionRequest` (confirmed 2026-05-25 spike). The timer
@@ -126,10 +138,22 @@ class HookPermissionTracker implements PermissionTracker {
     host: PermissionTrackerHost,
     sessionId: string,
     router: HookEventRouter,
+    /** When set, this tracker is for a specific subagent — fire only on
+     *  events whose payload `agent_id` matches. When unset, this is the
+     *  parent's tracker — fire only on events with no `agent_id`. */
+    agentId?: string,
   ) {
     this.timer = new TimerPermissionTracker(host);
-    this.unsubscribe = router.register(sessionId, 'PermissionRequest', () => {
+    this.unsubscribe = router.register(sessionId, 'PermissionRequest', (event: unknown) => {
       if (this.disposed) { return; }
+      const eventAgentId = (typeof event === 'object' && event !== null)
+        ? (event as Record<string, unknown>).agent_id
+        : undefined;
+      if (agentId) {
+        if (eventAgentId !== agentId) { return; }
+      } else {
+        if (typeof eventAgentId === 'string' && eventAgentId.length > 0) { return; }
+      }
       if (host.getActiveTools().size === 0) { return; }
       host.onWaitingFired();
     });
@@ -151,10 +175,15 @@ export interface PermissionTrackerFactoryOptions {
    *  `sessionId`, the factory returns the hook-overlay variant. Otherwise
    *  it returns the pure-timer variant. */
   hookRouter?: HookEventRouter;
-  /** Session UUID. Required for hook subscription. Subagent permission
-   *  trackers pass undefined here (their hook subscriptions need more
-   *  spike work — see HOOK-MONITORING.md). */
+  /** Session UUID. Required for hook subscription. For subagent
+   *  trackers, this is the *parent's* session_id (all subagent hook
+   *  events fire under the parent's session_id; see HOOK-MONITORING.md
+   *  2026-05-25 subagent spike). */
   sessionId?: string;
+  /** Subagent agent_id. When set, the hook variant filters events to
+   *  match this subagent only. When unset, the hook variant filters to
+   *  parent-only events (agent_id absent). */
+  agentId?: string;
 }
 
 /** Construct the variant appropriate for the current environment.
@@ -162,16 +191,14 @@ export interface PermissionTrackerFactoryOptions {
  *  - hookRouter + sessionId → `HookPermissionTracker` (overlay)
  *  - otherwise → `TimerPermissionTracker` (timer-only)
  *
- *  Per-subagent permission trackers always get the timer variant in
- *  PR-D. Subagent-level hook routing requires confirmation that hook
- *  payloads for subagent tool use carry the subagent's session_id (vs
- *  the parent's); deferred until that's empirically captured. */
+ *  The `agentId` opt selects parent vs subagent filter mode for the
+ *  hook variant — see `HookPermissionTracker` docs. */
 export function makePermissionTracker(
   host: PermissionTrackerHost,
   opts: PermissionTrackerFactoryOptions = {},
 ): PermissionTracker {
   if (opts.hookRouter && opts.sessionId) {
-    return new HookPermissionTracker(host, opts.sessionId, opts.hookRouter);
+    return new HookPermissionTracker(host, opts.sessionId, opts.hookRouter, opts.agentId);
   }
   return new TimerPermissionTracker(host);
 }
