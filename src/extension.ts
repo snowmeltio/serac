@@ -12,6 +12,7 @@ import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { buildWorktreeRows } from './worktreeRows.js';
 import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } from './workspaceOpener.js';
+import { HookEventRouter } from './hookEventRouter.js';
 
 export function activate(context: vscode.ExtensionContext): SeracExports {
   // Footer slot registry must be created up-front: companions resolve
@@ -29,6 +30,16 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
 
   const log = vscode.window.createOutputChannel('Serac', { log: true });
   context.subscriptions.push(log);
+
+  // Singleton hook-event router (Path C / Option B). Stub for this PR — no
+  // forwarder is wired and no tracker registers against it yet. Disposed on
+  // extension deactivation. The follow-up hook-wiring PR will:
+  //   1. Stand up the forwarder (Unix socket / HTTP), routing inbound events
+  //      through `hookRouter.onHookEvent(sessionId, eventType, payload)`.
+  //   2. Have each hook-variant tracker call `hookRouter.register(...)` to
+  //      subscribe to the events it cares about (PermissionRequest, etc.).
+  const hookRouter = new HookEventRouter();
+  context.subscriptions.push({ dispose: () => hookRouter.dispose() });
 
   const discovery = new SessionDiscovery(wsPath, { log });
   const usageProvider = new UsageProvider(wsPath);
