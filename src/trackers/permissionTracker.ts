@@ -20,6 +20,7 @@
  */
 
 import { getToolProfile } from '../toolProfiles.js';
+import type { HookEventRouter } from '../hookEventRouter.js';
 
 /** Base permission delay for normal (non-slow) tools. */
 export const PERMISSION_DELAY_MS = 3_000;
@@ -101,19 +102,76 @@ class TimerPermissionTracker implements PermissionTracker {
   }
 }
 
+/**
+ * Hook-overlay variant. Composes a `TimerPermissionTracker` as the
+ * authoritative fallback and adds a `PermissionRequest` subscription
+ * for low-latency wake-up.
+ *
+ * Why compose (not replace): Claude Code's hook stream has known
+ * silence modes — `permissions.deny` rule auto-rejects emit `PreToolUse`
+ * but no `PermissionRequest` (confirmed 2026-05-25 spike). The timer
+ * fallback catches every wait the hook misses. When hooks fire on time,
+ * the timer's `onWaitingFired` callback either becomes a no-op (host
+ * already in `waiting` state) or fires the same legitimate transition
+ * after the hook — same intent, idempotent at the host's edge.
+ *
+ * Latency win when hooks fire: 25-29 ms ground truth vs 3-6 s heuristic.
+ */
+class HookPermissionTracker implements PermissionTracker {
+  private readonly timer: TimerPermissionTracker;
+  private readonly unsubscribe: () => void;
+  private disposed = false;
+
+  constructor(
+    host: PermissionTrackerHost,
+    sessionId: string,
+    router: HookEventRouter,
+  ) {
+    this.timer = new TimerPermissionTracker(host);
+    this.unsubscribe = router.register(sessionId, 'PermissionRequest', () => {
+      if (this.disposed) { return; }
+      if (host.getActiveTools().size === 0) { return; }
+      host.onWaitingFired();
+    });
+  }
+
+  reschedule(): void { this.timer.reschedule(); }
+  cancel(): void { this.timer.cancel(); }
+
+  dispose(): void {
+    if (this.disposed) { return; }
+    this.disposed = true;
+    this.unsubscribe();
+    this.timer.dispose();
+  }
+}
+
+export interface PermissionTrackerFactoryOptions {
+  /** Hook router for the owning workspace. When provided alongside
+   *  `sessionId`, the factory returns the hook-overlay variant. Otherwise
+   *  it returns the pure-timer variant. */
+  hookRouter?: HookEventRouter;
+  /** Session UUID. Required for hook subscription. Subagent permission
+   *  trackers pass undefined here (their hook subscriptions need more
+   *  spike work — see HOOK-MONITORING.md). */
+  sessionId?: string;
+}
+
 /** Construct the variant appropriate for the current environment.
  *
- *  Today: always returns `TimerPermissionTracker` — no other variant exists.
+ *  - hookRouter + sessionId → `HookPermissionTracker` (overlay)
+ *  - otherwise → `TimerPermissionTracker` (timer-only)
  *
- *  Why the factory exists *before* a second variant does: Phase 4 will
- *  introduce `HookPermissionTracker`, fed by Claude Code's `PermissionRequest`
- *  hook event (25-29 ms latency vs current 3-6 s heuristic — confirmed in
- *  spike capture 2026-05-12). When that lands, the factory's body grows a
- *  feature-flag branch; every call site at the SessionManager — session-level
- *  and per-subagent (currently two sites) — remains unchanged.
- *
- *  This is a deliberate one-line layer of indirection, not pretend
- *  abstraction. Removing it now would force a wider diff in Phase 4. */
-export function makePermissionTracker(host: PermissionTrackerHost): PermissionTracker {
+ *  Per-subagent permission trackers always get the timer variant in
+ *  PR-D. Subagent-level hook routing requires confirmation that hook
+ *  payloads for subagent tool use carry the subagent's session_id (vs
+ *  the parent's); deferred until that's empirically captured. */
+export function makePermissionTracker(
+  host: PermissionTrackerHost,
+  opts: PermissionTrackerFactoryOptions = {},
+): PermissionTracker {
+  if (opts.hookRouter && opts.sessionId) {
+    return new HookPermissionTracker(host, opts.sessionId, opts.hookRouter);
+  }
   return new TimerPermissionTracker(host);
 }

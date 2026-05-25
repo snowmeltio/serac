@@ -186,7 +186,7 @@ export class SessionManager {
       getSessionFilePath: () => this.state.filePath,
       getAllSubagents: () => this.state.subagents,
     });
-    this.cwdTracker = makeCwdTracker(workspaceKey);
+    this.cwdTracker = makeCwdTracker(workspaceKey, { hookRouter: this.hookRouter, sessionId });
     this.permissionTracker = makePermissionTracker({
       getActiveTools: () => this.state.activeTools,
       getLastToolResultAt: () => this.lastToolResultAt,
@@ -196,7 +196,7 @@ export class SessionManager {
           this.appendActivity('Waiting for permission');
         }
       },
-    });
+    }, { hookRouter: this.hookRouter, sessionId });
     this.compactBoundaryTracker = makeCompactBoundaryTracker({
       onCompactDetected: () => {
         if (this.state.status !== 'running') {
@@ -204,7 +204,7 @@ export class SessionManager {
         }
         this.appendActivity('Compacting context');
       },
-    });
+    }, { hookRouter: this.hookRouter, sessionId });
     this.state = {
       sessionId,
       slug: sessionId.slice(0, 8),
