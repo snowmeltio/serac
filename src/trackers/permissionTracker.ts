@@ -1,20 +1,22 @@
 /**
  * PermissionTracker — owns timer scheduling for permission-wait detection.
  *
- * Spike extraction (entanglement test): does the permission timer's contract
- * close without leaking SessionManager internals?
- *
- * Behaviour preserved verbatim from sessionManager.ts (Path B audit §2):
- *   - Base delay PERMISSION_DELAY_MS=3s; SLOW_PERMISSION_DELAY_MS=6s for slow tools
- *   - Doubled (max 6s/12s) if a tool result arrived within TOOL_RECENCY_MS=3s
- *   - Exempt tools never trigger the timer
- *   - `onWaitingFired` only fires if activeTools is non-empty at fire time
- *     (host then applies any additional guards e.g. status === 'running')
+ * Behaviour:
+ *   - Base delay PERMISSION_DELAY_MS=3s; SLOW_PERMISSION_DELAY_MS=6s for slow tools.
+ *   - Doubled (max 6s/12s) if a tool result arrived within TOOL_RECENCY_MS=3s.
+ *   - Exempt tools never trigger the timer.
+ *   - `onWaitingFired` only fires if activeTools is non-empty at fire time;
+ *     the host then applies any additional guards (e.g. status === 'running',
+ *     subagent bubble policy).
  *
  * Used in two scopes per session:
- *   1. Session-level — host reads session activeTools, applies "Waiting for permission"
+ *   1. Session-level — host reads session activeTools, sets "Waiting for permission".
  *   2. Per-subagent — host reads subagent.activeTools, sets waitingOnPermission,
- *      bubbles to parent only when allRunningSubagentsBlocked()
+ *      bubbles to parent only when allRunningSubagentsBlocked().
+ *
+ * The hook variant (Phase 4) will replace the timer with subscriptions to
+ * Claude Code's `PermissionRequest` event (25-29 ms ground-truth latency vs
+ * 3-6 s heuristic). Same interface; different fire source.
  */
 
 import { getToolProfile } from '../toolProfiles.js';
@@ -47,11 +49,22 @@ export interface PermissionTracker {
   dispose(): void;
 }
 
+export interface TimerPermissionTrackerOptions {
+  /** Override clock for tests. Defaults to `Date.now`. */
+  now?: () => number;
+}
+
 export class TimerPermissionTracker implements PermissionTracker {
   private timerId: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
+  private readonly now: () => number;
 
-  constructor(private readonly host: PermissionTrackerHost) {}
+  constructor(
+    private readonly host: PermissionTrackerHost,
+    opts: TimerPermissionTrackerOptions = {},
+  ) {
+    this.now = opts.now ?? Date.now;
+  }
 
   reschedule(): void {
     this.cancel();
@@ -65,7 +78,7 @@ export class TimerPermissionTracker implements PermissionTracker {
     const hasSlow = toolNames.some(name => getToolProfile(name).slow);
     let delay = hasSlow ? SLOW_PERMISSION_DELAY_MS : PERMISSION_DELAY_MS;
     const lastResult = this.host.getLastToolResultAt();
-    const recentToolResult = lastResult > 0 && (Date.now() - lastResult < TOOL_RECENCY_MS);
+    const recentToolResult = lastResult > 0 && (this.now() - lastResult < TOOL_RECENCY_MS);
     if (recentToolResult) { delay *= 2; }
 
     this.timerId = setTimeout(() => {
@@ -88,7 +101,19 @@ export class TimerPermissionTracker implements PermissionTracker {
   }
 }
 
-/** Future seam: returns the hook variant when hooks are wired, timer-derived otherwise. */
+/** Construct the variant appropriate for the current environment.
+ *
+ *  Today: always returns `TimerPermissionTracker` — no other variant exists.
+ *
+ *  Why the factory exists *before* a second variant does: Phase 4 will
+ *  introduce `HookPermissionTracker`, fed by Claude Code's `PermissionRequest`
+ *  hook event (25-29 ms latency vs current 3-6 s heuristic — confirmed in
+ *  spike capture 2026-05-12). When that lands, the factory's body grows a
+ *  feature-flag branch; every call site at the SessionManager — session-level
+ *  and per-subagent (currently two sites) — remains unchanged.
+ *
+ *  This is a deliberate one-line layer of indirection, not pretend
+ *  abstraction. Removing it now would force a wider diff in Phase 4. */
 export function makePermissionTracker(host: PermissionTrackerHost): PermissionTracker {
   return new TimerPermissionTracker(host);
 }
