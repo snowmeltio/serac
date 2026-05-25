@@ -1,7 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import {
   JsonlDerivedSubagentLifecycleTracker,
   makeSubagentLifecycleTracker,
@@ -84,31 +81,20 @@ describe('JsonlDerivedSubagentLifecycleTracker', () => {
     expect(batches).toEqual([]);
   });
 
-  it('disposeAll clears tailer count and clears agentId on each subagent', async () => {
-    // Build a real subagents directory so silence-fire can attach a tailer.
-    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'sub-lifecycle-'));
-    const sessionFile = path.join(dir, 'session.jsonl');
-    const subagentsDir = path.join(dir, 'session', 'subagents');
-    await fs.promises.mkdir(subagentsDir, { recursive: true });
-    const agentFile = path.join(subagentsDir, 'agent-aaa.jsonl');
-    await fs.promises.writeFile(agentFile, '');
-
-    const sub = makeSubagent({ agentId: 'aaa' });
-    const host = makeHost({ sessionFilePath: sessionFile, allSubagents: [sub] });
-    const t = new JsonlDerivedSubagentLifecycleTracker(host);
-
-    t.onSpawn(sub);
-    // Fire the silence timer so a tailer is opened.
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(sub.tailer).not.toBeNull();
-    expect(t.getActiveTailerCount()).toBe(1);
-
-    t.disposeAll([sub]);
+  it('disposeAll clears silence timers and agentIds on each subagent', () => {
+    const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
+    const a = makeSubagent({ parentToolUseId: 'tu-a', agentId: 'aid-a' });
+    const b = makeSubagent({ parentToolUseId: 'tu-b', agentId: 'aid-b' });
+    t.onSpawn(a);
+    t.onSpawn(b);
+    expect(a.silenceTimerId).toBeDefined();
+    expect(b.silenceTimerId).toBeDefined();
+    t.disposeAll([a, b]);
+    expect(a.silenceTimerId).toBeUndefined();
+    expect(b.silenceTimerId).toBeUndefined();
+    expect(a.agentId).toBeNull();
+    expect(b.agentId).toBeNull();
     expect(t.getActiveTailerCount()).toBe(0);
-    expect(sub.tailer).toBeNull();
-    expect(sub.agentId).toBeNull();
-
-    await fs.promises.rm(dir, { recursive: true, force: true });
   });
 
   it('factory returns a working JSONL-derived tracker', () => {

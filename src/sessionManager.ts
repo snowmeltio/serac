@@ -147,6 +147,10 @@ export class SessionManager {
   /** Tracks compact boundaries. Spike: extracted from processSystemRecord's
    *  compact_boundary branch. Hook variant will fire on SessionStart(source:"compact"). */
   private compactBoundaryTracker: CompactBoundaryTracker;
+  /** Optional replay/observability hook fired on every status transition.
+   *  Non-invasive: default no-op. Used by the replay harness to verify a
+   *  captured transition stream is reproducible from JSONL. */
+  private readonly onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void;
   /** Tool_use IDs whose tool_result was processed before the tool_use record
    *  (Claude Code occasionally flushes tool_result ahead of tool_use for fast
    *  tools — same wall-clock millisecond, file order reversed). Without this
@@ -162,8 +166,10 @@ export class SessionManager {
     sessionId: string,
     filePath: string,
     workspaceKey: string,
+    opts: { onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void } = {},
   ) {
     const now = new Date();
+    this.onTransition = opts.onTransition;
     this.tailer = new JsonlTailer(filePath);
     this.subagentLifecycle = makeSubagentLifecycleTracker({
       isDisposed: () => this.disposed,
@@ -176,7 +182,7 @@ export class SessionManager {
       getLastToolResultAt: () => this.lastToolResultAt,
       onWaitingFired: () => {
         if (this.state.status === 'running' && this.state.activeTools.size > 0) {
-          this.state.status = 'waiting';
+          this.setStatus('waiting', 'permission_fired');
           this.appendActivity('Waiting for permission');
         }
       },
@@ -216,7 +222,7 @@ export class SessionManager {
    *  Preserves topic, customTitle, and aiTitle so display names survive compaction. */
   private resetState(): void {
     const now = new Date();
-    this.state.status = 'done';
+    this.setStatus('done', 'reset_state');
     this.state.activity = '';
     this.clearTools(this.state.activeTools);
     this.state.userTurnCount = 0;
@@ -412,14 +418,14 @@ export class SessionManager {
     }
 
     // result === 'waiting'
-    this.state.status = 'waiting';
+    this.setStatus('waiting', 'demote_waiting');
     this.appendActivity('Waiting for permission');
     return true;
   }
 
   /** Mark session as done and clean up all running state */
   private markSessionDone(): void {
-    this.state.status = 'done';
+    this.setStatus('done', 'session_done');
     // Clear status-indicator text that would be misleading on a done card.
     // Preserve genuine activity (tool names, responses) for context.
     if (this.state.activity === 'Waiting for permission') {
@@ -727,7 +733,7 @@ export class SessionManager {
         name => getToolProfile(name).userInput
       );
       if (needsUserInput) {
-        this.state.status = 'waiting';
+        this.setStatus('waiting', 'needs_user_input');
         this.appendActivity('Waiting for your response');
       } else {
         this.setRunning();
@@ -836,7 +842,7 @@ export class SessionManager {
   private processQueueOperation(record: JsonlRecord, timestamp: Date): boolean {
     if (record.operation === 'enqueue') {
       this.state.firstActivity = timestamp;
-      this.state.status = 'done';
+      this.setStatus('done', 'enqueue');
       this.enqueuedAt = Date.now();  // Track for stale guard (C3)
       return true;
     }
@@ -918,7 +924,7 @@ export class SessionManager {
     if (!subagent.running || subagent.activeTools.size === 0) { return; }
     subagent.waitingOnPermission = true;
     if (this.state.status === 'running' && this.allRunningSubagentsBlocked()) {
-      this.state.status = 'waiting';
+      this.setStatus('waiting', 'subagent_permission_bubble');
       this.appendActivity('Subagent waiting for permission');
     }
   }
@@ -936,13 +942,22 @@ export class SessionManager {
   /** Set status to running and anchor turn start for idle grace period.
    *  turnStartAt only updates on actual status transition (not repeated calls
    *  while already running) to preserve the 30s extended thinking grace. */
-  private setRunning(): void {
+  private setRunning(reason: string = 'set_running'): void {
     if (this.state.status !== 'running') {
       this.turnStartAt = Date.now();
       // Capture writer PID on first transition to running
       this.captureWriterPid();
     }
-    this.state.status = 'running';
+    this.setStatus('running', reason);
+  }
+
+  /** Single mutation point for `state.status` so the optional onTransition
+   *  callback fires on every real change. Same-status assignments are no-ops. */
+  private setStatus(next: SessionStatus, reason: string): void {
+    const prev = this.state.status;
+    if (prev === next) { return; }
+    this.state.status = next;
+    this.onTransition?.(prev, next, reason);
   }
 
   /** Whether the session should transition to done: no active tools, or all
