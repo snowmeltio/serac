@@ -294,4 +294,106 @@ describe('SessionDiscovery', () => {
 
     discovery.stop();
   });
+
+  // ── Archived-session title backfill ───────────────────────────
+
+  it('backfills aiTitle from JSONL when an archived session lacks meta title', async () => {
+    const sessionId = 'old-with-title';
+    const lines = [
+      JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text: 'hi' }] } }),
+      JSON.stringify({ type: 'ai-title', sessionId, aiTitle: 'Refactor worktree grouping' }),
+    ];
+    const filePath = path.join(projectsDir, workspaceKey, `${sessionId}.jsonl`);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, lines.join('\n') + '\n');
+    const eightDaysAgo = Date.now() - (8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(filePath, new Date(eightDaysAgo), new Date(eightDaysAgo));
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    await discovery.setArchiveRange(0);
+
+    const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+    expect(snap?.aiTitle).toBe('Refactor worktree grouping');
+
+    // Persisted to session-meta.json so subsequent scans don't re-read the JSONL
+    await new Promise(r => setTimeout(r, 100));
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    expect(meta.sessions[sessionId].aiTitle).toBe('Refactor worktree grouping');
+
+    discovery.stop();
+  });
+
+  it('prefers the last ai-title record when multiple are present', async () => {
+    const sessionId = 'old-multiple-titles';
+    const lines = [
+      JSON.stringify({ type: 'ai-title', sessionId, aiTitle: 'First guess' }),
+      JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text: 'more' }] } }),
+      JSON.stringify({ type: 'ai-title', sessionId, aiTitle: 'Better title' }),
+    ];
+    const filePath = path.join(projectsDir, workspaceKey, `${sessionId}.jsonl`);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, lines.join('\n') + '\n');
+    const eightDaysAgo = Date.now() - (8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(filePath, new Date(eightDaysAgo), new Date(eightDaysAgo));
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    await discovery.setArchiveRange(0);
+
+    const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+    expect(snap?.aiTitle).toBe('Better title');
+
+    discovery.stop();
+  });
+
+  it('uses meta.aiTitle on archived snapshots without re-reading JSONL', async () => {
+    const sessionId = 'old-cached';
+    const filePath = path.join(projectsDir, workspaceKey, `${sessionId}.jsonl`);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    // Intentionally no ai-title in the file — meta should still win
+    fs.writeFileSync(filePath, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text: 'hi' }] } }) + '\n');
+    const eightDaysAgo = Date.now() - (8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(filePath, new Date(eightDaysAgo), new Date(eightDaysAgo));
+
+    // Pre-seed meta with a cached title
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+    fs.writeFileSync(metaPath, JSON.stringify({
+      sessions: {
+        [sessionId]: { title: null, dismissed: true, acknowledged: false, acknowledgedAt: null, firstSeen: eightDaysAgo, aiTitle: 'Previously cached' },
+      },
+    }));
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    await discovery.setArchiveRange(0);
+
+    const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+    expect(snap?.aiTitle).toBe('Previously cached');
+
+    discovery.stop();
+  });
+
+  it('marks archived sessions with no ai-title record as scanned to avoid re-scanning', async () => {
+    const sessionId = 'old-no-title';
+    const filePath = path.join(projectsDir, workspaceKey, `${sessionId}.jsonl`);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text: 'hi' }] } }) + '\n');
+    const eightDaysAgo = Date.now() - (8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(filePath, new Date(eightDaysAgo), new Date(eightDaysAgo));
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    await discovery.setArchiveRange(0);
+
+    await new Promise(r => setTimeout(r, 100));
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    // Scanned marker: empty string, not undefined
+    expect(meta.sessions[sessionId].aiTitle).toBe('');
+    expect(meta.sessions[sessionId].customTitle).toBe('');
+
+    discovery.stop();
+  });
 });

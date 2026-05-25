@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as readline from 'readline';
 import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
@@ -406,6 +407,17 @@ export class SessionDiscovery {
       snapshot.dismissed = meta?.dismissed ?? false;
       snapshot.title = meta?.title ?? null;
 
+      // Cache live title fields into meta so they survive the 7-day archive
+      // cutoff (lightweight scanner doesn't parse JSONL).
+      if (meta && snapshot.aiTitle && snapshot.aiTitle !== meta.aiTitle) {
+        meta.aiTitle = snapshot.aiTitle;
+        this.metaDirty = true;
+      }
+      if (meta && snapshot.customTitle && snapshot.customTitle !== meta.customTitle) {
+        meta.customTitle = snapshot.customTitle;
+        this.metaDirty = true;
+      }
+
       // Apply stale transition: done + acknowledged + 10s elapsed = stale
       // But guard against enqueued sessions (C3): a queued session is done+acknowledged
       // but should not go stale while waiting for dequeue.
@@ -488,10 +500,14 @@ export class SessionDiscovery {
   }
 
   /** Lightweight scan of JSONL files older than SCAN_AGE_GATE_MS.
-   *  Only reads file stats and session-meta.json — no JSONL parsing. */
+   *  Reads file stats, session-meta.json, and (one-time, when meta lacks them)
+   *  streams the JSONL to extract `ai-title` / `custom-title` records so the
+   *  archived card shows a real label instead of the hex session id. The result
+   *  is persisted into session-meta.json so subsequent scans don't re-read. */
   private async scanExtendedArchive(rangeMs: number): Promise<void> {
     const wsDir = path.join(this.projectsDir, this.workspaceKey);
     const now = Date.now();
+    let backfilled = 0;
     try {
       const files = await fs.promises.readdir(wsDir);
       for (const file of files) {
@@ -510,8 +526,36 @@ export class SessionDiscovery {
           if (age <= SessionDiscovery.SCAN_AGE_GATE_MS) { continue; }
           if (rangeMs !== Infinity && age > rangeMs) { continue; }
 
-          // Build lightweight snapshot from meta + stat
-          const meta = this.sessionMeta.get(sessionId);
+          let meta = this.sessionMeta.get(sessionId);
+
+          // Backfill cached title fields once per session. Files written before
+          // this code shipped have no aiTitle/customTitle in meta, so we stream
+          // the JSONL one time and cache the result.
+          if (!meta || (meta.aiTitle === undefined && meta.customTitle === undefined)) {
+            const titles = await this.extractTitlesFromJsonl(filePath);
+            if (titles.aiTitle || titles.customTitle) {
+              meta = this.getOrCreateMeta(sessionId);
+              if (titles.aiTitle) { meta.aiTitle = titles.aiTitle; }
+              if (titles.customTitle) { meta.customTitle = titles.customTitle; }
+              this.metaDirty = true;
+              backfilled++;
+            } else if (meta) {
+              // Record an empty marker so we don't re-scan this file every
+              // time the archive range expands. Empty string distinguishes
+              // "scanned, nothing found" from "never scanned" (undefined).
+              meta.aiTitle = meta.aiTitle ?? '';
+              meta.customTitle = meta.customTitle ?? '';
+              this.metaDirty = true;
+            } else {
+              // No meta entry and no titles found — still mark scanned to
+              // avoid re-reading on future range expansions.
+              meta = this.getOrCreateMeta(sessionId);
+              meta.aiTitle = '';
+              meta.customTitle = '';
+              this.metaDirty = true;
+            }
+          }
+
           const snapshot: SessionSnapshot = {
             sessionId,
             slug: sessionId.slice(0, 8),
@@ -528,7 +572,8 @@ export class SessionDiscovery {
             searchText: '',
             modelLabel: '',
             title: meta?.title ?? null,
-            customTitle: '',
+            customTitle: meta?.customTitle ?? '',
+            aiTitle: meta?.aiTitle ?? '',
             confidence: 'high', // terminal status
           };
           this.extendedArchive.set(sessionId, snapshot);
@@ -537,10 +582,40 @@ export class SessionDiscovery {
         }
       }
       this.extendedArchiveLoadedRange = rangeMs;
-      this.log.info('[archive] Extended archive scan complete: %d entries for range %dms (scanned %d jsonl files)', this.extendedArchive.size, rangeMs, files.filter(f => f.endsWith('.jsonl')).length);
+      if (this.metaDirty) { this.enqueueSave(); }
+      this.log.info('[archive] Extended archive scan complete: %d entries for range %dms (scanned %d jsonl files, %d title backfills)', this.extendedArchive.size, rangeMs, files.filter(f => f.endsWith('.jsonl')).length, backfilled);
     } catch (err) {
       this.log.warn('[archive] Failed to read workspace directory %s: %s', wsDir, err);
     }
+  }
+
+  /** Stream a JSONL file looking for the latest `ai-title` and `custom-title`
+   *  records. Used as a one-time backfill so archived cards can show a label
+   *  instead of the hex session id. Returns empty strings if not found. */
+  private async extractTitlesFromJsonl(filePath: string): Promise<{ aiTitle: string; customTitle: string }> {
+    let aiTitle = '';
+    let customTitle = '';
+    try {
+      const stream = fs.createReadStream(filePath, { encoding: 'utf-8' });
+      const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+      for await (const line of rl) {
+        // Cheap substring pre-filter to avoid JSON.parse on every line.
+        if (!line.includes('"type":"ai-title"') && !line.includes('"type":"custom-title"')) {
+          continue;
+        }
+        try {
+          const rec = JSON.parse(line);
+          if (rec.type === 'ai-title' && typeof rec.aiTitle === 'string' && rec.aiTitle) {
+            aiTitle = rec.aiTitle;
+          } else if (rec.type === 'custom-title' && typeof rec.customTitle === 'string' && rec.customTitle) {
+            customTitle = rec.customTitle;
+          }
+        } catch { /* skip malformed line */ }
+      }
+    } catch (err) {
+      this.log.warn('[archive] Failed to extract titles from %s: %s', filePath, err);
+    }
+    return { aiTitle, customTitle };
   }
 
   /** Resolved local repoRoot, or null when not in a git repo. Used by the
