@@ -101,7 +101,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     },
   });
 
-  const discovery = new SessionDiscovery(wsPath, { log });
+  const discovery = new SessionDiscovery(wsPath, { log, hookRouter });
   const usageProvider = new UsageProvider(wsPath);
   const panelProvider = new AgentPanelProvider(context.extensionUri);
 
