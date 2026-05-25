@@ -33,13 +33,54 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   const log = vscode.window.createOutputChannel('Serac', { log: true });
   context.subscriptions.push(log);
 
-  // Singleton hook-event router. Ingress now binds a per-workspace Unix
-  // socket (Phase 4 / PR-A); no tracker subscribes yet (PR-D adds those).
-  // Until PR-D, events arrive at the router and either fan out to no
-  // subscribers (silently dropped) or buffer briefly within the TTL window
-  // and expire. This is the no-behaviour-change shape PR-A ships.
+  // Singleton hook-event router. PR-D wired tracker subscriptions; PR-E
+  // adds an optional debug observer that logs every routed event to a
+  // dedicated output channel, and a liveness watchdog that warns when no
+  // events arrive within LIVENESS_TIMEOUT_MS of a leader bind.
   const hookRouter = new HookEventRouter();
   context.subscriptions.push({ dispose: () => hookRouter.dispose() });
+
+  const hooksDebugLog = vscode.window.createOutputChannel('Serac (Hooks)', { log: true });
+  context.subscriptions.push(hooksDebugLog);
+
+  const hooksDebugEnabled = () =>
+    vscode.workspace.getConfiguration('serac.hooks').get<boolean>('debug') ?? false;
+
+  /** Liveness watchdog: when this window becomes leader, set a 10 s timer.
+   *  If it elapses without any event arriving, log a one-shot warning. The
+   *  warning is informational only — the JSONL/timer fallback already
+   *  guarantees correctness; this just tells Murray "hooks aren't reaching
+   *  the router; verify settings.json patched and Claude Code restarted." */
+  const LIVENESS_TIMEOUT_MS = 10_000;
+  let livenessTimer: ReturnType<typeof setTimeout> | undefined;
+  let firstEventSeen = false;
+  const startLivenessWatchdog = () => {
+    if (livenessTimer || firstEventSeen) { return; }
+    livenessTimer = setTimeout(() => {
+      if (!firstEventSeen) {
+        hooksDebugLog.warn(
+          `no hook events received within ${LIVENESS_TIMEOUT_MS / 1000} s of leader bind — ` +
+          'JSONL fallback remains authoritative; if you expected hooks, verify ' +
+          'serac.hooks.enabled is true and Claude Code has been restarted to pick up settings.json',
+        );
+      }
+    }, LIVENESS_TIMEOUT_MS);
+  };
+
+  hookRouter.setDebugObserver((sessionId, eventType, event) => {
+    if (!firstEventSeen) {
+      firstEventSeen = true;
+      if (livenessTimer) { clearTimeout(livenessTimer); livenessTimer = undefined; }
+      hooksDebugLog.info(`first hook event received (${eventType}) — ingress is live`);
+    }
+    if (hooksDebugEnabled()) {
+      const summary = summariseHookEvent(event);
+      hooksDebugLog.trace(`${eventType} sid=${sessionId.slice(0, 8)} ${summary}`);
+    }
+  });
+  context.subscriptions.push({ dispose: () => {
+    if (livenessTimer) { clearTimeout(livenessTimer); livenessTimer = undefined; }
+  }});
 
   // Per-workspace hook ingress. One leader window per workspace owns the
   // socket; sibling windows become inert followers and continue reading
@@ -75,7 +116,9 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     ingressHandle = handle;
     if (handle.isLeader) {
       log.info(`hook ingress: leader, socket=${handle.socketPath}`);
+      hooksDebugLog.info(`leader bound — socket=${handle.socketPath}`);
       tryPatch();
+      if (hooksEnabled()) { startLivenessWatchdog(); }
     } else {
       log.debug('hook ingress: follower (another window owns this workspace)');
     }
@@ -454,3 +497,18 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
 }
 
 export function deactivate() {}
+
+/** Render a one-line summary of a hook payload for the debug channel.
+ *  Trims to the fields a human actually wants when tailing the channel:
+ *  agent_id (subagent dispatch), tool_name (which tool), source (for
+ *  SessionStart compact vs startup), permission_mode. */
+function summariseHookEvent(event: unknown): string {
+  if (typeof event !== 'object' || event === null) { return ''; }
+  const e = event as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof e.agent_id === 'string') { parts.push(`agent=${e.agent_id.slice(0, 8)}`); }
+  if (typeof e.tool_name === 'string') { parts.push(`tool=${e.tool_name}`); }
+  if (typeof e.source === 'string') { parts.push(`source=${e.source}`); }
+  if (typeof e.permission_mode === 'string') { parts.push(`mode=${e.permission_mode}`); }
+  return parts.join(' ');
+}

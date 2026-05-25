@@ -185,7 +185,7 @@ export class SessionManager {
       isDisposed: () => this.disposed,
       getSessionFilePath: () => this.state.filePath,
       getAllSubagents: () => this.state.subagents,
-    });
+    }, { hookRouter: this.hookRouter, sessionId });
     this.cwdTracker = makeCwdTracker(workspaceKey, { hookRouter: this.hookRouter, sessionId });
     this.permissionTracker = makePermissionTracker({
       getActiveTools: () => this.state.activeTools,
@@ -902,11 +902,18 @@ export class SessionManager {
   private createSubagent(parentToolUseId: string, description: string, agentId: string | null): SubagentInfo {
     const activeTools = new Map<string, string>();
     let subagent!: SubagentInfo;  // definite-assignment: filled below before any closure runs
+    // Subagent permission tracker: hook variant only when we know the
+    // agent_id at construction time. PR-E spike (2026-05-25) confirmed
+    // subagent PermissionRequest events ride the parent's session_id and
+    // carry the subagent's agent_id; the hook variant filters on that.
+    const trackerOpts = (this.hookRouter && agentId)
+      ? { hookRouter: this.hookRouter, sessionId: this.state.sessionId, agentId }
+      : {};
     const tracker = makePermissionTracker({
       getActiveTools: () => activeTools,
       getLastToolResultAt: () => this.lastToolResultAt,
       onWaitingFired: () => this.bubbleSubagentWaitingIfAllBlocked(subagent),
-    });
+    }, trackerOpts);
     subagent = {
       parentToolUseId,
       description,
