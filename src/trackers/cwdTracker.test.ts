@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { makeCwdTracker } from './cwdTracker.js';
+import { HookEventRouter } from '../hookEventRouter.js';
 
 describe('CwdTracker', () => {
   it('returns empty state on construction', () => {
@@ -49,5 +50,61 @@ describe('CwdTracker', () => {
     const t = makeCwdTracker('-Users-foo-bar');
     t.dispose();
     t.dispose();
+  });
+});
+
+describe('CwdTracker (hook overlay)', () => {
+  const KEY = '-Users-foo-bar';
+  const SID = 'session-uuid-123';
+
+  function setup() {
+    const router = new HookEventRouter();
+    const tracker = makeCwdTracker(KEY, { hookRouter: router, sessionId: SID });
+    return { router, tracker };
+  }
+
+  it('updates cwd from SessionStart payload', () => {
+    const { router, tracker } = setup();
+    router.onHookEvent(SID, 'SessionStart', { cwd: '/Users/foo/bar', source: 'startup' });
+    expect(tracker.getState().cwd).toBe('/Users/foo/bar');
+    expect(tracker.getState().initialCwd).toBe('/Users/foo/bar');
+    tracker.dispose();
+  });
+
+  it('updates cwd from UserPromptSubmit payload', () => {
+    const { router, tracker } = setup();
+    router.onHookEvent(SID, 'UserPromptSubmit', { cwd: '/Users/foo/bar/sub' });
+    expect(tracker.getState().cwd).toBe('/Users/foo/bar/sub');
+    tracker.dispose();
+  });
+
+  it('still accepts onCwd() from the JSONL path', () => {
+    const { tracker } = setup();
+    tracker.onCwd('/Users/foo/bar');
+    expect(tracker.getState().cwd).toBe('/Users/foo/bar');
+    tracker.dispose();
+  });
+
+  it('ignores hook events for other sessions', () => {
+    const { router, tracker } = setup();
+    router.onHookEvent('different-session', 'SessionStart', { cwd: '/other/path' });
+    expect(tracker.getState().cwd).toBe('');
+    tracker.dispose();
+  });
+
+  it('ignores non-string cwd field', () => {
+    const { router, tracker } = setup();
+    router.onHookEvent(SID, 'SessionStart', { cwd: 42 });
+    router.onHookEvent(SID, 'SessionStart', {});
+    router.onHookEvent(SID, 'SessionStart', null);
+    expect(tracker.getState().cwd).toBe('');
+    tracker.dispose();
+  });
+
+  it('dispose unsubscribes — further events do nothing', () => {
+    const { router, tracker } = setup();
+    tracker.dispose();
+    router.onHookEvent(SID, 'SessionStart', { cwd: '/should/not/apply' });
+    expect(tracker.getState().cwd).toBe('');
   });
 });
