@@ -33,3 +33,7 @@ CLAUDE.md
 .gitignore
 .DS_Store
 **/.DS_Store
+HOOK-MONITORING.md
+panel-review/**
+spike/**
+scripts/**
