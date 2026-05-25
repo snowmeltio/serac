@@ -80,11 +80,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { JsonlTailer } from './jsonlTailer.js';
-import { SubagentTailerManager } from './subagentTailerManager.js';
 import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType } from './jsonlValidator.js';
 import { computeDemotion, getToolProfile, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS } from './toolProfiles.js';
 import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
+import { makeSubagentLifecycleTracker, type SubagentLifecycleTracker } from './trackers/subagentLifecycleTracker.js';
 // Re-export for backward compatibility (tests import from sessionManager)
 export { computeDemotion, getToolProfile } from './toolProfiles.js';
 export type { ToolProfile } from './toolProfiles.js';
@@ -135,8 +135,10 @@ export class SessionManager {
   private writerPid: number | null = null;
   /** Whether PID capture has been attempted (to avoid repeated fuser calls). */
   private pidCaptureAttempted = false;
-  /** Manages subagent JSONL tailers (silence timers, file discovery, polling). */
-  private subagentTailers: SubagentTailerManager;
+  /** Tracks subagent lifecycle (spawn / progress / completion).
+   *  JSONL-derived variant wraps SubagentTailerManager — hook variant
+   *  (Phase 4) publishes lifecycle transitions from SubagentStart/Stop events. */
+  private subagentLifecycle: SubagentLifecycleTracker;
   /** Tracks cwd / initialCwd. Hook variant (Phase 4) populates from SessionStart. */
   private cwdTracker: CwdTracker;
   /** Session-level permission timer. Hook variant (Phase 4) subscribes to PermissionRequest. */
@@ -159,7 +161,7 @@ export class SessionManager {
   ) {
     const now = new Date();
     this.tailer = new JsonlTailer(filePath);
-    this.subagentTailers = new SubagentTailerManager({
+    this.subagentLifecycle = makeSubagentLifecycleTracker({
       isDisposed: () => this.disposed,
       getSessionFilePath: () => this.state.filePath,
       getAllSubagents: () => this.state.subagents,
@@ -219,7 +221,7 @@ export class SessionManager {
     this.lastToolResultAt = 0;
     this.earlyToolResults.clear();
     // Dispose all subagent resources before clearing
-    this.subagentTailers.disposeAll(this.state.subagents);
+    this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
       subagent.permissionTracker.dispose();
     }
@@ -241,7 +243,7 @@ export class SessionManager {
       this.resetState();
     }
 
-    if (records.length === 0 && this.subagentTailers.getActiveTailerCount() === 0) {
+    if (records.length === 0 && this.subagentLifecycle.getActiveTailerCount() === 0) {
       return this.tailer.truncated;
     }
 
@@ -253,7 +255,7 @@ export class SessionManager {
     }
 
     // Poll subagent tailers for direct JSONL reads (Phase 2: silent subagent detection)
-    if (this.subagentTailers.getActiveTailerCount() > 0) {
+    if (this.subagentLifecycle.getActiveTailerCount() > 0) {
       if (await this.processSubagentTailerRecords()) {
         changed = true;
       }
@@ -463,7 +465,7 @@ export class SessionManager {
     this.disposed = true;
     this.clearSessionTimers();
     this.permissionTracker.dispose();
-    this.subagentTailers.disposeAll(this.state.subagents);
+    this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
       subagent.permissionTracker.dispose();
     }
@@ -611,7 +613,7 @@ export class SessionManager {
             subagent.resultPreview = SessionManager.extractResultPreview(block);
             // Clean up permission tracker + tailer resources on completion
             subagent.permissionTracker.dispose();
-            this.subagentTailers.disposeSubagent(subagent);
+            this.subagentLifecycle.onComplete(subagent);
           }
         }
 
@@ -691,7 +693,7 @@ export class SessionManager {
 
             const subagent = this.createSubagent(block.id, description, agentId);
             this.state.subagents.push(subagent);
-            this.subagentTailers.startSilenceTimer(subagent);
+            this.subagentLifecycle.onSpawn(subagent);
           }
         }
 
@@ -787,7 +789,7 @@ export class SessionManager {
           if (agentId && typeof agentId === 'string') {
             subagent.agentId = agentId;
             // Cancel silence timer + dispose tailer — we're getting progress
-            this.subagentTailers.cancelProgressSilence(subagent);
+            this.subagentLifecycle.onProgress(subagent);
           }
         }
       }
@@ -1161,13 +1163,13 @@ export class SessionManager {
     return path.basename(filePath) || 'file';
   }
 
-  // ── Phase 2: Subagent JSONL tailing (delegated to SubagentTailerManager) ──
+  // ── Phase 2: Subagent JSONL tailing (delegated to SubagentLifecycleTracker) ──
 
   /** Process records from subagent tailers. Returns true if any state changed.
-   *  SubagentTailerManager handles I/O; this method handles state mutations
+   *  SubagentLifecycleTracker handles I/O; this method handles state mutations
    *  via the shared applySubagent*Record methods. */
   private async processSubagentTailerRecords(): Promise<boolean> {
-    const batches = await this.subagentTailers.poll(this.state.subagents);
+    const batches = await this.subagentLifecycle.pollDirect(this.state.subagents);
     let changed = false;
 
     for (const { subagent, records } of batches) {
