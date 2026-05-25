@@ -1,18 +1,11 @@
 /**
- * Bubble policy test — exercises the 13-line closure at the subagent spawn site
- * in sessionManager.ts that bubbles "Subagent waiting for permission" up to the
- * parent session ONLY when *all* running subagents are blocked.
+ * Permission-wait integration tests for SessionManager.
  *
- * Pre-PermissionTracker, this logic lived in `resetSubagentPermissionTimer`.
- * Post-extraction, it's a closure passed as `onWaitingFired` to each subagent's
- * PermissionTracker. The unit tests for the tracker prove the tracker fires;
- * these tests prove the bubble-vs-no-bubble decision at the host level still
- * matches pre-refactor behaviour.
- *
- * Closes a gap surfaced by red-team review of PR #5: the 17 new tracker tests
- * cover the tracker in isolation, but the bubble-policy seam had no dedicated
- * coverage. A regression here (e.g. condition flipped, status check wrong)
- * would have been missed by tracker tests and easy to miss in sidechain tests.
+ * Originally added (file name "bubble") to close a /red-team gap on the
+ * subagent bubble closure. Persona-panel review surfaced two more end-to-end
+ * gaps: the session-level "Waiting for permission" closure had no dedicated
+ * coverage, and the MCP-progress-reset path (chatty MCP tools that prevent
+ * premature firing) was untested. Both groups live here now.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { JsonlRecord } from './types.js';
@@ -51,6 +44,13 @@ function spawnAgent(toolId: string, description: string = 'worker'): JsonlRecord
   };
 }
 
+function sessionToolUse(toolName: string, toolId: string): JsonlRecord {
+  return {
+    type: 'assistant', timestamp: new Date().toISOString(),
+    message: { content: [{ type: 'tool_use', name: toolName, id: toolId }] },
+  };
+}
+
 function sidechainToolUse(toolName: string, toolId: string, parentToolUseID: string): JsonlRecord {
   return {
     type: 'assistant', isSidechain: true, parentToolUseID,
@@ -66,6 +66,14 @@ function sidechainToolResult(toolUseId: string, parentToolUseID: string): JsonlR
     message: { content: [{ type: 'tool_result', tool_use_id: toolUseId }] },
   };
 }
+
+function mcpProgress(): JsonlRecord {
+  return { type: 'progress', timestamp: new Date().toISOString(), data: { type: 'mcp_progress' } };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Subagent bubble policy — the /red-team-flagged seam
+// ─────────────────────────────────────────────────────────────────────────
 
 describe('Bubble policy: subagent permission wait → parent session', () => {
   beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
@@ -167,5 +175,82 @@ describe('Bubble policy: subagent permission wait → parent session', () => {
     // Agent 1 is the only running subagent AND it's blocked — bubble.
     expect(mgr.getSnapshot().subagents.find(s => s.parentToolUseId === 'agent-1')?.waitingOnPermission).toBe(true);
     expect(mgr.getStatus()).toBe('waiting');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Session-level "Waiting for permission" closure — persona-panel gap (Sam)
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('Session-level permission wait', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('session-level permission fire transitions running → waiting + appends activity', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    // Parent session uses a non-exempt, non-slow tool directly (no subagent).
+    await feed(mgr, [sessionToolUse('SomeTool', 'tu-session-1')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    vi.advanceTimersByTime(3_001);  // PERMISSION_DELAY_MS + 1ms
+
+    const snap = mgr.getSnapshot();
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(snap.activity).toContain('Waiting for permission');
+  });
+
+  it('session-level fire does not occur when only exempt tools are active', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [sessionToolUse('Read', 'tu-r')]);
+    vi.advanceTimersByTime(20_000);
+    expect(mgr.getStatus()).not.toBe('waiting');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// MCP progress reset regression — persona-panel gap (Sam)
+//
+// A chatty MCP tool emitting sub-6s `mcp_progress` events resets the
+// permission timer each tick. This pins the behaviour both ways: progress
+// arriving within the window prevents premature fire, and once it stops,
+// the timer eventually does fire.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('MCP progress reset', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('mcp_progress within the slow window keeps timer pending (no premature fire)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [sessionToolUse('mcp__slack__post_message', 'tu-mcp')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    // Tick a progress every 2s for 10s — past both the base (3s) and slow (6s)
+    // permission delays. Without progress resets, the timer would fire at 6s.
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(2_000);
+      await feed(mgr, [mcpProgress()]);
+    }
+
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('mcp_progress stops arriving → permission timer eventually fires', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [sessionToolUse('mcp__slack__post_message', 'tu-mcp')]);
+
+    // One progress, then silence.
+    vi.advanceTimersByTime(1_000);
+    await feed(mgr, [mcpProgress()]);
+    // From the last progress, the slow delay (6s) must elapse with no further
+    // events for the indicator to fire.
+    vi.advanceTimersByTime(6_001);
+
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toContain('Waiting for permission');
   });
 });

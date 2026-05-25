@@ -23,8 +23,11 @@ export interface SubagentInfo {
   lastActivity: Date;
   /** Active tool_use IDs within this subagent (from sidechain records) */
   activeTools: Map<string, string>;
-  /** Permission-wait tracker for this subagent (timer-derived; hook-driven in future). */
-  permissionTracker: import('./trackers/permissionTracker.js').PermissionTracker | undefined;
+  /** Permission-wait tracker for this subagent (timer-derived; hook-driven in future).
+   *  Always present after construction — the SessionManager builds it via the
+   *  `createSubagent(...)` factory in the spawn site. Non-optional by design so
+   *  the type system rejects partial subagents. */
+  permissionTracker: import('./trackers/permissionTracker.js').PermissionTracker;
   /** Whether the user has acknowledged this subagent (triggers pruning when done) */
   acknowledged: boolean;
   /** [Phase 2] Targeted JSONL tailer for silent subagent detection.
