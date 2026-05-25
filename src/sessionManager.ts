@@ -83,7 +83,7 @@ import { JsonlTailer } from './jsonlTailer.js';
 import { SubagentTailerManager } from './subagentTailerManager.js';
 import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType } from './jsonlValidator.js';
 import { computeDemotion, getToolProfile, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS } from './toolProfiles.js';
-import { sanitiseWorkspaceKey } from './panelUtils.js';
+import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 // Re-export for backward compatibility (tests import from sessionManager)
 export { computeDemotion, getToolProfile } from './toolProfiles.js';
 export type { ToolProfile } from './toolProfiles.js';
@@ -148,6 +148,8 @@ export class SessionManager {
   private pidCaptureAttempted = false;
   /** Manages subagent JSONL tailers (silence timers, file discovery, polling). */
   private subagentTailers: SubagentTailerManager;
+  /** Tracks cwd / initialCwd. Spike: extracted from inline `processRecord` block. */
+  private cwdTracker: CwdTracker;
   /** Tool_use IDs whose tool_result was processed before the tool_use record
    *  (Claude Code occasionally flushes tool_result ahead of tool_use for fast
    *  tools — same wall-clock millisecond, file order reversed). Without this
@@ -171,11 +173,10 @@ export class SessionManager {
       getSessionFilePath: () => this.state.filePath,
       getAllSubagents: () => this.state.subagents,
     });
+    this.cwdTracker = makeCwdTracker(workspaceKey);
     this.state = {
       sessionId,
       slug: sessionId.slice(0, 8),
-      cwd: '',
-      initialCwd: '',
       workspaceKey,
       filePath,
       status: 'done',
@@ -273,8 +274,7 @@ export class SessionManager {
     return {
       sessionId: this.state.sessionId,
       slug: this.state.slug,
-      cwd: this.state.cwd,
-      initialCwd: this.state.initialCwd,
+      ...this.cwdTracker.getState(),
       workspaceKey: this.state.workspaceKey,
       topic: this.state.topic,
       status: this.state.status,
@@ -484,16 +484,7 @@ export class SessionManager {
     if (record.slug && record.slug !== this.state.slug) {
       this.state.slug = record.slug;
     }
-    if (record.cwd) {
-      this.state.cwd = record.cwd;
-      // Capture the first cwd that resolves back to this workspaceKey — that's
-      // the canonical workspace dir, immune to mid-session `cd`s. Earlier
-      // records may already point at a subfolder (sanitisation collapses
-      // separators, so subfolder cwds produce a different key).
-      if (!this.state.initialCwd && sanitiseWorkspaceKey(record.cwd) === this.state.workspaceKey) {
-        this.state.initialCwd = record.cwd;
-      }
-    }
+    this.cwdTracker.onCwd(record.cwd);
     if (record.sessionId && record.sessionId !== this.state.sessionId) {
       return false;
     }
