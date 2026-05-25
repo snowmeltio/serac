@@ -49,15 +49,6 @@ export interface SessionState {
   sessionId: string;
   /** Human-readable slug from the session (e.g. "rippling-bouncing-pie") */
   slug: string;
-  /** Working directory of the session — tracks the latest `cwd` record, so it
-   *  drifts when the agent `cd`s mid-session. */
-  cwd: string;
-  /** Initial working directory at session start, captured from the first JSONL
-   *  record whose cwd round-trips to this workspaceKey. Stable across `cd`s,
-   *  so the foreign-workspace pane can anchor display names and click-through
-   *  to the workspace dir rather than a transient subfolder. Empty until the
-   *  first matching record arrives. */
-  initialCwd: string;
   /** Workspace path key (the sanitised directory name under ~/.claude/projects/) */
   workspaceKey: string;
   /** File path to the JSONL transcript */
