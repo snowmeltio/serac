@@ -103,8 +103,23 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // Header-bar commands: workspace-scoped toggle of serac.hooks.enabled.
   // Workspace target matches how the settings patch is scoped — flipping in
   // one window of a workspace affects every window opened on it.
+  //
+  // Cooldown: the icon swaps under the cursor on every flip, so a rapid
+  // double-click could fire the OPPOSITE action immediately. We throttle
+  // both commands behind a shared timestamp — a second toggle within
+  // TOGGLE_COOLDOWN_MS no-ops with a brief status-bar nudge.
+  const TOGGLE_COOLDOWN_MS = 2_000;
+  let lastToggleAt = 0;
+  const onCooldown = () => Date.now() - lastToggleAt < TOGGLE_COOLDOWN_MS;
+  const cooldownNudge = () => vscode.window.setStatusBarMessage(
+    'Serac: hook mode just changed — wait a moment before toggling again.',
+    1_500,
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('agentActivity.enableHooks', async () => {
+      if (onCooldown()) { cooldownNudge(); return; }
+      lastToggleAt = Date.now();
       await vscode.workspace.getConfiguration('serac.hooks')
         .update('enabled', true, vscode.ConfigurationTarget.Workspace);
       vscode.window.showInformationMessage(
@@ -113,6 +128,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       );
     }),
     vscode.commands.registerCommand('agentActivity.disableHooks', async () => {
+      if (onCooldown()) { cooldownNudge(); return; }
+      lastToggleAt = Date.now();
       await vscode.workspace.getConfiguration('serac.hooks')
         .update('enabled', false, vscode.ConfigurationTarget.Workspace);
       vscode.window.setStatusBarMessage(
