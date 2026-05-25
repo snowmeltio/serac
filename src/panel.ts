@@ -20,6 +20,7 @@ import {
   getModelCapacity,
   getCompactThreshold,
   formatTokenCount,
+  groupForeignWorkspaces,
   PanelSession,
   UsageData,
 } from './panelUtils.js';
@@ -1001,13 +1002,13 @@ const RANGE_MS: Record<string, number> = {
     lastWorktreesHtml = html;
   }
 
-  /** Render every foreign workspace as a flat row. Grouping (repo aggregation
-   *  and parent-dir nesting) is disabled for now — see groupForeignWorkspaces
-   *  in panelUtils.ts if reinstating. */
+  /** Collapse multi-worktree repos into a single row (e.g. when viewed from
+   *  outside serac, all `serac-spike-*` worktrees fold into one `serac` row
+   *  with a `Nwt` chip); render everything else flat. */
   function renderForeignWorkspaceRows(workspaces: WorkspaceGroup[]): string {
     let html = '<div class="ws-section-header">Other workspaces</div>';
-    const sorted = [...workspaces].sort((a, b) => a.displayName.localeCompare(b.displayName));
-    for (const ws of sorted) {
+    const rows = groupForeignWorkspaces(workspaces, tildeAbbrev);
+    for (const ws of rows) {
       html += renderWsRow(ws);
     }
     return html;
