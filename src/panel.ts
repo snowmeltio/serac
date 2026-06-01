@@ -49,6 +49,9 @@ interface WorkspaceGroup {
   /** Pre-aggregation per-worktree workspaces, kept so the picker can show
    *  per-worktree counts. Inactive worktrees have no matching member. */
   members?: WorkspaceGroup[];
+  /** Set on synthetic rows consolidating non-git scratch dirs (under
+   *  /private/tmp). The picker is driven by `members` and the chip relabelled. */
+  pseudoRepo?: boolean;
 }
 
 /** Compact settings shape (mirrors CompactSettings from claudeSettings.ts,
@@ -1138,10 +1141,16 @@ const RANGE_MS: Record<string, number> = {
     const wtCount = ws.worktreeCount ?? 0;
     const wtMembers = ws.worktreeMembersLabel ?? '';
     const isAggregated = wtCount > 1;
-    // Expandable picker only when we actually have per-worktree paths
-    // (foreign manager populated `worktrees`). Otherwise fall back to the
-    // legacy direct-open aggregated row.
-    const pickerEligible = isAggregated && Array.isArray(ws.worktrees) && ws.worktrees.length > 0;
+    // Pseudo rows (consolidated /private/tmp scratch dirs) have no git
+    // worktrees — their picker is driven by `members` (one child per dir).
+    const isPseudo = ws.pseudoRepo === true;
+    // Expandable picker when we have per-worktree paths (foreign manager
+    // populated `worktrees`) or, for pseudo rows, per-dir members. Otherwise
+    // fall back to the legacy direct-open aggregated row.
+    const pickerEligible = isAggregated && (
+      (Array.isArray(ws.worktrees) && ws.worktrees.length > 0)
+      || (isPseudo && Array.isArray(ws.members) && ws.members.length > 0)
+    );
     const isExpanded = pickerEligible && expandedWorkspaces.has(ws.workspaceKey);
     const rowClass = 'ws-row'
       + (grouped ? ' ws-row-grouped' : '')
@@ -1158,14 +1167,19 @@ const RANGE_MS: Record<string, number> = {
     const chevron = pickerEligible
       ? '<span class="ws-chevron' + (isExpanded ? ' expanded' : '') + '">&#x25B8;</span>'
       : '';
+    // Pseudo (tmp) rows borrow the familiar `Nwt` suffix but mark it with a `*`
+    // — these aren't real git worktrees, just consolidated scratch dirs. The
+    // `*` is explained in the chip tooltip. (Avoided `Nd`: the `d` reads as the
+    // Done count or "days".)
     const wtChip = isAggregated
-      ? '<span class="worktree-count-chip" title="' + escapeHtml(wtMembers) + '">' + wtCount + 'wt</span>'
+      ? '<span class="worktree-count-chip" title="' + escapeHtml(isPseudo ? '* not git worktrees — consolidated scratch dirs under /tmp\n' + wtMembers : wtMembers) + '">' + wtCount + 'wt' + (isPseudo ? '*' : '') + '</span>'
       : '';
     // Picker parent rows don't open on click — they expand — so they don't
     // carry data-cwd. Plain aggregated rows (no per-worktree data) still
     // open the canonical checkout directly.
+    const pickerNoun = isPseudo ? 'directories' : 'worktrees';
     const titleText = pickerEligible
-      ? (isExpanded ? 'Collapse worktrees' : 'Show ' + wtCount + ' worktrees')
+      ? (isExpanded ? 'Collapse ' + pickerNoun : 'Show ' + wtCount + ' ' + pickerNoun)
       : (ws.cwd ? tildeAbbrev(ws.cwd) : '');
     let rowAttrs: string;
     if (pickerEligible) {
@@ -1196,6 +1210,9 @@ const RANGE_MS: Record<string, number> = {
    *  workspace path so we never offer a no-op target. Per-worktree counts
    *  come from `ws.members[i].counts` matched on path. */
   function renderWorktreePickerChildren(ws: WorkspaceGroup): string {
+    // Pseudo rows (consolidated scratch dirs) have no git worktrees — list the
+    // member dirs directly, each opening its own cwd.
+    if (ws.pseudoRepo === true) { return renderScratchPickerChildren(ws); }
     const worktrees = ws.worktrees ?? [];
     if (worktrees.length === 0) { return ''; }
     const wsRootNorm = workspacePath.replace(/\/+$/, '');
@@ -1247,6 +1264,48 @@ const RANGE_MS: Record<string, number> = {
         + '<span class="ws-name">' + escapeHtml(label) + '</span>'
         + mainChip
         + noActivityHint
+        + '<div class="ws-counts">' + childCountsHtml + '</div>'
+        + '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  /** Render the inline picker children for an expanded pseudo (scratch) row.
+   *  One child per member dir, each opening its own cwd. Skips the current
+   *  workspace path so we never offer a no-op target. Unlike the worktree
+   *  picker there are no main/detached/no-activity hints — every member is a
+   *  live scratch dir with sessions. */
+  function renderScratchPickerChildren(ws: WorkspaceGroup): string {
+    const members = ws.members ?? [];
+    if (members.length === 0) { return ''; }
+    const wsRootNorm = workspacePath.replace(/\/+$/, '');
+    const sorted = [...members].sort((a, b) => a.displayName.localeCompare(b.displayName));
+    let html = '<div class="ws-picker-children" role="group" aria-label="Directories">';
+    for (const m of sorted) {
+      if (!m.cwd) { continue; }
+      const pathNorm = m.cwd.replace(/\/+$/, '');
+      if (pathNorm === wsRootNorm) { continue; }
+      const counts = m.counts ?? {};
+      const cRunning = counts['running'] || 0;
+      const cWaiting = counts['waiting'] || 0;
+      const cDone = counts['done'] || 0;
+      const cSeen = counts['stale'] || 0;
+      const childHasLive = cRunning > 0 || cWaiting > 0;
+      let childCountsHtml = '';
+      if (cWaiting) childCountsHtml += '<span class="status-count waiting-count">' + cWaiting + 'W</span>';
+      if (cRunning) childCountsHtml += '<span class="status-count running-count">' + cRunning + 'R</span>';
+      if (cDone) childCountsHtml += '<span class="status-count done-count">' + cDone + 'D</span>';
+      if (cSeen) childCountsHtml += '<span class="status-count stale-count">' + cSeen + 'S</span>';
+      const childCls = 'ws-row ws-picker-child ws-row-clickable'
+        + (cWaiting > 0 ? ' ws-row-waiting' : '');
+      html += '<div class="' + childCls + '"'
+        + (childHasLive ? ' data-confidence="' + escapeHtml(m.confidence ?? 'medium') + '"' : '')
+        + ' data-cwd="' + escapeHtml(m.cwd) + '"'
+        + ' data-parent-key="' + escapeHtml(ws.workspaceKey) + '"'
+        + ' tabindex="0" role="button"'
+        + ' title="' + escapeHtml(tildeAbbrev(m.cwd)) + '">'
+        + '<span class="ws-name">' + escapeHtml(basenameOf(m.cwd)) + '</span>'
         + '<div class="ws-counts">' + childCountsHtml + '</div>'
         + '</div>';
     }

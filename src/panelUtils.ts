@@ -197,6 +197,11 @@ export interface GroupableWorkspace {
    *  picker matches each `worktrees[i].path` against a member `cwd` to pull
    *  per-row counts/confidence. Inactive worktrees have no matching member. */
   members?: GroupableWorkspace[];
+  /** Set on synthetic rows that consolidate non-git scratch dirs (e.g. those
+   *  under /private/tmp) rather than real git worktrees. The picker is driven
+   *  by `members` (one child per scratch dir) and the chip is relabelled,
+   *  since there are no `worktrees` to enumerate. */
+  pseudoRepo?: boolean;
 }
 
 function basename(p: string): string {
@@ -238,6 +243,21 @@ function pickAggregatedCwd<W extends GroupableWorkspace>(repoRoot: string, membe
   if (main?.cwd) { return main.cwd; }
   if (repoRoot) { return repoRoot; }
   return members[0]?.cwd ?? null;
+}
+
+/** Synthetic repoRoot used to consolidate scratch sessions that live under the
+ *  macOS temp dir but aren't git repos. `/tmp` is a symlink to `/private/tmp`,
+ *  so realpathed cwds land here. Gated behind `serac.worktrees.consolidateTmp`;
+ *  the overlay is applied extension-side in ForeignWorkspaceManager.
+ *  See {@link isTmpScratchPath}. */
+export const PSEUDO_TMP_REPO_ROOT = '/private/tmp';
+
+/** True when `cwd` is a directory beneath the temp root (`/private/tmp/...` or
+ *  `/tmp/...`). The root itself (no sub-path) is excluded — there's nothing to
+ *  consolidate. Used to assign {@link PSEUDO_TMP_REPO_ROOT} as a pseudo-repo. */
+export function isTmpScratchPath(cwd: string | null | undefined): boolean {
+  if (!cwd) { return false; }
+  return cwd.startsWith('/private/tmp/') || cwd.startsWith('/tmp/');
 }
 
 /** Collapse 2+ workspaces that share a non-null `repoRoot` into a single
@@ -285,18 +305,22 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
       };
       return rest as GroupableWorkspace;
     });
+    const isPseudo = repoRoot === PSEUDO_TMP_REPO_ROOT;
     const synthetic = {
       ...proto,
       workspaceKey: 'repo:' + repoRoot,
       displayName: name,
-      cwd: aggregatedCwd,
+      // Pseudo rows have no canonical checkout to open — expanding to pick a
+      // member dir is the only sensible action, so withhold a direct cwd.
+      cwd: isPseudo ? null : aggregatedCwd,
       counts: sumCounts(ws),
       confidence: aggregateConfidence(ws) ?? proto.confidence,
       repoRoot,
       worktreeCount: ws.length,
       worktreeMembersLabel: membersLabel,
-      worktrees: proto.worktrees,
+      worktrees: isPseudo ? undefined : proto.worktrees,
       members: memberRecords,
+      pseudoRepo: isPseudo ? true : undefined,
     } as W;
     aggregated.push(synthetic);
   }

@@ -18,6 +18,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
+import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
+import { PSEUDO_TMP_REPO_ROOT } from './panelUtils.js';
 
 const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {} };
 
@@ -151,5 +153,79 @@ describe('ForeignWorkspaceManager: worktree discovery', () => {
     await manager.scan();
     const changed = await manager.refreshWorktreesForKnownRepos();
     expect(changed).toBe(false);
+  });
+});
+
+describe('ForeignWorkspaceManager: /private/tmp pseudo-repo overlay', () => {
+  beforeEach(() => {
+    _resetConfig();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-tmp-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    _resetConfig();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // The scratch cwd is a string under /private/tmp; the dir need not exist on
+  // disk — resolveRepoRoot returns null for a missing path, and the overlay
+  // keys off the cwd string. This mirrors real scratch dirs that aren't repos.
+  function createScratch(cwd: string): void {
+    createForeignSession(sanitiseKey(cwd), 'sess-' + sanitiseKey(cwd), cwd);
+  }
+
+  it('assigns the pseudo root to scratch sessions under /private/tmp when enabled', async () => {
+    _setConfigValues({ 'serac.worktrees.consolidateTmp': true });
+    createScratch('/private/tmp/serac-hook-spike');
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    const groups = manager.getWorkspaces();
+    expect(groups.length).toBe(1);
+    expect(groups[0].repoRoot).toBe(PSEUDO_TMP_REPO_ROOT);
+    // Pseudo roots have no .git, so no enumerated worktrees are attached.
+    expect(groups[0].worktrees).toBeUndefined();
+  });
+
+  it('leaves scratch repoRoot null when the setting is off (default)', async () => {
+    createScratch('/private/tmp/serac-hook-spike');
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    const groups = manager.getWorkspaces();
+    expect(groups.length).toBe(1);
+    expect(groups[0].repoRoot).toBeNull();
+  });
+
+  it('does not overlay non-tmp scratch dirs even when enabled', async () => {
+    _setConfigValues({ 'serac.worktrees.consolidateTmp': true });
+    // A path outside the temp root. It need not exist — resolveRepoRoot returns
+    // null for a missing path, and isTmpScratchPath rejects it, so no overlay.
+    // (Avoid os.tmpdir()-based paths here: on this host that resolves under
+    // /tmp, which would legitimately trigger the overlay.)
+    const stray = '/Users/nobody/projects/no-git-elsewhere';
+    createScratch(stray);
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    expect(manager.getWorkspaces()[0].repoRoot).toBeNull();
+  });
+
+  it('does not override a real git repoRoot with the pseudo root', async () => {
+    _setConfigValues({ 'serac.worktrees.consolidateTmp': true });
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(tmpDir, 'repo-')));
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    createForeignSession(sanitiseKey(repo), 'sess-repo', repo);
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    expect(manager.getWorkspaces()[0].repoRoot).toBe(repo);
   });
 });

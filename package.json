@@ -217,6 +217,11 @@
           "minimum": 1,
           "description": "Auto-collapse the worktree picker after this many seconds of idle."
         },
+        "serac.worktrees.consolidateTmp": {
+          "type": "boolean",
+          "default": false,
+          "description": "Consolidate worktree display: group scratch sessions under /private/tmp (and /tmp) into a single \"tmp\" pseudo-repository row in \"Other workspaces\", instead of one flat row per directory. Expand the row to pick a specific directory."
+        },
         "serac.usage.showWeekly": {
           "type": "boolean",
           "default": true,

@@ -233,6 +233,10 @@ export interface WorkspaceGroup {
    *  and confidence. Inactive worktrees (no Claude Code activity in 7d) have
    *  no member here — the picker renders them as no-activity rows. */
   members?: WorkspaceGroup[];
+  /** Set on synthetic rows that consolidate non-git scratch dirs (under
+   *  /private/tmp) rather than git worktrees. The picker is driven by
+   *  `members` and the chip is relabelled — there are no `worktrees`. */
+  pseudoRepo?: boolean;
 }
 
 /** A row in the Worktrees pane: one worktree of the current repo. Built in

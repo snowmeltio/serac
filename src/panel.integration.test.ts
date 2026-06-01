@@ -439,6 +439,56 @@ describe('panel.ts integration', () => {
     });
   });
 
+  describe('tmp pseudo-repo picker', () => {
+    /** Per-workspace scratch rows as ForeignWorkspaceManager emits them with
+     *  the overlay on: shared pseudo repoRoot, no worktrees array. The webview's
+     *  groupForeignWorkspaces folds them into one pseudoRepo row. */
+    function scratchFixture() {
+      return [
+        { workspaceKey: '-private-tmp-serac-hook-spike', displayName: 'serac-hook-spike', cwd: '/private/tmp/serac-hook-spike', repoRoot: '/private/tmp', counts: { running: 1 }, confidence: 'medium' },
+        { workspaceKey: '-private-tmp-serac-spike-subagent', displayName: 'serac-spike-subagent', cwd: '/private/tmp/serac-spike-subagent', repoRoot: '/private/tmp', counts: { stale: 1 }, confidence: 'low' },
+      ];
+    }
+
+    it('consolidates scratch dirs into one expandable tmp row with a dir-count chip', () => {
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces: scratchFixture() });
+      const rows = document.querySelectorAll('.ws-foreign-rows .ws-row');
+      expect(rows.length).toBe(1);
+      const row = rows[0] as HTMLElement;
+      expect(row.querySelector('.ws-name')!.textContent).toBe('tmp');
+      expect(row.classList.contains('ws-row-expandable')).toBe(true);
+      expect(row.dataset.cwd).toBeUndefined();
+      expect(row.dataset.workspaceKey).toBe('repo:/private/tmp');
+      // Chip reuses the 'wt' suffix but marks pseudo rows with '*'.
+      const chip = row.querySelector('.worktree-count-chip')!;
+      expect(chip.textContent).toBe('2wt*');
+    });
+
+    it('expanding lists one child per scratch dir (no main/no-activity hints)', () => {
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces: scratchFixture() });
+      (document.querySelector('.ws-row-expandable') as HTMLElement).click();
+      const children = Array.from(document.querySelectorAll('.ws-picker-child')) as HTMLElement[];
+      expect(children.map(c => c.dataset.cwd).sort()).toEqual([
+        '/private/tmp/serac-hook-spike',
+        '/private/tmp/serac-spike-subagent',
+      ]);
+      expect(document.querySelector('.ws-main-chip')).toBeNull();
+      expect(document.querySelector('.ws-picker-quiet')).toBeNull();
+      expect(children[0].dataset.parentKey).toBe('repo:/private/tmp');
+    });
+
+    it('clicking a scratch child opens that directory', () => {
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces: scratchFixture() });
+      (document.querySelector('.ws-row-expandable') as HTMLElement).click();
+      postedMessages = [];
+      const child = document.querySelector('.ws-picker-child[data-cwd="/private/tmp/serac-hook-spike"]') as HTMLElement;
+      child.click();
+      const openMsg = postedMessages.find((m: any) => m?.type === 'openWorkspace') as any;
+      expect(openMsg).toBeTruthy();
+      expect(openMsg.cwd).toBe('/private/tmp/serac-hook-spike');
+    });
+  });
+
   describe('visibility settings', () => {
     it('hides foreign workspaces section when show.foreignWorkspaces is false', () => {
       sendSettings({ show: { foreignWorkspaces: false } });

@@ -30,6 +30,9 @@ export interface SeracSettings {
     /** Pixel cap on the worktrees pane. 0 = auto (no cap). */
     maxHeightPx: number;
     autoCollapseAfterSeconds: number;
+    /** Group foreign scratch sessions under /private/tmp (and /tmp) into a
+     *  single "tmp" pseudo-repository row instead of one flat row per dir. */
+    consolidateTmp: boolean;
   };
   usage: {
     showWeekly: boolean;
@@ -59,7 +62,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
   refresh: { intervalSeconds: 5 },
   discovery: { ageGateDays: 7 },
   foreignWorkspaces: { maxHeightPx: 280 },
-  worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20 },
+  worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20, consolidateTmp: false },
   usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
   animations: { enabled: true },
   cleanup: { confirmRequired: true },
@@ -96,6 +99,7 @@ export function readSettings(): SeracSettings {
     worktrees: {
       maxHeightPx: cfg.get<number>('worktrees.maxHeightPx', d.worktrees.maxHeightPx),
       autoCollapseAfterSeconds: cfg.get<number>('worktrees.autoCollapseAfterSeconds', d.worktrees.autoCollapseAfterSeconds),
+      consolidateTmp: cfg.get<boolean>('worktrees.consolidateTmp', d.worktrees.consolidateTmp),
     },
     usage: {
       showWeekly: cfg.get<boolean>('usage.showWeekly', d.usage.showWeekly),
