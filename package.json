@@ -2,7 +2,7 @@
   "name": "serac-claude-code",
   "displayName": "Serac Session Monitor",
   "description": "Session monitor for Claude Code — status cards, subagent tracking, usage quotas, and transcript viewer in the VS Code sidebar",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",
@@ -176,7 +176,13 @@
         },
         "serac.archive.defaultRange": {
           "type": "string",
-          "enum": ["1d", "3d", "7d", "30d", "all"],
+          "enum": [
+            "1d",
+            "3d",
+            "7d",
+            "30d",
+            "all"
+          ],
           "default": "1d",
           "description": "Default time range for archived sessions. The bottom pills override this per-session."
         },
