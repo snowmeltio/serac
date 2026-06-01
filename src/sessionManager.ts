@@ -99,6 +99,15 @@ const IDLE_DELAY_MS = 5000;
  *  CONTINUE_PATTERN — matches "Continuing: /path/to/project" from /continue prompts */
 const HANDOFF_PATTERN = /^HANDOFF-PROMPT[:\s]*(.+)/m;
 const CONTINUE_PATTERN = /^Continuing:\s*\/.*$/;
+/** Transient "blocked" activity strings set while a session waits on user input
+ *  or permission. They become stale the instant the session resumes, so they're
+ *  cleared on the waiting→running transition (and on a done card) rather than
+ *  lingering as a misleading subtitle through the next thinking phase. */
+const WAITING_ACTIVITY_MESSAGES = new Set([
+  'Waiting for your response',
+  'Waiting for permission',
+  'Subagent waiting for permission',
+]);
 /** Confidence thresholds: how stale can a running/waiting session's lastActivity be
  *  before we degrade visual confidence? [#106] */
 const CONFIDENCE_HIGH_MS = 5_000;
@@ -438,7 +447,7 @@ export class SessionManager {
     this.setStatus('done', 'session_done');
     // Clear status-indicator text that would be misleading on a done card.
     // Preserve genuine activity (tool names, responses) for context.
-    if (this.state.activity === 'Waiting for permission') {
+    if (WAITING_ACTIVITY_MESSAGES.has(this.state.activity)) {
       this.state.activity = '';
     }
     this.clearTools(this.state.activeTools);
@@ -964,6 +973,14 @@ export class SessionManager {
       this.turnStartAt = Date.now();
       // Capture writer PID on first transition to running
       this.captureWriterPid();
+      // The session is resuming, so any "Waiting for …" subtitle is now stale.
+      // Replace it with a neutral running label so the card doesn't keep
+      // showing "Waiting for your response" through the next thinking phase.
+      // (A tool_use record overwrites activity before reaching here, so this
+      // only fires when the resume carried no fresh activity text.)
+      if (WAITING_ACTIVITY_MESSAGES.has(this.state.activity)) {
+        this.state.activity = 'Processing';
+      }
     }
     this.setStatus('running', reason);
   }
