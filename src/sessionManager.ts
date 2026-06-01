@@ -221,11 +221,22 @@ export class SessionManager {
     this.permissionTracker = makePermissionTracker({
       getActiveTools: () => this.state.activeTools,
       getLastToolResultAt: () => this.lastToolResultAt,
-      onWaitingFired: () => {
-        if (this.state.status === 'running' && this.state.activeTools.size > 0) {
-          this.setStatus('waiting', 'permission_fired');
-          this.appendActivity('Waiting for permission');
-        }
+      onWaitingFired: (toolName?: string) => {
+        if (this.state.status !== 'running') { return; }
+        // Key the label off the triggering tool. AskUserQuestion (userInput:
+        // true) is a direct prompt to the user, not a permission gate, so it
+        // must read "Waiting for your response" — matching the JSONL path in
+        // processAssistantRecord(). Prefer the hook's tool_name; fall back to
+        // scanning activeTools for the timer variant (no single tool_name).
+        const needsUserInput = toolName
+          ? getToolProfile(toolName).userInput
+          : [...this.state.activeTools.values()].some(name => getToolProfile(name).userInput);
+        // Require an active tool, EXCEPT for direct-input tools accelerated by a
+        // hook ahead of the JSONL tool_use record (activeTools still empty). The
+        // JSONL path re-affirms their `waiting` state, so there is no flip risk.
+        if (this.state.activeTools.size === 0 && !needsUserInput) { return; }
+        this.setStatus('waiting', needsUserInput ? 'needs_user_input' : 'permission_fired');
+        this.appendActivity(needsUserInput ? 'Waiting for your response' : 'Waiting for permission');
       },
     }, { hookRouter: this.hookRouter, sessionId });
     this.compactBoundaryTracker = makeCompactBoundaryTracker({

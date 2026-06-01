@@ -35,9 +35,15 @@ export interface PermissionTrackerHost {
   /** Timestamp (ms) of the most recent tool_result. 0 if none in this turn.
    *  Used for recency-doubling — only doubles if `Date.now() - lastResult < TOOL_RECENCY_MS`. */
   getLastToolResultAt(): number;
-  /** Timer fired AND activeTools is still non-empty. Host applies status side effects
-   *  (e.g. set status='waiting', append activity, bubble to parent). */
-  onWaitingFired(): void;
+  /** Timer fired AND activeTools is still non-empty, OR a `PermissionRequest`
+   *  hook arrived. Host applies status side effects (e.g. set status='waiting',
+   *  append activity, bubble to parent).
+   *  @param toolName  The tool the request is for, when known from a hook event.
+   *    Lets the host key the label (AskUserQuestion → "Waiting for your response"
+   *    vs "Waiting for permission") and accelerate direct-input tools ahead of
+   *    the JSONL tool_use record. Absent for the timer variant, which has no
+   *    single triggering tool — the host then reads activeTools. */
+  onWaitingFired(toolName?: string): void;
 }
 
 export interface PermissionTracker {
@@ -154,8 +160,18 @@ class HookPermissionTracker implements PermissionTracker {
       } else {
         if (typeof eventAgentId === 'string' && eventAgentId.length > 0) { return; }
       }
-      if (host.getActiveTools().size === 0) { return; }
-      host.onWaitingFired();
+      const rawToolName = (typeof event === 'object' && event !== null)
+        ? (event as Record<string, unknown>).tool_name
+        : undefined;
+      const toolName = typeof rawToolName === 'string' ? rawToolName : undefined;
+      // Direct-input tools (AskUserQuestion) accelerate ahead of the JSONL
+      // tool_use record, when activeTools is still empty — safe because the
+      // host's JSONL path re-affirms `waiting` for them rather than flipping to
+      // `running`. Every other tool keeps the active-tool gate so a stray
+      // request can't move a running session to waiting.
+      const userInput = toolName ? getToolProfile(toolName).userInput : false;
+      if (!userInput && host.getActiveTools().size === 0) { return; }
+      host.onWaitingFired(toolName);
     });
   }
 
