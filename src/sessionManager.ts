@@ -86,6 +86,9 @@ import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
 import { makeSubagentLifecycleTracker, type SubagentLifecycleTracker } from './trackers/subagentLifecycleTracker.js';
 import { makeCompactBoundaryTracker, type CompactBoundaryTracker } from './trackers/compactBoundaryTracker.js';
+import { makeTurnLifecycleTracker, type TurnLifecycleTracker } from './trackers/turnLifecycleTracker.js';
+import { makeToolOutcomeTracker, type ToolOutcomeTracker } from './trackers/toolOutcomeTracker.js';
+import { makeSessionLifecycleTracker, type SessionLifecycleTracker } from './trackers/sessionLifecycleTracker.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 // Re-export for backward compatibility (tests import from sessionManager)
 export { computeDemotion, getToolProfile } from './toolProfiles.js';
@@ -93,6 +96,10 @@ export type { ToolProfile } from './toolProfiles.js';
 
 /** Idle threshold: if no new data for 5s after a turn, mark as idle/done */
 const IDLE_DELAY_MS = 5000;
+/** Safety bound on the PreCompact grace window. Compaction normally closes via
+ *  the `compact_boundary` signal; if that never arrives (e.g. crash mid-compact),
+ *  release the window after this long so the session isn't pinned `running`. */
+const COMPACT_GRACE_TIMEOUT_MS = 60_000;
 /** Permission timer constants moved to trackers/permissionTracker.ts. */
 /** Topic extraction patterns [A3]:
  *  HANDOFF_PATTERN — matches "HANDOFF-PROMPT: <title>" or "HANDOFF-PROMPT <title>"
@@ -157,6 +164,21 @@ export class SessionManager {
   /** Tracks compact boundaries. Spike: extracted from processSystemRecord's
    *  compact_boundary branch. Hook variant will fire on SessionStart(source:"compact"). */
   private compactBoundaryTracker: CompactBoundaryTracker;
+  /** Accelerates running→done via the `Stop` hook. No-op JSONL variant (the idle
+   *  timer owns done from JSONL). */
+  private turnLifecycleTracker: TurnLifecycleTracker;
+  /** Turn-close guard. Set when `Stop` ends a turn; suppresses the trailing
+   *  assistant record from re-firing `running` (which would flicker done→running
+   *  →done). Cleared by a genuine new-turn reopener (user / dequeue / compact).
+   *  See ARCHITECTURE.md "The `Stop` turn-close guard". */
+  private turnEndedByStop = false;
+  /** Enrichment from PostToolUse/PreToolUse. Display-only; never moves status. */
+  private toolOutcomeTracker: ToolOutcomeTracker;
+  /** SessionEnd (enrichment) + PreCompact (compacting grace window). */
+  private sessionLifecycleTracker: SessionLifecycleTracker;
+  /** Safety timeout that closes the compacting grace window if no
+   *  `compact_boundary` arrives. */
+  private compactGraceTimerId?: ReturnType<typeof setTimeout>;
   /** Optional replay/observability hook fired on every status transition.
    *  Non-invasive: default no-op. Used by the replay harness to verify a
    *  captured transition stream is reproducible from JSONL. */
@@ -208,11 +230,34 @@ export class SessionManager {
     }, { hookRouter: this.hookRouter, sessionId });
     this.compactBoundaryTracker = makeCompactBoundaryTracker({
       onCompactDetected: () => {
+        // Compaction is a legitimate running-reopener — clear the Stop guard so
+        // the session resumes rather than being held done by a stale turn end.
+        this.turnEndedByStop = false;
+        // `compact_boundary` means compaction finished — close the grace window.
+        this.closeCompactWindow();
         if (this.state.status !== 'running') {
           this.setRunning();
         }
         this.appendActivity('Compacting context');
       },
+    }, { hookRouter: this.hookRouter, sessionId });
+    this.turnLifecycleTracker = makeTurnLifecycleTracker({
+      onTurnEnded: () => {
+        // `Stop` fired: the turn ended. Mark done now (accelerating the idle
+        // timer) and raise the guard so the turn's trailing JSONL records,
+        // polled 0.5-2s later, can't re-open the session to running.
+        this.turnEndedByStop = true;
+        this.markSessionDone();
+      },
+    }, { hookRouter: this.hookRouter, sessionId });
+    this.toolOutcomeTracker = makeToolOutcomeTracker({
+      // Enrichment only — these never touch status or the activity line.
+      onToolOutcome: (outcome) => { this.state.lastTool = outcome; },
+      onPermissionMode: (mode) => { this.state.permissionMode = mode; },
+    }, { hookRouter: this.hookRouter, sessionId });
+    this.sessionLifecycleTracker = makeSessionLifecycleTracker({
+      onSessionEnd: (reason) => { this.state.endReason = reason; },
+      onPreCompact: () => { this.openCompactWindow(); },
     }, { hookRouter: this.hookRouter, sessionId });
     this.state = {
       sessionId,
@@ -256,6 +301,7 @@ export class SessionManager {
     this.firstActivitySet = false;
     this.seenOutputInTurn = false;
     this.lastToolResultAt = 0;
+    this.turnEndedByStop = false;
     this.earlyToolResults.clear();
     // Dispose all subagent resources before clearing
     this.subagentLifecycle.disposeAll(this.state.subagents);
@@ -264,6 +310,10 @@ export class SessionManager {
     }
     this.state.subagents = [];
     this.clearSessionTimers();
+    // Compaction rewrites the JSONL, which lands here as a truncation. If a
+    // PreCompact grace window is open, this reset IS the compaction — keep the
+    // session running and re-arm the window instead of leaving it `done`.
+    if (this.state.compacting) { this.openCompactWindow(); }
   }
 
   /** Process all new records from the JSONL file. Returns true if state changed. */
@@ -341,6 +391,10 @@ export class SessionManager {
       confidence: this.computeConfidence(),
       worktreeRoot: this.worktreeRoot,
       worktreeLabel: this.worktreeLabel,
+      lastTool: this.state.lastTool,
+      permissionMode: this.state.permissionMode,
+      endReason: this.state.endReason,
+      compacting: this.state.compacting,
     };
   }
 
@@ -357,6 +411,8 @@ export class SessionManager {
    *  Active statuses degrade with silence: high (<5s) → medium (<30s) → low. */
   private computeConfidence(): StatusConfidence {
     if (this.state.status === 'done') return 'high';
+    // Compaction is a known-busy silence gap — don't let confidence decay.
+    if (this.state.compacting) return 'high';
     // Running subagents = strong evidence the session is alive [#108]
     if (this.hasActiveSubagents()) return 'high';
     const age = Date.now() - this.state.lastActivity.getTime();
@@ -407,6 +463,8 @@ export class SessionManager {
    *  Subagent activity propagates to session.lastActivity via updateSubagentActivity(),
    *  so no effectiveLastActivity loop is needed. */
   demoteIfStale(thresholdMs: number): boolean {
+    // Compacting grace window: never demote — compaction is expected silence.
+    if (this.state.compacting) { return false; }
     const now = Date.now();
     const result = computeDemotion(
       this.state.status,
@@ -495,13 +553,38 @@ export class SessionManager {
    *  handled separately by disposeSubagent(). Centralises timer ownership [A5]. */
   private clearSessionTimers(): void {
     if (this.state.idleTimerId) { clearTimeout(this.state.idleTimerId); this.state.idleTimerId = undefined; }
+    if (this.compactGraceTimerId) { clearTimeout(this.compactGraceTimerId); this.compactGraceTimerId = undefined; }
     this.permissionTracker.cancel();
+  }
+
+  /** Open the PreCompact grace window: hold the session `running` through the
+   *  compaction silence/truncation, suppress demotion, and arm a safety timeout.
+   *  Idempotent — re-arming on a repeated PreCompact is fine. */
+  private openCompactWindow(): void {
+    this.state.compacting = true;
+    this.turnEndedByStop = false;  // compaction supersedes a pending turn-end
+    if (this.state.status !== 'running') { this.setRunning('precompact'); }
+    this.appendActivity('Compacting context');
+    if (this.compactGraceTimerId) { clearTimeout(this.compactGraceTimerId); }
+    this.compactGraceTimerId = setTimeout(() => {
+      if (this.disposed) { return; }
+      this.closeCompactWindow();
+    }, COMPACT_GRACE_TIMEOUT_MS);
+  }
+
+  /** Close the grace window. Idempotent. */
+  private closeCompactWindow(): void {
+    this.state.compacting = false;
+    if (this.compactGraceTimerId) { clearTimeout(this.compactGraceTimerId); this.compactGraceTimerId = undefined; }
   }
 
   dispose(): void {
     this.disposed = true;
     this.clearSessionTimers();
     this.permissionTracker.dispose();
+    this.turnLifecycleTracker.dispose();
+    this.toolOutcomeTracker.dispose();
+    this.sessionLifecycleTracker.dispose();
     this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
       subagent.permissionTracker.dispose();
@@ -661,6 +744,8 @@ export class SessionManager {
     // Reset turn-scoped flags: new turn starts, thinking phase begins
     this.seenOutputInTurn = false;
     this.lastToolResultAt = 0;
+    // A user record is a genuine new-turn reopener — release the Stop guard.
+    this.turnEndedByStop = false;
     this.setRunning();
     // Cancel any pending permission timer — tool results have arrived
     this.permissionTracker.cancel();
@@ -712,6 +797,9 @@ export class SessionManager {
           this.earlyToolResults.delete(block.id);
           continue;
         }
+        // Trailing tool_use of a Stop-closed turn: don't repopulate activeTools
+        // on a done session (would trip demoteIfStale → waiting after 30s).
+        if (this.turnEndedByStop) { continue; }
         hasToolUse = true;
         this.addTool(this.state.activeTools, block.id, block.name);
 
@@ -746,7 +834,12 @@ export class SessionManager {
       }
     }
 
-    if (hasToolUse) {
+    if (this.turnEndedByStop) {
+      // Trailing record of a turn the `Stop` hook already closed. A genuine new
+      // turn always arrives via a user/dequeue/compact record first (which
+      // clears the guard), so this record is stale: it must not re-open the
+      // session to running. See ARCHITECTURE.md "The `Stop` turn-close guard".
+    } else if (hasToolUse) {
       // Check if any tool immediately needs user input
       const needsUserInput = [...this.state.activeTools.values()].some(
         name => getToolProfile(name).userInput
@@ -869,6 +962,8 @@ export class SessionManager {
       // Message dequeued = Claude is about to start processing. Set running
       // immediately so the session doesn't stay idle during extended thinking
       // (which can take 30-60+ seconds without writing JSONL records).
+      // A dequeue is a genuine new-turn reopener — release the Stop guard.
+      this.turnEndedByStop = false;
       this.setRunning();
       this.appendActivity('Processing');
       return true;
@@ -1014,6 +1109,8 @@ export class SessionManager {
 
     this.state.idleTimerId = setTimeout(() => {
       if (this.disposed) { return; }
+      // Compacting grace window: re-arm instead of demoting through the gap.
+      if (this.state.compacting) { this.resetIdleTimer(); return; }
       if (this.state.status !== 'running' || !this.shouldMarkDone()) { return; }
 
       if (this.seenOutputInTurn) {
