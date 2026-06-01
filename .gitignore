@@ -8,6 +8,8 @@ media/panel.js.map
 logo-concepts/
 .locks/
 .local/
+# Runtime hook ingress artefacts (Unix socket + leader lock), created per-workspace
+.serac/
 
 # Internal dev artefacts — kept local, not published to the public repo
 .claude/
