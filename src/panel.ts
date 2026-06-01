@@ -39,6 +39,16 @@ interface WorkspaceGroup {
   counts: Record<string, number>;
   confidence?: string;
   repoRoot?: string | null;
+  /** Set on synthetic rows (groupForeignWorkspaces collapses repos with 2+
+   *  worktrees into one row). Drives the worktree-count chip and gates the
+   *  inline picker. */
+  worktreeCount?: number;
+  worktreeMembersLabel?: string;
+  /** Every worktree of the repo (incl. main). Drives the inline picker. */
+  worktrees?: Array<{ path: string; branch: string | null; isMain: boolean }>;
+  /** Pre-aggregation per-worktree workspaces, kept so the picker can show
+   *  per-worktree counts. Inactive worktrees have no matching member. */
+  members?: WorkspaceGroup[];
 }
 
 /** Compact settings shape (mirrors CompactSettings from claudeSettings.ts,
@@ -118,10 +128,53 @@ interface FocusMessage {
   sessionId: string;
 }
 
-type WebviewIncomingMessage = UpdateMessage | FocusMessage;
+/** Mirrors SeracSettings from settings.ts. Webview bundle can't import
+ *  extension-side modules (different bundling target), so the shape is
+ *  redeclared here. Keep field names in sync. */
+interface PanelSettings {
+  show: {
+    foreignWorkspaces: boolean;
+    worktrees: boolean;
+    usage: boolean;
+    subagents: boolean;
+    teams: boolean;
+  };
+  archive: { defaultRange: string; maxDoneShown: number };
+  refresh: { intervalSeconds: number };
+  discovery: { ageGateDays: number };
+  foreignWorkspaces: { maxHeightPx: number };
+  worktrees: { maxHeightPx: number; autoCollapseAfterSeconds: number };
+  usage: { showWeekly: boolean; warnAtPercent: number; criticalAtPercent: number };
+  animations: { enabled: boolean };
+  cleanup: { confirmRequired: boolean };
+}
 
-const TRANSITION_MS = 300;
-const FOREIGN_SLIDE_MS = 220;
+interface SettingsMessage {
+  type: 'settings';
+  settings: PanelSettings;
+}
+
+type WebviewIncomingMessage = UpdateMessage | FocusMessage | SettingsMessage;
+
+/** Defaults that mirror DEFAULT_SETTINGS in settings.ts. Used as the
+ *  initial value before the first SettingsMessage arrives — kept in sync
+ *  with the package.json `default` declarations. */
+const DEFAULT_PANEL_SETTINGS: PanelSettings = {
+  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, teams: true },
+  archive: { defaultRange: '1d', maxDoneShown: 20 },
+  refresh: { intervalSeconds: 5 },
+  discovery: { ageGateDays: 7 },
+  foreignWorkspaces: { maxHeightPx: 280 },
+  worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20 },
+  usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
+  animations: { enabled: true },
+  cleanup: { confirmRequired: true },
+};
+
+/** Animation timing. Derived from settings.animations.enabled — when
+ *  animations are off, both collapse to 0 so render is instantaneous. */
+let TRANSITION_MS = 300;
+let FOREIGN_SLIDE_MS = 220;
 // Range values in ms. 'all' uses 0 as sentinel (means no limit).
 const RANGE_MS: Record<string, number> = {
   '1d': 86400000,
@@ -134,10 +187,20 @@ const RANGE_MS: Record<string, number> = {
 (function () {
   const vscode = acquireVsCodeApi();
   const root = document.getElementById('root')!;
+  /** Cached settings snapshot. Replaced on every SettingsMessage; consulted
+   *  by render code via direct field reads. Defaults match
+   *  DEFAULT_PANEL_SETTINGS so the very first render (before any
+   *  SettingsMessage arrives) behaves the same as today. */
+  let currentSettings: PanelSettings = DEFAULT_PANEL_SETTINGS;
   let archiveRange = '1d';
+  /** Was archiveRange restored from saved state? If yes, the user has made
+   *  an explicit pill choice and we keep it; the settings.archive.defaultRange
+   *  applies only to fresh installs (no saved state). */
+  let archiveRangeFromSavedState = false;
   const savedState = vscode.getState();
   if (savedState && savedState.archiveRange && savedState.archiveRange in RANGE_MS) {
     archiveRange = savedState.archiveRange as string;
+    archiveRangeFromSavedState = true;
     // Notify extension of restored range so it can load extended archive if needed
     vscode.postMessage({ type: 'archiveRange', rangeMs: RANGE_MS[archiveRange] });
   }
@@ -172,9 +235,85 @@ const RANGE_MS: Record<string, number> = {
   const expandedTeams = new Set<string>(
     (savedState && Array.isArray(savedState.expandedTeams)) ? savedState.expandedTeams as string[] : []
   );
+  // Worktree picker expansion state (persisted). Keyed on the synthetic
+  // workspace key emitted by groupForeignWorkspaces (`repo:<repoRoot>`).
+  const expandedWorkspaces = new Set<string>(
+    (savedState && Array.isArray(savedState.expandedWorkspaces)) ? savedState.expandedWorkspaces as string[] : []
+  );
+  // Idle auto-collapse timers, keyed on workspaceKey. Kept in webview-local
+  // state (not persisted) so reloads don't carry zombie timers — the
+  // expansion itself survives reloads via expandedWorkspaces.
+  const workspaceCollapseTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   function saveState(): void {
-    vscode.setState({ archiveRange, expandedSessions: Array.from(expandedSessions), expandedTeams: Array.from(expandedTeams) });
+    vscode.setState({
+      archiveRange,
+      expandedSessions: Array.from(expandedSessions),
+      expandedTeams: Array.from(expandedTeams),
+      expandedWorkspaces: Array.from(expandedWorkspaces),
+    });
+  }
+
+  function clearWorkspaceCollapseTimer(workspaceKey: string): void {
+    const t = workspaceCollapseTimers.get(workspaceKey);
+    if (t !== undefined) {
+      clearTimeout(t);
+      workspaceCollapseTimers.delete(workspaceKey);
+    }
+  }
+
+  function scheduleWorkspaceCollapse(workspaceKey: string): void {
+    clearWorkspaceCollapseTimer(workspaceKey);
+    const idleMs = currentSettings.worktrees.autoCollapseAfterSeconds * 1000;
+    const timerId = setTimeout(() => {
+      workspaceCollapseTimers.delete(workspaceKey);
+      // Only collapse if still expanded (user may have manually collapsed
+      // in the meantime, which would have already cleared the timer).
+      if (expandedWorkspaces.delete(workspaceKey)) {
+        saveState();
+        if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+      }
+    }, idleMs);
+    workspaceCollapseTimers.set(workspaceKey, timerId);
+  }
+
+  /** Apply a fresh settings snapshot. Sets the cached value, syncs CSS
+   *  custom properties so heights / animation timings update immediately,
+   *  then re-renders if data is already in hand. Called from the message
+   *  handler on every SettingsMessage receipt. */
+  function applySettings(settings: PanelSettings): void {
+    currentSettings = settings;
+    TRANSITION_MS = settings.animations.enabled ? 300 : 0;
+    FOREIGN_SLIDE_MS = settings.animations.enabled ? 220 : 0;
+    const docRoot = document.documentElement.style;
+    docRoot.setProperty(
+      '--serac-foreign-max-height',
+      settings.foreignWorkspaces.maxHeightPx === 0 ? 'none' : settings.foreignWorkspaces.maxHeightPx + 'px',
+    );
+    docRoot.setProperty(
+      '--serac-worktrees-max-height',
+      settings.worktrees.maxHeightPx === 0 ? 'none' : settings.worktrees.maxHeightPx + 'px',
+    );
+    docRoot.setProperty('--serac-transition-ms', TRANSITION_MS + 'ms');
+    docRoot.setProperty('--serac-foreign-slide-ms', FOREIGN_SLIDE_MS + 'ms');
+    // Apply the configured archive default only when no saved pill exists.
+    // An explicit pill click survives reloads via vscode.setState and wins.
+    if (!archiveRangeFromSavedState && settings.archive.defaultRange in RANGE_MS) {
+      const next = settings.archive.defaultRange;
+      if (next !== archiveRange) {
+        archiveRange = next;
+        vscode.postMessage({ type: 'archiveRange', rangeMs: RANGE_MS[next] });
+      }
+    }
+    if (lastSessions) { render(lastSessions, lastNeedsInputCount, workspacePath); }
+  }
+
+  function collapseWorkspace(workspaceKey: string, rerender: boolean): void {
+    clearWorkspaceCollapseTimer(workspaceKey);
+    if (expandedWorkspaces.delete(workspaceKey)) {
+      saveState();
+      if (rerender && lastSessions) { render(lastSessions, lastNeedsInputCount, workspacePath); }
+    }
   }
 
   // ===== DELEGATED EVENT HANDLERS =====
@@ -305,6 +444,32 @@ const RANGE_MS: Record<string, number> = {
       return;
     }
 
+    // Worktree picker child row → open the chosen worktree, then collapse parent
+    const pickerChild = target.closest<HTMLElement>('.ws-picker-child[data-cwd]');
+    if (pickerChild) {
+      e.stopPropagation();
+      const cwd = pickerChild.dataset.cwd;
+      const parentKey = pickerChild.dataset.parentKey;
+      if (cwd) { vscode.postMessage({ type: 'openWorkspace', cwd }); }
+      if (parentKey) { collapseWorkspace(parentKey, true); }
+      return;
+    }
+
+    // Expandable foreign workspace row → toggle picker expansion
+    const expandableRow = target.closest<HTMLElement>('.ws-row-expandable[data-workspace-key]');
+    if (expandableRow) {
+      const key = expandableRow.dataset.workspaceKey!;
+      if (expandedWorkspaces.has(key)) {
+        collapseWorkspace(key, true);
+      } else {
+        expandedWorkspaces.add(key);
+        saveState();
+        scheduleWorkspaceCollapse(key);
+        if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+      }
+      return;
+    }
+
     // Foreign workspace row click → open that workspace
     const wsRow = target.closest<HTMLElement>('.ws-row[data-cwd]');
     if (wsRow) {
@@ -348,6 +513,18 @@ const RANGE_MS: Record<string, number> = {
       foreignRunningRow.click();
       return;
     }
+    const pickerChild = target.closest<HTMLElement>('.ws-picker-child[data-cwd]');
+    if (pickerChild) {
+      e.preventDefault();
+      pickerChild.click();
+      return;
+    }
+    const expandableRow = target.closest<HTMLElement>('.ws-row-expandable[data-workspace-key]');
+    if (expandableRow) {
+      e.preventDefault();
+      expandableRow.click();
+      return;
+    }
     const wsRow = target.closest<HTMLElement>('.ws-row[data-cwd]');
     if (wsRow) {
       e.preventDefault();
@@ -373,6 +550,8 @@ const RANGE_MS: Record<string, number> = {
       } else if (message.type === 'focusSession') {
         focusedSessionId = message.sessionId;
         if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+      } else if (message.type === 'settings') {
+        applySettings(message.settings);
       }
     } catch (err) {
       showErrorBoundary(err);
@@ -465,10 +644,18 @@ const RANGE_MS: Record<string, number> = {
     }
 
     // === Foreign waiting band (other workspaces — needs you) ===
-    renderForeignWaitingSection(scrollWrap, now);
+    if (currentSettings.show.foreignWorkspaces) {
+      renderForeignWaitingSection(scrollWrap, now);
+    } else {
+      scrollWrap.querySelector('.foreign-waiting-section')?.remove();
+    }
 
     // === Team section (before individual session cards) ===
-    renderTeamSection(scrollWrap, now);
+    if (currentSettings.show.teams) {
+      renderTeamSection(scrollWrap, now);
+    } else {
+      scrollWrap.querySelector('.team-section')?.remove();
+    }
 
     // === Card section (running/waiting/stale) ===
     let cardSection = scrollWrap.querySelector('.card-section:not(.done-section)') as HTMLElement | null;
@@ -503,7 +690,11 @@ const RANGE_MS: Record<string, number> = {
     }
 
     // === Foreign-running strip (between local active and local done) ===
-    renderForeignRunningSection(scrollWrap, cardSection, now);
+    if (currentSettings.show.foreignWorkspaces) {
+      renderForeignRunningSection(scrollWrap, cardSection, now);
+    } else {
+      scrollWrap.querySelector('.foreign-running-section')?.remove();
+    }
 
     // === Done card section ===
     let doneSection = scrollWrap.querySelector('.card-section.done-section') as HTMLElement | null;
@@ -529,32 +720,51 @@ const RANGE_MS: Record<string, number> = {
 
     // === Worktrees pane (sits above Other workspaces) ===
     let worktreesContainer = root.querySelector('.ws-worktree-rows') as HTMLElement | null;
-    if (!worktreesContainer) {
-      worktreesContainer = document.createElement('div');
-      worktreesContainer.className = 'ws-worktree-rows';
-      root.appendChild(worktreesContainer);
+    if (currentSettings.show.worktrees) {
+      if (!worktreesContainer) {
+        worktreesContainer = document.createElement('div');
+        worktreesContainer.className = 'ws-worktree-rows';
+        root.appendChild(worktreesContainer);
+      }
+      updateWorktreesContainer(worktreesContainer);
+    } else {
+      worktreesContainer?.remove();
+      worktreesContainer = null;
     }
-    updateWorktreesContainer(worktreesContainer);
 
     // === Foreign workspace rows (between time-range bar and usage) ===
     let foreignContainer = root.querySelector('.ws-foreign-rows') as HTMLElement | null;
-    if (!foreignContainer) {
-      foreignContainer = document.createElement('div');
-      foreignContainer.className = 'ws-foreign-rows';
-      root.appendChild(foreignContainer);
+    if (currentSettings.show.foreignWorkspaces) {
+      if (!foreignContainer) {
+        foreignContainer = document.createElement('div');
+        foreignContainer.className = 'ws-foreign-rows';
+        root.appendChild(foreignContainer);
+      }
+    } else {
+      foreignContainer?.remove();
+      foreignContainer = null;
     }
 
     // === Usage section (always last) ===
-    renderUsageSection();
-    // Order: worktrees → foreign → usage. Re-parent if needed.
+    if (currentSettings.show.usage) {
+      renderUsageSection();
+    } else {
+      root.querySelector('.usage-section')?.remove();
+    }
+    // Order: worktrees → foreign → usage. Re-parent if any of the three exists.
     const usageEl = root.querySelector('.usage-section');
     if (usageEl) {
-      if (foreignContainer.nextElementSibling !== usageEl) {
+      if (foreignContainer && foreignContainer.nextElementSibling !== usageEl) {
         root.insertBefore(foreignContainer, usageEl);
       }
-      if (worktreesContainer.nextElementSibling !== foreignContainer) {
-        root.insertBefore(worktreesContainer, foreignContainer);
+      if (worktreesContainer) {
+        const wtAnchor = foreignContainer ?? usageEl;
+        if (worktreesContainer.nextElementSibling !== wtAnchor) {
+          root.insertBefore(worktreesContainer, wtAnchor);
+        }
       }
+    } else if (foreignContainer && worktreesContainer && worktreesContainer.nextElementSibling !== foreignContainer) {
+      root.insertBefore(worktreesContainer, foreignContainer);
     }
     if (foreignContainer) {
       updateForeignContainer(foreignContainer);
@@ -595,8 +805,8 @@ const RANGE_MS: Record<string, number> = {
     //    Take them out of flex flow (position: absolute) so siblings reflow
     //    upward immediately; the FLIP step below then animates that reflow.
     //    The card-leave class is added on the next frame so the browser
-    //    registers the pre-leave state and the transform/opacity transition
-    //    actually animates.
+    //    registers the pre-leave state and the opacity transition actually
+    //    animates.
     existing.forEach(el => {
       const htmlEl = el as HTMLElement;
       const id = htmlEl.dataset.sessionId;
@@ -814,7 +1024,9 @@ const RANGE_MS: Record<string, number> = {
 
     let subagentHtml = '';
     const hasSubagents = s.subagents && s.subagents.length > 0;
-    const showSubagents = hasSubagents && (s.status === 'running' || s.status === 'waiting' || isFocused);
+    const showSubagents = hasSubagents
+      && currentSettings.show.subagents
+      && (s.status === 'running' || s.status === 'waiting' || isFocused);
     if (showSubagents && s.subagents) {
       const waitingAgents = s.subagents.filter(a => a.waitingOnPermission);
       const runningOnly = s.subagents.filter(a => a.running && !a.waitingOnPermission);
@@ -823,7 +1035,7 @@ const RANGE_MS: Record<string, number> = {
       const activeAgents = waitingAgents.concat(runningOnly); // always shown individually
 
       const COMPACT_THRESHOLD = 5;
-      const EXPAND_CAP = 20; // max done items shown even when expanded
+      const EXPAND_CAP = currentSettings.archive.maxDoneShown; // max done items shown even when expanded
       const shouldCompact = s.subagents.length > COMPACT_THRESHOLD;
       const isExpanded = shouldCompact && expandedSessions.has(s.sessionId);
 
@@ -914,7 +1126,10 @@ const RANGE_MS: Record<string, number> = {
       + contextBarHtml;
   }
 
-  /** Render a single foreign workspace row (shared by grouped and ungrouped rendering). */
+  /** Render a single foreign workspace row (shared by grouped and ungrouped rendering).
+   *  When the row aggregates 2+ worktrees, becomes a click-to-expand picker
+   *  parent (chevron, no data-cwd) followed by an inline child list of every
+   *  worktree of the repo. Otherwise behaves as a direct-open row. */
   function renderWsRow(ws: WorkspaceGroup, grouped: boolean = false): string {
     const running = ws.counts['running'] || 0;
     const waiting = ws.counts['waiting'] || 0;
@@ -923,31 +1138,126 @@ const RANGE_MS: Record<string, number> = {
     const wtCount = ws.worktreeCount ?? 0;
     const wtMembers = ws.worktreeMembersLabel ?? '';
     const isAggregated = wtCount > 1;
+    // Expandable picker only when we actually have per-worktree paths
+    // (foreign manager populated `worktrees`). Otherwise fall back to the
+    // legacy direct-open aggregated row.
+    const pickerEligible = isAggregated && Array.isArray(ws.worktrees) && ws.worktrees.length > 0;
+    const isExpanded = pickerEligible && expandedWorkspaces.has(ws.workspaceKey);
     const rowClass = 'ws-row'
       + (grouped ? ' ws-row-grouped' : '')
       + (isAggregated ? ' ws-row-aggregated' : '')
+      + (pickerEligible ? ' ws-row-expandable' : '')
       + (waiting > 0 ? ' ws-row-waiting' : '')
-      + (ws.cwd ? ' ws-row-clickable' : '');
+      + ((pickerEligible || ws.cwd) ? ' ws-row-clickable' : '');
     let countsHtml = '';
     if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
     if (running) countsHtml += '<span class="status-count running-count">' + running + 'R</span>';
     if (done) countsHtml += '<span class="status-count done-count">' + done + 'D</span>';
     if (seen) countsHtml += '<span class="status-count stale-count">' + seen + 'S</span>';
     const hasLiveSessions = running > 0 || waiting > 0;
+    const chevron = pickerEligible
+      ? '<span class="ws-chevron' + (isExpanded ? ' expanded' : '') + '">&#x25B8;</span>'
+      : '';
     const wtChip = isAggregated
       ? '<span class="worktree-count-chip" title="' + escapeHtml(wtMembers) + '">' + wtCount + 'wt</span>'
       : '';
-    // Row tooltip is just the full path (cwd or repoRoot) on one line — the
-    // members list lives on the wt chip's tooltip when this row aggregates.
-    const titleText = ws.cwd ? tildeAbbrev(ws.cwd) : '';
-    const cwdAttr = ws.cwd ? ' data-cwd="' + escapeHtml(ws.cwd) + '" tabindex="0" role="button" title="' + escapeHtml(titleText) + '"' : '';
-    return '<div class="' + rowClass + '"'
+    // Picker parent rows don't open on click — they expand — so they don't
+    // carry data-cwd. Plain aggregated rows (no per-worktree data) still
+    // open the canonical checkout directly.
+    const titleText = pickerEligible
+      ? (isExpanded ? 'Collapse worktrees' : 'Show ' + wtCount + ' worktrees')
+      : (ws.cwd ? tildeAbbrev(ws.cwd) : '');
+    let rowAttrs: string;
+    if (pickerEligible) {
+      rowAttrs = ' data-workspace-key="' + escapeHtml(ws.workspaceKey)
+        + '" tabindex="0" role="button" aria-expanded="' + (isExpanded ? 'true' : 'false') + '"'
+        + ' title="' + escapeHtml(titleText) + '"';
+    } else if (ws.cwd) {
+      rowAttrs = ' data-cwd="' + escapeHtml(ws.cwd) + '" tabindex="0" role="button" title="' + escapeHtml(titleText) + '"';
+    } else {
+      rowAttrs = '';
+    }
+    let html = '<div class="' + rowClass + '"'
       + (hasLiveSessions ? ' data-confidence="' + (ws.confidence || 'medium') + '"' : '')
-      + cwdAttr + '>'
+      + rowAttrs + '>'
+      + chevron
       + '<span class="ws-name">' + escapeHtml(ws.displayName) + '</span>'
       + wtChip
       + '<div class="ws-counts">' + countsHtml + '</div>'
       + '</div>';
+    if (isExpanded) {
+      html += renderWorktreePickerChildren(ws);
+    }
+    return html;
+  }
+
+  /** Render the inline picker children for an expanded aggregated row.
+   *  Lists every worktree of the repo (incl. main). Skips the current
+   *  workspace path so we never offer a no-op target. Per-worktree counts
+   *  come from `ws.members[i].counts` matched on path. */
+  function renderWorktreePickerChildren(ws: WorkspaceGroup): string {
+    const worktrees = ws.worktrees ?? [];
+    if (worktrees.length === 0) { return ''; }
+    const wsRootNorm = workspacePath.replace(/\/+$/, '');
+    const memberByCwd = new Map<string, WorkspaceGroup>();
+    for (const m of (ws.members ?? [])) {
+      if (m.cwd) { memberByCwd.set(m.cwd.replace(/\/+$/, ''), m); }
+    }
+    // Sort: main first, then by branch/path
+    const sorted = [...worktrees].sort((a, b) => {
+      if (a.isMain !== b.isMain) { return a.isMain ? -1 : 1; }
+      const aLabel = a.branch ?? a.path;
+      const bLabel = b.branch ?? b.path;
+      return aLabel.localeCompare(bLabel);
+    });
+    let html = '<div class="ws-picker-children" role="group" aria-label="Worktrees">';
+    for (const wt of sorted) {
+      const pathNorm = wt.path.replace(/\/+$/, '');
+      // Skip the worktree the user is already in — clicking it is a no-op.
+      if (pathNorm === wsRootNorm) { continue; }
+      const member = memberByCwd.get(pathNorm);
+      const counts = member?.counts ?? {};
+      const cRunning = counts['running'] || 0;
+      const cWaiting = counts['waiting'] || 0;
+      const cDone = counts['done'] || 0;
+      const cSeen = counts['stale'] || 0;
+      const childHasLive = cRunning > 0 || cWaiting > 0;
+      let childCountsHtml = '';
+      if (cWaiting) childCountsHtml += '<span class="status-count waiting-count">' + cWaiting + 'W</span>';
+      if (cRunning) childCountsHtml += '<span class="status-count running-count">' + cRunning + 'R</span>';
+      if (cDone) childCountsHtml += '<span class="status-count done-count">' + cDone + 'D</span>';
+      if (cSeen) childCountsHtml += '<span class="status-count stale-count">' + cSeen + 'S</span>';
+      const label = wt.branch || basenameOf(wt.path);
+      const mainChip = wt.isMain
+        ? '<span class="ws-main-chip" title="Main checkout">main</span>'
+        : '';
+      const detachedHint = wt.branch ? '' : ' (detached)';
+      const titleText = tildeAbbrev(wt.path) + detachedHint;
+      const noActivityHint = !member && !wt.isMain
+        ? '<span class="ws-picker-quiet" title="No Claude Code activity in 7d">no activity</span>'
+        : '';
+      const childCls = 'ws-row ws-picker-child ws-row-clickable'
+        + (cWaiting > 0 ? ' ws-row-waiting' : '');
+      html += '<div class="' + childCls + '"'
+        + (childHasLive ? ' data-confidence="' + escapeHtml(member?.confidence ?? 'medium') + '"' : '')
+        + ' data-cwd="' + escapeHtml(wt.path) + '"'
+        + ' data-parent-key="' + escapeHtml(ws.workspaceKey) + '"'
+        + ' tabindex="0" role="button"'
+        + ' title="' + escapeHtml(titleText) + '">'
+        + '<span class="ws-name">' + escapeHtml(label) + '</span>'
+        + mainChip
+        + noActivityHint
+        + '<div class="ws-counts">' + childCountsHtml + '</div>'
+        + '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function basenameOf(p: string): string {
+    const trimmed = p.endsWith('/') ? p.slice(0, -1) : p;
+    const idx = trimmed.lastIndexOf('/');
+    return idx === -1 ? trimmed : trimmed.slice(idx + 1);
   }
 
   /** Abbreviate a path by replacing $HOME with ~. */
@@ -1358,7 +1668,7 @@ const RANGE_MS: Record<string, number> = {
 
     // Session subagent dots
     let subagentDotsHtml = '';
-    if (agent.subagents && agent.subagents.length > 0) {
+    if (currentSettings.show.subagents && agent.subagents && agent.subagents.length > 0) {
       subagentDotsHtml = '<span class="team-agent-subagents">';
       for (const sa of agent.subagents) {
         const saDotClass = sa.waitingOnPermission ? 'waiting' : sa.running ? 'running' : 'done';
@@ -1447,7 +1757,7 @@ const RANGE_MS: Record<string, number> = {
       html += '<div class="usage-ghost-msg">Next interaction starts new session.</div>';
     } else {
       const sessionTickPct = getElapsedPct(u.resetTime, 5 * 60 * 60 * 1000);
-      const sessionCls = quotaClass(u.quotaPct5h || 0, sessionTickPct);
+      const sessionCls = quotaClass(u.quotaPct5h || 0, sessionTickPct, currentSettings.usage.warnAtPercent, currentSettings.usage.criticalAtPercent);
       const overQuota = (u.quotaPct5h || 0) >= 100;
 
       html += '<div class="usage-row">';
@@ -1472,6 +1782,9 @@ const RANGE_MS: Record<string, number> = {
     }
 
     // --- Weekly ---
+    if (!currentSettings.usage.showWeekly) {
+      // Skip the weekly block entirely; footer still appears below.
+    } else {
     const weeklyExpired = u.weeklyResetTime && u.weeklyResetTime <= Date.now();
     if (weeklyExpired) {
       // Ghost state: weekly window expired
@@ -1487,7 +1800,7 @@ const RANGE_MS: Record<string, number> = {
       html += '</div>';
     } else if ((u.quotaPctWeekly || 0) > 0 || u.weeklyResetTime) {
       const weeklyTickPct = getElapsedPct(u.weeklyResetTime, 7 * 24 * 60 * 60 * 1000);
-      const weeklyCls = quotaClass(u.quotaPctWeekly || 0, weeklyTickPct);
+      const weeklyCls = quotaClass(u.quotaPctWeekly || 0, weeklyTickPct, currentSettings.usage.warnAtPercent, currentSettings.usage.criticalAtPercent);
 
       html += '<div class="usage-weekly-sep">';
       html += '<div class="usage-row">';
@@ -1505,6 +1818,7 @@ const RANGE_MS: Record<string, number> = {
       html += '</div>';
       html += '</div>';
     }
+    } // end showWeekly gate
 
     // Footer row: companion slots on the left, Updated-ago on the right
     let footer = '';

@@ -24,6 +24,7 @@ dist/types.*
 STATE.md
 HANDOFF-PROMPT.md
 .locks/**
+.serac/**
 logo-concepts/**
 CHANGELOG.md
 .claude/**

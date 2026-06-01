@@ -2,7 +2,14 @@
  * Tests for SessionDiscovery foreign workspace scanning.
  * Uses fully isolated temp directories (no writes to real ~/.claude/).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Required because SessionDiscovery transitively imports settings.ts → 'vscode'.
+vi.mock('vscode', async () => {
+  const mock = await import('./__mocks__/vscode.js');
+  return { ...mock, default: mock };
+});
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';

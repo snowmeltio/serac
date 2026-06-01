@@ -15,6 +15,7 @@ import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } 
 import { HookEventRouter } from './hookEventRouter.js';
 import { startHookIngress, type IngressHandle } from './hookIngress/index.js';
 import { applyForwarderPatch, removeForwarderPatch } from './hookSettings/patcher.js';
+import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
 
 export function activate(context: vscode.ExtensionContext): SeracExports {
   // Footer slot registry must be created up-front: companions resolve
@@ -190,7 +191,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       // hook event in flight isn't routed to a vanished socket. Then close
       // the socket. The leader-only patch path means followers no-op here.
       if (ingressHandle?.isLeader) { tryUnpatch(); }
-      ingressHandle?.dispose();
+      void ingressHandle?.dispose();
     },
   });
 
@@ -458,6 +459,13 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   }
   context.subscriptions.push(
     vscode.commands.registerCommand('agentActivity.cleanup', () => {
+      // When confirmation isn't required, skip the arm/confirm dance and
+      // fire cleanup immediately on first click.
+      if (!readSettings().cleanup.confirmRequired) {
+        const handler = panelProvider.getCleanupHandler();
+        if (handler) { handler(); }
+        return;
+      }
       cleanupArmedAt = Date.now();
       vscode.commands.executeCommand('setContext', 'serac.cleanupArming', true);
       if (cleanupArmTimer) { clearTimeout(cleanupArmTimer); }
@@ -487,6 +495,13 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         undefined,
         err => log.warn('Failed to focus session:', err),
       );
+    }),
+  );
+
+  // Title-bar cog: open VS Code's settings UI scoped to the Serac extension.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('agentActivity.openSettings', () => {
+      vscode.commands.executeCommand('workbench.action.openSettings', '@ext:snowmeltio.serac-claude-code');
     }),
   );
 
@@ -545,8 +560,27 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   settingsWatcher.onDidDelete(reloadSettings);
   context.subscriptions.push(settingsWatcher);
 
-  // Timestamp freshness timer (relative time labels in UI)
-  const refreshTimer = setInterval(() => sendUpdate(), 5000);
+  // Timestamp freshness timer (relative time labels in UI). Reactive to
+  // serac.refresh.intervalSeconds — rebuilt whenever the user changes it.
+  let seracSettings: SeracSettings = readSettings();
+  let refreshTimer: ReturnType<typeof setInterval> = setInterval(
+    () => sendUpdate(),
+    seracSettings.refresh.intervalSeconds * 1000,
+  );
+  function rebuildRefreshTimer(intervalSeconds: number) {
+    clearInterval(refreshTimer);
+    refreshTimer = setInterval(() => sendUpdate(), intervalSeconds * 1000);
+  }
+
+  context.subscriptions.push(
+    onSettingsChanged(next => {
+      const intervalChanged = next.refresh.intervalSeconds !== seracSettings.refresh.intervalSeconds;
+      seracSettings = next;
+      panelProvider.sendSettings(next);
+      if (intervalChanged) { rebuildRefreshTimer(next.refresh.intervalSeconds); }
+      sendUpdate();
+    }),
+  );
 
   context.subscriptions.push({
     dispose() {

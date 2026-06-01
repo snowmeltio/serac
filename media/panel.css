@@ -29,8 +29,14 @@ body {
   display: flex;
   flex-direction: column;
 }
-#root { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
-.card-archive-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+/* Root scrolls vertically so that when the workspace + worktree + cards
+ * sections all want more height than the viewport, the *whole* panel
+ * scrolls — the cards' min-height (below) is preserved instead of the
+ * cards collapsing to zero. */
+#root { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
+/* Cards keep a sensible minimum so the worktree / foreign panes can't
+ * push them out of view, even when both panes are set to auto height. */
+.card-archive-scroll { flex: 1; overflow-y: auto; min-height: 200px; }
 .archive-list { flex-shrink: 0; }
 
 /* === TOP BAR (slim status row; actions live in the WebviewView title bar) === */
@@ -71,7 +77,10 @@ body {
 .ws-foreign-rows {
   padding: 4px 12px 6px 12px;
   border-top: 1px solid var(--vscode-panel-border, #2d2d2d);
-  max-height: 280px;
+  /* Reactive cap from serac.foreignWorkspaces.maxHeightPx — set by panel.ts
+   * on every SettingsMessage. Fallback matches the historical default so
+   * users with no setting see today's behaviour. */
+  max-height: var(--serac-foreign-max-height, 280px);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -84,7 +93,8 @@ body {
 .ws-worktree-rows {
   padding: 4px 12px 6px 12px;
   border-top: 1px solid var(--vscode-panel-border, #2d2d2d);
-  max-height: 280px;
+  /* Reactive cap from serac.worktrees.maxHeightPx — see ws-foreign-rows. */
+  max-height: var(--serac-worktrees-max-height, 280px);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
@@ -180,6 +190,48 @@ body {
   letter-spacing: 0.2px;
 }
 .ws-row-grouped { padding-left: 12px; }
+
+/* Worktree picker: aggregated rows with 2+ worktrees are click-to-expand,
+ * revealing an inline list of every worktree (incl. main). The chevron
+ * mirrors the team-section pattern so the affordance is already familiar. */
+.ws-chevron {
+  display: inline-flex;
+  width: 8px;
+  flex-shrink: 0;
+  transition: transform 0.15s;
+  font-size: 8px;
+  color: var(--vscode-descriptionForeground, #888888);
+}
+.ws-chevron.expanded { transform: rotate(90deg); }
+.ws-row-expandable { cursor: pointer; }
+/* Children list indents to align under the parent's name (12px = chevron +
+ * gap matches the parent's leading whitespace). Faint left border doubles as
+ * a connector cue without adding a separate connector glyph. */
+.ws-picker-children {
+  padding-left: 12px;
+  margin: 2px 0 4px 4px;
+  border-left: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.06));
+}
+.ws-picker-child { padding-left: 4px; }
+/* Quiet "no activity" tag for worktrees that exist on disk but have no
+ * Claude Code activity in the last 7 days. Mirrors the .ws-main-chip outline
+ * style so the picker stays visually flat. */
+.ws-picker-quiet {
+  font-size: 9px;
+  font-weight: 400;
+  padding: 0 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.2;
+  color: var(--vscode-descriptionForeground, #888888);
+  background: transparent;
+  border: 1px dashed currentColor;
+  opacity: 0.55;
+  text-transform: lowercase;
+  letter-spacing: 0.2px;
+}
+
 .empty-state {
   padding: 20px 12px;
   text-align: center;
@@ -215,13 +267,14 @@ body {
   padding: 8px 8px 8px 10px;
   cursor: pointer;
   border-left: 3px solid transparent;
-  transition: transform 300ms ease-out, opacity 300ms ease-out, background 0.1s;
+  /* Reactive: serac.animations.enabled flips --serac-transition-ms between 300ms and 0. */
+  transition: transform var(--serac-transition-ms, 300ms) ease-out, opacity var(--serac-transition-ms, 300ms) ease-out, background 0.1s;
   will-change: transform;
   position: relative;
 }
 
 .card.card-enter { opacity: 0; transform: translateY(-10px); }
-.card.card-leave { opacity: 0; transform: translateX(-40px); pointer-events: none; }
+.card.card-leave { opacity: 0; pointer-events: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .card { transition: none; }

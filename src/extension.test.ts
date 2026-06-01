@@ -26,10 +26,12 @@ vi.mock('vscode', () => {
         onDidDelete: vi.fn(),
         dispose: vi.fn(),
       })),
-      getConfiguration: vi.fn((_section?: string) => ({
-        get: vi.fn(<T,>(_key: string, defaultValue?: T) => defaultValue),
+      // Minimal getConfiguration stub: returns defaults from settings.ts.
+      // Tests that care about specific config values can spy/override.
+      getConfiguration: vi.fn(() => ({
+        get: <T>(_key: string, defaultValue?: T): T | undefined => defaultValue,
       })),
-      onDidChangeConfiguration: vi.fn((_cb: (...args: unknown[]) => void) => ({ dispose: vi.fn() })),
+      onDidChangeConfiguration: vi.fn(() => ({ dispose: vi.fn() })),
     },
     window: {
       createOutputChannel: vi.fn(() => ({

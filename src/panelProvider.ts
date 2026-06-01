@@ -3,6 +3,7 @@ import { randomBytes } from 'crypto';
 import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, FooterSlotPayload, WorktreeRow } from './types.js';
 import type { CompactSettings } from './claudeSettings.js';
 import { parseWebviewCommand } from './validation.js';
+import { readSettings, type SeracSettings } from './settings.js';
 
 /**
  * WebviewViewProvider for the Agent Activity sidebar panel.
@@ -119,6 +120,11 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.getHtml(webviewView.webview);
 
+    // Push the current settings snapshot before the first data update so the
+    // webview can apply visibility gates / CSS custom properties on the very
+    // first render and avoid a flash of unhidden sections.
+    this.sendSettings();
+
     // Handle messages from the webview
     webviewView.webview.onDidReceiveMessage((raw: unknown) => {
       const message = parseWebviewCommand(raw);
@@ -185,6 +191,20 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   focusSession(sessionId: string): void {
     if (!this.view) { return; }
     this.view.webview.postMessage({ type: 'focusSession', sessionId });
+  }
+
+  /** Push the current `serac.*` settings snapshot to the webview. Called once
+   *  on resolveWebviewView and again whenever onDidChangeConfiguration fires
+   *  for the `serac` section. Settings live in a separate message (not bundled
+   *  into the 5s update tick) so reactivity is event-driven and the update
+   *  payload stays lean. */
+  sendSettings(settings?: SeracSettings): void {
+    if (!this.view) { return; }
+    const payload: WebviewMessage = {
+      type: 'settings',
+      settings: settings ?? readSettings(),
+    };
+    this.view.webview.postMessage(payload);
   }
 
   private sendUpdate(): void {
