@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
 import { resolveRepoRoot, discoverWorktrees, type WorktreeInfo } from './gitWorktreeUtil.js';
+import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { readSettings } from './settings.js';
@@ -361,9 +362,21 @@ export class ForeignWorkspaceManager {
       }
     }
 
+    // Pseudo-repo overlay: when enabled, scratch sessions under /private/tmp
+    // (and /tmp) that aren't real git repos get the shared PSEUDO_TMP_REPO_ROOT
+    // so groupForeignWorkspaces folds them into a single "tmp" row. Applied at
+    // read time (not baked into repoRootCache) so toggling the setting takes
+    // effect on the next poll without a cache flush.
+    const consolidateTmp = readSettings().worktrees.consolidateTmp;
+
     const result: WorkspaceGroup[] = [];
     for (const [key, counts] of groups) {
-      const repoRoot = this.repoRootCache.get(key) ?? null;
+      let repoRoot = this.repoRootCache.get(key) ?? null;
+      if (!repoRoot && consolidateTmp && isTmpScratchPath(this.cwdCache.get(key))) {
+        repoRoot = PSEUDO_TMP_REPO_ROOT;
+      }
+      // Pseudo roots have no .git, so worktreesByRepoRoot never holds them —
+      // the synthetic row is driven by `members`, not enumerated worktrees.
       const worktrees = repoRoot ? this.worktreesByRepoRoot.get(repoRoot) : undefined;
       result.push({
         workspaceKey: key,

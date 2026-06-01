@@ -21,6 +21,8 @@ import {
   getCompactThreshold,
   formatTokenCount,
   PanelSession,
+  PSEUDO_TMP_REPO_ROOT,
+  isTmpScratchPath,
 } from './panelUtils.js';
 
 // Helper to create a minimal session
@@ -582,5 +584,57 @@ describe('groupForeignWorkspaces', () => {
     // kicks in.
     expect(rows[0].members).toBeUndefined();
     expect(rows[0].worktreeCount).toBeUndefined();
+  });
+
+  it('consolidates scratch dirs sharing the pseudo /private/tmp root into one tmp row', () => {
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'serac-hook-spike', cwd: '/private/tmp/serac-hook-spike', repoRoot: PSEUDO_TMP_REPO_ROOT, counts: { running: 1 } }),
+      ws({ workspaceKey: 'b', displayName: 'serac-spike-subagent', cwd: '/private/tmp/serac-spike-subagent', repoRoot: PSEUDO_TMP_REPO_ROOT, counts: { stale: 1 } }),
+    ];
+    const rows = groupForeignWorkspaces(list);
+    expect(rows).toHaveLength(1);
+    const agg = rows[0];
+    expect(agg.displayName).toBe('tmp');
+    expect(agg.pseudoRepo).toBe(true);
+    expect(agg.worktreeCount).toBe(2);
+    expect(agg.counts).toEqual({ running: 1, stale: 1 });
+  });
+
+  it('pseudo (tmp) rows withhold cwd and worktrees so the picker drives off members', () => {
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'p1', cwd: '/private/tmp/p1', repoRoot: PSEUDO_TMP_REPO_ROOT, counts: { done: 1 } }),
+      ws({ workspaceKey: 'b', displayName: 'p2', cwd: '/private/tmp/p2', repoRoot: PSEUDO_TMP_REPO_ROOT, counts: { done: 1 } }),
+    ];
+    const agg = groupForeignWorkspaces(list)[0];
+    expect(agg.cwd).toBeNull();
+    expect(agg.worktrees).toBeUndefined();
+    expect(agg.members).toBeDefined();
+    expect(agg.members!.map(m => m.cwd)).toEqual(
+      expect.arrayContaining(['/private/tmp/p1', '/private/tmp/p2']),
+    );
+  });
+
+  it('does not set pseudoRepo on real git repo aggregations', () => {
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo', counts: { running: 1 } }),
+      ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo', counts: { done: 1 } }),
+    ];
+    expect(groupForeignWorkspaces(list)[0].pseudoRepo).toBeUndefined();
+  });
+});
+
+describe('isTmpScratchPath', () => {
+  it('matches sub-paths of /private/tmp and /tmp', () => {
+    expect(isTmpScratchPath('/private/tmp/serac-hook-spike')).toBe(true);
+    expect(isTmpScratchPath('/tmp/serac-spike-subagent')).toBe(true);
+  });
+
+  it('excludes the temp root itself and unrelated paths', () => {
+    expect(isTmpScratchPath('/private/tmp')).toBe(false);
+    expect(isTmpScratchPath('/tmp')).toBe(false);
+    expect(isTmpScratchPath('/Users/me/repos/serac')).toBe(false);
+    expect(isTmpScratchPath('/var/tmp/thing')).toBe(false);
+    expect(isTmpScratchPath(null)).toBe(false);
+    expect(isTmpScratchPath(undefined)).toBe(false);
   });
 });
