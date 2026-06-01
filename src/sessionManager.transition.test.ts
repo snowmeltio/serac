@@ -255,6 +255,26 @@ describe('Transition coverage: key state transitions', () => {
     expect(mgr.getStatus()).toBe('running');
   });
 
+  it('clears stale "Waiting for your response" subtitle once the question is answered', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [{
+      type: 'assistant', timestamp: ts(),
+      message: { content: [{ type: 'tool_use', name: 'AskUserQuestion', id: 'ask3' }] },
+    }]);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toBe('Waiting for your response');
+
+    // Answer arrives as a tool_result — session resumes and may sit in the
+    // thinking phase, so the subtitle must not keep saying "Waiting…".
+    await feedRecords(mgr, [{
+      type: 'user', timestamp: ts(),
+      message: { content: [{ type: 'tool_result', tool_use_id: 'ask3' }] },
+    }]);
+    expect(mgr.getStatus()).toBe('running');
+    expect(mgr.getSnapshot().activity).not.toBe('Waiting for your response');
+    expect(mgr.getSnapshot().activity).toBe('Processing');
+  });
+
   it('running → done via hard ceiling (demoteIfStale)', async () => {
     const mgr = makeManager();
     // Use a tool_use so activeTools is non-empty (prevents idle timer from marking done).
