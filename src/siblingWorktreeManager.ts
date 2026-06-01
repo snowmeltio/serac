@@ -82,17 +82,24 @@ export class SiblingWorktreeManager {
 
   /** Scan all non-local workspace directories. For each candidate that
    *  hasn't already been classified, peek at a session to discover its CWD
-   *  and decide whether it's a sibling worktree of the local repo. */
-  async scan(): Promise<void> {
-    if (this.inert) { return; }
-    if (!readSettings().show.worktrees) { return; }
+   *  and decide whether it's a sibling worktree of the local repo. Returns
+   *  true when the tracked set changed (sessions added or pruned) so the
+   *  caller can trigger a re-render. */
+  async scan(): Promise<boolean> {
+    if (this.inert) { return false; }
+    if (!readSettings().show.worktrees) { return false; }
     const now = Date.now();
     const ageGate = ageGateMs();
+    // Drop siblings whose worktree directory has been removed (e.g. `git
+    // worktree remove`). Their JSONLs linger in ~/.claude/projects, but the
+    // worktree is gone — without this they'd persist as undismissable zombie
+    // cards until the extension restarts.
+    let changed = await this.pruneRemovedWorktrees();
     let dirs: string[];
     try {
       dirs = await fs.promises.readdir(this.projectsDir);
     } catch {
-      return;
+      return changed;
     }
 
     for (const dir of dirs) {
@@ -161,8 +168,43 @@ export class SiblingWorktreeManager {
           continue;
         }
         this.sessions.set(compositeId, manager);
+        changed = true;
       }
     }
+    return changed;
+  }
+
+  /** Drop tracked siblings whose worktree CWD no longer exists on disk.
+   *  Returns true when anything was pruned. A pruned dir is fully forgotten
+   *  (not added to nonSiblingKeys) so that if the worktree is recreated later
+   *  a subsequent scan re-classifies and re-adds it. */
+  private async pruneRemovedWorktrees(): Promise<boolean> {
+    let changed = false;
+    for (const dir of [...this.siblingKeys]) {
+      const cwd = this.worktreeRootForKey.get(dir);
+      if (cwd) {
+        try {
+          await fs.promises.access(cwd);
+          continue; // worktree still present — keep it
+        } catch {
+          // CWD gone — fall through to prune
+        }
+      }
+      // Drop every session originating from this worktree.
+      for (const [compositeId, session] of this.sessions) {
+        if (compositeId.startsWith(dir + '/')) {
+          session.dispose();
+          this.sessions.delete(compositeId);
+          changed = true;
+        }
+      }
+      this.siblingKeys.delete(dir);
+      this.worktreeRootForKey.delete(dir);
+      this.worktreeLabelForKey.delete(dir);
+      this.log.info('[sibling] pruned removed worktree: %s', dir);
+      changed = true;
+    }
+    return changed;
   }
 
   /** Read enough of a JSONL in `wsPath` to extract a CWD. We try the most

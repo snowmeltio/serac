@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SessionDiscovery } from './sessionDiscovery.js';
+import type { SessionSnapshot } from './types.js';
 
 /**
  * Tests for SessionDiscovery.
@@ -35,6 +36,35 @@ function createJsonlFile(sessionId: string, content = ''): string {
 
 function makeDiscovery(): SessionDiscovery {
   return new SessionDiscovery(workspacePath, { projectsDir });
+}
+
+/** Build a minimal SessionSnapshot for tests that inject feed entries directly
+ *  (e.g. stubbing sibling-worktree snapshots). */
+function makeSnapshot(
+  sessionId: string,
+  overrides: Partial<SessionSnapshot> = {},
+): SessionSnapshot {
+  return {
+    sessionId,
+    slug: sessionId,
+    cwd: workspacePath,
+    workspaceKey,
+    topic: '',
+    status: 'done',
+    activity: '',
+    subagents: [],
+    lastActivity: 0,
+    firstActivity: 0,
+    dismissed: false,
+    contextTokens: 0,
+    searchText: '',
+    modelLabel: 'Opus',
+    title: null,
+    customTitle: '',
+    aiTitle: '',
+    confidence: 'high',
+    ...overrides,
+  };
 }
 
 describe('SessionDiscovery', () => {
@@ -85,6 +115,36 @@ describe('SessionDiscovery', () => {
     const snap = d2.getSnapshots().find(s => s.sessionId === 'session-1');
     expect(snap?.dismissed).toBe(true);
     d2.stop();
+  });
+
+  it('honours the local dismiss overlay for sibling-worktree sessions', async () => {
+    // Sibling sessions are merged into the feed but source their state from the
+    // sibling's own meta. Dismissal is a local view-state overlay, so clicking ×
+    // on a sibling card must move it to the archive even though we never touch
+    // the sibling's session-meta.json. Regression: previously a no-op. [worktree]
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+
+    const sibSnapshot = makeSnapshot('sib-session', {
+      status: 'done',
+      worktreeRoot: '/repos/serac-hook-monitoring',
+      worktreeLabel: 'serac-hook-monitoring',
+    });
+    // Inject a sibling snapshot via the internal manager (no real worktree on disk).
+    (discovery as unknown as {
+      siblingManager: { getSnapshots: () => unknown[] };
+    }).siblingManager.getSnapshots = () => [{ ...sibSnapshot }];
+
+    // Before: visible and not dismissed.
+    const before = discovery.getSnapshots().find(s => s.sessionId === 'sib-session');
+    expect(before?.dismissed).toBe(false);
+
+    // Dismiss writes only to local meta — the sibling's meta is never touched.
+    discovery.dismissSession('sib-session');
+
+    const after = discovery.getSnapshots().find(s => s.sessionId === 'sib-session');
+    expect(after?.dismissed).toBe(true);
+    discovery.stop();
   });
 
   // ── Two-zone sort ─────────────────────────────────────────────
