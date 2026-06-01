@@ -461,12 +461,15 @@ export class SessionDiscovery {
     }
 
     // Merge sibling-worktree sessions into the same feed. Sibling sessions
-    // already carry worktreeRoot/worktreeLabel; we don't apply local meta
-    // (dismissed/title) to them because that meta lives in the sibling's own
-    // session-meta.json and isn't ours to mutate. The done→stale rollover uses
-    // lastActivity as the time anchor (rather than acknowledgedAt) so the
-    // Worktrees pane decays correctly without cross-workspace meta reads.
+    // already carry worktreeRoot/worktreeLabel; we don't write back title/aiTitle
+    // to them because that lives in the sibling's own session-meta.json and isn't
+    // ours to mutate. Dismissal is the exception: it's a local view-state overlay,
+    // so we honour the local `dismissed` flag (set by dismissSession) without
+    // touching the sibling's meta. The done→stale rollover uses lastActivity as the
+    // time anchor (rather than acknowledgedAt) so the Worktrees pane decays
+    // correctly without cross-workspace meta reads.
     for (const sib of this.siblingManager.getSnapshots()) {
+      if (this.sessionMeta.get(sib.sessionId)?.dismissed) { sib.dismissed = true; }
       if (sib.status === 'done' && now - sib.lastActivity > 10_000) {
         sib.status = 'stale';
       }
@@ -943,7 +946,7 @@ export class SessionDiscovery {
       // Sibling worktrees of the local repo: scan periodically, poll every cycle.
       // Run before foreign manager so foreign can exclude any newly-discovered siblings.
       if (this.siblingManager.shouldRescan()) {
-        await this.siblingManager.scan();
+        if (await this.siblingManager.scan()) { changed = true; }
       }
       const siblingChanged = await this.siblingManager.poll();
       if (siblingChanged) { changed = true; }
