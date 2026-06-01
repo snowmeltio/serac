@@ -188,7 +188,7 @@ demoted** when hooks are present:
 | `Stop` | ✅ | **consume (new)** | accelerate `done` — with the turn-close guard |
 | `PostToolUse` | ✅ | **consume (new)** | enrichment: `duration_ms`, outcome, response preview |
 | `PreToolUse` | ✅ | **consume (new)** | enrichment: intent, `permission_mode`, deny-by-rule |
-| `PermissionRequest` | ✅ | already consumed (tweak) | ground-truth `waiting` for permission **and** AskUserQuestion; needs a `tool_name`-keyed activity label |
+| `PermissionRequest` | ✅ | consumed + `tool_name`-keyed label (done) | ground-truth `waiting` for permission **and** AskUserQuestion; label keys off the tool's `userInput` profile, and `userInput` tools bypass the active-tool gate to accelerate ahead of JSONL |
 | `SessionStart` / `UserPromptSubmit` / `SubagentStop` | ✅ | already consumed | cwd, compact boundary, subagent lifecycle |
 | `SubagentStart` | ✅ | **drop / de-register** | payload has `agent_id` but no `tool_use_id`; can't bridge to the `parentToolUseId`-keyed subagent model at spawn → double-counts |
 | `Notification` | ❌ | **do not add** | `permission_prompt` is redundant with `PermissionRequest` (verified: AskUserQuestion fires both); only unique variant `idle_prompt` is a nudge about an already-waiting session and is ignored |
@@ -264,12 +264,22 @@ one slice of state, a host interface for callbacks, a factory hiding the source.
 3. **`SessionEnd`/`PreCompact` enrichment** (`SessionLifecycleTracker`). Add both
    to `HOOK_EVENTS`, remove `SubagentStart`, re-patch settings, then consume.
 
-Independent follow-ups (not blockers):
-- Accelerate the AskUserQuestion `waiting` via the already-wired
-  `PermissionRequest`, fixing the hardcoded `'Waiting for permission'` activity
-  ([sessionManager.ts:205](src/sessionManager.ts#L205)) to key off `tool_name`
-  (AskUserQuestion → "Waiting for your response").
-- Forwarder perf cleanup (see Cost).
+Independent follow-ups (both done 2026-06-01):
+- **AskUserQuestion acceleration + `tool_name`-keyed label** (done). The
+  `PermissionRequest` subscriber now threads the event's `tool_name` to
+  `onWaitingFired(toolName?)`, which keys the activity label off the tool's
+  `userInput` profile (AskUserQuestion → "Waiting for your response", else
+  "Waiting for permission"). The timer variant passes no `toolName` and the host
+  falls back to scanning `activeTools`. **Gate nuance:** the `activeTools`-non-empty
+  gate is bypassed *only* for `userInput` tools, so AskUserQuestion accelerates
+  to `waiting` ahead of its JSONL `tool_use` record (activeTools still empty),
+  while non-input tools keep the gate — otherwise the trailing JSONL `setRunning`
+  would flip them `waiting → running`. Safe because the JSONL path *re-affirms*
+  `waiting` for `userInput` tools rather than running them.
+- **Forwarder perf cleanup** (done) — see Cost. Lazy-`require('node:net')` on the
+  no-socket fast path, `SOCKET_TIMEOUT_MS` 1000 → 250 to cap tail latency, and an
+  honest bench that reports overhead above the ~30 ms Node-boot floor (≈5 ms) rather
+  than an unachievable sub-30 ms absolute.
 
 Each step degrades cleanly to today's behaviour when no hook arrives.
 

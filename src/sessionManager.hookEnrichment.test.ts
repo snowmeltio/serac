@@ -40,6 +40,9 @@ const ts = () => new Date().toISOString();
 const assistant = (text: string): JsonlRecord => ({
   type: 'assistant', timestamp: ts(), message: { content: [{ type: 'text', text }] },
 });
+const toolUse = (name: string, id: string): JsonlRecord => ({
+  type: 'assistant', timestamp: ts(), message: { content: [{ type: 'tool_use', name, id }] },
+});
 
 describe('Hook enrichment (PostToolUse / PreToolUse / SessionEnd)', () => {
   beforeEach(() => { vi.useFakeTimers(); mockRecords = []; mockTruncated = false; });
@@ -135,5 +138,56 @@ describe('PreCompact compacting grace window', () => {
 
     vi.advanceTimersByTime(61_000);
     expect(mgr.getSnapshot().compacting).toBe(false);
+  });
+});
+
+describe('PermissionRequest acceleration (tool_name-keyed label)', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; mockTruncated = false; });
+
+  it('accelerates AskUserQuestion ahead of the JSONL tool_use, with the user-prompt label', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    // Running, activeTools still empty (JSONL tool_use not yet polled).
+    await feed(mgr, [assistant('thinking')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    router.onHookEvent(SID, 'PermissionRequest', { tool_name: 'AskUserQuestion' });
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toBe('Waiting for your response');
+  });
+
+  it('the trailing JSONL tool_use re-affirms waiting — no flip back to running', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    await feed(mgr, [assistant('thinking')]);
+    router.onHookEvent(SID, 'PermissionRequest', { tool_name: 'AskUserQuestion' });
+    expect(mgr.getStatus()).toBe('waiting');
+
+    // JSONL catches up with the AskUserQuestion tool_use.
+    await feed(mgr, [toolUse('AskUserQuestion', 'ask1')]);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toBe('Waiting for your response');
+  });
+
+  it('keeps the active-tool gate for non-input tools (no acceleration without an active tool)', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    await feed(mgr, [assistant('thinking')]);
+
+    // Bash request with empty activeTools must NOT flip to waiting — JSONL's
+    // setRunning would otherwise fight it.
+    router.onHookEvent(SID, 'PermissionRequest', { tool_name: 'Bash' });
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('labels a non-input permission wait "Waiting for permission" once its tool is active', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    await feed(mgr, [toolUse('Bash', 'bash1')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    router.onHookEvent(SID, 'PermissionRequest', { tool_name: 'Bash' });
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toBe('Waiting for permission');
   });
 });
