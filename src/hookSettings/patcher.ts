@@ -28,18 +28,22 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-/** Hook events we register a forwarder for. Mirrors HOOK-MONITORING.md PR-B
- *  table. PostToolUseFailure is intentionally excluded — undocumented in the
- *  spike capture set, and the same information flows through PostToolUse. */
+/** Hook events we register a forwarder for. See ARCHITECTURE.md "Hook
+ *  consumption". `SubagentStart` is intentionally excluded: nothing consumes it
+ *  (its payload has no `tool_use_id`, so it can't bridge to the
+ *  `parentToolUseId`-keyed subagent model at spawn time). `PostToolUseFailure`
+ *  is excluded too — undocumented, and the same info flows through PostToolUse.
+ *  `SessionEnd`/`PreCompact` are consumed by SessionLifecycleTracker. */
 export const HOOK_EVENTS = [
   'SessionStart',
+  'SessionEnd',
   'UserPromptSubmit',
   'PreToolUse',
   'PostToolUse',
   'PermissionRequest',
-  'SubagentStart',
   'SubagentStop',
   'Stop',
+  'PreCompact',
 ] as const;
 
 export type HookEvent = typeof HOOK_EVENTS[number];

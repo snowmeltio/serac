@@ -87,6 +87,26 @@ export interface SessionState {
   aiTitle: string;
   /** Count of main-thread user turns (for title trigger) */
   userTurnCount: number;
+  /** Hook enrichment (PostToolUse): outcome of the most recently completed tool.
+   *  Display-only; never affects status. Undefined until a PostToolUse arrives. */
+  lastTool?: ToolOutcome;
+  /** Hook enrichment (PreToolUse): the session's current permission mode
+   *  (e.g. "default", "acceptEdits", "bypassPermissions"). Display-only. */
+  permissionMode?: string;
+  /** Hook enrichment (SessionEnd): why the session ended
+   *  ("clear" | "logout" | "prompt_input_exit" | "other"). Display-only. */
+  endReason?: string;
+  /** Status-stabiliser (PreCompact): true while a compaction is in progress, so
+   *  the session holds `running`/high-confidence and is not demoted. Cleared on
+   *  `compact_boundary` or a safety timeout. */
+  compacting?: boolean;
+}
+
+/** Outcome of a completed tool, captured from the `PostToolUse` hook. */
+export interface ToolOutcome {
+  name: string;
+  durationMs: number;
+  isError: boolean;
 }
 
 /** Serialisable snapshot sent to the webview */
@@ -125,6 +145,14 @@ export interface SessionSnapshot {
   worktreeRoot?: string;
   /** Display label for the originating worktree (basename of worktreeRoot). */
   worktreeLabel?: string;
+  /** Hook enrichment — outcome of the most recently completed tool (PostToolUse). */
+  lastTool?: ToolOutcome;
+  /** Hook enrichment — session's current permission mode (PreToolUse). */
+  permissionMode?: string;
+  /** Hook enrichment — why the session ended (SessionEnd). */
+  endReason?: string;
+  /** True while a compaction is in progress (PreCompact grace window). */
+  compacting?: boolean;
 }
 
 export interface SubagentSnapshot {

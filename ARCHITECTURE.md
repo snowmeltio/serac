@@ -51,7 +51,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 ```
 done ──→ running          (user record arrives, dequeue, or compact_boundary)
 running ──→ waiting       (AskUserQuestion, permission timer 3s/6s, all subagents blocked)
-running ──→ done          (idle timer 5s, all-subagents-done, or hard ceiling 3min)
+running ──→ done          (idle timer 5s, all-subagents-done, hard ceiling 3min, or Stop hook)
 waiting ──→ running       (sidechain tool_result unblocks subagents, user record)
 waiting ──→ done          (waiting hard ceiling 10min)
 any ──→ done              (queue-operation: enqueue, JSONL truncation)
@@ -69,6 +69,7 @@ Internal statuses are `running | waiting | done`. `stale` and `idle` are display
 3. **Idle timer (5s)** — fires only if status is `running` AND output has been seen in this turn AND no blocking subagents are active.
 4. **Extended thinking grace (30s)** — first 30s of a turn with no output yet uses PID-liveness check instead of demoting (covers slow first-token).
 5. **Hard ceiling (3 min running, 10 min waiting)** — safety net; forces done regardless of state. Covers laptop sleep, quota hits, abandoned permission prompts.
+6. **`Stop` hook (when present)** — accelerates `running → done` to the instant the turn ends, ahead of the 5s idle timer. Sets the `turnEndedByStop` guard so the turn's trailing assistant record (polled 0.5–2s later) cannot re-fire `running`; the guard is released by the next genuine new-turn reopener (user record, `dequeue`, or `compact_boundary`) or on `resetState`. Pure acceleration — `done` is still reached by the idle timer when no hook arrives, so hookless sessions are unchanged. See "Hook consumption".
 
 ### Out-of-order tool_use/tool_result
 
@@ -90,6 +91,212 @@ Each subagent runs its own permission timer against `subagent.activeTools`. When
 Subagents are further classified for demotion:
 - **Blocking subagent** — `parentToolUseId` is still in the parent's `activeTools` (parent waiting for the Task/Agent result). Suppresses parent demotion.
 - **Background subagent** — parent has moved on (`parentToolUseId` no longer in `activeTools`). Does NOT suppress demotion; parent can demote to `done` while the background subagent finishes.
+
+## Hook consumption
+
+> Status: **implemented 2026-06-01** — `TurnLifecycleTracker`,
+> `ToolOutcomeTracker`, `SessionLifecycleTracker`; `HOOK_EVENTS` gained
+> `SessionEnd`/`PreCompact` and lost `SubagentStart`. Panel rendering of the
+> enrichment fields (`lastTool`, `permissionMode`, `endReason`) is the remaining
+> follow-up: the data is on the snapshot but not yet drawn on the card.
+>
+> Red-teamed twice. Draft 1's authority/coverage model was rejected (see
+> **Rejected: the authority model**). Draft 2's "acceleration is order-free via
+> idempotency" claim was found **false for `Stop`** — see **The `Stop` turn-close
+> guard**. `Notification`→`waiting` and `SubagentStart` consumption were
+> investigated and dropped (AskUserQuestion is already covered by
+> `PermissionRequest`; `SubagentStart` can't bridge to `parentToolUseId` at spawn).
+
+### Principle: two roles
+
+Hooks serve two roles. The split removes most cross-source arbitration — but not
+all of it, which Draft 2 got wrong.
+
+1. **Accelerators for status.** A hook fires a status transition JSONL would
+   reach anyway, only earlier.
+   - **Same-transition accelerators are order-free.** `setStatus` no-ops on
+     same-status, so a hook and JSONL firing the *same* transition is idempotent
+     regardless of order. The permission→`waiting` path is like this:
+     `PermissionRequest` and the JSONL tool path both fire `waiting`.
+   - **`Stop`→`done` is the exception — NOT same-transition, NOT order-free.**
+     `Stop` fires `done`; the turn's trailing JSONL assistant record fires
+     `running` via `setRunning()` ([sessionManager.ts:763](src/sessionManager.ts#L763)).
+     Different transitions ⇒ not idempotent ⇒ a per-turn `done→running→done`
+     flicker unless guarded. See the next subsection.
+2. **Enrichment via dedicated snapshot fields.** `PostToolUse` (tool duration +
+   outcome), `PreToolUse` (permission mode), and `SessionEnd` (end reason) carry
+   data JSONL lacks. They write **dedicated snapshot fields** (`lastTool`,
+   `permissionMode`, `endReason`) — **not** the shared `activity` line and
+   **never** status. This is deliberate: the hook fires ahead of the JSONL poll,
+   so writing `activity` would be clobbered by a *stale* later-arriving JSONL
+   `tool_use` (arrival-order, not event-order — the exact race Draft 2
+   over-claimed immunity to). A dedicated field sidesteps it entirely.
+   - **Exception — `PreCompact` is a status-stabiliser, not enrichment.** It
+     opens the compacting grace window (below): holds `running`/high-confidence
+     and suppresses demotion. It is the one lifecycle event that touches status.
+
+This is **observe-only.** Serac's forwarder always exits `0` and never returns a
+blocking, deny, or context-injection decision. Consuming more events never gives
+Serac a vote in what the agent does — only a clearer view of what it did. The
+exit-0 guarantee in `bin/serac-hook-forward.cjs` is the guardrail; it must not
+change.
+
+### The `Stop` turn-close guard
+
+`Stop` must **not** bypass the idle path by calling `markSessionDone()` directly.
+The turn's trailing assistant record is polled 0.5–2s later, hits the text-only
+branch of `processAssistantRecord` → `setRunning()`, flipping `done→running`;
+the 5s idle timer then re-demotes — a per-turn flicker that is *worse* than
+today's single clean `running→done`.
+
+The fix uses the reopener taxonomy. `done→running` has exactly four sources
+([sessionManager.ts:15-20](src/sessionManager.ts#L15)): user record, `dequeue`,
+trailing assistant record, and `compact_boundary`. A *legitimate* new turn always
+begins with one of the first, second, or fourth — so a bare assistant record
+after `Stop` is, by construction, trailing data of the turn that just ended.
+
+- `Stop` sets a `turnEndedByStop` flag and marks done.
+- While the flag is set, `processAssistantRecord`'s `setRunning()` is
+  **suppressed** (trailing records cannot reopen), as is `activeTools`
+  repopulation from a trailing `tool_use`.
+- A `user` / `dequeue` / `compact_boundary` record **clears** the flag and
+  proceeds normally — a real new turn.
+
+State-based, ~10 lines, no timestamp/clock dependency. The flag lives at the
+**SessionManager host edge**, not inside a tracker slice, because it coordinates
+`setRunning`, `activeTools`, and the idle timer.
+
+### JSONL stays the status backstop — at full strength
+
+Because hooks only *accelerate* status, the existing JSONL heuristics are **not
+demoted** when hooks are present:
+
+- The **idle timer**, **extended-thinking grace**, and especially the
+  **PID-liveness check** keep running at full cadence. This is deliberate: when
+  Claude Code *crashes* mid-turn, no `Stop` fires — and the hook channel is dead
+  exactly when you need it. PID-liveness is the only thing that catches a dead
+  process fast, so it must never be gated behind "hooks are live."
+- A session that emits no hooks at all (started before hooks were installed, or
+  running in a non-leader VS Code window) behaves **exactly as it does today**.
+  No per-session capability flag is required; absence of acceleration is just the
+  current path.
+
+### Signal map
+
+| Hook event | Registered today | Plan | Role |
+|---|---|---|---|
+| `Stop` | ✅ | **consume (new)** | accelerate `done` — with the turn-close guard |
+| `PostToolUse` | ✅ | **consume (new)** | enrichment: `duration_ms`, outcome, response preview |
+| `PreToolUse` | ✅ | **consume (new)** | enrichment: intent, `permission_mode`, deny-by-rule |
+| `PermissionRequest` | ✅ | already consumed (tweak) | ground-truth `waiting` for permission **and** AskUserQuestion; needs a `tool_name`-keyed activity label |
+| `SessionStart` / `UserPromptSubmit` / `SubagentStop` | ✅ | already consumed | cwd, compact boundary, subagent lifecycle |
+| `SubagentStart` | ✅ | **drop / de-register** | payload has `agent_id` but no `tool_use_id`; can't bridge to the `parentToolUseId`-keyed subagent model at spawn → double-counts |
+| `Notification` | ❌ | **do not add** | `permission_prompt` is redundant with `PermissionRequest` (verified: AskUserQuestion fires both); only unique variant `idle_prompt` is a nudge about an already-waiting session and is ignored |
+| `SessionEnd` | ❌ | **add (initial)** | enrichment: end reason (clear/logout/prompt_input_exit/other) |
+| `PreCompact` | ❌ | **add (initial)** | **status-stabiliser**: opens a compacting grace window (holds `running`/high-confidence, suppresses idle-demotion + survives truncation) until `compact_boundary` or timeout; carries `trigger` (manual/auto) |
+
+Steps 1–2 register **nothing new** — `Stop`/`PreToolUse`/`PostToolUse` are already
+in `HOOK_EVENTS`. Only the later enrichment phase adds `SessionEnd`/`PreCompact`.
+`SubagentStart` should be **removed** from `HOOK_EVENTS` to stop paying a forwarder
+spawn per subagent for an event nothing consumes.
+
+### Caveats (resolved / settled)
+
+- **`stop_hook_active`.** `Stop`/`SubagentStop` payloads carry this flag (`false`
+  in every capture). A `Stop` with `stop_hook_active: true` is a
+  continuation-triggered stop, not a turn end — the `Stop` consumer must ignore
+  those or it will close a turn that is still running.
+- **`notification_type` (informational, since `Notification` is dropped).** The
+  payload discriminates `permission_prompt` from `idle_prompt`. We verified
+  `permission_prompt` is redundant with `PermissionRequest` (AskUserQuestion
+  fires *both*), so `Notification` is not consumed at all. Kept here only so a
+  future reader doesn't re-derive it.
+
+### Cost (benchmarked 2026-06-01)
+
+- **Steps 1–2 add ≈ zero forwarder cost.** `Stop`/`PreToolUse`/`PostToolUse` are
+  already registered and already spawn `serac-hook-forward.cjs` on every tool
+  call — today they're just dropped at the router. Consuming them adds only a
+  synchronous router dispatch + a field write.
+- **`SessionEnd`/`PreCompact` add negligible cost** — they fire once per session
+  end / compaction, not per tool call.
+- **The forwarder is over its own spec, independently of this work.**
+  `scripts/bench-forwarder.cjs`: min 38ms / p50 40ms / p95 71ms / max 603ms
+  against a `<30ms` cold-spawn target — node cold-start per event. This is a
+  pre-existing per-tool latency tax on *all* hooked tool calls; worth a separate
+  cleanup (persistent helper or compiled forwarder), not a blocker for consuming.
+
+### Where it lives
+
+New consumers follow the existing tracker convention (`src/trackers/README.md`):
+one slice of state, a host interface for callbacks, a factory hiding the source.
+
+- **`TurnLifecycleTracker`** — consumes `Stop` to accelerate `done`. The
+  turn-close guard (`turnEndedByStop` flag + suppression of trailing
+  `setRunning`/`activeTools`) lives at the **SessionManager host edge**, not in
+  the tracker slice, because it coordinates `setRunning`, `activeTools`, and the
+  idle timer. The existing `seenOutputInTurn` / idle / PID-liveness logic stays
+  as the JSONL backstop and keeps running.
+- **`ToolOutcomeTracker`** — consumes `PostToolUse` (→ `lastTool`) and
+  `PreToolUse` (→ `permissionMode`). Non-authoritative; writes dedicated snapshot
+  fields, never status and never the `activity` line.
+- **`SessionLifecycleTracker`** — consumes `SessionEnd` (enrichment: end reason,
+  no status effect) and `PreCompact` (status-stabiliser). `PreCompact` opens a
+  **compacting grace window** at the SessionManager host edge: while open, the
+  session holds `running` at high confidence, the idle timer does not demote, and
+  `resetState` (triggered by compaction's JSONL truncation) must **preserve** the
+  window so the card doesn't flip to `done` mid-compaction. The window closes on
+  the existing `compact_boundary` signal (handled by `CompactBoundaryTracker`) or
+  a timeout. This fixes the observed mid-compaction `running`→`done` flip and
+  confidence decay. `SessionEnd` itself never moves status (enrichment-only
+  unless an `ended` display state is added later — see Status inference).
+
+(`NotificationTracker` from the prior draft is dropped — see signal map.)
+
+### Implementation order (single initial build)
+
+`SessionEnd` and `PreCompact` are in the initial build, not deferred.
+
+1. **`Stop` → accelerate `done`** (`TurnLifecycleTracker` + host-edge turn-close
+   guard). Build the guard first — it *is* the feature. Already registered.
+2. **`PostToolUse`/`PreToolUse` enrichment** (`ToolOutcomeTracker`) → dedicated
+   `lastTool`/`permissionMode` snapshot fields. Already registered; marginal cost ≈ 0.
+3. **`SessionEnd`/`PreCompact` enrichment** (`SessionLifecycleTracker`). Add both
+   to `HOOK_EVENTS`, remove `SubagentStart`, re-patch settings, then consume.
+
+Independent follow-ups (not blockers):
+- Accelerate the AskUserQuestion `waiting` via the already-wired
+  `PermissionRequest`, fixing the hardcoded `'Waiting for permission'` activity
+  ([sessionManager.ts:205](src/sessionManager.ts#L205)) to key off `tool_name`
+  (AskUserQuestion → "Waiting for your response").
+- Forwarder perf cleanup (see Cost).
+
+Each step degrades cleanly to today's behaviour when no hook arrives.
+
+### Rejected: the authority model
+
+The first draft made hooks *authoritative* for status, with:
+- a per-session coverage state machine (`unknown`/`live`/`degraded`), and
+- a "causal-recency-wins" rule letting the latest-processed record from either
+  source override the other, and
+- demotion of JSONL heuristics (including PID-liveness) under `live` coverage.
+
+Rejected because:
+- **Causal-recency was wrong across async channels.** Hooks arrive on a push
+  socket; JSONL is polled 500ms–2s later. A `Stop` is almost always *processed*
+  before its own turn's trailing JSONL is read off disk, so "latest processed
+  wins" would let stale JSONL reopen a hook-closed turn — flicker on every turn,
+  not a corner case.
+- **The machinery was unjustified.** It existed only to arbitrate two sources
+  both claiming a *status*. The two-roles split removes that need entirely:
+  acceleration is idempotent, enrichment has no rival source.
+- **Demoting PID-liveness was a crash-detection regression** — see "JSONL stays
+  the status backstop" above.
+
+Reintroduce an authority model only if a concrete case appears where JSONL infers
+a **durably wrong** terminal status (not merely a *late* one) that a hook must
+override — or where `Stop`/`Notification` prove unreliable enough that JSONL must
+*cross-check* rather than *backstop* them.
 
 ## Usage model
 

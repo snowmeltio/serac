@@ -33,11 +33,25 @@ Today, all four trackers ship a JSONL/timer-derived variant only:
 |---|---|---|
 | `CwdTracker` | `cwd` field from JSONL records | `SessionStart` / `UserPromptSubmit` hook events |
 | `PermissionTracker` | `setTimeout` against tool activity | `PermissionRequest` hook events |
-| `SubagentLifecycleTracker` | wraps `SubagentTailerManager` | `SubagentStart` / `SubagentStop` events |
+| `SubagentLifecycleTracker` | wraps `SubagentTailerManager` | `SubagentStop` events |
 | `CompactBoundaryTracker` | `system.subtype === 'compact_boundary'` | `SessionStart(source: "compact")` |
+| `TurnLifecycleTracker` | no-op (idle timer owns `done`) | `Stop` → accelerate `done` (host-edge turn-close guard) |
+| `ToolOutcomeTracker` | no-op (no JSONL source) | `PostToolUse`/`PreToolUse` → `lastTool`/`permissionMode` (enrichment) |
+| `SessionLifecycleTracker` | no-op (no JSONL source) | `SessionEnd` (enrichment) / `PreCompact` (compacting grace window) |
 
 The Phase 4 swap is a one-line change inside each factory body; no
 SessionManager call site changes.
+
+Beyond swapping these four, the **Hook consumption** design (`ARCHITECTURE.md`)
+adds three new trackers: `TurnLifecycleTracker` (`Stop` → accelerate `done`),
+`ToolOutcomeTracker` (`PreToolUse`/`PostToolUse` enrichment), and
+`SessionLifecycleTracker` (`SessionEnd`/`PreCompact` enrichment). Hooks play two
+roles there — they *accelerate* status transitions (JSONL stays the source of
+truth, PID-liveness stays full-strength) and are the *sole source* for enrichment
+(durations, outcomes, deny-by-rule, end reason). They are not authoritative for
+status. One nuance: `Stop`→`done` is **not** order-free (it races trailing JSONL
+that fires `running`), so its turn-close guard lives at the SessionManager host
+edge, not in the tracker slice. New trackers follow the same convention below.
 
 ## Partial-order contract (PermissionTracker)
 
