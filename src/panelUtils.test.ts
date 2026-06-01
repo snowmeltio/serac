@@ -530,4 +530,57 @@ describe('groupForeignWorkspaces', () => {
     expect(rows[0].worktreeMembersLabel).toContain('~/repo/a');
     expect(rows[0].worktreeMembersLabel).toContain('~/repo/b');
   });
+
+  it('preserves the worktrees array on the aggregated row', () => {
+    const worktrees = [
+      { path: '/r/repo', branch: 'main', isMain: true },
+      { path: '/r/repo-feat-a', branch: 'feat-a', isMain: false },
+      { path: '/r/repo-feat-b', branch: 'feat-b', isMain: false },
+    ];
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'a', cwd: '/r/repo-feat-a', repoRoot: '/r/repo', counts: { running: 1 }, worktrees }),
+      ws({ workspaceKey: 'b', displayName: 'b', cwd: '/r/repo-feat-b', repoRoot: '/r/repo', counts: { done: 2 }, worktrees }),
+    ];
+    const rows = groupForeignWorkspaces(list);
+    expect(rows[0].worktrees).toEqual(worktrees);
+  });
+
+  it('preserves per-worktree members on the aggregated row, stripped of nested worktrees/members', () => {
+    const worktrees = [
+      { path: '/r/repo', branch: 'main', isMain: true },
+      { path: '/r/repo-feat-a', branch: 'feat-a', isMain: false },
+    ];
+    const list = [
+      ws({ workspaceKey: 'a', displayName: 'a', cwd: '/r/repo-feat-a', repoRoot: '/r/repo', counts: { running: 1 }, worktrees }),
+      ws({ workspaceKey: 'b', displayName: 'b', cwd: '/r/repo-feat-b', repoRoot: '/r/repo', counts: { done: 2 }, worktrees }),
+    ];
+    const rows = groupForeignWorkspaces(list);
+    const agg = rows[0];
+    expect(agg.members).toBeDefined();
+    expect(agg.members!.length).toBe(2);
+    // Members are stripped of nested worktrees/members so the payload is flat.
+    for (const m of agg.members!) {
+      expect((m as { worktrees?: unknown }).worktrees).toBeUndefined();
+      expect((m as { members?: unknown }).members).toBeUndefined();
+    }
+    // But original counts + cwd survive so the picker can match by path.
+    const cwds = agg.members!.map(m => m.cwd);
+    expect(cwds).toContain('/r/repo-feat-a');
+    expect(cwds).toContain('/r/repo-feat-b');
+  });
+
+  it('does not set worktrees/members on non-aggregated (single workspace) rows', () => {
+    const list = [
+      ws({
+        workspaceKey: 'a', displayName: 'lone', cwd: '/r/lone', repoRoot: '/r/lone',
+        worktrees: [{ path: '/r/lone', branch: 'main', isMain: true }],
+      }),
+    ];
+    const rows = groupForeignWorkspaces(list);
+    // Single-workspace rows pass through unchanged — the worktrees array is
+    // still there (it was on the original) but no aggregation/members logic
+    // kicks in.
+    expect(rows[0].members).toBeUndefined();
+    expect(rows[0].worktreeCount).toBeUndefined();
+  });
 });

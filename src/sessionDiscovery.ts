@@ -363,25 +363,41 @@ export class SessionDiscovery {
     this.teamDiscovery.dispose();
   }
 
-  /** Re-enumerate worktrees of the local repo. No-op when no repoRoot. Fires
-   *  the change callback when the set changes so the panel re-renders. */
+  /** Re-enumerate worktrees of the local repo AND every foreign repo currently
+   *  tracked. No-op for the local side when no repoRoot. Fires the change
+   *  callback when either set changes so the panel re-renders the picker. */
   private async refreshDiscoveredWorktrees(): Promise<void> {
-    if (!this.localRepoRoot) {
-      this.discoveredWorktrees = [];
-      return;
-    }
-    let next: WorktreeInfo[] = [];
-    try {
-      next = await discoverWorktrees(this.localRepoRoot);
-    } catch (err) {
-      this.log.warn('discoverWorktrees failed:', err);
-      return;
-    }
-    if (worktreeSetChanged(this.discoveredWorktrees, next)) {
-      this.discoveredWorktrees = next;
-      this.onChangeCallback?.();
+    let localChanged = false;
+    if (this.localRepoRoot) {
+      let next: WorktreeInfo[] = [];
+      try {
+        next = await discoverWorktrees(this.localRepoRoot);
+      } catch (err) {
+        this.log.warn('discoverWorktrees failed:', err);
+        next = this.discoveredWorktrees;
+      }
+      if (worktreeSetChanged(this.discoveredWorktrees, next)) {
+        this.discoveredWorktrees = next;
+        localChanged = true;
+      } else {
+        this.discoveredWorktrees = next;
+      }
     } else {
-      this.discoveredWorktrees = next;
+      this.discoveredWorktrees = [];
+    }
+
+    // Foreign side: re-enumerate worktrees for every distinct foreign repoRoot.
+    // Reads only `.git/worktrees/*` dirents — same cost profile as the local
+    // refresh, scaled by the number of distinct foreign repos.
+    let foreignChanged = false;
+    try {
+      foreignChanged = await this.foreignManager.refreshWorktreesForKnownRepos();
+    } catch (err) {
+      this.log.warn('foreign worktree refresh failed:', err);
+    }
+
+    if (localChanged || foreignChanged) {
+      this.onChangeCallback?.();
     }
   }
 

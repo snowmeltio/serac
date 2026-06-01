@@ -28,6 +28,30 @@ function sendUpdate(data: Record<string, unknown>): void {
   }));
 }
 
+/** Dispatch a settings message to the panel. Pass a partial settings shape;
+ *  unspecified sections fall back to the defaults. */
+function sendSettings(overrides: any = {}): void {
+  const defaults = {
+    show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, teams: true },
+    archive: { defaultRange: '1d', maxDoneShown: 20 },
+    refresh: { intervalSeconds: 5 },
+    discovery: { ageGateDays: 7 },
+    foreignWorkspaces: { maxHeightPx: 280 },
+    worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20 },
+    usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
+    animations: { enabled: true },
+    cleanup: { confirmRequired: true },
+  };
+  // Shallow-merge each top-level section so callers can override one field.
+  const merged: any = { ...defaults };
+  for (const key of Object.keys(overrides)) {
+    merged[key] = { ...(defaults as any)[key], ...overrides[key] };
+  }
+  window.dispatchEvent(new MessageEvent('message', {
+    data: { type: 'settings', settings: merged },
+  }));
+}
+
 /** Create a minimal session snapshot for testing */
 function makeSession(overrides: Record<string, unknown> = {}) {
   return {
@@ -261,5 +285,233 @@ describe('panel.ts integration', () => {
     expect(document.querySelector('.top-bar .status-summary')).toBeTruthy();
     expect(document.getElementById('newChatBtn')).toBeNull();
     expect(document.getElementById('cleanupBtn')).toBeNull();
+  });
+
+  describe('worktree picker', () => {
+    /** Build a foreign workspaces payload mirroring what ForeignWorkspaceManager
+     *  emits when two worktrees of the same repo are tracked. The extension
+     *  emits raw per-workspace rows; groupForeignWorkspaces (run inside the
+     *  webview) aggregates them. */
+    function pickerFixture() {
+      const worktrees = [
+        { path: '/repos/myrepo', branch: 'main', isMain: true },
+        { path: '/repos/myrepo-feat-a', branch: 'feat-a', isMain: false },
+        { path: '/repos/myrepo-feat-b', branch: 'feat-b', isMain: false },
+      ];
+      return [
+        { workspaceKey: '-ws-a', displayName: 'feat-a', cwd: '/repos/myrepo-feat-a', repoRoot: '/repos/myrepo', counts: { running: 1, done: 2 }, confidence: 'medium', worktrees },
+        { workspaceKey: '-ws-b', displayName: 'feat-b', cwd: '/repos/myrepo-feat-b', repoRoot: '/repos/myrepo', counts: { waiting: 1 }, confidence: 'medium', worktrees },
+      ];
+    }
+
+    it('aggregated row with worktrees array is rendered as expandable (chevron, no data-cwd)', () => {
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces: pickerFixture() });
+      const row = document.querySelector('.ws-foreign-rows .ws-row') as HTMLElement;
+      expect(row).toBeTruthy();
+      expect(row.classList.contains('ws-row-expandable')).toBe(true);
+      expect(row.dataset.cwd).toBeUndefined();
+      expect(row.dataset.workspaceKey).toBe('repo:/repos/myrepo');
+      expect(row.querySelector('.ws-chevron')).toBeTruthy();
+    });
+
+    it('clicking expandable row does NOT post openWorkspace; instead reveals picker children', () => {
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces: pickerFixture() });
+      const row = document.querySelector('.ws-row-expandable') as HTMLElement;
+      postedMessages = [];
+      row.click();
+      expect(postedMessages.find((m: any) => m?.type === 'openWorkspace')).toBeUndefined();
+      const children = document.querySelectorAll('.ws-picker-child');
+      expect(children.length).toBeGreaterThan(0);
+      // Children carry data-cwd and a parent-key so collapse-on-pick can fire.
+      const first = children[0] as HTMLElement;
+      expect(first.dataset.cwd).toBeTruthy();
+      expect(first.dataset.parentKey).toBe('repo:/repos/myrepo');
+    });
+
+    it('picker children include the main checkout with a `main` chip', () => {
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces: pickerFixture() });
+      (document.querySelector('.ws-row-expandable') as HTMLElement).click();
+      const children = Array.from(document.querySelectorAll('.ws-picker-child')) as HTMLElement[];
+      const mainChild = children.find(c => c.dataset.cwd === '/repos/myrepo');
+      expect(mainChild).toBeTruthy();
+      expect(mainChild!.querySelector('.ws-main-chip')).toBeTruthy();
+    });
+
+    it('picker children show per-worktree counts from matching member workspace', () => {
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces: pickerFixture() });
+      (document.querySelector('.ws-row-expandable') as HTMLElement).click();
+      const featA = document.querySelector('.ws-picker-child[data-cwd="/repos/myrepo-feat-a"]') as HTMLElement;
+      expect(featA).toBeTruthy();
+      const counts = featA.querySelector('.ws-counts')!.textContent;
+      expect(counts).toContain('1R');
+      expect(counts).toContain('2D');
+      const featB = document.querySelector('.ws-picker-child[data-cwd="/repos/myrepo-feat-b"]') as HTMLElement;
+      expect(featB.querySelector('.ws-counts')!.textContent).toContain('1W');
+    });
+
+    it('worktrees with no matching member render a quiet "no activity" hint', () => {
+      // feat-b worktree exists but has no member entry (no Claude Code activity)
+      const worktrees = [
+        { path: '/repos/myrepo', branch: 'main', isMain: true },
+        { path: '/repos/myrepo-feat-a', branch: 'feat-a', isMain: false },
+        { path: '/repos/myrepo-feat-untouched', branch: 'feat-untouched', isMain: false },
+      ];
+      const foreignWorkspaces = [
+        { workspaceKey: '-ws-a', displayName: 'feat-a', cwd: '/repos/myrepo-feat-a', repoRoot: '/repos/myrepo', counts: { running: 1 }, confidence: 'medium', worktrees },
+        { workspaceKey: '-ws-main', displayName: 'main', cwd: '/repos/myrepo', repoRoot: '/repos/myrepo', counts: { done: 1 }, confidence: 'medium', worktrees },
+      ];
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces });
+      (document.querySelector('.ws-row-expandable') as HTMLElement).click();
+      const untouched = document.querySelector('.ws-picker-child[data-cwd="/repos/myrepo-feat-untouched"]') as HTMLElement;
+      expect(untouched).toBeTruthy();
+      expect(untouched.querySelector('.ws-picker-quiet')).toBeTruthy();
+    });
+
+    it('picker excludes the current workspace from child rows', () => {
+      // workspacePath is '/repos/myrepo', so the main checkout should be filtered out
+      sendUpdate({
+        sessions: [makeSession()],
+        workspacePath: '/repos/myrepo',
+        foreignWorkspaces: pickerFixture(),
+      });
+      (document.querySelector('.ws-row-expandable') as HTMLElement).click();
+      const children = Array.from(document.querySelectorAll('.ws-picker-child')) as HTMLElement[];
+      const cwds = children.map(c => c.dataset.cwd);
+      expect(cwds).not.toContain('/repos/myrepo');
+      expect(cwds).toContain('/repos/myrepo-feat-a');
+    });
+
+    it('clicking a picker child posts openWorkspace with the child path and collapses the parent', () => {
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces: pickerFixture() });
+      (document.querySelector('.ws-row-expandable') as HTMLElement).click();
+      postedMessages = [];
+      const featA = document.querySelector('.ws-picker-child[data-cwd="/repos/myrepo-feat-a"]') as HTMLElement;
+      featA.click();
+      const openMsg = postedMessages.find((m: any) => m?.type === 'openWorkspace') as any;
+      expect(openMsg).toBeTruthy();
+      expect(openMsg.cwd).toBe('/repos/myrepo-feat-a');
+      // Parent collapsed: chevron no longer expanded, children gone.
+      expect(document.querySelectorAll('.ws-picker-child').length).toBe(0);
+      const chevron = document.querySelector('.ws-chevron');
+      expect(chevron!.classList.contains('expanded')).toBe(false);
+    });
+
+    it('clicking the expandable row twice toggles open then closed', () => {
+      sendUpdate({ sessions: [makeSession()], foreignWorkspaces: pickerFixture() });
+      const row = () => document.querySelector('.ws-row-expandable') as HTMLElement;
+      row().click();
+      expect(document.querySelectorAll('.ws-picker-child').length).toBeGreaterThan(0);
+      row().click();
+      expect(document.querySelectorAll('.ws-picker-child').length).toBe(0);
+    });
+
+    it('single-worktree foreign rows are NOT expandable and open immediately', () => {
+      sendUpdate({
+        sessions: [makeSession()],
+        foreignWorkspaces: [
+          { workspaceKey: '-ws-x', displayName: 'lone', cwd: '/path/lone', repoRoot: '/path/lone', counts: { done: 1 }, confidence: 'low' },
+        ],
+      });
+      const row = document.querySelector('.ws-foreign-rows .ws-row') as HTMLElement;
+      expect(row.classList.contains('ws-row-expandable')).toBe(false);
+      expect(row.dataset.cwd).toBe('/path/lone');
+      postedMessages = [];
+      row.click();
+      const openMsg = postedMessages.find((m: any) => m?.type === 'openWorkspace') as any;
+      expect(openMsg).toBeTruthy();
+      expect(openMsg.cwd).toBe('/path/lone');
+    });
+
+    it('aggregated row without worktrees array falls back to direct-open (legacy path)', () => {
+      // No worktrees on the foreign workspaces (e.g. foreign manager hasn't
+      // populated yet, or repo dir was removed). Aggregation still happens
+      // via groupForeignWorkspaces, but the row isn't a picker.
+      sendUpdate({
+        sessions: [makeSession()],
+        foreignWorkspaces: [
+          { workspaceKey: '-ws-a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo', counts: { done: 1 }, confidence: 'low' },
+          { workspaceKey: '-ws-b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo', counts: { done: 1 }, confidence: 'low' },
+        ],
+      });
+      const row = document.querySelector('.ws-foreign-rows .ws-row') as HTMLElement;
+      expect(row.classList.contains('ws-row-expandable')).toBe(false);
+      expect(row.dataset.cwd).toBeTruthy();
+    });
+  });
+
+  describe('visibility settings', () => {
+    it('hides foreign workspaces section when show.foreignWorkspaces is false', () => {
+      sendSettings({ show: { foreignWorkspaces: false } });
+      sendUpdate({
+        sessions: [makeSession()],
+        foreignWorkspaces: [
+          { workspaceKey: '-other', displayName: 'Other', cwd: '/other', counts: { running: 1 }, confidence: 'high' },
+        ],
+      });
+      expect(document.querySelector('.ws-foreign-rows')).toBeFalsy();
+    });
+
+    it('hides worktrees pane when show.worktrees is false', () => {
+      sendSettings({ show: { worktrees: false } });
+      sendUpdate({
+        sessions: [makeSession()],
+        worktrees: [
+          { path: '/repo/wt-a', branch: 'main', displayName: 'wt-a', counts: { running: 1 }, confidence: 'high', isCurrent: false, isMain: true },
+        ],
+      });
+      expect(document.querySelector('.ws-worktree-rows')).toBeFalsy();
+    });
+
+    it('hides usage section when show.usage is false', () => {
+      sendSettings({ show: { usage: false } });
+      sendUpdate({
+        sessions: [makeSession()],
+        usage: { loaded: true, apiConnected: true, platformSupported: true, quotaPct5h: 50, resetTime: Date.now() + 3_600_000, lastPoll: Date.now() },
+      });
+      expect(document.querySelector('.usage-section')).toBeFalsy();
+    });
+
+    it('omits subagent rows when show.subagents is false', () => {
+      sendSettings({ show: { subagents: false } });
+      sendUpdate({
+        sessions: [makeSession({
+          subagents: [
+            { parentToolUseId: 't1', description: 'Explore', running: true, waitingOnPermission: false, startedAt: Date.now(), resultPreview: null, toolsCompleted: 1, blocking: true },
+          ],
+        })],
+      });
+      // Subagent containers/items should not be in the DOM
+      expect(document.querySelector('.subagent-section')).toBeFalsy();
+    });
+
+    it('restoring show.foreignWorkspaces re-renders the section on the next update', () => {
+      sendSettings({ show: { foreignWorkspaces: false } });
+      sendUpdate({
+        sessions: [makeSession()],
+        foreignWorkspaces: [{ workspaceKey: '-other', displayName: 'Other', cwd: '/other', counts: { running: 1 }, confidence: 'high' }],
+      });
+      expect(document.querySelector('.ws-foreign-rows')).toBeFalsy();
+
+      sendSettings({ show: { foreignWorkspaces: true } });
+      sendUpdate({
+        sessions: [makeSession()],
+        foreignWorkspaces: [{ workspaceKey: '-other', displayName: 'Other', cwd: '/other', counts: { running: 1 }, confidence: 'high' }],
+      });
+      expect(document.querySelector('.ws-foreign-rows')).toBeTruthy();
+    });
+
+    it('applies maxHeightPx as a CSS custom property; 0 maps to "none"', () => {
+      sendSettings({ foreignWorkspaces: { maxHeightPx: 0 }, worktrees: { maxHeightPx: 500, autoCollapseAfterSeconds: 20 } });
+      const docRootStyle = document.documentElement.style;
+      expect(docRootStyle.getPropertyValue('--serac-foreign-max-height')).toBe('none');
+      expect(docRootStyle.getPropertyValue('--serac-worktrees-max-height')).toBe('500px');
+    });
+
+    it('disabling animations sets transition vars to 0ms', () => {
+      sendSettings({ animations: { enabled: false } });
+      const docRootStyle = document.documentElement.style;
+      expect(docRootStyle.getPropertyValue('--serac-transition-ms')).toBe('0ms');
+      expect(docRootStyle.getPropertyValue('--serac-foreign-slide-ms')).toBe('0ms');
+    });
   });
 });

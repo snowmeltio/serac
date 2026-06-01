@@ -80,6 +80,11 @@
         "command": "agentActivity.disableHooks",
         "title": "Disable Hook Mode",
         "icon": "$(zap)"
+      },
+      {
+        "command": "agentActivity.openSettings",
+        "title": "Open Serac Settings",
+        "icon": "$(settings-gear)"
       }
     ],
     "menus": {
@@ -113,6 +118,11 @@
           "command": "agentActivity.disableHooks",
           "when": "view == agentActivity.panel && serac.hooksEnabled",
           "group": "navigation@4"
+        },
+        {
+          "command": "agentActivity.openSettings",
+          "when": "view == agentActivity.panel",
+          "group": "navigation@5"
         }
       ],
       "commandPalette": [
@@ -138,6 +148,102 @@
           "type": "boolean",
           "default": false,
           "description": "Log every inbound hook event to the 'Serac (Hooks)' output channel. Useful for debugging hook flow when serac.hooks.enabled is on. Off by default — leader-bound and liveness-warning lines log regardless."
+        },
+        "serac.show.foreignWorkspaces": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the \"Other workspaces\" section. When off, the section is hidden and discovery scanning is skipped."
+        },
+        "serac.show.worktrees": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the \"Worktrees\" section. When off, the section is hidden and worktree scanning is skipped."
+        },
+        "serac.show.usage": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the usage / quota section at the bottom of the panel."
+        },
+        "serac.show.subagents": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show subagent rows inside session cards."
+        },
+        "serac.show.teams": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the Agent Teams section (Cornice integration)."
+        },
+        "serac.archive.defaultRange": {
+          "type": "string",
+          "enum": ["1d", "3d", "7d", "30d", "all"],
+          "default": "1d",
+          "description": "Default time range for archived sessions. The bottom pills override this per-session."
+        },
+        "serac.archive.maxDoneShown": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Maximum number of completed (done) items shown in the archive when expanded."
+        },
+        "serac.refresh.intervalSeconds": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 300,
+          "description": "Panel refresh interval in seconds. Lower = more responsive timestamps, higher = lower CPU."
+        },
+        "serac.discovery.ageGateDays": {
+          "type": "number",
+          "default": 7,
+          "minimum": 1,
+          "description": "Ignore foreign workspaces, worktrees, and agent teams whose latest activity is older than this many days."
+        },
+        "serac.foreignWorkspaces.maxHeightPx": {
+          "type": "number",
+          "default": 280,
+          "minimum": 0,
+          "description": "Maximum pixel height of the \"Other workspaces\" pane before it scrolls internally. Rows are ~18px, so 280 ≈ 15 rows. Set to 0 for auto (no cap)."
+        },
+        "serac.worktrees.maxHeightPx": {
+          "type": "number",
+          "default": 280,
+          "minimum": 0,
+          "description": "Maximum pixel height of the \"Worktrees\" pane before it scrolls internally. Rows are ~18px, so 280 ≈ 15 rows. Set to 0 for auto (no cap)."
+        },
+        "serac.worktrees.autoCollapseAfterSeconds": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Auto-collapse the worktree picker after this many seconds of idle."
+        },
+        "serac.usage.showWeekly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the weekly usage row."
+        },
+        "serac.usage.warnAtPercent": {
+          "type": "number",
+          "default": 85,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Tint usage as 'warn' when burn rate reaches this percentage."
+        },
+        "serac.usage.criticalAtPercent": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "description": "Tint usage as 'critical' when burn rate reaches this percentage."
+        },
+        "serac.animations.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable card-slide and FLIP animations. Disable for snappier rendering or to respect reduced-motion preferences."
+        },
+        "serac.cleanup.confirmRequired": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require a second click to confirm the title-bar cleanup action (the arm-then-confirm dance)."
         }
       }
     }

@@ -86,13 +86,46 @@ export const window = {
 };
 
 // --- workspace ---
+/** In-memory config store keyed by full dotted setting key (e.g.
+ *  "serac.show.usage"). Tests use _setConfigValues to seed and
+ *  _resetConfig() to clear between cases. */
+const _configStore: Map<string, unknown> = new Map();
+const _configChangeHandlers: Array<(e: { affectsConfiguration: (s: string) => boolean }) => void> = [];
+
+export function _setConfigValues(values: Record<string, unknown>): void {
+  for (const [k, v] of Object.entries(values)) { _configStore.set(k, v); }
+}
+
+export function _resetConfig(): void {
+  _configStore.clear();
+  _configChangeHandlers.length = 0;
+}
+
+/** Fire a synthetic config-change event with the given affected section(s).
+ *  `sections` are matched against the prefix queried by affectsConfiguration. */
+export function _fireConfigChange(...sections: string[]): void {
+  const event = {
+    affectsConfiguration: (s: string) => sections.some(sec => sec === s || sec.startsWith(s + '.') || s.startsWith(sec + '.')),
+  };
+  for (const handler of _configChangeHandlers) { handler(event); }
+}
+
 export const workspace = {
   workspaceFolders: [{ uri: Uri.file('/test/workspace'), name: 'workspace', index: 0 }],
   openTextDocument: vi.fn().mockResolvedValue({ uri: Uri.file('/test/doc') }),
-  getConfiguration: vi.fn((_section?: string) => ({
-    get: vi.fn(<T,>(_key: string, defaultValue?: T) => defaultValue),
+  getConfiguration: vi.fn((section?: string) => ({
+    get<T>(key: string, defaultValue?: T): T | undefined {
+      const fullKey = section ? `${section}.${key}` : key;
+      return (_configStore.has(fullKey) ? _configStore.get(fullKey) : defaultValue) as T | undefined;
+    },
   })),
-  onDidChangeConfiguration: vi.fn((_cb: (...args: unknown[]) => void) => ({ dispose: vi.fn() })),
+  onDidChangeConfiguration: vi.fn((handler: (e: { affectsConfiguration: (s: string) => boolean }) => void) => {
+    _configChangeHandlers.push(handler);
+    return { dispose: () => {
+      const i = _configChangeHandlers.indexOf(handler);
+      if (i >= 0) { _configChangeHandlers.splice(i, 1); }
+    }};
+  }),
 };
 
 // --- commands ---

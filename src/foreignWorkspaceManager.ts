@@ -12,12 +12,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
-import { resolveRepoRoot } from './gitWorktreeUtil.js';
+import { resolveRepoRoot, discoverWorktrees, type WorktreeInfo } from './gitWorktreeUtil.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
+import { readSettings } from './settings.js';
 
-/** Age gate for foreign workspace tracking */
-const FOREIGN_AGE_GATE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Read the active foreign-workspace age gate from `serac.discovery.ageGateDays`.
+ *  Called at the top of each scan / housekeeping pass so the value is always
+ *  current; reactive to settings changes without restart. */
+function ageGateMs(): number {
+  return readSettings().discovery.ageGateDays * 24 * 60 * 60 * 1000;
+}
 /** Full rescan every Nth poll cycle */
 const FOREIGN_SCAN_INTERVAL = 10;
 /** Confidence ranking for max-confidence aggregation */
@@ -31,6 +36,10 @@ export class ForeignWorkspaceManager {
   private repoRootCache: Map<string, string | null> = new Map();
   /** Cached per-workspace session meta (dismissed/acknowledged), refreshed during scan(). */
   private metaCache: Map<string, Map<string, SessionMeta>> = new Map();
+  /** Enumerated worktrees per repoRoot. Populated alongside repoRootCache and
+   *  refreshed by SessionDiscovery on the same 60s cadence as the local
+   *  worktree set. Drives the inline picker on aggregated rows. */
+  private worktreesByRepoRoot: Map<string, WorktreeInfo[]> = new Map();
   private scanCounter = 0;
   /** Returns the workspace keys that are sibling worktrees of the local repo
    *  and should therefore NOT be tracked here as foreign. Provided by
@@ -61,7 +70,9 @@ export class ForeignWorkspaceManager {
 
   /** Scan all workspace directories for foreign sessions within the age gate. */
   async scan(): Promise<void> {
+    if (!readSettings().show.foreignWorkspaces) { return; }
     const now = Date.now();
+    const ageGate = ageGateMs();
     const siblingKeys = this.getSiblingKeys();
     try {
       const dirs = await fs.promises.readdir(this.projectsDir);
@@ -89,7 +100,7 @@ export class ForeignWorkspaceManager {
             const filePath = path.join(wsPath, file);
             try {
               const fstat = await fs.promises.stat(filePath);
-              if (now - fstat.mtimeMs > FOREIGN_AGE_GATE_MS) { continue; }
+              if (now - fstat.mtimeMs > ageGate) { continue; }
             } catch { continue; }
 
             const manager = new SessionManager(sessionId, filePath, dir);
@@ -103,7 +114,7 @@ export class ForeignWorkspaceManager {
             // records to old sessions, bumping mtime without indicating real
             // activity — without this check, scan() keeps re-adding what poll()
             // evicts, causing the workspace to flicker.
-            if (now - manager.getLastActivity().getTime() > FOREIGN_AGE_GATE_MS) {
+            if (now - manager.getLastActivity().getTime() > ageGate) {
               manager.dispose();
               continue;
             }
@@ -135,6 +146,10 @@ export class ForeignWorkspaceManager {
           this.log.warn(`Failed to resolve repoRoot for ${cwd}:`, err);
         }
       }
+      // Enumerate worktrees for every distinct repoRoot we now track. Reads
+      // only `.git/worktrees/*` dirents — no shell-out. Used for the inline
+      // picker on aggregated rows.
+      await this.refreshWorktreesForKnownRepos();
       // Refresh meta caches for every workspace we now track
       const seenKeys = new Set<string>();
       for (const session of this.sessions.values()) {
@@ -162,6 +177,52 @@ export class ForeignWorkspaceManager {
     this.cwdCache.delete(workspaceKey);
     this.repoRootCache.delete(workspaceKey);
     this.metaCache.delete(workspaceKey);
+    this.pruneWorktreesByRepoRoot();
+  }
+
+  /** Re-enumerate worktrees for every distinct non-null repoRoot we currently
+   *  track. Returns true when the set changed for any repo. Safe to call from
+   *  scan() (after repoRootCache is populated) or from a 60s refresh timer. */
+  async refreshWorktreesForKnownRepos(): Promise<boolean> {
+    const wantedRoots = new Set<string>();
+    for (const root of this.repoRootCache.values()) {
+      if (root) { wantedRoots.add(root); }
+    }
+    let changed = false;
+    for (const root of wantedRoots) {
+      let next: WorktreeInfo[] = [];
+      try {
+        next = await discoverWorktrees(root);
+      } catch (err) {
+        this.log.warn(`discoverWorktrees failed for ${root}:`, err);
+        continue;
+      }
+      const prev = this.worktreesByRepoRoot.get(root);
+      if (!prev || worktreeListChanged(prev, next)) {
+        changed = true;
+      }
+      this.worktreesByRepoRoot.set(root, next);
+    }
+    // Drop entries for repos we no longer track
+    for (const root of [...this.worktreesByRepoRoot.keys()]) {
+      if (!wantedRoots.has(root)) {
+        this.worktreesByRepoRoot.delete(root);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** Drop worktree entries for repoRoots no longer tracked. Called on
+   *  workspace eviction so the cache doesn't leak. */
+  private pruneWorktreesByRepoRoot(): void {
+    const live = new Set<string>();
+    for (const root of this.repoRootCache.values()) {
+      if (root) { live.add(root); }
+    }
+    for (const root of [...this.worktreesByRepoRoot.keys()]) {
+      if (!live.has(root)) { this.worktreesByRepoRoot.delete(root); }
+    }
   }
 
   /** Per-workspace repo root accessor (used by SiblingWorktreeManager to
@@ -198,13 +259,16 @@ export class ForeignWorkspaceManager {
 
   /** Poll active foreign sessions. Evicts entries past the age gate. */
   async poll(): Promise<boolean> {
+    if (!readSettings().show.foreignWorkspaces) { return false; }
     let changed = false;
     const now = Date.now();
+    const ageGate = ageGateMs();
     const siblingKeys = this.getSiblingKeys();
 
     // Evict any sessions that have migrated into the sibling set since the
     // last poll — the sibling manager owns them now.
     if (siblingKeys.size > 0) {
+      let siblingsEvicted = false;
       for (const [compositeId, session] of this.sessions) {
         const key = compositeId.split('/', 1)[0];
         if (siblingKeys.has(key)) {
@@ -214,14 +278,16 @@ export class ForeignWorkspaceManager {
           this.repoRootCache.delete(key);
           this.metaCache.delete(key);
           changed = true;
+          siblingsEvicted = true;
         }
       }
+      if (siblingsEvicted) { this.pruneWorktreesByRepoRoot(); }
     }
 
     for (const [compositeId, session] of this.sessions) {
       const status = session.getStatus();
       if (status !== 'running' && status !== 'waiting') {
-        if (now - session.getLastActivity().getTime() > FOREIGN_AGE_GATE_MS) {
+        if (now - session.getLastActivity().getTime() > ageGate) {
           session.dispose();
           this.sessions.delete(compositeId);
           changed = true;
@@ -297,13 +363,18 @@ export class ForeignWorkspaceManager {
 
     const result: WorkspaceGroup[] = [];
     for (const [key, counts] of groups) {
+      const repoRoot = this.repoRootCache.get(key) ?? null;
+      const worktrees = repoRoot ? this.worktreesByRepoRoot.get(repoRoot) : undefined;
       result.push({
         workspaceKey: key,
         displayName: ForeignWorkspaceManager.workspaceDisplayName(key, this.cwdCache.get(key)),
         cwd: this.cwdCache.get(key) ?? null,
         counts,
         confidence: confidences.get(key) ?? 'low',
-        repoRoot: this.repoRootCache.get(key) ?? null,
+        repoRoot,
+        worktrees: worktrees && worktrees.length > 0
+          ? worktrees.map(w => ({ path: w.path, branch: w.branch, isMain: w.isMain }))
+          : undefined,
       });
     }
     result.sort((a, b) => a.displayName.localeCompare(b.displayName));
@@ -359,6 +430,7 @@ export class ForeignWorkspaceManager {
     this.cwdCache.clear();
     this.repoRootCache.clear();
     this.metaCache.clear();
+    this.worktreesByRepoRoot.clear();
   }
 
   /** Derive a human-readable name from a workspace CWD or sanitised key. */
@@ -376,4 +448,17 @@ export class ForeignWorkspaceManager {
     }
     return segments.slice(-3).join('-') || key;
   }
+}
+
+/** Compare two worktree lists for set equality (order-insensitive, branch-aware).
+ *  Mirrors the helper in sessionDiscovery.ts so foreign worktree refresh can
+ *  detect change without depending on local discovery internals. */
+function worktreeListChanged(a: WorktreeInfo[], b: WorktreeInfo[]): boolean {
+  if (a.length !== b.length) { return true; }
+  const key = (w: WorktreeInfo): string => `${w.path}\0${w.branch ?? ''}`;
+  const aKeys = new Set(a.map(key));
+  for (const w of b) {
+    if (!aKeys.has(key(w))) { return true; }
+  }
+  return false;
 }

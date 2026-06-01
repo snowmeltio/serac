@@ -20,9 +20,13 @@ import type {
   SessionMeta, StatusConfidence, DisplayStatus,
 } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
+import { readSettings } from './settings.js';
 
-/** Age gate: skip manifests older than 7 days */
-const TEAM_AGE_GATE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Read the active team-manifest age gate. Shared with the workspace and
+ *  worktree managers via `serac.discovery.ageGateDays`. */
+function ageGateMs(): number {
+  return readSettings().discovery.ageGateDays * 24 * 60 * 60 * 1000;
+}
 /** Full rescan every Nth poll cycle */
 const TEAM_SCAN_INTERVAL = 10;
 /** Batch size for concurrent session updates (shared FD budget) */
@@ -73,6 +77,7 @@ export class TeamDiscovery {
 
   /** Scan ~/.claude/teams/ for manifests (flat .json files and subdirectory config.json). */
   async scan(): Promise<void> {
+    if (!readSettings().show.teams) { return; }
     const now = Date.now();
     let entries: string[];
     try {
@@ -112,7 +117,7 @@ export class TeamDiscovery {
       }
 
       // Age gate
-      if (now - fstat.mtimeMs > TEAM_AGE_GATE_MS) { continue; }
+      if (now - fstat.mtimeMs > ageGateMs()) { continue; }
 
       // Skip re-parse if mtime unchanged
       seenTeamIds.add(teamId);
@@ -213,6 +218,7 @@ export class TeamDiscovery {
 
   /** Poll active team agents. Returns true if any changed. */
   async poll(): Promise<boolean> {
+    if (!readSettings().show.teams) { return false; }
     let changed = false;
 
     // Partition into active vs dormant

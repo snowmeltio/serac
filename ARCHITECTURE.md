@@ -32,6 +32,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `sessionRepair.ts` | 84 | JSONL metadata repair. Reads tail 64KB, appends `custom-title` record if no metadata exists. |
 | `transcriptRenderer.ts` | 206 | JSONL to markdown converter. Renders user/assistant/system records with tool summaries. |
 | `types.ts` | 244 | All TypeScript interfaces. SessionState, SessionSnapshot, UsageSnapshot, WebviewMessage, JsonlRecord. |
+| `settings.ts` | 130 | Typed accessor and change subscriber for the `serac.*` configuration namespace. Single source of truth for defaults. |
 
 ## Status inference
 
@@ -105,9 +106,10 @@ Subagents are further classified for demotion:
 
 ### Message protocol
 
-**Extension to webview:** Two message types:
-- `update` — all session snapshots, usage data, needs-input count, and workspace path. A 200ms debounce guard prevents double-renders when onChange callbacks and the 5s timestamp refresh timer overlap.
+**Extension to webview:** Three message types:
+- `update` — all session snapshots, usage data, needs-input count, and workspace path. A 200ms debounce guard prevents double-renders when onChange callbacks and the refresh timer overlap.
 - `focusSession` — sets `focusedSessionId` and re-renders with highlight. Used when a new chat is detected after the user clicks "+ New".
+- `settings` — the current `serac.*` configuration snapshot. Posted once on `resolveWebviewView` (before the first `update` so the very first render sees the right visibility / heights) and again whenever `onDidChangeConfiguration` fires. Held separate from `update` because settings change rarely and updates are noisy.
 
 **Webview to extension:** Command messages (focusSession, dismissSession, undismissSession, viewTranscript, newChat, cleanup, copyToClipboard, requestUpdate).
 
@@ -130,6 +132,23 @@ Sessions with no topic and no activity in idle/stale status are silently filtere
 ### Card name display priority
 
 `customTitle` > `title` (from session-meta.json) > `topic` (first user message) > folder name > slug > session ID.
+
+### Foreign workspace worktree picker
+
+When `groupForeignWorkspaces` aggregates 2+ foreign workspaces sharing a `repoRoot`, the synthetic row becomes click-to-expand (chevron, no `data-cwd`). Expanding inlines one child row per worktree of the repo (read from `<repoRoot>/.git/worktrees/*` by `ForeignWorkspaceManager`, refreshed on the same 60s cadence as the local `discoveredWorktrees`). Per-worktree counts come from the pre-aggregation `members` preserved on the synthetic row. Inactive worktrees (no Claude Code activity within `serac.discovery.ageGateDays`) still appear, marked with a quiet "no activity" tag. Picking a worktree posts `openWorkspace` and auto-collapses the parent; an idle expand collapses after `serac.worktrees.autoCollapseAfterSeconds`.
+
+## Configuration
+
+The extension exposes a `serac.*` namespace via `package.json#contributes.configuration`. Reads go through a single typed accessor in `src/settings.ts` — never `vscode.workspace.getConfiguration` directly elsewhere.
+
+- **Reading:** `readSettings(): SeracSettings` returns a complete snapshot, falling back to `DEFAULT_SETTINGS` for any unset key. Defaults match the historical hardcoded constants so an upgrade with no `serac.*` keys behaves identically.
+- **Reactivity:** `onSettingsChanged(cb)` wraps `vscode.workspace.onDidChangeConfiguration` and fires the callback with a fresh snapshot whenever any `serac.*` key changes. `extension.ts` posts a new `settings` message to the webview and (when `serac.refresh.intervalSeconds` changed) rebuilds the refresh timer.
+- **Webview side:** `panel.ts` caches the last received `SettingsMessage` in `currentSettings`. Render functions consult it directly for visibility gates (`show.foreignWorkspaces`, `show.worktrees`, `show.usage`, `show.subagents`, `show.teams`), thresholds (`usage.warnAtPercent`, `usage.criticalAtPercent`), and limits (`archive.maxDoneShown`, `worktrees.autoCollapseAfterSeconds`).
+- **Discovery managers** (`foreignWorkspaceManager`, `siblingWorktreeManager`, `teamDiscovery`) call `readSettings()` at the top of `scan()` / `poll()` to:
+  - Short-circuit when the corresponding `show.*` setting is false (no background work for hidden sections).
+  - Read the consolidated `discovery.ageGateDays` (single source of truth — replaces three previously identical 7-day constants).
+- **CSS reactivity:** Heights and animation timings are CSS custom properties on `:root` (`--serac-foreign-max-height`, `--serac-worktrees-max-height`, `--serac-transition-ms`, `--serac-foreign-slide-ms`), set by `applySettings()` in the webview. A `maxHeightPx` of `0` maps to `none` (no cap). `.card-archive-scroll` has a fixed `min-height: 200px` so cards can never be collapsed by the workspace/worktree panes; `#root` uses `overflow-y: auto` so the whole panel scrolls when the combined content exceeds the viewport.
+- **Per-workspace overrides:** All settings inherit VS Code's standard layering — user settings → workspace settings (`.vscode/settings.json`). Free, no additional plumbing.
 
 ## Session metadata
 

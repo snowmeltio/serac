@@ -13,9 +13,14 @@ import { SessionManager } from './sessionManager.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
+import { readSettings } from './settings.js';
 
-/** Age gate for sibling-worktree session tracking (matches foreign manager). */
-const SIBLING_AGE_GATE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Read the active sibling-worktree age gate. Single source of truth is
+ *  `serac.discovery.ageGateDays`, shared with ForeignWorkspaceManager and
+ *  TeamDiscovery so the three never drift apart. */
+function ageGateMs(): number {
+  return readSettings().discovery.ageGateDays * 24 * 60 * 60 * 1000;
+}
 /** Full rescan every Nth poll cycle. */
 const SIBLING_SCAN_INTERVAL = 10;
 
@@ -80,7 +85,9 @@ export class SiblingWorktreeManager {
    *  and decide whether it's a sibling worktree of the local repo. */
   async scan(): Promise<void> {
     if (this.inert) { return; }
+    if (!readSettings().show.worktrees) { return; }
     const now = Date.now();
+    const ageGate = ageGateMs();
     let dirs: string[];
     try {
       dirs = await fs.promises.readdir(this.projectsDir);
@@ -139,7 +146,7 @@ export class SiblingWorktreeManager {
         const filePath = path.join(wsPath, file);
         try {
           const fstat = await fs.promises.stat(filePath);
-          if (now - fstat.mtimeMs > SIBLING_AGE_GATE_MS) { continue; }
+          if (now - fstat.mtimeMs > ageGate) { continue; }
         } catch { continue; }
 
         const manager = new SessionManager(sessionId, filePath, dir);
@@ -149,7 +156,7 @@ export class SiblingWorktreeManager {
         } catch (err) {
           this.log.warn(`Sibling session update failed (${compositeId}):`, err);
         }
-        if (now - manager.getLastActivity().getTime() > SIBLING_AGE_GATE_MS) {
+        if (now - manager.getLastActivity().getTime() > ageGate) {
           manager.dispose();
           continue;
         }
@@ -166,12 +173,13 @@ export class SiblingWorktreeManager {
     files: string[],
     now: number,
   ): Promise<string | null> {
+    const ageGate = ageGateMs();
     const candidates: { file: string; mtimeMs: number }[] = [];
     for (const file of files) {
       if (!file.endsWith('.jsonl')) { continue; }
       try {
         const stat = await fs.promises.stat(path.join(wsPath, file));
-        if (now - stat.mtimeMs > SIBLING_AGE_GATE_MS) { continue; }
+        if (now - stat.mtimeMs > ageGate) { continue; }
         candidates.push({ file, mtimeMs: stat.mtimeMs });
       } catch { /* skip */ }
     }
@@ -193,13 +201,15 @@ export class SiblingWorktreeManager {
   /** Poll active sibling sessions. Mirrors ForeignWorkspaceManager.poll(). */
   async poll(): Promise<boolean> {
     if (this.inert) { return false; }
+    if (!readSettings().show.worktrees) { return false; }
     let changed = false;
     const now = Date.now();
+    const ageGate = ageGateMs();
 
     for (const [compositeId, session] of this.sessions) {
       const status = session.getStatus();
       if (status !== 'running' && status !== 'waiting') {
-        if (now - session.getLastActivity().getTime() > SIBLING_AGE_GATE_MS) {
+        if (now - session.getLastActivity().getTime() > ageGate) {
           session.dispose();
           this.sessions.delete(compositeId);
           changed = true;

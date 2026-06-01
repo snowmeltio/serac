@@ -189,6 +189,14 @@ export interface GroupableWorkspace {
   worktreeCount?: number;
   /** Tooltip listing every member worktree path (only set on aggregated rows). */
   worktreeMembersLabel?: string;
+  /** Every worktree of this repo as discovered from `.git/worktrees/*`. Drives
+   *  the inline picker shown when an aggregated row is expanded. Includes the
+   *  main checkout and worktrees with no Claude Code activity. */
+  worktrees?: Array<{ path: string; branch: string | null; isMain: boolean }>;
+  /** Original per-worktree workspaces preserved through aggregation. The
+   *  picker matches each `worktrees[i].path` against a member `cwd` to pull
+   *  per-row counts/confidence. Inactive worktrees have no matching member. */
+  members?: GroupableWorkspace[];
 }
 
 function basename(p: string): string {
@@ -265,6 +273,18 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
     // "this repo has N worktrees" fact, not a count of live work.
     const membersLabel = ws.map((m) => tildeAbbrev(m.cwd ?? m.displayName)).join('\n');
     const proto = ws[0];
+    // Worktree array is identical across members of the same repo (all
+    // resolved by the extension from the shared repoRoot). Preserve it on
+    // the synthetic row so the picker has full per-repo data, including
+    // worktrees with no Claude Code activity. Strip nested members/worktrees
+    // from each preserved member so the payload stays flat.
+    const memberRecords = ws.map((m) => {
+      const { members: _members, worktrees: _wts, ...rest } = m as W & {
+        members?: GroupableWorkspace[];
+        worktrees?: Array<{ path: string; branch: string | null; isMain: boolean }>;
+      };
+      return rest as GroupableWorkspace;
+    });
     const synthetic = {
       ...proto,
       workspaceKey: 'repo:' + repoRoot,
@@ -275,6 +295,8 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
       repoRoot,
       worktreeCount: ws.length,
       worktreeMembersLabel: membersLabel,
+      worktrees: proto.worktrees,
+      members: memberRecords,
     } as W;
     aggregated.push(synthetic);
   }
@@ -355,14 +377,19 @@ export function getElapsedPct(resetMs: number | undefined, windowMs: number): nu
   return Math.min(100, Math.max(0, (elapsed / windowMs) * 100));
 }
 
-export function quotaClass(quotaPct: number, elapsedPct: number): string {
+export function quotaClass(
+  quotaPct: number,
+  elapsedPct: number,
+  warnAtPercent = 85,
+  criticalAtPercent = 100,
+): string {
   // Lock to critical at the cap — if you've used the whole quota, the bar
   // shouldn't fade as the reset approaches. You're still capped.
   if (quotaPct >= 100) return 'critical';
   if (!elapsedPct || elapsedPct <= 0) return 'ok';
   const burnRate = (quotaPct / elapsedPct) * 100;
-  if (burnRate >= 100) return 'critical';
-  if (burnRate >= 85) return 'warn';
+  if (burnRate >= criticalAtPercent) return 'critical';
+  if (burnRate >= warnAtPercent) return 'warn';
   if (burnRate >= 60) return 'good';
   return 'ok';
 }

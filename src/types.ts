@@ -220,6 +220,19 @@ export interface WorkspaceGroup {
   worktreeCount?: number;
   /** Tooltip listing member worktree paths (only set on aggregated rows). */
   worktreeMembersLabel?: string;
+  /** Every worktree of this repo as discovered from `.git/worktrees/*`, set on
+   *  rows whose `repoRoot` resolved to a real repo. Drives the inline picker
+   *  shown when the user clicks an aggregated row — entries with no Claude
+   *  Code activity still appear so the picker is a faithful map of the repo.
+   *  Lightweight shape (path/branch/isMain) to avoid leaking node fs types
+   *  into the webview bundle; mirrors WorktreeInfo from gitWorktreeUtil. */
+  worktrees?: Array<{ path: string; branch: string | null; isMain: boolean }>;
+  /** Original per-worktree WorkspaceGroups preserved through aggregation.
+   *  Only set on synthetic rows produced by groupForeignWorkspaces. The picker
+   *  matches each worktree path against a member cwd to look up per-row counts
+   *  and confidence. Inactive worktrees (no Claude Code activity in 7d) have
+   *  no member here — the picker renders them as no-activity rows. */
+  members?: WorkspaceGroup[];
 }
 
 /** A row in the Worktrees pane: one worktree of the current repo. Built in
@@ -316,6 +329,10 @@ export interface TeamSnapshot {
 
 /** Message types sent from extension to webview */
 export type WebviewMessage =
+  | {
+      type: 'settings';
+      settings: import('./settings.js').SeracSettings;
+    }
   | {
       type: 'update';
       sessions: SessionSnapshot[];

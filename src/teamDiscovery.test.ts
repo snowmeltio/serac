@@ -1,4 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Required because TeamDiscovery transitively imports settings.ts → 'vscode'.
+vi.mock('vscode', async () => {
+  const mock = await import('./__mocks__/vscode.js');
+  return { ...mock, default: mock };
+});
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
