@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.9.0 (2026-06-02) — Hook consumption + scratch-session consolidation
+
+The hook overlay added in v1.7.0 stopped being plumbing and started doing work. When hook mode is on, Serac now consumes the full event stream for faster, richer status, while JSONL polling stays the source of truth and the backstop whenever hooks are absent.
+
+### Added
+- **Hook consumption overlay** (hook mode only) — three new event consumers layered over JSONL:
+  - **`Stop` accelerates turn-end.** A session drops to "done" the instant the turn closes rather than waiting out the 5s idle timer. A turn-close guard suppresses the turn's own trailing assistant record so it can't briefly re-open the session to "running" (the done→running→done flicker the red team caught).
+  - **`PreToolUse` / `PostToolUse` enrichment** — cards now carry the live permission mode and the last tool's outcome (name, duration, error/interrupted), sourced only from hooks so arrival order never clobbers the activity line.
+  - **`SessionEnd` / `PreCompact`** — end reason is recorded, and a compacting grace window holds a session at "running" + high confidence right through context compaction (previously it could flicker to low-confidence or "done" mid-compaction).
+- **AskUserQuestion waiting is accelerated via the `PermissionRequest` hook**, ~25ms instead of the 3-6s timer, and labelled correctly. The label keys off the tool: AskUserQuestion reads "Waiting for your response", everything else "Waiting for permission".
+- **`/private/tmp` scratch sessions consolidate** into a single pseudo-repo row instead of scattering one row per throwaway directory.
+
+### Fixed
+- **Stale "Waiting for your response" subtitle now clears** once the question is answered. The card kept the waiting subtitle through the following thinking phase; it now resets to "Processing".
+- **Sibling-worktree sessions are pruned** when their worktree is removed, so a deleted worktree no longer leaves ghost cards in the aggregated counts.
+
+### Performance
+- **Hook forwarder cleanup** — lazy `require('node:net')` on the no-socket fast path and a tighter 250ms socket timeout to cap how long a stalled server can block Claude's tool loop. The "<30ms" target was retired as unachievable (it sits below Node's ~30ms cold-start floor for a spawn-per-event hook); the bench now reports overhead above that floor, which is ≈5ms.
+
+## v1.8.0 (2026-06-01) — Configurable `serac.*` settings + worktree aggregation
+
+### Added
+- **User-configurable `serac.*` settings namespace** — panel section visibility, archive ranges, refresh interval, discovery age gate, pane height caps, usage thresholds, animations, and cleanup-confirmation behaviour are all now settings rather than constants.
+- **Worktree picker** — clicking a foreign-workspace row expands it inline to pick a specific worktree, with per-worktree W/R/D/S counts. Auto-collapses on pick and after 20s idle.
+
+### Changed
+- **Foreign-workspace and worktree aggregation** now show inline counts, so a collapsed multi-worktree row tells you what's happening inside it without expanding.
+
+## v1.7.0 (2026-05-25) — Opt-in hook mode + tracker refactor
+
+Foundation release for hook-based monitoring. Status inference was refactored into composable trackers, and an opt-in hook ingress was added so events can drive status with far lower latency than the timer heuristics, while JSONL polling remains the default and the fallback.
+
+### Added
+- **Hook mode (opt-in, per-workspace)** — a header-bar button toggles it. When enabled, Serac installs project-scoped Claude Code hooks that forward events over a per-workspace Unix socket, collapsing permission-wait detection from the 3-6s timer heuristic to near-instant. A leader election ensures only one VS Code window per workspace owns the socket. With hook mode off, behaviour is identical to v1.6.2.
+
+### Changed
+- **Status inference refactored into single-slice trackers** (cwd, permission-wait, subagent lifecycle, compact boundaries) behind factory seams, with a `HookEventRouter` fan-out primitive and a replay harness. This is the seam the hook overlay plugs into; JSONL-derived behaviour is unchanged.
+- Trimmed `.vscodeignore` so the packaged `.vsix` no longer carries internal dev artefacts.
+
+### Fixed
+- **Double-click throttling** on the cleanup arm→confirm flow and the hook-mode toggle, so an accidental double-click no longer skips the confirmation step or flip-flops the mode.
+
 ## v1.6.2 (2026-05-25) — Archive titles + repo aggregation back + smoother dismiss
 
 ### Fixed
