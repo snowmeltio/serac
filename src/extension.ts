@@ -219,6 +219,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     getWorkflows: () => discovery.getWorkflowSnapshots(),
     getTeams: () => discovery.getTeamSnapshots(),
     getSession: (sessionId: string) => discovery.getSnapshots().find(s => s.sessionId === sessionId),
+    listSubagents: (sessionId: string) => discovery.listSubagentFiles(sessionId),
     resolveAgentFile: (source: DetailSource, containerId: string, groupKey: string, agentId: string) => {
       if (source === 'workflow') { return discovery.getWorkflowAgentFilePath(groupKey, agentId); }
       if (source === 'subagents') { return discovery.getSubagentFilePath(containerId, agentId); }

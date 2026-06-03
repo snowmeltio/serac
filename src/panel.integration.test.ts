@@ -599,13 +599,13 @@ describe('panel.ts integration', () => {
       });
       const chip = document.querySelector('.card-meta .wf-view-chip') as HTMLElement;
       expect(chip).toBeTruthy();
-      expect(chip.textContent).toContain('view workflow');
+      expect(chip.textContent).toContain('workflow');
       expect(chip.querySelector('.wf-arrow')).toBeTruthy();
       expect(chip.classList.contains('detail-chip')).toBe(true);
       expect(chip.dataset.detailSource).toBe('workflow');
       expect(chip.dataset.detailContainer).toBe('wf-sess');
       expect(chip.dataset.detailSession).toBe('wf-sess');
-      expect(chip.getAttribute('aria-label')).toBe('view workflow');
+      expect(chip.getAttribute('aria-label')).toBe('workflow');
     });
 
     it('renders the roll-up bar and phase pills (no full-width view bar)', () => {
@@ -791,7 +791,7 @@ describe('panel.ts integration', () => {
       expect(card.querySelectorAll('.wf-rollup').length).toBe(1);
       expect(card.querySelectorAll('.wf-view-chip').length).toBe(1);
       expect(card.querySelector('.wf-metaline')!.textContent).toContain('+1 earlier');
-      expect(card.querySelector('.wf-view-chip')!.getAttribute('aria-label')).toBe('view workflows');
+      expect(card.querySelector('.wf-view-chip')!.getAttribute('aria-label')).toBe('workflows');
     });
   });
 
@@ -920,7 +920,7 @@ describe('panel.ts integration', () => {
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: subs })] });
       const chip = document.querySelector('.card-meta .detail-chip[data-detail-source="subagents"]') as HTMLElement;
       expect(chip).toBeTruthy();
-      expect(chip.textContent).toContain('view subagents');
+      expect(chip.textContent).toContain('subagents');
       expect(chip.dataset.detailContainer).toBe('sa-sess');
       expect(chip.dataset.detailSession).toBe('sa-sess');
     });
@@ -968,7 +968,7 @@ describe('panel.ts integration', () => {
       sendUpdate({ sessions: [], teams: [makeTeam()] });
       const chip = document.querySelector('.team-orchestrator .detail-chip[data-detail-source="team"]') as HTMLElement;
       expect(chip).toBeTruthy();
-      expect(chip.textContent).toContain('view agent team');
+      expect(chip.textContent).toContain('agent team');
       expect(chip.dataset.detailContainer).toBe('orch-1');
       expect(chip.dataset.detailSession).toBe('orch-1');
     });
@@ -1017,6 +1017,21 @@ describe('panel.ts integration', () => {
         sessions: [makeSession({ sessionId: 'bg-4', status: 'done', backgroundShellCount: 0 })],
       });
       expect(document.querySelector('.bg-shell-badge')).toBeFalsy();
+    });
+  });
+
+  describe('keyboard: native card buttons keep their own activation', () => {
+    it('Enter on a card action button does not steal focus to the card', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'kb-sess' })] });
+      postedMessages = [];
+      const btn = document.querySelector('.transcript-btn') as HTMLElement;
+      expect(btn).toBeTruthy();
+      // The delegated keydown handler must bail on native <button>s rather than
+      // matching the enclosing .card (which would preventDefault the button's own
+      // activation and fire focusSession instead). So: no focusSession posted.
+      btn.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+      btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(postedMessages.filter((m: any) => m.type === 'focusSession').length).toBe(0);
     });
   });
 });

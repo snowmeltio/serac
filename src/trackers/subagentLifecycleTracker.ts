@@ -7,7 +7,8 @@
  * SubagentTailerManager. The lifecycle methods delegate as follows:
  *   - onSpawn               → SubagentTailerManager.startSilenceTimer
  *   - onProgress            → SubagentTailerManager.cancelProgressSilence
- *   - onComplete            → SubagentTailerManager.disposeSubagent
+ *   - onComplete            → SubagentTailerManager.disposeTailerAndTimer (keeps agentId)
+ *   - disposeTailerAndTimer → SubagentTailerManager.disposeTailerAndTimer
  *   - pollDirect            → SubagentTailerManager.poll
  *   - getActiveTailerCount  → SubagentTailerManager.getActiveTailerCount
  *   - disposeAll            → SubagentTailerManager.disposeAll
@@ -42,8 +43,15 @@ export interface SubagentLifecycleTracker {
   /** agent_progress arrived — cancel silence timer and dispose any open
    *  tailer (progress relay is working). */
   onProgress(subagent: SubagentInfo): void;
-  /** Subagent finished — release tailer, silence timer, and agentId. */
+  /** Subagent finished — release tailer and silence timer. agentId is PRESERVED
+   *  so a completed subagent keeps its rich tracked view (result preview, tool
+   *  count) and stays resolvable in the detail-panel drill-in. agentId is only
+   *  cleared on full teardown (disposeAll). */
   onComplete(subagent: SubagentInfo): void;
+  /** Release a single subagent's tailer + silence timer without clearing its
+   *  agentId. Used at session-done to free I/O resources for mid-flight
+   *  subagents while keeping them visible. */
+  disposeTailerAndTimer(subagent: SubagentInfo): void;
   /** Poll all active subagent tailers and return their records grouped by
    *  subagent. Disposes tailers for subagents that are no longer running. */
   pollDirect(subagents: SubagentInfo[]): Promise<SubagentRecordBatch[]>;
@@ -70,7 +78,15 @@ export class JsonlDerivedSubagentLifecycleTracker implements SubagentLifecycleTr
   }
 
   onComplete(subagent: SubagentInfo): void {
-    this.mgr.disposeSubagent(subagent);
+    // Preserve agentId — only release the tailer + silence timer. A completed
+    // subagent must keep its agentId so its rich snapshot (resultPreview,
+    // toolsCompleted) survives and the detail panel can still open its
+    // transcript. agentId is nulled only on disposeAll (session teardown).
+    this.mgr.disposeTailerAndTimer(subagent);
+  }
+
+  disposeTailerAndTimer(subagent: SubagentInfo): void {
+    this.mgr.disposeTailerAndTimer(subagent);
   }
 
   pollDirect(subagents: SubagentInfo[]): Promise<SubagentRecordBatch[]> {
@@ -132,6 +148,7 @@ class HookSubagentLifecycleTracker implements SubagentLifecycleTracker {
   onSpawn(subagent: SubagentInfo): void { this.fallback.onSpawn(subagent); }
   onProgress(subagent: SubagentInfo): void { this.fallback.onProgress(subagent); }
   onComplete(subagent: SubagentInfo): void { this.fallback.onComplete(subagent); }
+  disposeTailerAndTimer(subagent: SubagentInfo): void { this.fallback.disposeTailerAndTimer(subagent); }
   pollDirect(subagents: SubagentInfo[]): Promise<SubagentRecordBatch[]> { return this.fallback.pollDirect(subagents); }
   getActiveTailerCount(): number { return this.fallback.getActiveTailerCount(); }
   disposeAll(subagents: SubagentInfo[]): void { this.fallback.disposeAll(subagents); }

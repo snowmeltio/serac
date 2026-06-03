@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import { randomBytes } from 'crypto';
 import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, FooterSlotPayload, WorktreeRow, DetailSource } from './types.js';
 import type { CompactSettings } from './claudeSettings.js';
@@ -239,6 +240,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       sessions: this.sessions,
       waitingCount: this.waitingCount,
       workspacePath: this.workspacePath,
+      home: os.homedir(),
       usage: this.usage,
       foreignWorkspaces: this.foreignWorkspaces.length > 0 ? this.foreignWorkspaces : undefined,
       foreignWaiting: this.foreignWaiting.length > 0 ? this.foreignWaiting : undefined,

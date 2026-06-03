@@ -329,6 +329,30 @@ describe('TeamDiscovery', () => {
       expect(mockManagers.get('lead-001')!.disposed).toBe(true);
       td.dispose();
     });
+
+    it('evicts a team whose config transitions valid → malformed (gains a version field)', async () => {
+      createJsonl('lead-001', PROJECT_CWD);
+      writeAgentTeamsConfig('drifty', teamConfig({ name: 'drifty', leadSessionId: 'lead-001' }));
+
+      const td = makeDiscovery();
+      await td.scan();
+      expect(td.getTeamSnapshots(emptyMeta())).toHaveLength(1);
+      expect(mockManagers.has('lead-001')).toBe(true);
+
+      // Rewrite into a rejected (legacy version-bearing) shape; bump mtime so the
+      // scan re-reads rather than short-circuiting on an unchanged mtime.
+      const cfgPath = path.join(teamsDir, 'drifty', 'config.json');
+      writeAgentTeamsConfig('drifty', { ...teamConfig({ name: 'drifty', leadSessionId: 'lead-001' }), version: 1 });
+      const later = new Date(Date.now() + 5000);
+      fs.utimesSync(cfgPath, later, later);
+
+      await td.scan();
+      // The stale manifest must be gone — not left rendering a roster and
+      // suppressing the orchestrator's plain card.
+      expect(td.getTeamSnapshots(emptyMeta())).toHaveLength(0);
+      expect(mockManagers.get('lead-001')!.disposed).toBe(true);
+      td.dispose();
+    });
   });
 
   describe('shouldRescan()', () => {

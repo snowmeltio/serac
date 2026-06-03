@@ -58,13 +58,24 @@ describe('JsonlDerivedSubagentLifecycleTracker', () => {
     expect(sub.silenceTimerId).toBeUndefined();
   });
 
-  it('onComplete releases agentId and silence timer', () => {
+  it('onComplete releases the silence timer but PRESERVES agentId', () => {
     const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
     const sub = makeSubagent({ agentId: 'abc' });
     t.onSpawn(sub);
     t.onComplete(sub);
     expect(sub.silenceTimerId).toBeUndefined();
-    expect(sub.agentId).toBeNull();
+    // agentId is kept so a completed subagent stays resolvable in the drill-in;
+    // it is only cleared on disposeAll (session teardown).
+    expect(sub.agentId).toBe('abc');
+  });
+
+  it('disposeTailerAndTimer releases the silence timer but PRESERVES agentId', () => {
+    const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
+    const sub = makeSubagent({ agentId: 'abc' });
+    t.onSpawn(sub);
+    t.disposeTailerAndTimer(sub);
+    expect(sub.silenceTimerId).toBeUndefined();
+    expect(sub.agentId).toBe('abc');
   });
 
   it('getActiveTailerCount starts at 0 and stays 0 with no progress-silent subagents', async () => {
@@ -122,8 +133,10 @@ describe('SubagentLifecycleTracker (hook overlay)', () => {
     t.onSpawn(sub);
     expect(sub.silenceTimerId).toBeDefined();
     router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-xyz', agent_type: 'general-purpose' });
+    // Silence timer cleared proves onComplete fired; agentId is now preserved
+    // (only disposeAll clears it), so a completed subagent stays resolvable.
     expect(sub.silenceTimerId).toBeUndefined();
-    expect(sub.agentId).toBeNull();   // onComplete clears it
+    expect(sub.agentId).toBe('agent-xyz');
   });
 
   it('SubagentStop with no agent_id is ignored', () => {

@@ -53,6 +53,36 @@ body {
   text-transform: none;
 }
 
+/* ── Run switcher (multi-run sessions) ── */
+.wf-runs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+.wf-run-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  white-space: nowrap;
+}
+.wf-run-chip:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
+.wf-run-chip:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
+.wf-run-chip.active {
+  color: var(--vscode-foreground);
+  border-color: var(--sm-blizzard-blue);
+  background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.18));
+  cursor: default;
+}
+.wf-run-chip-label { overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+
 .wf-openconv {
   display: inline-flex;
   gap: 4px;
@@ -130,6 +160,8 @@ body {
 .wf-dot.done { background: var(--sm-teal-bright); }
 .wf-dot.running { background: var(--sm-blizzard-blue); box-shadow: 0 0 3px rgba(var(--sm-blizzard-blue-rgb), 0.6); }
 .wf-dot.waiting { background: var(--vscode-charts-orange, #d9a23a); }
+.wf-dot.failed { background: var(--sm-salmon-red); }
+.wf-dot.incomplete { background: var(--vscode-charts-orange, #d9a23a); }
 
 /* ── Reader ── */
 .wf-reader-head {

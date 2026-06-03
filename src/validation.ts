@@ -72,9 +72,10 @@ export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
     return { type: msg.type, runId: msg.runId } as WebviewCommand;
   }
 
-  // archiveRange needs a numeric rangeMs
+  // archiveRange needs a finite, non-negative rangeMs (rangeMs===0 means "all"
+  // and is later converted to Infinity internally; reject NaN/±Infinity here).
   if (msg.type === 'archiveRange') {
-    if (typeof msg.rangeMs !== 'number' || msg.rangeMs < 0) { return null; }
+    if (typeof msg.rangeMs !== 'number' || !Number.isFinite(msg.rangeMs) || msg.rangeMs < 0) { return null; }
     return { type: 'archiveRange', rangeMs: msg.rangeMs };
   }
 

@@ -127,9 +127,10 @@ describe('Phase 4 spike replay — subagent-hook-2026-05-25.jsonl', () => {
     for (const p of PAYLOADS) {
       router.onHookEvent(SID, String(p.hook_event_name), p);
     }
-    // SubagentStop should have cleared the silence timer and released agentId.
+    // SubagentStop should have cleared the silence timer. agentId is preserved
+    // (only disposeAll clears it) so the completed subagent stays resolvable.
     expect(sub.silenceTimerId).toBeUndefined();
-    expect(sub.agentId).toBeNull();
+    expect(sub.agentId).toBe(AGENT_ID);
   });
 });
 

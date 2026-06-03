@@ -234,6 +234,44 @@ describe('WorkflowDiscovery', () => {
     d.dispose();
   });
 
+  describe('abandoned live run → incomplete (liveness probe)', () => {
+    function writeLiveRun(runId: string): void {
+      const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'liveaaa1' }), 'utf-8');
+    }
+
+    it('marks the run incomplete when the parent session is dead in a clean, active registry', async () => {
+      writeLiveRun('wf_dead-001');
+      const deadProbe = { isActive: () => true, isScanClean: () => true, isSessionLive: () => false };
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log, deadProbe);
+      await d.scan();
+      const snaps = d.getWorkflowSnapshots(emptyMeta());
+      expect(snaps[0].status).toBe('incomplete');
+      expect(d.hasActiveRuns()).toBe(false); // 'incomplete' is not 'running' → poll cadence relaxes
+      d.dispose();
+    });
+
+    it('keeps the run running while the parent session IS live', async () => {
+      writeLiveRun('wf_live-003');
+      const liveProbe = { isActive: () => true, isScanClean: () => true, isSessionLive: (id: string) => id === SID };
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log, liveProbe);
+      await d.scan();
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].status).toBe('running');
+      d.dispose();
+    });
+
+    it('stays running (conservative) when the registry is empty or its scan is degraded', async () => {
+      writeLiveRun('wf_live-004');
+      const idleProbe = { isActive: () => false, isScanClean: () => false, isSessionLive: () => false };
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log, idleProbe);
+      await d.scan();
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].status).toBe('running');
+      d.dispose();
+    });
+  });
+
   it('correlates a live agent to its phase via record-0 prompt, flat-fallback when unmatchable', async () => {
     const runId = 'wf_corr-001';
     const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);

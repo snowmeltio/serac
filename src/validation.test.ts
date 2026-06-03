@@ -93,6 +93,19 @@ describe('parseWebviewCommand', () => {
     expect(parseWebviewCommand({ type: 'cleanup' })).toEqual({ type: 'cleanup' });
   });
 
+  it('parses archiveRange with a finite non-negative rangeMs (0 = "all")', () => {
+    expect(parseWebviewCommand({ type: 'archiveRange', rangeMs: 0 })).toEqual({ type: 'archiveRange', rangeMs: 0 });
+    expect(parseWebviewCommand({ type: 'archiveRange', rangeMs: 86400000 })).toEqual({ type: 'archiveRange', rangeMs: 86400000 });
+  });
+
+  it('rejects archiveRange with NaN, Infinity, negative, or non-number rangeMs', () => {
+    expect(parseWebviewCommand({ type: 'archiveRange', rangeMs: NaN })).toBeNull();
+    expect(parseWebviewCommand({ type: 'archiveRange', rangeMs: Infinity })).toBeNull();
+    expect(parseWebviewCommand({ type: 'archiveRange', rangeMs: -Infinity })).toBeNull();
+    expect(parseWebviewCommand({ type: 'archiveRange', rangeMs: -1 })).toBeNull();
+    expect(parseWebviewCommand({ type: 'archiveRange', rangeMs: '1d' })).toBeNull();
+  });
+
   it('ignores extra fields on valid commands', () => {
     const result = parseWebviewCommand({
       type: 'focusSession',

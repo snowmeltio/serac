@@ -478,6 +478,16 @@ export interface DetailGroupView {
   agents: DetailAgentView[];
 }
 
+/** A selectable workflow run in the detail header's run switcher. Present only
+ *  when a parent session owns more than one workflow run; the panel shows one
+ *  run at a time (the active one) and these chips switch between them. */
+export interface DetailRunChoice {
+  runId: string;
+  label: string;
+  status: string;
+  active: boolean;
+}
+
 /** Normalised detail-panel payload (host → webview). */
 export interface DetailModel {
   source: DetailSource;
@@ -489,6 +499,8 @@ export interface DetailModel {
   chips: string[];
   metrics: string;
   groups: DetailGroupView[];
+  /** Run switcher (workflow source, >1 run only); omitted otherwise. */
+  runs?: DetailRunChoice[];
 }
 
 /** Message types sent from extension to webview */
@@ -502,6 +514,9 @@ export type WebviewMessage =
       sessions: SessionSnapshot[];
       waitingCount: number;
       workspacePath: string;
+      /** Host home directory, so the webview can ~-abbreviate paths (it has no
+       *  process.env). */
+      home?: string;
       usage: UsageSnapshot | null;
       /** Foreign workspace summaries (empty when no other workspaces active) */
       foreignWorkspaces?: WorkspaceGroup[];

@@ -114,6 +114,7 @@ interface Harness {
     getWorkflows: ReturnType<typeof vi.fn>;
     getTeams: ReturnType<typeof vi.fn>;
     getSession: ReturnType<typeof vi.fn>;
+    listSubagents: ReturnType<typeof vi.fn>;
     resolveAgentFile: ReturnType<typeof vi.fn>;
     openConversation: ReturnType<typeof vi.fn>;
   };
@@ -132,6 +133,7 @@ function setup(over: Partial<DetailPanelDeps> = {}): Harness {
     getWorkflows: vi.fn(() => [makeWorkflow()]),
     getTeams: vi.fn(() => [makeTeam()]),
     getSession: vi.fn(() => makeSession()),
+    listSubagents: vi.fn(() => [] as { agentId: string; agentType: string | null; description: string | null }[]),
     resolveAgentFile: vi.fn(() => '/path/agent.jsonl'),
     openConversation: vi.fn(),
   };
@@ -292,6 +294,19 @@ describe('DetailPanel', () => {
       await new Promise(r => setTimeout(r, 0));
       expect(h.deps.resolveAgentFile).not.toHaveBeenCalled();
     });
+
+    it('does not post a transcript to a panel disposed mid-parse', async () => {
+      let resolveParse!: (v: { timestamp: string; role: string; content: string }[]) => void;
+      vi.mocked(parseTranscript).mockReturnValue(new Promise(r => { resolveParse = r; }));
+      const h = setup();
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      await h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
+      // Dispose the panel before the parse resolves, then resolve.
+      h.mockPanel._fireDispose();
+      resolveParse([{ timestamp: 't', role: 'user', content: 'late' }]);
+      await new Promise(r => setTimeout(r, 0));
+      expect(h.posted().find(m => m.type === 'agentTranscript')).toBeUndefined();
+    });
   });
 
   describe('openConversation message', () => {
@@ -307,6 +322,88 @@ describe('DetailPanel', () => {
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'openConversation', sessionId: '../../etc/passwd' });
       expect(h.deps.openConversation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('subagents dir-scan fallback', () => {
+    it('recovers on-disk subagents the tracker never resolved (empty tracked list)', () => {
+      // A session whose subagents never relayed agent_progress: all agentId null.
+      const session = makeSession({
+        subagents: [
+          { parentToolUseId: 't1', agentId: null, description: 'pending a', running: false, waitingOnPermission: false, startedAt: 1000, resultPreview: null, toolsCompleted: 0, blocking: false },
+        ] as any,
+      });
+      const h = setup({
+        getSession: vi.fn(() => session),
+        listSubagents: vi.fn(() => [
+          { agentId: 'd1', agentType: 'general-purpose', description: 'review types' },
+          { agentId: 'd2', agentType: 'Explore', description: null },
+        ]),
+      });
+      h.panel.show('subagents', 'sess-1', 'sess-1');
+      const m = h.lastModel();
+      expect(m.groups[0].agents.map((a: any) => a.agentId)).toEqual(['d1', 'd2']);
+      // label prefers description, then agentType, then a short agentId.
+      expect(m.groups[0].agents[0].label).toBe('review types');
+      expect(m.groups[0].agents[1].label).toBe('Explore');
+      expect(m.groups[0].agents.every((a: any) => a.status === 'done')).toBe(true);
+      expect(m.metrics).toContain('2 subagents');
+    });
+
+    it('unions tracked subagents with disk-only ones, without duplicating', () => {
+      const h = setup({
+        // makeSession default: sa1 (done), sa2 (running), and an agentless entry.
+        listSubagents: vi.fn(() => [
+          { agentId: 'sa1', agentType: 'x', description: 'dup of tracked' }, // already tracked → skip
+          { agentId: 'd9', agentType: null, description: 'disk only' },       // new → appended
+        ]),
+      });
+      h.panel.show('subagents', 'sess-1', 'sess-1');
+      const m = h.lastModel();
+      const ids = m.groups[0].agents.map((a: any) => a.agentId);
+      expect(ids).toEqual(['sa1', 'sa2', 'd9']);
+      // tracked sa1 keeps its rich label, not the disk one.
+      expect(m.groups[0].agents.find((a: any) => a.agentId === 'sa1').label).toBe('explore auth');
+      expect(m.metrics).toContain('3 subagents');
+      expect(m.metrics).toContain('1 running'); // running count from tracked only
+    });
+  });
+
+  describe('multi-run switcher', () => {
+    function twoRuns() {
+      return [
+        makeWorkflow({ runId: 'wf_new', name: 'review', startTime: 5000, status: 'running', source: 'live' }),
+        makeWorkflow({ runId: 'wf_old', name: 'review', startTime: 1000, status: 'completed' }),
+      ];
+    }
+
+    it('shows only the most recent run by default, with a run switcher', () => {
+      const h = setup({ getWorkflows: vi.fn(() => twoRuns()) });
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      const m = h.lastModel();
+      // groups belong to the newest run only (key = wf_new)
+      expect(m.groups.every((g: any) => g.key === 'wf_new')).toBe(true);
+      expect(m.runs).toHaveLength(2);
+      // most-recent-first, ordinal-disambiguated (same name)
+      expect(m.runs[0]).toMatchObject({ runId: 'wf_new', label: 'review #1', active: true });
+      expect(m.runs[1]).toMatchObject({ runId: 'wf_old', label: 'review #2', active: false });
+      expect(m.chips).toContain('live'); // newest run is live
+    });
+
+    it('omits the switcher for a single run', () => {
+      const h = setup(); // default getWorkflows = single run
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      expect(h.lastModel().runs).toBeUndefined();
+    });
+
+    it('selectWorkflowRun switches the visible run', async () => {
+      const h = setup({ getWorkflows: vi.fn(() => twoRuns()) });
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      await h.webview._fireMessage({ type: 'selectWorkflowRun', runId: 'wf_old' });
+      const m = h.lastModel();
+      expect(m.groups.every((g: any) => g.key === 'wf_old')).toBe(true);
+      expect(m.runs.find((r: any) => r.runId === 'wf_old').active).toBe(true);
+      expect(m.chips).toContain('completed');
     });
   });
 

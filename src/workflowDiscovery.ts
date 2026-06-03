@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { SessionMeta, WorkflowAgentSnapshot, WorkflowSnapshot } from './types.js';
+import type { SessionMeta, WorkflowAgentSnapshot, WorkflowRunStatus, WorkflowSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { parseWorkflowSidecar } from './workflowSidecar.js';
 import { extractWorkflowMeta, extractAgentCalls, matchAgentCall, type WorkflowAgentCall } from './workflowScript.js';
@@ -9,6 +9,16 @@ import { isValidSessionId } from './validation.js';
 
 /** Periodic full rescan cadence (every Nth poll cycle) when nothing is live. */
 const WORKFLOW_SCAN_INTERVAL = 10;
+
+/** The slice of ProcessRegistry the live tier needs to confirm a parent session
+ *  has died (so an abandoned run can be downgraded from 'running' to
+ *  'incomplete'). Structural so ProcessRegistry satisfies it without an import,
+ *  and tests can pass a stub. */
+export interface WorkflowLivenessProbe {
+  isActive(): boolean;
+  isScanClean(): boolean;
+  isSessionLive(sessionId: string): boolean;
+}
 
 /** Resolve the active workflow age gate: `serac.discovery.workflowsAgeGateDays`
  *  when set, else the shared `serac.discovery.ageGateDays` base. */
@@ -41,6 +51,9 @@ export class WorkflowDiscovery {
     private readonly projectsDir: string,
     private readonly workspaceKey: string,
     private readonly log: Logger,
+    /** Optional liveness probe. When present and in use, a live run whose parent
+     *  session is confirmed dead is marked 'incomplete' instead of 'running'. */
+    private readonly liveness?: WorkflowLivenessProbe,
   ) {
     this.wsDir = path.join(this.projectsDir, this.workspaceKey);
   }
@@ -316,13 +329,26 @@ export class WorkflowDiscovery {
       // journal not written yet — emit a phase-only scaffold
     }
 
+    // A live run with no sidecar whose parent session is confirmed dead was
+    // killed/abandoned — downgrade it to 'incomplete' (not 'running'), which
+    // drops the fast poll cadence and matches the documented behaviour. Gate
+    // conservatively: only when the registry is in use AND its last scan was
+    // clean, so an absent/degraded registry never false-positives a healthy
+    // long-running workflow. (Run-dir mtime is NOT used — it doesn't advance on
+    // transcript/journal appends, so it would misfire on healthy runs.)
+    const parentDead = !!this.liveness
+      && this.liveness.isActive()
+      && this.liveness.isScanClean()
+      && !this.liveness.isSessionLive(sessionId);
+    const runStatus: WorkflowRunStatus = parentDead ? 'incomplete' : 'running';
+
     return {
       runId,
       sessionId,
       taskId: null,
       name,
       summary: '',
-      status: 'running',
+      status: runStatus,
       source: 'live',
       startTime,
       durationMs: null,

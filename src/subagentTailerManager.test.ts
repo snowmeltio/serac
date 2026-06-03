@@ -273,5 +273,48 @@ describe('SubagentTailerManager', () => {
       expect(silent.tailer).toBeNull();
       expect(mgr.getActiveTailerCount()).toBe(1);
     });
+
+    it('does not re-point a known agentId at another file when its own is missing', async () => {
+      // A resumed subagent knows its agentId, but its own JSONL isn't on disk
+      // yet; an unrelated sibling file IS present and untailed. openTailer must
+      // NOT scan (which would claim the sibling and overwrite the known id).
+      writeAgentFile('agent-sibling.jsonl');
+      const resumed = makeSubagent({ agentId: 'resumed' });
+      const mgr = new SubagentTailerManager({
+        isDisposed: () => false,
+        getSessionFilePath: () => sessionFile,
+        getAllSubagents: () => [resumed],
+      });
+
+      await (mgr as any).openTailer(resumed);
+      expect(resumed.agentId).toBe('resumed'); // NOT overwritten with 'sibling'
+      expect(resumed.tailer).toBeNull();        // no tailer opened this cycle
+      expect(mgr.getActiveTailerCount()).toBe(0);
+    });
+
+    it('never exceeds the tailer cap under concurrent opens (hard cap re-check)', async () => {
+      // MAX_SUBAGENT_TAILERS is 10. Pre-load to one below the cap; then three
+      // known-agentId subagents (own files present) race to attach. Only one
+      // slot is free, so the post-await re-check must keep the total at 10.
+      writeAgentFile('agent-c1.jsonl');
+      writeAgentFile('agent-c2.jsonl');
+      writeAgentFile('agent-c3.jsonl');
+      const s1 = makeSubagent({ agentId: 'c1' });
+      const s2 = makeSubagent({ agentId: 'c2' });
+      const s3 = makeSubagent({ agentId: 'c3' });
+      const mgr = new SubagentTailerManager({
+        isDisposed: () => false,
+        getSessionFilePath: () => sessionFile,
+        getAllSubagents: () => [s1, s2, s3],
+      });
+      (mgr as any).activeTailerCount = 9; // MAX - 1
+
+      await Promise.all([
+        (mgr as any).openTailer(s1),
+        (mgr as any).openTailer(s2),
+        (mgr as any).openTailer(s3),
+      ]);
+      expect(mgr.getActiveTailerCount()).toBeLessThanOrEqual(10);
+    });
   });
 });

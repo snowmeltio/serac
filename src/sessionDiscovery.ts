@@ -54,6 +54,9 @@ export class SessionDiscovery {
   private polling = false;
   /** Serialises fire-and-forget saveMeta() calls to prevent concurrent write races */
   private saveQueue: Promise<void> = Promise.resolve();
+  /** Monotonic counter making each save's tmp path unique, so two overlapping
+   *  saveMeta() writes can never share (and clobber) one tmp file. */
+  private saveSeq = 0;
   /** Concurrency limit for session updates (stays under macOS ulimit -n 256) */
   private static readonly UPDATE_BATCH_SIZE = 50;
   /** Age gate: skip JSONL files older than this during scan [Phase 6] */
@@ -114,9 +117,11 @@ export class SessionDiscovery {
     this.siblingManager = new SiblingWorktreeManager(this.projectsDir, this.workspaceKey, this.log);
     this.foreignManager.setSiblingKeysProvider(() => this.siblingManager.getSiblingKeys());
     this.teamDiscovery = new TeamDiscovery(this.projectsDir, this.workspaceKey, this.log);
-    this.workflowDiscovery = new WorkflowDiscovery(this.projectsDir, this.workspaceKey, this.log);
     // Sessions registry is a sibling of projects/ under the Claude state dir.
+    // Constructed before WorkflowDiscovery so the workflow live tier can use it
+    // as a liveness probe (abandoned-run → 'incomplete').
     this.processRegistry = new ProcessRegistry(path.join(path.dirname(this.projectsDir), 'sessions'), this.log);
+    this.workflowDiscovery = new WorkflowDiscovery(this.projectsDir, this.workspaceKey, this.log, this.processRegistry);
   }
 
   // ── Meta persistence ──────────────────────────────────────────────
@@ -176,7 +181,7 @@ export class SessionDiscovery {
     const file: SessionMetaFile = {
       sessions: Object.fromEntries(this.sessionMeta),
     };
-    const tmpPath = `${this.metaFilePath}.${process.pid}.tmp`;
+    const tmpPath = `${this.metaFilePath}.${process.pid}.${++this.saveSeq}.tmp`;
     await fs.promises.writeFile(tmpPath, JSON.stringify(file, null, 2), 'utf-8');
     await fs.promises.rename(tmpPath, this.metaFilePath);
     // Update mtime so reloadMetaIfChanged() won't re-read our own write [C1]
@@ -187,9 +192,14 @@ export class SessionDiscovery {
     this.metaDirty = false;
   }
 
-  /** Flush pending meta changes if dirty */
+  /** Flush pending meta changes if dirty. Routes through the same serialising
+   *  queue as enqueueSave() so a poll-loop flush can't run a second, un-ordered
+   *  saveMeta() concurrently with an in-flight enqueued save. */
   private async flushMeta(): Promise<void> {
-    if (this.metaDirty) { await this.saveMeta(); }
+    if (this.metaDirty) {
+      this.enqueueSave();
+      await this.saveQueue;
+    }
   }
 
   /** Enqueue a save to prevent concurrent write races [audit fix] */
@@ -684,10 +694,13 @@ export class SessionDiscovery {
     return this.siblingManager.isSessionRunning(sessionId);
   }
 
-  /** Count sessions waiting on user input */
+  /** Count sessions waiting on user input. Dismissed (archived) sessions are
+   *  excluded — they don't render as live cards, so they must not bump the
+   *  sidebar badge (mirrors the dismissed filter in the snapshot builder). */
   getWaitingCount(): number {
     let count = 0;
     for (const session of this.sessions.values()) {
+      if (this.sessionMeta.get(session.getSessionId())?.dismissed) { continue; }
       if (session.getStatus() === 'waiting') { count++; }
     }
     return count;
@@ -764,6 +777,51 @@ export class SessionDiscovery {
     const sessionDir = jsonlPath.replace(/\.jsonl$/, '');
     const file = path.join(sessionDir, 'subagents', `agent-${agentId}.jsonl`);
     return fs.existsSync(file) ? file : null;
+  }
+
+  /** Dir-scan a session's on-disk subagent transcripts. The detail panel's
+   *  subagents source prefers live-tracked subagents (they carry rich progress),
+   *  but Agent-tool subagents that never relay `agent_progress` leave the tracker
+   *  with a null agentId — yet their transcript + meta still land on disk. This
+   *  recovers them: list `subagents/agent-*.jsonl` (the `workflows/` subdir is
+   *  skipped — those agents belong to a workflow run, not this session), reading
+   *  the sibling `agent-*.meta.json` for `agentType`/`description` labels. Sorted
+   *  by mtime so spawn order is stable. */
+  listSubagentFiles(sessionId: string): { agentId: string; agentType: string | null; description: string | null }[] {
+    const jsonlPath = this.getSessionFilePath(sessionId);
+    if (!jsonlPath) { return []; }
+    const subagentsDir = path.join(jsonlPath.replace(/\.jsonl$/, ''), 'subagents');
+    let files: string[];
+    try {
+      files = fs.readdirSync(subagentsDir);
+    } catch {
+      return [];
+    }
+    const out: { agentId: string; agentType: string | null; description: string | null; ts: number }[] = [];
+    for (const f of files) {
+      const match = f.match(/^agent-(.+)\.jsonl$/);
+      if (!match) { continue; }
+      const agentId = match[1];
+      if (!isValidSessionId(agentId)) { continue; }
+      let agentType: string | null = null;
+      let description: string | null = null;
+      try {
+        const metaRaw = fs.readFileSync(path.join(subagentsDir, `agent-${agentId}.meta.json`), 'utf8');
+        const meta = JSON.parse(metaRaw) as { agentType?: unknown; description?: unknown };
+        if (typeof meta.agentType === 'string') { agentType = meta.agentType; }
+        if (typeof meta.description === 'string') { description = meta.description; }
+      } catch {
+        // No meta (or unreadable/malformed) — the row still resolves by agentId.
+      }
+      let ts = Number.MAX_SAFE_INTEGER;
+      try {
+        const stat = fs.statSync(path.join(subagentsDir, f));
+        ts = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+      } catch { /* keep default */ }
+      out.push({ agentId, agentType, description, ts });
+    }
+    out.sort((a, b) => a.ts - b.ts);
+    return out.map(({ agentId, agentType, description }) => ({ agentId, agentType, description }));
   }
 
   // ── Workflow API ──────────────────────────────────────────────────

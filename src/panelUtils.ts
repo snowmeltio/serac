@@ -295,7 +295,6 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
     // Worktree count + tooltip reflect every tracked worktree of the repo,
     // including ones whose sessions are all dismissed — the chip is a stable
     // "this repo has N worktrees" fact, not a count of live work.
-    const membersLabel = ws.map((m) => tildeAbbrev(m.cwd ?? m.displayName)).join('\n');
     const proto = ws[0];
     // Worktree array is identical across members of the same repo (all
     // resolved by the extension from the shared repoRoot). Preserve it on
@@ -310,6 +309,16 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
       return rest as GroupableWorkspace;
     });
     const isPseudo = repoRoot === PSEUDO_TMP_REPO_ROOT;
+    // Prefer the enumerated worktree list (every worktree of the repo, including
+    // ones with no Claude Code activity) so the chip count + tooltip match the
+    // picker rows the row expands to. Fall back to the active-member count for
+    // pseudo (tmp) rows and repos with no enumeration.
+    const protoWts = (proto as W & { worktrees?: Array<{ path: string; branch: string | null; isMain: boolean }> }).worktrees;
+    const enumeratedWts = !isPseudo && Array.isArray(protoWts) && protoWts.length > 0;
+    const worktreeCount = enumeratedWts ? protoWts!.length : ws.length;
+    const membersLabel = enumeratedWts
+      ? protoWts!.map((w) => tildeAbbrev(w.path)).join('\n')
+      : ws.map((m) => tildeAbbrev(m.cwd ?? m.displayName)).join('\n');
     const synthetic = {
       ...proto,
       workspaceKey: 'repo:' + repoRoot,
@@ -320,7 +329,7 @@ export function groupForeignWorkspaces<W extends GroupableWorkspace>(
       counts: sumCounts(ws),
       confidence: aggregateConfidence(ws) ?? proto.confidence,
       repoRoot,
-      worktreeCount: ws.length,
+      worktreeCount,
       worktreeMembersLabel: membersLabel,
       worktrees: isPseudo ? undefined : proto.worktrees,
       members: memberRecords,
@@ -415,7 +424,12 @@ export function quotaClass(
   // shouldn't fade as the reset approaches. You're still capped.
   if (quotaPct >= 100) return 'critical';
   if (!elapsedPct || elapsedPct <= 0) return 'ok';
-  const burnRate = (quotaPct / elapsedPct) * 100;
+  // Early-window floor: pacing ratios are meaningless when almost no time has
+  // elapsed, so don't let a near-empty window amplify trivial usage into red
+  // (the post-reset flash). 5% of the window (~15 min of a 5h window) before
+  // pace colouring kicks in.
+  const effectiveElapsed = Math.max(elapsedPct, 5);
+  const burnRate = (quotaPct / effectiveElapsed) * 100;
   if (burnRate >= criticalAtPercent) return 'critical';
   if (burnRate >= warnAtPercent) return 'warn';
   if (burnRate >= 60) return 'good';

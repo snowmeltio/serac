@@ -581,6 +581,10 @@ export class SessionManager {
       subagent.waitingOnPermission = false;
       this.clearTools(subagent.activeTools);
       subagent.permissionTracker.dispose();
+      // Release any open tailer + pending silence timer for a mid-flight
+      // subagent at turn-end — otherwise activeTailerCount stays stuck and the
+      // silence timer dangles. agentId is preserved so the drill-in still works.
+      this.subagentLifecycle.disposeTailerAndTimer(subagent);
     }
     this.clearSessionTimers();
   }

@@ -75,15 +75,31 @@ function extractBalanced(src: string, openIdx: number, open: string, close: stri
 
 function extractPhases(metaText: string): { title: string; detail?: string }[] {
   const out: { title: string; detail?: string }[] = [];
-  const pm = metaText.match(/phases\s*:\s*\[/);
-  if (!pm || pm.index === undefined) { return out; }
-  const arrStart = pm.index + pm[0].length - 1; // at the [
+  // Locate `phases: [` only OUTSIDE string literals — a literal `phases: [`
+  // written inside the name/description value must not steal the match (a naive
+  // /phases\s*:\s*\[/ scan would). Walk the text tracking string state.
+  let arrStart = -1;
+  const phaseRe = /phases\s*:\s*\[/y;
+  let inStr: string | null = null;
+  for (let i = 0; i < metaText.length; i++) {
+    const c = metaText[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === inStr) { inStr = null; }
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { inStr = c; continue; }
+    phaseRe.lastIndex = i;
+    const m = phaseRe.exec(metaText);
+    if (m && m.index === i) { arrStart = i + m[0].length - 1; break; } // at the [
+  }
+  if (arrStart < 0) { return out; }
   const arrText = extractBalanced(metaText, arrStart, '[', ']');
   if (!arrText) { return out; }
   // Walk top-level {...} object slices, treating quoted strings as opaque (via
   // extractBalanced) so a brace *inside* a title/detail string can't truncate
   // the object — a naive /\{[^}]*\}/ scan would stop at the first '}' char.
-  let inStr: string | null = null;
+  inStr = null;
   for (let i = 0; i < arrText.length; i++) {
     const c = arrText[i];
     if (inStr) {
@@ -177,6 +193,28 @@ function promptSegments(literal: string): string[] {
     .sort((a, b) => b.length - a.length);
 }
 
+/** Mark every source index that lies inside a single/double/backtick string
+ *  literal (delimiters included), using the same opaque-string walk as
+ *  extractBalanced. Used to reject `agent(` matches embedded in prompt prose.
+ *  Note: a `${ ... }` interpolation is treated as still-in-string here, so an
+ *  agent() written inside an interpolation is (rarely) skipped — an accepted
+ *  heuristic limitation, consistent with extractStringLiteral's backtick note. */
+function buildStringMask(src: string): boolean[] {
+  const inString = new Array<boolean>(src.length).fill(false);
+  let inStr: string | null = null;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (inStr) {
+      inString[i] = true;
+      if (c === '\\') { if (i + 1 < src.length) { inString[i + 1] = true; } i++; continue; }
+      if (c === inStr) { inStr = null; }
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { inStr = c; inString[i] = true; }
+  }
+  return inString;
+}
+
 /**
  * Extract every `agent(prompt, { label, phase, ... })` call site statically.
  * Used by the live tier to map a running agent's record-0 prompt back to the
@@ -185,9 +223,11 @@ function promptSegments(literal: string): string[] {
  */
 export function extractAgentCalls(source: string): WorkflowAgentCall[] {
   const calls: WorkflowAgentCall[] = [];
+  const inString = buildStringMask(source);
   const re = /\bagent\s*\(/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(source)) !== null) {
+    if (inString[m.index]) { continue; } // phantom `agent(` inside a string/template literal
     const parenIdx = m.index + m[0].length - 1; // at '('
     const argList = extractBalanced(source, parenIdx, '(', ')');
     if (!argList) { continue; }

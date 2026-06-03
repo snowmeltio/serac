@@ -26,6 +26,13 @@ interface DetailGroupView {
   agents: DetailAgentView[];
 }
 
+interface DetailRunChoice {
+  runId: string;
+  label: string;
+  status: string;
+  active: boolean;
+}
+
 interface DetailModel {
   source: string;
   containerId: string;
@@ -34,6 +41,7 @@ interface DetailModel {
   chips: string[];
   metrics: string;
   groups: DetailGroupView[];
+  runs?: DetailRunChoice[];
 }
 
 interface TranscriptEntry { timestamp: string; role: string; content: string }
@@ -84,8 +92,16 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   function findAgent(groupKey: string | null, agentId: string | null): DetailAgentView | undefined {
     if (!model || groupKey === null || agentId === null) { return undefined; }
-    const g = model.groups.find(gr => gr.key === groupKey);
-    return g?.agents.find(a => a.agentId === agentId);
+    // A workflow's phase groups all share one key (the runId), so several groups
+    // can match `groupKey`. Search every matching group — not just the first —
+    // or agents in phases after the first become unselectable (the reader stays
+    // on the empty "select an agent" state). agentId is unique within a run.
+    for (const g of model.groups) {
+      if (g.key !== groupKey) { continue; }
+      const a = g.agents.find(ag => ag.agentId === agentId);
+      if (a) { return a; }
+    }
+    return undefined;
   }
 
   function firstAgent(): { groupKey: string; agentId: string } | null {
@@ -218,16 +234,56 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + '</div>';
   }
 
+  /** Header run switcher — shown only when the session owns several workflow
+   *  runs. Clicking a chip asks the host to re-render for that run. */
+  function renderRunSwitcher(): string {
+    if (!model || !model.runs || model.runs.length < 2) { return ''; }
+    let html = '<div class="wf-runs">';
+    for (const r of model.runs) {
+      // Run status is WorkflowRunStatus (completed|running|failed|incomplete) —
+      // map each to a dot class so a failed run is visually distinct rather than
+      // a neutral grey blob.
+      const dot = r.status === 'completed' ? 'done'
+        : r.status === 'running' ? 'running'
+        : r.status === 'failed' ? 'failed'
+        : r.status === 'incomplete' ? 'incomplete' : '';
+      html += '<span class="wf-run-chip' + (r.active ? ' active' : '') + '"'
+        + ' data-run="' + escapeHtml(r.runId) + '" role="button" tabindex="0"'
+        + ' title="' + escapeHtml(r.label) + ' · ' + escapeHtml(r.status) + '">'
+        + '<span class="wf-dot ' + dot + '"></span>'
+        + '<span class="wf-run-chip-label">' + escapeHtml(r.label) + '</span></span>';
+    }
+    html += '</div>';
+    return html;
+  }
+
   function render(): void {
+    // Re-render replaces the whole tree via innerHTML, which resets the scroll
+    // of the two independently-scrollable panes. On a live run the host re-posts
+    // the model whenever an agent's status flips, so without this a user reading
+    // a transcript gets snapped back to the top each tick. Capture and restore.
+    const prevReader = root.querySelector('.wf-reader') as HTMLElement | null;
+    const prevNav = root.querySelector('.wf-nav') as HTMLElement | null;
+    const readerTop = prevReader ? prevReader.scrollTop : 0;
+    const navTop = prevNav ? prevNav.scrollTop : 0;
     if (!model || model.groups.every(g => g.agents.length === 0)) {
-      root.innerHTML = '<div class="wf-empty">No agents to show for this view.</div>';
+      // Keep the run switcher visible even when the selected run has no agents,
+      // so the user can switch to a run that does.
+      const switcher = model ? renderRunSwitcher() : '';
+      root.innerHTML = renderHeader() + switcher
+        + '<div class="wf-empty">No agents to show for this view.</div>';
       return;
     }
     root.innerHTML = renderHeader()
+      + renderRunSwitcher()
       + '<div class="wf-2pane">'
       + '<div class="wf-nav">' + renderNav() + '</div>'
       + '<div class="wf-reader">' + renderReader() + '</div>'
       + '</div>';
+    const newReader = root.querySelector('.wf-reader') as HTMLElement | null;
+    const newNav = root.querySelector('.wf-nav') as HTMLElement | null;
+    if (newReader && readerTop) { newReader.scrollTop = readerTop; }
+    if (newNav && navTop) { newNav.scrollTop = navTop; }
   }
 
   // ── Events ─────────────────────────────────────────────────────────
@@ -239,6 +295,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
       selectAgent(navRow.dataset.group!, navRow.dataset.agent!);
       return;
     }
+    const runChip = target.closest<HTMLElement>('.wf-run-chip');
+    if (runChip) {
+      if (!runChip.classList.contains('active')) {
+        vscode.postMessage({ type: 'selectWorkflowRun', runId: runChip.dataset.run! });
+      }
+      return;
+    }
     if (target.closest('.wf-openconv')) {
       if (model) { vscode.postMessage({ type: 'openConversation', sessionId: model.sessionId }); }
       return;
@@ -248,9 +311,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
   root.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key !== 'Enter' && e.key !== ' ') { return; }
     const target = e.target as HTMLElement;
-    if (target.closest('.wf-nav-row') || target.closest('.wf-openconv')) {
+    const activatable = target.closest('.wf-nav-row, .wf-openconv, .wf-run-chip');
+    if (activatable) {
       e.preventDefault();
-      (target.closest('.wf-nav-row, .wf-openconv') as HTMLElement).click();
+      (activatable as HTMLElement).click();
     }
   });
 

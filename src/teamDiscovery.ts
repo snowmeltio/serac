@@ -146,6 +146,13 @@ export class TeamDiscovery {
       const manifest = parseAgentTeamsConfig(content, entry);
       if (!manifest) {
         this.log.warn(`[teams] Skipping malformed manifest: ${entry}`);
+        // A previously-valid config that became malformed must not keep its
+        // stale manifest — it would keep rendering a roster and suppressing the
+        // orchestrator's plain session card. Evict it (removeTeam also clears
+        // manifestMtimes so the next scan re-reads rather than short-circuiting).
+        // teamId stays in seenTeamIds (line above), so the end-of-scan prune
+        // won't double-handle it.
+        if (this.manifests.has(teamId)) { this.removeTeam(teamId); }
         continue;
       }
 

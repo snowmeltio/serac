@@ -146,10 +146,17 @@ export class SubagentTailerManager {
       const subagentFile = path.join(subagentsDir, `agent-${subagent.agentId}.jsonl`);
       try {
         await fs.promises.access(subagentFile);
+        // Re-check the cap after the await: concurrent silence-fires can each
+        // pass the pre-await guard, so the count must be re-tested adjacent to
+        // the increment or it can exceed MAX_SUBAGENT_TAILERS.
+        if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
         subagent.tailer = new JsonlTailer(subagentFile);
         this.activeTailerCount++;
       } catch {
-        await this.scanForFile(subagent, subagentsDir, siblings);
+        // Known agentId but its file isn't on disk yet. Do NOT scan —
+        // scanForFile would claim an arbitrary unmatched file and overwrite the
+        // known agentId, mispairing this subagent with another's transcript.
+        // The file appears at its known path and is picked up on a later cycle.
       }
     } else {
       await this.scanForFile(subagent, subagentsDir, siblings);
@@ -205,11 +212,16 @@ export class SubagentTailerManager {
       stats.sort((a, b) => a.ts - b.ts);
       const chosen = stats[0].name;
 
+      // Re-check the cap after the awaits above (readdir/stat): concurrent
+      // silence-fires can each pass the pre-await guard in openTailer.
+      if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
       const filePath = path.join(subagentsDir, chosen);
       subagent.tailer = new JsonlTailer(filePath);
       this.activeTailerCount++;
       const match = chosen.match(/^agent-(.+)\.jsonl$/);
-      if (match) { subagent.agentId = match[1]; }
+      // Only adopt the scanned file's id when we don't already have one — a
+      // known agentId must never be overwritten by a directory guess.
+      if (match && !subagent.agentId) { subagent.agentId = match[1]; }
     } catch {
       // Directory doesn't exist or isn't readable
     }

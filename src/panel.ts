@@ -241,6 +241,7 @@ const RANGE_MS: Record<string, number> = {
   }
   let workspacePath = '';
   let workspaceKey = '';
+  let homeDir = ''; // host home dir for ~-abbreviation (webview has no process.env)
   let focusedSessionId: string | null = null;
   let lastSessions: PanelSession[] | null = null;
   let lastNeedsInputCount = 0;
@@ -563,6 +564,11 @@ const RANGE_MS: Record<string, number> = {
   root.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     const target = e.target as HTMLElement;
+    // Native <button>s (transcript, dismiss, team-dismiss) activate themselves on
+    // Enter/Space and fire a real click the delegate routes. Bail out before the
+    // generic .card catch below, which would otherwise preventDefault and steal
+    // the activation — focusing the card instead of running the button's action.
+    if (target.closest('button')) { return; }
     const detailChip = target.closest<HTMLElement>('.detail-chip');
     if (detailChip) {
       e.preventDefault();
@@ -574,6 +580,27 @@ const RANGE_MS: Record<string, number> = {
     if (wfDismiss) {
       e.preventDefault();
       wfDismiss.click();
+      return;
+    }
+    // Companion footer slots — role=button rows, need Enter/Space wiring
+    const footerSlot = target.closest<HTMLElement>('.usage-slot-row[data-slot-id]');
+    if (footerSlot && footerSlot.classList.contains('clickable')) {
+      e.preventDefault();
+      footerSlot.click();
+      return;
+    }
+    // Subagent / team expand toggles — role=button spans/divs nested in the card,
+    // so they must be matched before the generic .card branch swallows them.
+    const toggleSess = target.closest<HTMLElement>('[data-toggle-session]');
+    if (toggleSess) {
+      e.preventDefault();
+      toggleSess.click();
+      return;
+    }
+    const toggleTeam = target.closest<HTMLElement>('[data-toggle-team]');
+    if (toggleTeam) {
+      e.preventDefault();
+      toggleTeam.click();
       return;
     }
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
@@ -640,6 +667,7 @@ const RANGE_MS: Record<string, number> = {
         compactSettings = message.compactSettings ?? null;
         lastOlderSessionCount = message.olderSessionCount ?? 0;
         lastWorktrees = message.worktrees ?? [];
+        homeDir = message.home ?? '';
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         render(sessions, message.waitingCount, message.workspacePath);
       } else if (message.type === 'focusSession') {
@@ -960,7 +988,9 @@ const RANGE_MS: Record<string, number> = {
       el.className = 'card ' + s.status + (isFocused ? ' focused' : '') + (isNew ? ' card-enter' : '');
       el.setAttribute('role', 'listitem');
       el.setAttribute('tabindex', '0');
-      el.setAttribute('aria-label', escapeHtml(stripMarkdown(getDisplayName(s))) + ' \u2014 ' + s.status);
+      // setAttribute takes a plain DOM string \u2014 do NOT HTML-escape, or a screen
+      // reader announces literal entities ("A&amp;B"). s.status is a fixed enum.
+      el.setAttribute('aria-label', stripMarkdown(getDisplayName(s)) + ' \u2014 ' + s.status);
       el.dataset.confidence = s.confidence || 'high';
       el.innerHTML = renderCardInner(s, now, isFocused);
 
@@ -1260,7 +1290,8 @@ const RANGE_MS: Record<string, number> = {
       subagentHtml += '<div class="subagent-summary">'
         + s.subagents.length + ' subagent' + (s.subagents.length > 1 ? 's' : '') + ': ' + summaryParts.join(', ');
       if (shouldCompact && isFocused && doneCount > 0) {
-        subagentHtml += ' <span class="subagent-toggle" data-toggle-session="' + escapeHtml(s.sessionId) + '">'
+        subagentHtml += ' <span class="subagent-toggle" role="button" tabindex="0"'
+          + ' aria-label="Toggle done subagents" data-toggle-session="' + escapeHtml(s.sessionId) + '">'
           + (isExpanded ? '▾ collapse' : '▸ show done') + '</span>';
       }
       subagentHtml += '</div>';
@@ -1289,10 +1320,10 @@ const RANGE_MS: Record<string, number> = {
     const bgShells = s.backgroundShellCount ?? 0;
     if (bgShells > 0) {
       const bgLabel = bgShells + ' shell' + (bgShells === 1 ? '' : 's') + ' running';
-      metaHtml += '<span class="bg-shell-badge" title="Background shells launched with run_in_background still running">⚙ ' + bgLabel + '</span>';
+      metaHtml += '<span class="bg-shell-badge" title="Background shells launched with run_in_background still running">' + bgLabel + '</span>';
     }
     if (wfs && wfs.length > 0) {
-      const wfLabel = wfs.length > 1 ? 'view workflows' : 'view workflow';
+      const wfLabel = wfs.length > 1 ? 'workflows' : 'workflow';
       metaHtml += renderDetailChip(wfLabel, 'workflow', s.sessionId, s.sessionId);
     }
     // "view subagents" chip — opens the same detail panel keyed to this
@@ -1300,7 +1331,7 @@ const RANGE_MS: Record<string, number> = {
     // the same subagent-visibility setting but not the status/focus gate, so a
     // finished session still offers the drill-in.
     if (hasSubagents && currentSettings.show.subagents) {
-      metaHtml += renderDetailChip('view subagents', 'subagents', s.sessionId, s.sessionId);
+      metaHtml += renderDetailChip('subagents', 'subagents', s.sessionId, s.sessionId);
     }
     metaHtml += actionsHtml;
     metaHtml += '</div>';
@@ -1529,8 +1560,9 @@ const RANGE_MS: Record<string, number> = {
 
   /** Abbreviate a path by replacing $HOME with ~. */
   function tildeAbbrev(p: string): string {
-    const home = typeof process !== 'undefined' && process.env?.HOME;
-    if (home && p.startsWith(home)) { return '~' + p.slice(home.length); }
+    // homeDir is injected by the host 'update' message — the webview runs in the
+    // browser and has no process.env, so reading process.env.HOME never worked.
+    if (homeDir && p.startsWith(homeDir)) { return '~' + p.slice(homeDir.length); }
     return p;
   }
 
@@ -1844,7 +1876,9 @@ const RANGE_MS: Record<string, number> = {
       if (running > 0) summaryParts.push('<span class="running-count">' + running + ' running</span>');
       if (done > 0) summaryParts.push('<span>' + done + ' done</span>');
 
-      html += '<div class="team-agent-summary" data-toggle-team="' + escapeHtml(team.teamId) + '">'
+      html += '<div class="team-agent-summary" role="button" tabindex="0"'
+        + ' aria-expanded="' + (isExpanded ? 'true' : 'false') + '"'
+        + ' data-toggle-team="' + escapeHtml(team.teamId) + '">'
         + '<span class="team-chevron' + (isExpanded ? ' expanded' : '') + '">&#x25B8;</span>'
         + team.agents.length + ' agent' + (team.agents.length > 1 ? 's' : '') + ': '
         + summaryParts.join(', ')
@@ -1886,7 +1920,7 @@ const RANGE_MS: Record<string, number> = {
     }
     metaHtml += '<span class="team-badge">orchestrator</span>';
     if (team.agents.length > 0) {
-      metaHtml += renderDetailChip('view agent team', 'team', team.teamId, o.sessionId);
+      metaHtml += renderDetailChip('agent team', 'team', team.teamId, o.sessionId);
     }
 
     const teamLive = team.agents.some(a => a.status === 'running' || a.status === 'waiting')

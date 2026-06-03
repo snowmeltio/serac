@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
 import type {
-  DetailAgentView, DetailGroupView, DetailModel, DetailSource,
+  DetailAgentView, DetailGroupView, DetailModel, DetailRunChoice, DetailSource,
   SessionSnapshot, TeamSnapshot, WorkflowSnapshot,
 } from './types.js';
 import { parseTranscript } from './transcriptRenderer.js';
@@ -26,6 +26,10 @@ export interface DetailPanelDeps {
   getTeams: () => TeamSnapshot[];
   /** Resolve a session snapshot by id (for the subagents source). */
   getSession: (sessionId: string) => SessionSnapshot | undefined;
+  /** List a session's subagent transcripts on disk (`subagents/agent-*.jsonl`).
+   *  Fallback for the subagents source when live tracking never resolved an
+   *  agentId (e.g. Agent-tool subagents that don't relay `agent_progress`). */
+  listSubagents: (sessionId: string) => { agentId: string; agentType: string | null; description: string | null }[];
   /** Resolve an agent's transcript JSONL for a source, or null. */
   resolveAgentFile: (source: DetailSource, containerId: string, groupKey: string, agentId: string) => string | null;
   /** Open the invoking conversation for a session (companion editor). */
@@ -37,6 +41,10 @@ export class DetailPanel {
   private source: DetailSource = 'workflow';
   private containerId: string | null = null;
   private sessionId: string | null = null;
+  /** Which workflow run the panel is showing when a session owns several. Reset
+   *  on every show() so a fresh drill-in defaults to the most recent run; the
+   *  header run switcher updates it. Ignored by the team/subagents sources. */
+  private selectedRunId: string | null = null;
   /** JSON of the last render payload pushed; lets the periodic refresh() tick
    *  skip re-posting when nothing changed (a full re-render resets reader scroll
    *  + focus, jarring on an idle panel). */
@@ -52,6 +60,8 @@ export class DetailPanel {
     this.source = source;
     this.containerId = containerId;
     this.sessionId = sessionId;
+    this.selectedRunId = null; // fresh drill-in → default to the most recent run
+
     if (!this.panel) {
       this.panel = vscode.window.createWebviewPanel(
         'seracDetail',
@@ -72,7 +82,12 @@ export class DetailPanel {
         this.lastPushed = null;
       });
     } else {
-      this.panel.reveal(vscode.ViewColumn.Beside);
+      // Reveal in the panel's CURRENT column, not Beside. `Beside` recomputes
+      // relative to the active editor, so if the user is focused on the
+      // conversation (left), revealing Beside spawns/relocates a new pane
+      // instead of surfacing the existing one. Passing the live viewColumn
+      // keeps the panel where it already is.
+      this.panel.reveal(this.panel.viewColumn);
     }
     // Opening/revealing must always render (the user just asked for it).
     this.postRender(true);
@@ -111,45 +126,65 @@ export class DetailPanel {
   }
 
   private buildWorkflowModel(sessionId: string, invokingSessionId: string): DetailModel {
-    const runs = this.deps.getWorkflows().filter(w => w.sessionId === sessionId);
-    const lead = runs[0];
+    // Most-recent-first so a fresh drill-in defaults to the run the user just
+    // kicked off, and the switcher reads newest → oldest.
+    const runs = this.deps.getWorkflows()
+      .filter(w => w.sessionId === sessionId)
+      .sort((a, b) => b.startTime - a.startTime);
     const multi = runs.length > 1;
+    // Show ONE run at a time: the selected one, else the most recent. Earlier
+    // runs are reachable through the header switcher. (Concatenating every run's
+    // phases buried the current run under earlier-run noise and made phase
+    // headers ambiguous.)
+    const selected = runs.find(r => r.runId === this.selectedRunId) ?? runs[0];
     const groups: DetailGroupView[] = [];
-    for (const run of runs) {
+    if (selected) {
       const seen = new Set<string>();
-      const prefix = multi ? run.name + ' · ' : '';
-      for (const ph of run.phases) {
-        const inPhase = run.agents.filter(a => a.phaseIndex === ph.index);
+      for (const ph of selected.phases) {
+        const inPhase = selected.agents.filter(a => a.phaseIndex === ph.index);
         inPhase.forEach(a => seen.add(a.agentId));
         groups.push({
-          key: run.runId,
-          title: prefix + 'Phase ' + ph.index + ' · ' + ph.title,
-          status: run.status,
+          key: selected.runId,
+          title: 'Phase ' + ph.index + ' · ' + ph.title,
+          status: selected.status,
           agents: inPhase.map(a => this.workflowAgentView(a)),
         });
       }
-      const ungrouped = run.agents.filter(a => !seen.has(a.agentId));
+      const ungrouped = selected.agents.filter(a => !seen.has(a.agentId));
       if (ungrouped.length > 0) {
-        // With phases present, ungrouped agents get an "Other" header; with no
-        // phases at all it's a flat list (null title) unless we need the run name.
-        const title = run.phases.length > 0 ? prefix + 'Other' : (multi ? prefix + 'Agents' : null);
-        groups.push({ key: run.runId, title, status: run.status, agents: ungrouped.map(a => this.workflowAgentView(a)) });
+        const title = selected.phases.length > 0 ? 'Other' : null;
+        groups.push({ key: selected.runId, title, status: selected.status, agents: ungrouped.map(a => this.workflowAgentView(a)) });
       }
     }
-    const metricsBits = lead
-      ? [lead.agentCount + ' agents', fmtTokens(lead.totalTokens) + ' tokens', lead.totalToolCalls + ' tools']
+    const metricsBits = selected
+      ? [selected.agentCount + ' agents', fmtTokens(selected.totalTokens) + ' tokens', selected.totalToolCalls + ' tools']
       : [];
-    if (lead?.durationMs) { const d = fmtDuration(lead.durationMs); if (d) { metricsBits.push(d); } }
-    if (multi) { metricsBits.push('+' + (runs.length - 1) + ' earlier'); }
+    if (selected?.durationMs) { const d = fmtDuration(selected.durationMs); if (d) { metricsBits.push(d); } }
     return {
       source: 'workflow',
       containerId: sessionId,
       sessionId: invokingSessionId,
-      title: lead?.name ?? 'Workflow',
-      chips: lead ? [lead.source === 'live' ? 'live' : 'workflow', lead.status] : ['workflow'],
+      title: selected?.name ?? 'Workflow',
+      chips: selected ? [selected.source === 'live' ? 'live' : 'workflow', selected.status] : ['workflow'],
       metrics: metricsBits.join(' · '),
       groups,
+      runs: multi ? this.buildRunChoices(runs, selected) : undefined,
     };
+  }
+
+  /** Build the header run-switcher entries. Runs are already most-recent-first.
+   *  When several share a workflow name they get a recency ordinal (#1 = newest)
+   *  so the chips stay distinguishable. */
+  private buildRunChoices(runs: WorkflowSnapshot[], selected: WorkflowSnapshot | undefined): DetailRunChoice[] {
+    const nameTotals = new Map<string, number>();
+    for (const r of runs) { nameTotals.set(r.name, (nameTotals.get(r.name) ?? 0) + 1); }
+    const nameSeen = new Map<string, number>();
+    return runs.map(r => {
+      const n = (nameSeen.get(r.name) ?? 0) + 1;
+      nameSeen.set(r.name, n);
+      const label = (nameTotals.get(r.name) ?? 0) > 1 ? r.name + ' #' + n : r.name;
+      return { runId: r.runId, label, status: r.status, active: r.runId === selected?.runId };
+    });
   }
 
   private workflowAgentView(a: WorkflowSnapshot['agents'][number]): DetailAgentView {
@@ -170,9 +205,39 @@ export class DetailPanel {
 
   private buildSubagentsModel(sessionId: string, invokingSessionId: string): DetailModel {
     const session = this.deps.getSession(sessionId);
-    const subs = (session?.subagents ?? []).filter(s => s.agentId);
-    const running = subs.filter(s => s.running).length;
-    const metricsBits = [subs.length + ' subagent' + (subs.length === 1 ? '' : 's')];
+    // Live-tracked subagents carry rich progress (running state, tool counts,
+    // result preview) but only once tracking resolved an agentId. Agent-tool
+    // subagents that never relay `agent_progress` stay agentId-less, so the
+    // tracked list alone can be empty even when transcripts exist on disk.
+    const tracked = (session?.subagents ?? []).filter(s => s.agentId);
+    const agents: DetailAgentView[] = tracked.map(s => ({
+      agentId: s.agentId as string,
+      label: s.description || (s.agentId as string).slice(0, 10),
+      status: s.running ? 'running' : 'done',
+      tokens: 0,
+      toolCalls: s.toolsCompleted,
+      durationMs: null,
+      model: '',
+      resultPreview: s.resultPreview,
+    } satisfies DetailAgentView));
+    // Union in any on-disk transcript the tracker missed, so no subagent is
+    // silently dropped (the cause of the empty panel). These are treated as
+    // completed — a disk-only agent with no live tracking has nothing running.
+    const trackedIds = new Set(tracked.map(s => s.agentId));
+    for (const d of this.deps.listSubagents(sessionId)) {
+      if (trackedIds.has(d.agentId)) { continue; }
+      agents.push({
+        agentId: d.agentId,
+        label: d.description || d.agentType || d.agentId.slice(0, 10),
+        status: 'done',
+        tokens: 0,
+        toolCalls: 0,
+        durationMs: null,
+        model: '',
+      } satisfies DetailAgentView);
+    }
+    const running = tracked.filter(s => s.running).length;
+    const metricsBits = [agents.length + ' subagent' + (agents.length === 1 ? '' : 's')];
     if (running > 0) { metricsBits.push(running + ' running'); }
     return {
       source: 'subagents',
@@ -181,21 +246,7 @@ export class DetailPanel {
       title: 'Subagents',
       chips: ['subagents'],
       metrics: metricsBits.join(' · '),
-      groups: [{
-        key: '',
-        title: null,
-        status: null,
-        agents: subs.map(s => ({
-          agentId: s.agentId as string,
-          label: s.description || (s.agentId as string).slice(0, 10),
-          status: s.running ? 'running' : 'done',
-          tokens: 0,
-          toolCalls: s.toolsCompleted,
-          durationMs: null,
-          model: '',
-          resultPreview: s.resultPreview,
-        } satisfies DetailAgentView)),
-      }],
+      groups: [{ key: '', title: null, status: null, agents }],
     };
   }
 
@@ -242,24 +293,36 @@ export class DetailPanel {
         && typeof msg.groupKey === 'string'
         && typeof msg.agentId === 'string') {
       await this.sendAgentTranscript(msg.source, msg.containerId, msg.groupKey, msg.agentId);
+    } else if (msg.type === 'selectWorkflowRun' && typeof msg.runId === 'string') {
+      // Header run switcher: re-render the workflow model for the chosen run.
+      // Force, since the run change always alters the visible groups.
+      this.selectedRunId = msg.runId;
+      this.postRender(true);
     } else if (msg.type === 'openConversation' && isValidSessionId(msg.sessionId)) {
       this.deps.openConversation(msg.sessionId);
     }
   }
 
   private async sendAgentTranscript(source: DetailSource, containerId: string, groupKey: string, agentId: string): Promise<void> {
-    if (!this.panel) { return; }
+    // Capture the panel up front and re-check identity after the await: the
+    // transcript parse is async, and the panel can be disposed (or reused for a
+    // different drill-in) before it resolves. Posting to a disposed webview
+    // throws; posting to a reused one bleeds a stale transcript into the new view.
+    const panel = this.panel;
+    if (!panel) { return; }
     const key = groupKey + '|' + agentId;
     const file = this.deps.resolveAgentFile(source, containerId, groupKey, agentId);
     if (!file) {
-      void this.panel.webview.postMessage({ type: 'agentTranscriptError', key, message: 'Transcript not available yet.' });
+      void panel.webview.postMessage({ type: 'agentTranscriptError', key, message: 'Transcript not available yet.' });
       return;
     }
     try {
       const entries = await parseTranscript(file);
-      void this.panel.webview.postMessage({ type: 'agentTranscript', key, entries });
+      if (this.panel !== panel) { return; } // disposed or replaced mid-parse
+      void panel.webview.postMessage({ type: 'agentTranscript', key, entries });
     } catch (err) {
-      void this.panel.webview.postMessage({ type: 'agentTranscriptError', key, message: String(err) });
+      if (this.panel !== panel) { return; }
+      void panel.webview.postMessage({ type: 'agentTranscriptError', key, message: String(err) });
     }
   }
 

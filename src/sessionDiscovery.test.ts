@@ -556,4 +556,81 @@ describe('SessionDiscovery', () => {
       discovery.stop();
     });
   });
+
+  describe('listSubagentFiles()', () => {
+    function writeSubagent(sessionId: string, agentId: string, meta?: Record<string, unknown>): void {
+      const subDir = path.join(projectsDir, workspaceKey, sessionId, 'subagents');
+      fs.mkdirSync(subDir, { recursive: true });
+      fs.writeFileSync(path.join(subDir, `agent-${agentId}.jsonl`), '');
+      if (meta) {
+        fs.writeFileSync(path.join(subDir, `agent-${agentId}.meta.json`), JSON.stringify(meta));
+      }
+    }
+
+    it('lists on-disk subagents with agentType/description from meta', async () => {
+      const sessionId = 'sess-list';
+      createJsonlFile(sessionId);
+      writeSubagent(sessionId, 'aaa111', { agentType: 'general-purpose', description: 'review types' });
+      writeSubagent(sessionId, 'bbb222'); // no meta
+
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      const list = discovery.listSubagentFiles(sessionId);
+      discovery.stop();
+
+      const byId = Object.fromEntries(list.map(e => [e.agentId, e]));
+      expect(Object.keys(byId).sort()).toEqual(['aaa111', 'bbb222']);
+      expect(byId['aaa111']).toMatchObject({ agentType: 'general-purpose', description: 'review types' });
+      expect(byId['bbb222']).toMatchObject({ agentType: null, description: null });
+    });
+
+    it('ignores the workflows/ subdir and non-agent files', async () => {
+      const sessionId = 'sess-list2';
+      createJsonlFile(sessionId);
+      writeSubagent(sessionId, 'aaa111', { agentType: 'x', description: 'y' });
+      const subDir = path.join(projectsDir, workspaceKey, sessionId, 'subagents');
+      // a workflow run dir (must NOT be picked up as a plain subagent)
+      fs.mkdirSync(path.join(subDir, 'workflows', 'wf_x'), { recursive: true });
+      fs.writeFileSync(path.join(subDir, 'workflows', 'wf_x', 'agent-zzz999.jsonl'), '');
+      // a stray non-matching file
+      fs.writeFileSync(path.join(subDir, 'journal.jsonl'), '');
+
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      const ids = discovery.listSubagentFiles(sessionId).map(e => e.agentId);
+      discovery.stop();
+      expect(ids).toEqual(['aaa111']);
+    });
+
+    it('returns [] for an unknown session and a session with no subagents dir', async () => {
+      const sessionId = 'sess-empty';
+      createJsonlFile(sessionId);
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      expect(discovery.listSubagentFiles('no-such-session')).toEqual([]);
+      expect(discovery.listSubagentFiles(sessionId)).toEqual([]);
+      discovery.stop();
+    });
+  });
+
+  describe('getWaitingCount()', () => {
+    // A trailing, unanswered AskUserQuestion tool_use infers 'waiting' on parse
+    // (userInput tool, no matching tool_result) — no permission timer needed.
+    function waitingJsonl(): string {
+      const ts = new Date().toISOString();
+      const user = JSON.stringify({ type: 'user', timestamp: ts, message: { content: [{ type: 'text', text: 'hi' }] } });
+      const asst = JSON.stringify({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'tool_use', id: 'tu1', name: 'AskUserQuestion', input: {} }] } });
+      return user + '\n' + asst;
+    }
+
+    it('counts a waiting session but excludes it once dismissed', async () => {
+      createJsonlFile('w1', waitingJsonl());
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      expect(discovery.getWaitingCount()).toBe(1);
+      discovery.dismissSession('w1');
+      expect(discovery.getWaitingCount()).toBe(0);
+      discovery.stop();
+    });
+  });
 });

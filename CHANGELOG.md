@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.10.1 (2026-06-03) — Detail-panel fixes, accessibility, robustness audit
+
+Follow-up to v1.10.0: six reported detail-panel/UX issues fixed, plus a 22-finding adversarial audit across the codebase (key collisions, dropped state, races/leaks, accessibility, parser hardening). 23 new regression tests.
+
+### Fixed — reported issues
+- **Detail panel reuses the existing editor pane** instead of spawning a new one. Revealing an already-open panel now targets its current column rather than `ViewColumn.Beside` (which recomputed relative to the active editor).
+- **Workflow agents in later phases are selectable again.** The webview matched only the first group with a given key, but a run's phase groups all share the runId key, so agents after phase 1 were unselectable (reader stuck on "Select an agent"). It now searches every matching group.
+- **Subagents drill-in is no longer empty.** Agent-tool subagents that never relayed `agent_progress` left the tracker with no agentId; the panel now unions live-tracked subagents with an on-disk dir-scan so every subagent shows.
+- **Multiple workflow runs per session** are now a header **run switcher** (most-recent default, same-name runs disambiguated by recency), one run at a time, instead of every run's phases concatenated.
+- **Chips shortened** (the "view " prefix dropped) and the **⚙ icon removed** from the background-shell badge.
+
+### Fixed — audit findings
+- **Detail panel:** reader/nav scroll position is preserved across live re-renders (no more snap-to-top while reading a running run); transcript sends are dropped if the panel is disposed mid-parse; failed/incomplete runs get a distinct status dot.
+- **Accessibility:** native card buttons (transcript/dismiss/team-dismiss) keep their own Enter/Space activation; subagent and team expand toggles and companion footer slots are keyboard-operable; card `aria-label` is no longer HTML-escaped (screen readers no longer read literal entities).
+- **Discovery/lifecycle:** completed subagents keep their agentId (rich result preview/tool count survive in the drill-in); `markSessionDone` releases subagent tailers + silence timers (no leaked tailer count); the waiting badge excludes dismissed sessions; per-write unique tmp path for meta saves; an abandoned live workflow run (parent process confirmed dead) is marked `incomplete` rather than pinned to `running`.
+- **Tailing:** a known agentId is never re-pointed at another subagent's file when its own is briefly absent; the tailer cap is re-checked after I/O so concurrent opens can't exceed it.
+- **Parser hardening:** `phases: [` and `agent(` written inside a workflow script's string literals no longer register as real call sites.
+- **Misc:** `~`-abbreviation of paths now works in the webview (home dir is plumbed from the host); team-agent subagent dot strips wrap instead of overflowing; the usage bar no longer flashes red on trivial usage right after a quota reset; `archiveRange` rejects `NaN`/`Infinity`.
+
 ## v1.10.0 (2026-06-03) — Workflow viewer, detail panel, process liveness
 
 Serac becomes a viewer for Claude Code's terminal-native orchestration: Opus 4.8 **Workflow** runs and **Agent Teams** now render as ordinary session cards with a drill-in navigator, and a new process-liveness reader closes a class of stuck-status false positives.

@@ -546,6 +546,10 @@ body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach
   align-items: center;
   gap: 6px;
   margin-bottom: 3px;
+  /* Wrap when a card is unusually loaded (e.g. bg-shell badge + view-workflows
+   * + view-subagents + actions) so the row never overflows the panel width and
+   * pushes the action buttons out of reach behind a horizontal scrollbar. */
+  flex-wrap: wrap;
 }
 
 .session-id-pill {
@@ -870,7 +874,7 @@ body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach
 .team-agent.depth-3 { padding-left: 28px; }
 
 /* Session subagents within a team agent (inline dots) */
-.team-agent-subagents { display: flex; gap: 2px; align-items: center; flex-shrink: 0; }
+.team-agent-subagents { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; flex-shrink: 0; max-width: 50%; }
 .team-agent-subagent-dot { width: 4px; height: 4px; border-radius: 50%; }
 .team-agent-subagent-dot.running { background: var(--sm-blizzard-blue); }
 .team-agent-subagent-dot.waiting { background: var(--sm-frozen-peach); }

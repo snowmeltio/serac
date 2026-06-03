@@ -334,6 +334,15 @@ describe('quotaClass', () => {
     expect(quotaClass(100, 96)).toBe('critical');
     expect(quotaClass(105, 99)).toBe('critical');
   });
+  it('does not flash red on trivial usage just after a quota reset (early-window floor)', () => {
+    // Without the floor, 2% quota at 0.33% elapsed = (2/0.33)*100 ≈ 606 →
+    // critical (a red flash moments after reset). With the 5% floor it is
+    // (2/5)*100 = 40 → ok. The floor only changes the near-empty-window regime:
+    expect(quotaClass(2, 0.33)).toBe('ok');
+    // Genuinely high early usage is NOT masked — 6% at 0.33% elapsed →
+    // (6/5)*100 = 120 ≥ 100 → still critical.
+    expect(quotaClass(6, 0.33)).toBe('critical');
+  });
 });
 
 // ===== formatResetTime =====
@@ -446,6 +455,28 @@ describe('groupForeignWorkspaces', () => {
     const rows = groupForeignWorkspaces(list);
     expect(rows).toHaveLength(1);
     expect(rows[0].worktreeCount).toBe(2);
+  });
+
+  it('worktreeCount + tooltip use the enumerated worktree list when present (matching the picker rows)', () => {
+    // The repo has 4 worktrees but only 2 have Claude Code activity. The chip
+    // count must reflect the enumerated list (what the picker expands to), not
+    // the 2 active members.
+    const wts = [
+      { path: '/r/repo', branch: 'main', isMain: true },
+      { path: '/r/repo/feat-a', branch: 'feat-a', isMain: false },
+      { path: '/r/repo/feat-b', branch: 'feat-b', isMain: false },
+      { path: '/r/repo/feat-c', branch: 'feat-c', isMain: false },
+    ];
+    const list = [
+      { ...ws({ workspaceKey: 'a', displayName: 'feat-a', cwd: '/r/repo/feat-a', repoRoot: '/r/repo', counts: { running: 1 } }), worktrees: wts },
+      { ...ws({ workspaceKey: 'b', displayName: 'feat-b', cwd: '/r/repo/feat-b', repoRoot: '/r/repo', counts: { done: 1 } }), worktrees: wts },
+    ];
+    const rows = groupForeignWorkspaces(list as GroupableWorkspace[]);
+    const agg = rows[0];
+    expect(agg.worktreeCount).toBe(4);
+    // Tooltip lists the enumerated worktree paths, including the no-activity one.
+    expect(agg.worktreeMembersLabel).toContain('/r/repo/feat-c');
+    expect(agg.worktreeMembersLabel).toContain('/r/repo');
   });
 
   it('aggregated row prefers the main worktree cwd (cwd === repoRoot) over a worktree path', () => {

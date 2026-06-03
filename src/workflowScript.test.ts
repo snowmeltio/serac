@@ -70,6 +70,20 @@ describe('extractWorkflowMeta', () => {
     expect(meta!.description).toBe("O'Brien's run");
     expect(meta!.phases[0]).toEqual({ title: 'Line\nbreak', detail: 'a\ttab' });
   });
+
+  it('does not let a "phases: [" inside the description string steal the real phases', () => {
+    // A naive /phases\s*:\s*\[/ scan matches the literal inside the description
+    // first, then balances against the wrong bracket and drops the real phases.
+    const src = [
+      "export const meta = {",
+      "  name: 'x',",
+      "  description: 'we run phases: [discover, verify] across teams',",
+      "  phases: [{ title: 'Real' }],",
+      "}",
+    ].join('\n');
+    const meta = extractWorkflowMeta(src);
+    expect(meta!.phases).toEqual([{ title: 'Real' }]);
+  });
 });
 
 describe('extractAgentCalls', () => {
@@ -113,6 +127,15 @@ describe('extractAgentCalls', () => {
     const [call] = extractAgentCalls(src);
     expect(call.phase).toBe('Real');
     expect(call.label).toBeNull();
+  });
+
+  it('ignores a phantom agent( written inside a string/template literal', () => {
+    // A decoy `agent(...)` embedded in another prompt's text must not register
+    // as its own call site (the /\bagent\s*\(/ scan would otherwise match it).
+    const src = "const SPEC = `... agent('decoy long literal here now', { phase: 'Decoy' }) ...`;\nawait agent(`real distinctive head segment`, { label: 'r' })";
+    const calls = extractAgentCalls(src);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].label).toBe('r');
   });
 });
 
