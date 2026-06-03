@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.9.1 (2026-06-03) — Title-bar declutter + tunable confidence decay
+
+### Changed
+- **Title-bar trimmed to bin · cog · plus.** The manual refresh and hook-mode toggle were dropped from the view title bar — refresh is redundant with the auto-refresh timer, and hook mode is set-once-per-workspace via settings. Both remain available from the command palette. The cleanup, settings, and new-chat actions are reordered for a calmer toolbar.
+
+### Added
+- **Confidence-decay thresholds are now settings** — `serac.sessions.highConfidenceSeconds` (default 5) and `serac.sessions.mediumConfidenceSeconds` (default 30) control how quickly a quiet running/waiting session dims from high to medium to low confidence. Previously hardcoded. Defaults are unchanged, so existing behaviour is identical until you tune them.
+
 ## v1.9.0 (2026-06-02) — Hook consumption + scratch-session consolidation
 
 The hook overlay added in v1.7.0 stopped being plumbing and started doing work. When hook mode is on, Serac now consumes the full event stream for faster, richer status, while JSONL polling stays the source of truth and the backstop whenever hooks are absent.

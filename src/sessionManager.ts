@@ -116,9 +116,22 @@ const WAITING_ACTIVITY_MESSAGES = new Set([
   'Subagent waiting for permission',
 ]);
 /** Confidence thresholds: how stale can a running/waiting session's lastActivity be
- *  before we degrade visual confidence? [#106] */
-const CONFIDENCE_HIGH_MS = 5_000;
-const CONFIDENCE_MEDIUM_MS = 30_000;
+ *  before we degrade visual confidence? [#106]
+ *
+ *  Module-level (not const) because they're user-tunable via
+ *  `serac.sessions.{high,medium}ConfidenceSeconds`. sessionManager is
+ *  vscode-free core, so extension.ts pushes the values in via
+ *  {@link setConfidenceThresholds} on startup and on settings change. Defaults
+ *  match the historical hardcoded values, so untouched settings are a no-op. */
+let CONFIDENCE_HIGH_MS = 5_000;
+let CONFIDENCE_MEDIUM_MS = 30_000;
+
+/** Set the visual confidence-decay thresholds (in milliseconds). Shared across
+ *  all SessionManager instances since the underlying setting is global. */
+export function setConfidenceThresholds(highMs: number, mediumMs: number): void {
+  CONFIDENCE_HIGH_MS = highMs;
+  CONFIDENCE_MEDIUM_MS = mediumMs;
+}
 
 
 /**

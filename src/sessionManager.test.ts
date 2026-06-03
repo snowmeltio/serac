@@ -15,7 +15,7 @@ vi.mock('./jsonlTailer.js', () => ({
 }));
 
 // Import after mock is registered
-const { SessionManager } = await import('./sessionManager.js');
+const { SessionManager, setConfidenceThresholds } = await import('./sessionManager.js');
 
 function makeManager(): InstanceType<typeof SessionManager> {
   return new SessionManager('test-session-id', '/tmp/test.jsonl', 'test-workspace');
@@ -506,6 +506,22 @@ describe('SessionManager state machine', () => {
     const snap = mgr.getSnapshot();
     if (snap.status === 'running' || snap.status === 'waiting') {
       expect(snap.confidence).toBe('low');
+    }
+  });
+
+  it('setConfidenceThresholds shifts the decay boundary (serac.sessions.*)', async () => {
+    // Widen the high-confidence window to 20s. At 6s silence — past the 5s
+    // default, but inside the new 20s window — confidence should stay high.
+    setConfidenceThresholds(20_000, 60_000);
+    try {
+      const mgr = makeManager();
+      await feedRecords(mgr, [userRecord('hello')]);
+      await feedRecords(mgr, [assistantToolUseRecord('Edit', 'e1')]);
+      vi.advanceTimersByTime(6_000);
+      expect(mgr.getSnapshot().confidence).toBe('high');
+    } finally {
+      // Restore defaults so global state doesn't bleed into other tests.
+      setConfidenceThresholds(5_000, 30_000);
     }
   });
 });

@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { SessionDiscovery } from './sessionDiscovery.js';
+import { setConfidenceThresholds } from './sessionManager.js';
 import { claudeStateDir } from './paths.js';
 import { FooterSlotRegistry } from './footerSlots.js';
 import type { SeracExports } from './types.js';
@@ -563,6 +564,10 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // Timestamp freshness timer (relative time labels in UI). Reactive to
   // serac.refresh.intervalSeconds — rebuilt whenever the user changes it.
   let seracSettings: SeracSettings = readSettings();
+  // Push user-tunable confidence-decay thresholds into vscode-free core.
+  const applyConfidenceThresholds = (s: SeracSettings) =>
+    setConfidenceThresholds(s.sessions.highConfidenceSeconds * 1000, s.sessions.mediumConfidenceSeconds * 1000);
+  applyConfidenceThresholds(seracSettings);
   let refreshTimer: ReturnType<typeof setInterval> = setInterval(
     () => sendUpdate(),
     seracSettings.refresh.intervalSeconds * 1000,
@@ -576,6 +581,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     onSettingsChanged(next => {
       const intervalChanged = next.refresh.intervalSeconds !== seracSettings.refresh.intervalSeconds;
       seracSettings = next;
+      applyConfidenceThresholds(next);
       panelProvider.sendSettings(next);
       if (intervalChanged) { rebuildRefreshTimer(next.refresh.intervalSeconds); }
       sendUpdate();

@@ -16,6 +16,14 @@ export interface SeracSettings {
     defaultRange: '1d' | '3d' | '7d' | '30d' | 'all';
     maxDoneShown: number;
   };
+  sessions: {
+    /** A running/waiting session's status shows high confidence while its last
+     *  activity is younger than this many seconds. */
+    highConfidenceSeconds: number;
+    /** ...medium confidence until older than this many seconds, then low.
+     *  Should be greater than highConfidenceSeconds. */
+    mediumConfidenceSeconds: number;
+  };
   refresh: {
     intervalSeconds: number;
   };
@@ -59,6 +67,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     teams: true,
   },
   archive: { defaultRange: '1d', maxDoneShown: 20 },
+  sessions: { highConfidenceSeconds: 5, mediumConfidenceSeconds: 30 },
   refresh: { intervalSeconds: 5 },
   discovery: { ageGateDays: 7 },
   foreignWorkspaces: { maxHeightPx: 280 },
@@ -86,6 +95,10 @@ export function readSettings(): SeracSettings {
     archive: {
       defaultRange: cfg.get<SeracSettings['archive']['defaultRange']>('archive.defaultRange', d.archive.defaultRange),
       maxDoneShown: cfg.get<number>('archive.maxDoneShown', d.archive.maxDoneShown),
+    },
+    sessions: {
+      highConfidenceSeconds: cfg.get<number>('sessions.highConfidenceSeconds', d.sessions.highConfidenceSeconds),
+      mediumConfidenceSeconds: cfg.get<number>('sessions.mediumConfidenceSeconds', d.sessions.mediumConfidenceSeconds),
     },
     refresh: {
       intervalSeconds: cfg.get<number>('refresh.intervalSeconds', d.refresh.intervalSeconds),

@@ -2,7 +2,7 @@
   "name": "serac-claude-code",
   "displayName": "Serac Session Monitor",
   "description": "Session monitor for Claude Code — status cards, subagent tracking, usage quotas, and transcript viewer in the VS Code sidebar",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",
@@ -100,29 +100,14 @@
           "group": "navigation@1"
         },
         {
-          "command": "agentActivity.newChat",
+          "command": "agentActivity.openSettings",
           "when": "view == agentActivity.panel",
           "group": "navigation@2"
         },
         {
-          "command": "agentActivity.refresh",
+          "command": "agentActivity.newChat",
           "when": "view == agentActivity.panel",
           "group": "navigation@3"
-        },
-        {
-          "command": "agentActivity.enableHooks",
-          "when": "view == agentActivity.panel && !serac.hooksEnabled",
-          "group": "navigation@4"
-        },
-        {
-          "command": "agentActivity.disableHooks",
-          "when": "view == agentActivity.panel && serac.hooksEnabled",
-          "group": "navigation@4"
-        },
-        {
-          "command": "agentActivity.openSettings",
-          "when": "view == agentActivity.panel",
-          "group": "navigation@5"
         }
       ],
       "commandPalette": [
@@ -191,6 +176,18 @@
           "default": 20,
           "minimum": 1,
           "description": "Maximum number of completed (done) items shown in the archive when expanded."
+        },
+        "serac.sessions.highConfidenceSeconds": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "description": "A running or waiting session's status is shown at high confidence while its last activity is younger than this many seconds. After this, the card dims to medium confidence. Lower = quicker to flag a possibly-stalled session."
+        },
+        "serac.sessions.mediumConfidenceSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "description": "A running or waiting session shows medium confidence until its last activity is older than this many seconds, then drops to low confidence. Should be greater than serac.sessions.highConfidenceSeconds."
         },
         "serac.refresh.intervalSeconds": {
           "type": "number",
