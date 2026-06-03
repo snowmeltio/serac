@@ -5,7 +5,7 @@ vi.mock('vscode', async () => {
   return { ...mock, default: mock };
 });
 
-import { readSettings, onSettingsChanged, DEFAULT_SETTINGS } from './settings.js';
+import { readSettings, onSettingsChanged, ageGateDaysFor, DEFAULT_SETTINGS } from './settings.js';
 import { _setConfigValues, _resetConfig, _fireConfigChange } from './__mocks__/vscode.js';
 
 describe('readSettings', () => {
@@ -35,6 +35,10 @@ describe('readSettings', () => {
       'serac.archive.maxDoneShown': 50,
       'serac.refresh.intervalSeconds': 2,
       'serac.discovery.ageGateDays': 14,
+      'serac.discovery.foreignWorkspacesAgeGateDays': 2,
+      'serac.discovery.worktreesAgeGateDays': 30,
+      'serac.discovery.teamsAgeGateDays': 1,
+      'serac.discovery.workflowsAgeGateDays': 90,
       'serac.foreignWorkspaces.maxHeightPx': 0,
       'serac.worktrees.maxHeightPx': 500,
       'serac.worktrees.autoCollapseAfterSeconds': 60,
@@ -54,6 +58,10 @@ describe('readSettings', () => {
     expect(s.archive.maxDoneShown).toBe(50);
     expect(s.refresh.intervalSeconds).toBe(2);
     expect(s.discovery.ageGateDays).toBe(14);
+    expect(s.discovery.foreignWorkspacesAgeGateDays).toBe(2);
+    expect(s.discovery.worktreesAgeGateDays).toBe(30);
+    expect(s.discovery.teamsAgeGateDays).toBe(1);
+    expect(s.discovery.workflowsAgeGateDays).toBe(90);
     expect(s.foreignWorkspaces.maxHeightPx).toBe(0);
     expect(s.worktrees.maxHeightPx).toBe(500);
     expect(s.worktrees.autoCollapseAfterSeconds).toBe(60);
@@ -62,6 +70,75 @@ describe('readSettings', () => {
     expect(s.usage.criticalAtPercent).toBe(90);
     expect(s.animations.enabled).toBe(false);
     expect(s.cleanup.confirmRequired).toBe(false);
+  });
+});
+
+describe('ageGateDaysFor', () => {
+  beforeEach(() => { _resetConfig(); });
+
+  it('inherits the base ageGateDays for every section when no override is set', () => {
+    _setConfigValues({ 'serac.discovery.ageGateDays': 14 });
+    expect(ageGateDaysFor('foreignWorkspaces')).toBe(14);
+    expect(ageGateDaysFor('worktrees')).toBe(14);
+    expect(ageGateDaysFor('teams')).toBe(14);
+    expect(ageGateDaysFor('workflows')).toBe(14);
+  });
+
+  it('uses a section override and leaves the other sections on the base', () => {
+    _setConfigValues({
+      'serac.discovery.ageGateDays': 7,
+      'serac.discovery.foreignWorkspacesAgeGateDays': 2,
+    });
+    expect(ageGateDaysFor('foreignWorkspaces')).toBe(2); // overridden
+    expect(ageGateDaysFor('worktrees')).toBe(7);         // inherits base
+    expect(ageGateDaysFor('teams')).toBe(7);
+    expect(ageGateDaysFor('workflows')).toBe(7);
+  });
+
+  it('resolves each section to its own override independently', () => {
+    _setConfigValues({
+      'serac.discovery.ageGateDays': 7,
+      'serac.discovery.foreignWorkspacesAgeGateDays': 1,
+      'serac.discovery.worktreesAgeGateDays': 30,
+      'serac.discovery.teamsAgeGateDays': 3,
+      'serac.discovery.workflowsAgeGateDays': 90,
+    });
+    expect(ageGateDaysFor('foreignWorkspaces')).toBe(1);
+    expect(ageGateDaysFor('worktrees')).toBe(30);
+    expect(ageGateDaysFor('teams')).toBe(3);
+    expect(ageGateDaysFor('workflows')).toBe(90);
+  });
+
+  it('falls back to the base when an override is non-positive (never disables the gate)', () => {
+    _setConfigValues({
+      'serac.discovery.ageGateDays': 7,
+      'serac.discovery.teamsAgeGateDays': 0,
+    });
+    expect(ageGateDaysFor('teams')).toBe(7);
+  });
+
+  it('falls back to the base when an override is non-finite (1e999 → Infinity)', () => {
+    // A pathological manual edit (a value that overflows a double) must not
+    // silently disable the gate by yielding an Infinity window.
+    _setConfigValues({
+      'serac.discovery.ageGateDays': 7,
+      'serac.discovery.worktreesAgeGateDays': Infinity,
+    });
+    expect(ageGateDaysFor('worktrees')).toBe(7);
+  });
+
+  it('defaults to the base default (7) when nothing is configured', () => {
+    expect(ageGateDaysFor('foreignWorkspaces')).toBe(DEFAULT_SETTINGS.discovery.ageGateDays);
+  });
+
+  it('accepts a pre-read settings snapshot to avoid re-reading config', () => {
+    _setConfigValues({
+      'serac.discovery.ageGateDays': 7,
+      'serac.discovery.worktreesAgeGateDays': 21,
+    });
+    const snap = readSettings();
+    expect(ageGateDaysFor('worktrees', snap)).toBe(21);
+    expect(ageGateDaysFor('teams', snap)).toBe(7);
   });
 });
 

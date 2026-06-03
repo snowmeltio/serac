@@ -153,10 +153,19 @@ export interface SessionSnapshot {
   endReason?: string;
   /** True while a compaction is in progress (PreCompact grace window). */
   compacting?: boolean;
+  /** SPIKE — count of outstanding backgrounded Bash shells (`run_in_background`)
+   *  whose completion has not yet been observed. Display-only enrichment; does
+   *  NOT affect `status`. Present (and > 0) typically on a `done`/`stale` card
+   *  whose turn ended while a detached build/deploy keeps running. Undefined
+   *  when none outstanding. See BACKLOG.md for the UI/policy follow-up. */
+  backgroundShellCount?: number;
 }
 
 export interface SubagentSnapshot {
   parentToolUseId: string;
+  /** Maps 1:1 to <session>/subagents/agent-<agentId>.jsonl. Null until the
+   *  agent id is known. Used by the detail panel's subagents source. */
+  agentId: string | null;
   description: string;
   running: boolean;
   waitingOnPermission: boolean;
@@ -288,12 +297,15 @@ export interface WorktreeRow {
   isMain: boolean;
 }
 
-// ── Team types (Cornice orchestrator + Agent Teams integration) ──────
+// ── Team types (Agent Teams integration) ──────
 
-/** Exit status of a Cornice-spawned agent */
+/** Terminal exit status of a team agent. Agent Teams configs never carry one
+ *  (members are removed on completion); the field/type are retained as the
+ *  wire shape — non-null values were only ever set by the removed Cornice
+ *  sidecar parser. */
 export type AgentExitStatus = 'success' | 'failed' | 'cancelled';
 
-/** Agent entry in a team manifest (Cornice sidecar or Agent Teams config) */
+/** Agent entry in a normalised team manifest. */
 export interface TeamAgentEntry {
   /** Claude Code session ID. Null for Agent Teams members without session tracking. */
   sessionId: string | null;
@@ -301,16 +313,16 @@ export interface TeamAgentEntry {
   cwd: string;
   parentSessionId: string;
   depth: number;
-  spawnedAt: number;       // epoch ms (parsed from ISO or epoch)
+  spawnedAt: number;       // epoch ms
   completedAt: number | null;
   exitStatus: AgentExitStatus | null;
   /** Whether the agent is currently active (from Agent Teams isActive field) */
   isActive: boolean | null;
 }
 
-/** Parsed team manifest (from Cornice sidecar or Agent Teams config.json) */
+/** Parsed team manifest (normalised from an Agent Teams config.json). */
 export interface TeamManifest {
-  /** Schema version (1 for Cornice sidecar, 0 for Agent Teams config) */
+  /** Schema version. 0 = Agent Teams config (the only live source). */
   version: number;
   orchestrator: {
     sessionId: string;
@@ -342,7 +354,8 @@ export interface TeamAgentSnapshot {
 
 /** Full team snapshot sent to webview */
 export interface TeamSnapshot {
-  /** Orchestrator session ID */
+  /** Stable team id (`at:<team-name>` for Agent Teams). Not the orchestrator
+   *  session id — that is `orchestrator.sessionId`. */
   teamId: string;
   name: string;
   orchestrator: {
@@ -356,7 +369,126 @@ export interface TeamSnapshot {
   agents: TeamAgentSnapshot[];
   /** Aggregated status counts across all agents */
   counts: Record<string, number>;
+  /** Recency timestamp (epoch ms): the orchestrator's last activity, falling
+   *  back to the config's updatedAt. Used to order the archive by recency. */
+  updatedAt: number;
   dismissed: boolean;
+}
+
+// ── Workflow types (Opus 4.8 Workflow runs) ──────────────────────────
+// A "workflow" is one invocation of the built-in Workflow tool inside a
+// session. Claude Code writes a render-ready sidecar at
+// <sessionDir>/workflows/wf_<runId>.json once the run completes; Serac
+// reads it (Tier 1). A run observed before completion has no sidecar and is
+// reconstructed minimally from its journal (Tier 2, source:'live').
+
+/** Normalised run status (sidecar `status` mapped onto a closed union). */
+export type WorkflowRunStatus = 'completed' | 'running' | 'failed' | 'incomplete';
+
+/** A phase declared in the workflow script's `meta.phases` (1-based index). */
+export interface WorkflowPhase {
+  index: number;
+  title: string;
+  detail: string;
+}
+
+/** Snapshot of one workflow agent (from a `workflow_agent` progress entry). */
+export interface WorkflowAgentSnapshot {
+  /** Maps 1:1 to subagents/workflows/<runId>/agent-<agentId>.jsonl */
+  agentId: string;
+  label: string;
+  /** 1-based phase this agent belongs to; null when grouping is unavailable. */
+  phaseIndex: number | null;
+  phaseTitle: string | null;
+  model: string;
+  agentType: string | null;
+  status: DisplayStatus;
+  startedAt: number;            // epoch ms
+  durationMs: number | null;
+  tokens: number;
+  toolCalls: number;
+  attempt: number;
+  promptPreview: string;
+  resultPreview: string | null;
+  lastToolName: string | null;
+  lastToolSummary: string | null;
+}
+
+/** Full workflow-run snapshot sent to the webview. */
+export interface WorkflowSnapshot {
+  runId: string;                // wf_<hash>; webview key + dismiss key
+  /** Parent session that owns the run (the dir the sidecar lives under). */
+  sessionId: string;
+  taskId: string | null;
+  name: string;                 // workflowName
+  summary: string;
+  status: WorkflowRunStatus;
+  /** Which tier produced this snapshot. */
+  source: 'sidecar' | 'live';
+  startTime: number;            // epoch ms
+  durationMs: number | null;
+  defaultModel: string;
+  agentCount: number;
+  totalTokens: number;
+  totalToolCalls: number;
+  phases: WorkflowPhase[];
+  agents: WorkflowAgentSnapshot[];
+  /** Aggregated agent status counts. */
+  counts: Record<string, number>;
+  /** log() narrator lines (sidecar only; empty for live runs). */
+  logs: string[];
+  dismissed: boolean;
+}
+
+// ── Detail panel (source-keyed agent navigator) ──────────────────────
+// One editor-area webview serves three drill-ins that share the same
+// parent→children shape: workflow runs, agent teams, and a session's Task
+// subagents. The host normalises each source into a DetailModel; the webview
+// renders it generically (left = groups→agents, right = transcript reader).
+
+/** Which kind of parent a detail-panel view is drilling into. */
+export type DetailSource = 'workflow' | 'team' | 'subagents';
+
+/** One selectable agent row in the detail navigator. */
+export interface DetailAgentView {
+  /** Resolution key within (source, containerId, groupKey) — used to locate the
+   *  transcript JSONL. runId-agent for workflow, agent-hash for subagents,
+   *  member name for team. */
+  agentId: string;
+  label: string;
+  status: DisplayStatus;
+  tokens: number;
+  toolCalls: number;
+  durationMs: number | null;
+  model: string;
+  /** Optional enrichments (workflow carries these; team/subagents may omit). */
+  phaseTitle?: string | null;
+  attempt?: number;
+  promptPreview?: string;
+  resultPreview?: string | null;
+}
+
+/** A left-pane group: a workflow phase, or a single flat group (team/subagents). */
+export interface DetailGroupView {
+  /** Group identity passed back on viewAgent (runId for workflow; '' when flat). */
+  key: string;
+  /** Section heading; null renders the agents as a flat list with no header. */
+  title: string | null;
+  status: string | null;
+  agents: DetailAgentView[];
+}
+
+/** Normalised detail-panel payload (host → webview). */
+export interface DetailModel {
+  source: DetailSource;
+  /** sessionId (workflow/subagents) or teamId (team). */
+  containerId: string;
+  /** The invoking conversation to open from the panel header. */
+  sessionId: string;
+  title: string;
+  chips: string[];
+  metrics: string;
+  groups: DetailGroupView[];
 }
 
 /** Message types sent from extension to webview */
@@ -377,8 +509,10 @@ export type WebviewMessage =
       foreignWaiting?: SessionSnapshot[];
       /** Foreign sessions currently running — surfaced as a compact strip below local cards */
       foreignRunning?: SessionSnapshot[];
-      /** Cornice agent team snapshots (empty when no teams active) */
+      /** Agent team snapshots (empty when no teams active) */
       teams?: TeamSnapshot[];
+      /** Opus 4.8 Workflow runs, keyed to their parent session (empty when none) */
+      workflows?: WorkflowSnapshot[];
       /** Claude Code auto-compact settings (from ~/.claude/settings.json env overrides) */
       compactSettings?: import('./claudeSettings.js').CompactSettings;
       /** Companion-registered footer slots (rendered under the usage card) */
@@ -411,7 +545,10 @@ export type WebviewCommand =
   | { type: 'dismissTeam'; teamId: string }
   | { type: 'undismissTeam'; teamId: string }
   | { type: 'openWorkspace'; cwd: string; sessionId?: string }
-  | { type: 'footerSlotClick'; slotId: string };
+  | { type: 'footerSlotClick'; slotId: string }
+  | { type: 'openDetail'; source: DetailSource; containerId: string; sessionId: string }
+  | { type: 'dismissWorkflow'; runId: string }
+  | { type: 'undismissWorkflow'; runId: string };
 
 // ─── Public extension API surface (returned by activate()) ──────────────
 

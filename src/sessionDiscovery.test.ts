@@ -117,6 +117,55 @@ describe('SessionDiscovery', () => {
     d2.stop();
   });
 
+  it('round-trips workflow dismiss/undismiss through getWorkflowSnapshots and persists the flag', async () => {
+    // A completed run owned by session-wf. dismissWorkflow archives just the run
+    // (keyed workflow:<runId> in session-meta, distinct from the session key).
+    const discovery = makeDiscovery();
+    createJsonlFile('session-wf');
+    const runId = 'wf_round-001';
+    const wfDir = path.join(projectsDir, workspaceKey, 'session-wf', 'workflows');
+    fs.mkdirSync(wfDir, { recursive: true });
+    fs.writeFileSync(path.join(wfDir, `${runId}.json`), JSON.stringify({
+      runId,
+      workflowName: 'demo',
+      summary: 's',
+      status: 'completed',
+      startTime: 1780000000000,
+      durationMs: 1000,
+      defaultModel: 'claude-opus-4-8[1m]',
+      agentCount: 1,
+      totalTokens: 10,
+      totalToolCalls: 1,
+      logs: [],
+      phases: [{ title: 'Only', detail: 'd' }],
+      workflowProgress: [
+        { type: 'workflow_phase', index: 1, title: 'Only' },
+        { type: 'workflow_agent', index: 1, agentId: 'aaa111', phaseIndex: 1, phaseTitle: 'Only', state: 'done', label: 'l' },
+      ],
+    }), 'utf-8');
+    await discovery.start(() => {});
+
+    // Initially visible and not dismissed.
+    const before = discovery.getWorkflowSnapshots().find(w => w.runId === runId);
+    expect(before?.dismissed).toBe(false);
+
+    // Dismiss → snapshot reflects it; the session card key is untouched.
+    discovery.dismissWorkflow(runId);
+    expect(discovery.getWorkflowSnapshots().find(w => w.runId === runId)?.dismissed).toBe(true);
+    expect(discovery.getSnapshots().find(s => s.sessionId === 'session-wf')?.dismissed).toBe(false);
+
+    // Persisted under the workflow: key (fire-and-forget save).
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    expect(meta.sessions[`workflow:${runId}`].dismissed).toBe(true);
+
+    // Undismiss → back to visible.
+    discovery.undismissWorkflow(runId);
+    expect(discovery.getWorkflowSnapshots().find(w => w.runId === runId)?.dismissed).toBe(false);
+    discovery.stop();
+  });
+
   it('honours the local dismiss overlay for sibling-worktree sessions', async () => {
     // Sibling sessions are merged into the feed but source their state from the
     // sibling's own meta. Dismissal is a local view-state overlay, so clicking ×
@@ -462,5 +511,49 @@ describe('SessionDiscovery', () => {
     expect(meta.sessions[sessionId].customTitle).toBe('');
 
     discovery.stop();
+  });
+
+  // ── Subagent transcript resolution (detail panel) ─────────────
+  describe('getSubagentFilePath()', () => {
+    it('resolves an existing subagent transcript under the session dir', async () => {
+      const sessionId = 'sess-sub';
+      createJsonlFile(sessionId);
+      const subDir = path.join(projectsDir, workspaceKey, sessionId, 'subagents');
+      fs.mkdirSync(subDir, { recursive: true });
+      const expected = path.join(subDir, 'agent-abc123.jsonl');
+      fs.writeFileSync(expected, '');
+
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      expect(discovery.getSubagentFilePath(sessionId, 'abc123')).toBe(expected);
+      discovery.stop();
+    });
+
+    it('returns null when the transcript file does not exist', async () => {
+      const sessionId = 'sess-sub';
+      createJsonlFile(sessionId);
+
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      expect(discovery.getSubagentFilePath(sessionId, 'missing')).toBeNull();
+      discovery.stop();
+    });
+
+    it('returns null for an unknown session', async () => {
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      expect(discovery.getSubagentFilePath('no-such-session', 'abc123')).toBeNull();
+      discovery.stop();
+    });
+
+    it('rejects a path-traversal agentId', async () => {
+      const sessionId = 'sess-sub';
+      createJsonlFile(sessionId);
+
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      expect(discovery.getSubagentFilePath(sessionId, '../../etc/passwd')).toBeNull();
+      discovery.stop();
+    });
   });
 });

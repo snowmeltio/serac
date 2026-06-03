@@ -88,6 +88,36 @@ interface PanelTeam {
   };
   agents: PanelTeamAgent[];
   counts: Record<string, number>;
+  updatedAt: number;
+  dismissed: boolean;
+}
+
+/** Detail-panel source key (mirrors DetailSource from types.ts; redeclared
+ *  because the webview bundle cannot import extension-side modules). */
+type DetailSource = 'workflow' | 'team' | 'subagents';
+
+/** Workflow agent (subset of WorkflowAgentSnapshot the card needs). */
+interface PanelWorkflowAgent {
+  phaseIndex: number | null;
+  status: string;
+}
+
+/** Workflow run snapshot (mirrors WorkflowSnapshot from types.ts; the card
+ *  uses a subset). One session may own several runs. */
+interface PanelWorkflow {
+  runId: string;
+  sessionId: string;
+  name: string;
+  status: string;        // completed | running | failed | incomplete
+  source: string;        // sidecar | live
+  phases: { index: number; title: string }[];
+  agents: PanelWorkflowAgent[];
+  counts: Record<string, number>;
+  agentCount: number;
+  totalTokens: number;
+  totalToolCalls: number;
+  durationMs: number | null;
+  startTime: number;     // epoch ms; with durationMs gives the archive recency ts
   dismissed: boolean;
 }
 
@@ -120,6 +150,7 @@ interface UpdateMessage {
   foreignWaiting?: PanelSession[];
   foreignRunning?: PanelSession[];
   teams?: PanelTeam[];
+  workflows?: PanelWorkflow[];
   compactSettings?: PanelCompactSettings;
   footerSlots?: PanelFooterSlot[];
   olderSessionCount?: number;
@@ -141,6 +172,7 @@ interface PanelSettings {
     usage: boolean;
     subagents: boolean;
     teams: boolean;
+    workflows: boolean;
   };
   archive: { defaultRange: string; maxDoneShown: number };
   refresh: { intervalSeconds: number };
@@ -163,7 +195,7 @@ type WebviewIncomingMessage = UpdateMessage | FocusMessage | SettingsMessage;
  *  initial value before the first SettingsMessage arrives — kept in sync
  *  with the package.json `default` declarations. */
 const DEFAULT_PANEL_SETTINGS: PanelSettings = {
-  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, teams: true },
+  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, teams: true, workflows: true },
   archive: { defaultRange: '1d', maxDoneShown: 20 },
   refresh: { intervalSeconds: 5 },
   discovery: { ageGateDays: 7 },
@@ -219,6 +251,9 @@ const RANGE_MS: Record<string, number> = {
   let lastForeignWaiting: PanelSession[] = [];
   let lastForeignRunning: PanelSession[] = [];
   let lastTeams: PanelTeam[] = [];
+  let lastWorkflows: PanelWorkflow[] = [];
+  /** Rebuilt each render: parent sessionId -> its runs (most relevant first). */
+  let workflowsBySession = new Map<string, PanelWorkflow[]>();
   let lastFooterSlots: PanelFooterSlot[] = [];
   let compactSettings: PanelCompactSettings | null = null;
   let lastOlderSessionCount = 0;
@@ -323,6 +358,21 @@ const RANGE_MS: Record<string, number> = {
   root.addEventListener('click', (e: MouseEvent) => {
     const target = e.target as HTMLElement;
 
+    // "view workflow/team/subagents →" chip — opens the source-keyed detail
+    // panel. Checked first: the chip nests inside cards and team headers, whose
+    // own click handlers (focusSession) would otherwise swallow it.
+    const detailChip = target.closest<HTMLElement>('.detail-chip');
+    if (detailChip) {
+      e.stopPropagation();
+      const source = detailChip.dataset.detailSource;
+      const containerId = detailChip.dataset.detailContainer;
+      const sessionId = detailChip.dataset.detailSession;
+      if (source && containerId && sessionId) {
+        vscode.postMessage({ type: 'openDetail', source, containerId, sessionId });
+      }
+      return;
+    }
+
     // Dismiss button
     const dismissBtn = target.closest<HTMLElement>('[data-dismiss-id]');
     if (dismissBtn) {
@@ -388,6 +438,14 @@ const RANGE_MS: Record<string, number> = {
       return;
     }
 
+    // Workflow run dismiss (archive) — the × on the in-card roll-up meta row
+    const wfDismissBtn = target.closest<HTMLElement>('[data-dismiss-workflow]');
+    if (wfDismissBtn) {
+      e.stopPropagation();
+      vscode.postMessage({ type: 'dismissWorkflow', runId: wfDismissBtn.dataset.dismissWorkflow });
+      return;
+    }
+
     // Team expand/collapse toggle
     const teamToggleBtn = target.closest<HTMLElement>('[data-toggle-team]');
     if (teamToggleBtn) {
@@ -419,6 +477,13 @@ const RANGE_MS: Record<string, number> = {
     const teamArchiveRow = target.closest<HTMLElement>('.team-compact-row[data-team-id]');
     if (teamArchiveRow) {
       vscode.postMessage({ type: 'undismissTeam', teamId: teamArchiveRow.dataset.teamId });
+      return;
+    }
+
+    // Workflow archive compact row click (undismiss → reopen the parent conversation)
+    const wfArchiveRow = target.closest<HTMLElement>('.workflow-compact-row[data-run-id]');
+    if (wfArchiveRow) {
+      vscode.postMessage({ type: 'undismissWorkflow', runId: wfArchiveRow.dataset.runId });
       return;
     }
 
@@ -498,6 +563,19 @@ const RANGE_MS: Record<string, number> = {
   root.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     const target = e.target as HTMLElement;
+    const detailChip = target.closest<HTMLElement>('.detail-chip');
+    if (detailChip) {
+      e.preventDefault();
+      detailChip.click();
+      return;
+    }
+    // Workflow archive × — a role=button span, so Enter/Space need wiring
+    const wfDismiss = target.closest<HTMLElement>('[data-dismiss-workflow]');
+    if (wfDismiss) {
+      e.preventDefault();
+      wfDismiss.click();
+      return;
+    }
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
     if (card) {
       e.preventDefault();
@@ -508,6 +586,19 @@ const RANGE_MS: Record<string, number> = {
     if (archiveRow) {
       e.preventDefault();
       archiveRow.click();
+      return;
+    }
+    // Team / workflow archive compact rows (role=listitem spans, tabindex 0)
+    const teamArchiveRow = target.closest<HTMLElement>('.team-compact-row[data-team-id]');
+    if (teamArchiveRow) {
+      e.preventDefault();
+      teamArchiveRow.click();
+      return;
+    }
+    const wfArchiveRow = target.closest<HTMLElement>('.workflow-compact-row[data-run-id]');
+    if (wfArchiveRow) {
+      e.preventDefault();
+      wfArchiveRow.click();
       return;
     }
     const foreignRunningRow = target.closest<HTMLElement>('.foreign-running-row');
@@ -544,6 +635,7 @@ const RANGE_MS: Record<string, number> = {
         lastForeignWaiting = message.foreignWaiting ?? [];
         lastForeignRunning = message.foreignRunning ?? [];
         lastTeams = message.teams ?? [];
+        lastWorkflows = message.workflows ?? [];
         lastFooterSlots = message.footerSlots ?? [];
         compactSettings = message.compactSettings ?? null;
         lastOlderSessionCount = message.olderSessionCount ?? 0;
@@ -618,6 +710,20 @@ const RANGE_MS: Record<string, number> = {
     const cards = sessions.filter(s => !s.dismissed);
     const archived = sessions.filter(s => s.dismissed);
     const now = Date.now();
+
+    // Group workflow runs by parent session (discovery pre-sorts active/recent
+    // first) so cards can show a WF tag, roll-up, and View pill. Empty when the
+    // toggle is off, which removes all workflow affordances in one place.
+    workflowsBySession = new Map<string, PanelWorkflow[]>();
+    const archivedWorkflows: PanelWorkflow[] = [];
+    if (currentSettings.show.workflows) {
+      for (const wf of lastWorkflows) {
+        // A dismissed run leaves its parent card and becomes an archive row.
+        if (wf.dismissed) { archivedWorkflows.push(wf); continue; }
+        const arr = workflowsBySession.get(wf.sessionId);
+        if (arr) { arr.push(wf); } else { workflowsBySession.set(wf.sessionId, [wf]); }
+      }
+    }
 
     // === Top bar ===
     let summaryHtml = '';
@@ -716,10 +822,10 @@ const RANGE_MS: Record<string, number> = {
     }
 
     // === Archive section ===
-    renderArchiveSection(archived, archivedTeams, now, doneSection);
+    renderArchiveSection(archived, archivedTeams, archivedWorkflows, now, doneSection);
 
     // === Time-range bar ===
-    renderTimeRangeBar(archived.length > 0 || archivedTeams.length > 0 || lastOlderSessionCount > 0);
+    renderTimeRangeBar(archived.length > 0 || archivedTeams.length > 0 || archivedWorkflows.length > 0 || lastOlderSessionCount > 0);
 
     // === Worktrees pane (sits above Other workspaces) ===
     let worktreesContainer = root.querySelector('.ws-worktree-rows') as HTMLElement | null;
@@ -901,11 +1007,11 @@ const RANGE_MS: Record<string, number> = {
   }
 
   // ===== ARCHIVE SECTION =====
-  function renderArchiveSection(archived: PanelSession[], archivedTeams: PanelTeam[], now: number, afterElement: HTMLElement): void {
+  function renderArchiveSection(archived: PanelSession[], archivedTeams: PanelTeam[], archivedWorkflows: PanelWorkflow[], now: number, afterElement: HTMLElement): void {
     const scrollWrap = root.querySelector('.card-archive-scroll');
     let existingList = (scrollWrap || root).querySelector('.archive-list') as HTMLElement | null;
 
-    if (archived.length === 0 && archivedTeams.length === 0) {
+    if (archived.length === 0 && archivedTeams.length === 0 && archivedWorkflows.length === 0) {
       if (existingList) existingList.remove();
       return;
     }
@@ -922,30 +1028,41 @@ const RANGE_MS: Record<string, number> = {
     const DAY_MS = 86400000;
     const rangeMs = RANGE_MS[archiveRange]; // 0 = no limit (all)
 
-    const recentItems: PanelSession[] = [];
-    const overflowItems: PanelSession[] = [];
+    // Unify sessions, teams, and workflows into one recency-sorted stream so an
+    // archived workflow/team reads like any other archived row. Each carries a
+    // `ts` (last-activity epoch ms): sessions use lastActivity; teams the
+    // orchestrator's updatedAt; workflows their end time (start + duration).
+    // `alwaysShow` exempts an item from the day-window. Teams and workflows are
+    // low-volume "container" archives (and a team's updatedAt can predate its
+    // dismissal — the 7-day discovery gate is keyed on config mtime, not
+    // updatedAt — so age-windowing them would silently hide a just-dismissed
+    // team). They still take part in the recency sort; only their *visibility*
+    // is unconditional, matching the pre-interleave behaviour. The window stays
+    // on plain sessions, which are the high-volume case it exists to bound.
+    interface ArchiveItem { ts: number; html: string; alwaysShow?: boolean }
+    const items: ArchiveItem[] = [];
     for (const s of archived) {
-      const age = now - s.lastActivity;
-      if (age <= DAY_MS) {
-        recentItems.push(s);
-      } else if (rangeMs === 0 || age <= rangeMs) {
-        overflowItems.push(s);
-      }
+      items.push({ ts: s.lastActivity, html: renderCompactRow(s, now) });
     }
-
-    let archiveHtml = '';
-
-    // Team archive rows (always shown at top of archive)
     for (const team of archivedTeams) {
-      archiveHtml += renderTeamCompactRow(team, now);
+      items.push({ ts: team.updatedAt, html: renderTeamCompactRow(team, now), alwaysShow: true });
+    }
+    for (const wf of archivedWorkflows) {
+      items.push({ ts: wf.startTime + (wf.durationMs || 0), html: renderWorkflowCompactRow(wf, now), alwaysShow: true });
     }
 
-    for (const s of recentItems) {
-      archiveHtml += renderCompactRow(s, now);
-    }
-    if (archiveRange !== '1d') {
-      for (const s of overflowItems) {
-        archiveHtml += renderCompactRow(s, now);
+    // Newest first.
+    items.sort((a, b) => b.ts - a.ts);
+
+    // Window: containers and rows from the last day always show; older sessions
+    // show only when the range allows (1d hides them; a wider/all range reveals).
+    let archiveHtml = '';
+    for (const item of items) {
+      const age = now - item.ts;
+      if (item.alwaysShow || age <= DAY_MS) {
+        archiveHtml += item.html;
+      } else if ((rangeMs === 0 || age <= rangeMs) && archiveRange !== '1d') {
+        archiveHtml += item.html;
       }
     }
 
@@ -1021,6 +1138,76 @@ const RANGE_MS: Record<string, number> = {
   }
 
   // ===== CARD INNER HTML =====
+  /** Compact "Nm Ns" / "Ns" duration. */
+  function formatDurationShort(ms: number): string {
+    const secs = Math.round(ms / 1000);
+    if (secs < 60) { return secs + 's'; }
+    const mins = Math.floor(secs / 60);
+    const rem = secs % 60;
+    return rem > 0 ? mins + 'm ' + rem + 's' : mins + 'm';
+  }
+
+  /** A clickable meta-row chip that opens the source-keyed detail panel.
+   *  `source` selects the drill-in (workflow | team | subagents); `containerId`
+   *  is the sessionId (workflow/subagents) or teamId (team); `sessionId` is the
+   *  invoking conversation the panel header jumps back to. Styling reuses the
+   *  status-tinted `.wf-view-chip` recipe; `.detail-chip` is the click hook. */
+  function renderDetailChip(label: string, source: DetailSource, containerId: string, sessionId: string): string {
+    return '<span class="wf-tag wf-view-chip detail-chip"'
+      + ' data-detail-source="' + escapeHtml(source) + '"'
+      + ' data-detail-container="' + escapeHtml(containerId) + '"'
+      + ' data-detail-session="' + escapeHtml(sessionId) + '"'
+      + ' role="button" tabindex="0" title="' + escapeHtml(label) + '" aria-label="' + escapeHtml(label)
+      + '">' + escapeHtml(label) + '<span class="wf-arrow">→</span></span>';
+  }
+
+  /** Roll-up block for a session that owns workflow run(s): a thin progress
+   *  bar, per-phase done counts, and run metrics. The card body opens the
+   *  invoking conversation; the "view workflow →" chip in the meta row (not
+   *  here) opens the detail panel. `wfs` is non-empty and most-relevant-first. */
+  function renderWorkflowBlock(wfs: PanelWorkflow[]): string {
+    const run = wfs[0];
+    const total = run.agentCount || run.agents.length || 0;
+    const done = run.counts['done'] || 0;
+    const running = run.status === 'running';
+    const failed = run.status === 'failed';
+    const completed = run.status === 'completed';
+    // A terminal 'completed' run is 100% by definition (an unknown/non-done
+    // agent state must not make a finished run look in-progress). Failed /
+    // incomplete show how far they actually got.
+    const pct = completed
+      ? 100
+      : (total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0);
+    const barFillCls = 'wf-bar-fill' + (running ? ' running' : failed ? ' failed' : '');
+
+    let pills = '';
+    for (const ph of run.phases) {
+      const inPhase = run.agents.filter(a => a.phaseIndex === ph.index);
+      const phaseDone = inPhase.filter(a => a.status === 'done').length;
+      // Only a completed run earns the success check; failed / incomplete /
+      // running show the fraction so a partial run never implies success.
+      const count = completed ? '✓' + phaseDone : phaseDone + '/' + inPhase.length;
+      pills += '<span class="wf-phase"><b>' + escapeHtml(ph.title) + '</b> ' + count + '</span>';
+    }
+
+    const metaBits: string[] = [total + ' agent' + (total === 1 ? '' : 's')];
+    if (run.totalTokens > 0) { metaBits.push(formatTokenCount(run.totalTokens) + ' tokens'); }
+    if (run.totalToolCalls > 0) { metaBits.push(run.totalToolCalls + ' tools'); }
+    if (run.durationMs && run.durationMs > 0) { metaBits.push(formatDurationShort(run.durationMs)); }
+    if (wfs.length > 1) { metaBits.push('+' + (wfs.length - 1) + ' earlier'); }
+
+    let html = '<div class="wf-rollup">';
+    html += '<div class="wf-bar' + (running ? ' running' : '') + '"><i class="' + barFillCls + '" style="width:' + pct + '%"></i></div>';
+    if (pills) { html += '<div class="wf-phases">' + pills + '</div>'; }
+    if (failed) { html += '<div class="wf-status-line failed">run failed</div>'; }
+    html += '<div class="wf-metaline">'
+      + '<span class="wf-meta-text">' + escapeHtml(metaBits.join(' · ')) + '</span>'
+      + '<span class="wf-dismiss" role="button" tabindex="0" title="Archive run" aria-label="Archive workflow run" data-dismiss-workflow="' + escapeHtml(run.runId) + '">×</span>'
+      + '</div>';
+    html += '</div>';
+    return html;
+  }
+
   function renderCardInner(s: PanelSession, now: number, isFocused: boolean): string {
     const statusLabel = getStatusLabel(s, now);
     const displayName = stripMarkdown(getDisplayName(s));
@@ -1089,11 +1276,31 @@ const RANGE_MS: Record<string, number> = {
     actionsHtml += '<button class="action-btn dismiss-btn' + (isLive ? ' dismiss-btn-force' : '') + '" data-dismiss-id="' + escapeHtml(s.sessionId) + '" title="' + escapeHtml(dismissTitle) + '" aria-label="Archive session">&times;</button>';
     actionsHtml += '</div>';
 
+    const wfs = workflowsBySession.get(s.sessionId);
     let metaHtml = '<div class="card-meta">';
     metaHtml += '<span class="session-id-pill clickable" data-copy-id="' + escapeHtml(s.sessionId) + '" title="Copy session ID">' + escapeHtml(s.sessionId.slice(0, 8)) + '</span>';
     if (s.modelLabel) {
       const modelCls = 'model-pill' + (s.modelLabel === 'Sonnet' ? ' sonnet' : s.modelLabel === 'Haiku' ? ' haiku' : '');
       metaHtml += '<span class="' + modelCls + '">' + escapeHtml(s.modelLabel) + '</span>';
+    }
+    // Background-shell badge — a detached `run_in_background` shell is still
+    // going after the turn ended. Non-status (the card keeps its real status);
+    // a quiet running-tinted chip so a `done` card still flags the live build.
+    const bgShells = s.backgroundShellCount ?? 0;
+    if (bgShells > 0) {
+      const bgLabel = bgShells + ' shell' + (bgShells === 1 ? '' : 's') + ' running';
+      metaHtml += '<span class="bg-shell-badge" title="Background shells launched with run_in_background still running">⚙ ' + bgLabel + '</span>';
+    }
+    if (wfs && wfs.length > 0) {
+      const wfLabel = wfs.length > 1 ? 'view workflows' : 'view workflow';
+      metaHtml += renderDetailChip(wfLabel, 'workflow', s.sessionId, s.sessionId);
+    }
+    // "view subagents" chip — opens the same detail panel keyed to this
+    // session's Task subagents. Additive to the inline summary below; gated on
+    // the same subagent-visibility setting but not the status/focus gate, so a
+    // finished session still offers the drill-in.
+    if (hasSubagents && currentSettings.show.subagents) {
+      metaHtml += renderDetailChip('view subagents', 'subagents', s.sessionId, s.sessionId);
     }
     metaHtml += actionsHtml;
     metaHtml += '</div>';
@@ -1125,6 +1332,7 @@ const RANGE_MS: Record<string, number> = {
       + '</div>'
       + metaHtml
       + detailHtml
+      + (wfs && wfs.length > 0 ? renderWorkflowBlock(wfs) : '')
       + subagentHtml
       + contextBarHtml;
   }
@@ -1677,6 +1885,9 @@ const RANGE_MS: Record<string, number> = {
       metaHtml += '<span class="' + modelCls + '">' + escapeHtml(o.modelLabel) + '</span>';
     }
     metaHtml += '<span class="team-badge">orchestrator</span>';
+    if (team.agents.length > 0) {
+      metaHtml += renderDetailChip('view agent team', 'team', team.teamId, o.sessionId);
+    }
 
     const teamLive = team.agents.some(a => a.status === 'running' || a.status === 'waiting')
       || o.status === 'running' || o.status === 'waiting';
@@ -1761,6 +1972,17 @@ const RANGE_MS: Record<string, number> = {
       + '<span class="team-badge">team</span>'
       + '<span class="compact-name">' + escapeHtml(team.name) + '</span>'
       + '<span class="compact-age">' + countLabel + '</span>'
+      + '</div>';
+  }
+
+  /** Archived workflow run: a compact row that un-dismisses (reopens the
+   *  invoking conversation) on click, mirroring the team/session archive rows. */
+  function renderWorkflowCompactRow(wf: PanelWorkflow, now: number): string {
+    const age = formatAge(now - (wf.startTime + (wf.durationMs || 0)));
+    return '<div class="workflow-compact-row" role="listitem" tabindex="0" data-run-id="' + escapeHtml(wf.runId) + '">'
+      + '<span class="wf-badge">wf</span>'
+      + '<span class="compact-name">' + escapeHtml(wf.name) + '</span>'
+      + '<span class="compact-age">' + age + '</span>'
       + '</div>';
   }
 

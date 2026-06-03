@@ -4,7 +4,7 @@ import * as vscode from 'vscode';
 import { validateRecord, getContentBlocks } from './jsonlValidator.js';
 import type { JsonlRecord, JsonlContentBlock } from './types.js';
 
-interface TranscriptEntry {
+export interface TranscriptEntry {
   timestamp: string;
   role: string;
   content: string;
@@ -19,7 +19,7 @@ export async function renderTranscript(
   sessionId: string,
   workspacePath: string,
 ): Promise<string> {
-  const entries = await parseJsonl(jsonlPath);
+  const entries = await parseTranscript(jsonlPath);
   const markdown = formatMarkdown(entries, sessionId);
 
   const transcriptsDir = path.join(workspacePath, '.claude', 'transcripts');
@@ -30,7 +30,10 @@ export async function renderTranscript(
   return outputPath;
 }
 
-async function parseJsonl(filePath: string): Promise<TranscriptEntry[]> {
+/** Parse a JSONL session/agent transcript into renderable entries.
+ *  Shared by the markdown writer ({@link renderTranscript}) and the workflow
+ *  detail-panel reader (which formats the entries as webview HTML). */
+export async function parseTranscript(filePath: string): Promise<TranscriptEntry[]> {
   const entries: TranscriptEntry[] = [];
   let raw: string;
   const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024; // 50MB cap [H4]

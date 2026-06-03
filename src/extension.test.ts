@@ -74,6 +74,12 @@ const mockDiscovery = {
   undismissTeam: vi.fn(),
   getTeamSessionFilePath: vi.fn().mockReturnValue(null),
   isTeamSessionRunning: vi.fn().mockReturnValue(false),
+  getWorkflowSnapshots: vi.fn().mockReturnValue([]),
+  dismissWorkflow: vi.fn(),
+  undismissWorkflow: vi.fn(),
+  getWorkflowAgentFilePath: vi.fn().mockReturnValue(null),
+  getSubagentFilePath: vi.fn().mockReturnValue(null),
+  getTeamAgentFilePath: vi.fn().mockReturnValue(null),
   getOlderSessionCount: vi.fn().mockReturnValue(0),
   getLocalRepoRoot: vi.fn().mockReturnValue(null),
   getDiscoveredWorktrees: vi.fn().mockReturnValue([]),
@@ -97,6 +103,9 @@ const mockPanelProvider = {
   setArchiveRangeHandler: vi.fn(),
   setDismissTeamHandler: vi.fn(),
   setUndismissTeamHandler: vi.fn(),
+  setOpenDetailHandler: vi.fn(),
+  setDismissWorkflowHandler: vi.fn(),
+  setUndismissWorkflowHandler: vi.fn(),
   setOpenWorkspaceHandler: vi.fn(),
   setFooterSlotBridge: vi.fn(),
   refresh: vi.fn(),
@@ -358,6 +367,84 @@ describe('extension', () => {
       expect(mockDiscovery.undismissSession).toHaveBeenCalledWith('test-session');
       expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
         'claude-vscode.editor.open', 'test-session', undefined, 1,
+      );
+    });
+  });
+
+  describe('team archive handlers', () => {
+    it('dismissTeam archives the team via discovery', () => {
+      activate(context as any);
+      const handler = vi.mocked(mockPanelProvider.setDismissTeamHandler).mock.calls[0][0];
+      handler('at:my-team');
+      expect(mockDiscovery.dismissTeam).toHaveBeenCalledWith('at:my-team');
+    });
+
+    it('undismissTeam reopens the orchestrator session resolved from the snapshot', () => {
+      activate(context as any);
+      // teamId is NOT the orchestrator session id (Agent Teams use `at:<name>`);
+      // the lead session is resolved from the snapshot's orchestrator.sessionId.
+      mockDiscovery.getTeamSnapshots.mockReturnValue([
+        { teamId: 'at:my-team', orchestrator: { sessionId: 'lead-session' }, agents: [], dismissed: false },
+      ]);
+
+      const handler = vi.mocked(mockPanelProvider.setUndismissTeamHandler).mock.calls[0][0];
+      handler('at:my-team');
+
+      expect(mockDiscovery.undismissTeam).toHaveBeenCalledWith('at:my-team');
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+        'claude-vscode.editor.open', 'lead-session', undefined, 1,
+      );
+    });
+
+    it('undismissTeam still undismisses when the team has no resolvable orchestrator', () => {
+      activate(context as any);
+      mockDiscovery.getTeamSnapshots.mockReturnValue([]);
+
+      const handler = vi.mocked(mockPanelProvider.setUndismissTeamHandler).mock.calls[0][0];
+      handler('at:orphan');
+
+      expect(mockDiscovery.undismissTeam).toHaveBeenCalledWith('at:orphan');
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), undefined, 1,
+      );
+    });
+  });
+
+  describe('workflow archive handlers', () => {
+    it('dismissWorkflow archives the run via discovery', () => {
+      activate(context as any);
+      const handler = vi.mocked(mockPanelProvider.setDismissWorkflowHandler).mock.calls[0][0];
+      handler('wf_run-001');
+      expect(mockDiscovery.dismissWorkflow).toHaveBeenCalledWith('wf_run-001');
+    });
+
+    it('undismissWorkflow reopens the invoking conversation resolved from the snapshot', () => {
+      activate(context as any);
+      // The runId is NOT a sessionId — the parent session is resolved from the
+      // snapshot's sessionId, then reopened.
+      mockDiscovery.getWorkflowSnapshots.mockReturnValue([
+        { runId: 'wf_run-002', sessionId: 'owner-session' },
+      ]);
+
+      const handler = vi.mocked(mockPanelProvider.setUndismissWorkflowHandler).mock.calls[0][0];
+      handler('wf_run-002');
+
+      expect(mockDiscovery.undismissWorkflow).toHaveBeenCalledWith('wf_run-002');
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+        'claude-vscode.editor.open', 'owner-session', undefined, 1,
+      );
+    });
+
+    it('undismissWorkflow still undismisses when the run has no resolvable session', () => {
+      activate(context as any);
+      mockDiscovery.getWorkflowSnapshots.mockReturnValue([]);
+
+      const handler = vi.mocked(mockPanelProvider.setUndismissWorkflowHandler).mock.calls[0][0];
+      handler('wf_orphan');
+
+      expect(mockDiscovery.undismissWorkflow).toHaveBeenCalledWith('wf_orphan');
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), undefined, 1,
       );
     });
   });

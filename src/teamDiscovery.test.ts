@@ -59,93 +59,73 @@ vi.mock('./sessionManager.js', () => ({
 const { TeamDiscovery } = await import('./teamDiscovery.js');
 
 // ── Helpers ─────────────────────────────────────────────────────────
+//
+// Serac now reads ONLY native Agent Teams configs (the Cornice sidecar parser
+// was removed). Agent Teams shape: a `<team-name>/config.json` with a lead
+// member (its leadSessionId is the orchestrator session) and tmux members that
+// carry NO own session id. So a scanned team produces exactly ONE
+// SessionManager — the lead's; member status comes from the config, not a
+// session. teamId is `at:<dir>`.
 
 let tmpDir: string;
 let teamsDir: string;
 let projectsDir: string;
+const PROJECT_CWD = '/Users/test/repos/project';
 
 const log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
 
-function makeDiscovery(): InstanceType<typeof TeamDiscovery> {
-  const td = new TeamDiscovery(projectsDir, log);
+/** The workspace key the discovery is scoped to (matches PROJECT_CWD). */
+const LOCAL_WS_KEY = PROJECT_CWD.replace(/[^a-zA-Z0-9]/g, '-');
+
+function makeDiscovery(localWorkspaceKey: string = LOCAL_WS_KEY): InstanceType<typeof TeamDiscovery> {
+  const td = new TeamDiscovery(projectsDir, localWorkspaceKey, log);
   // Override teamsDir to our temp location
   (td as Record<string, unknown>)['teamsDir'] = teamsDir;
   return td;
 }
 
-function validManifest(overrides: Record<string, unknown> = {}) {
+/** A member spec for teamConfig(): name + optional isActive (omit = "starting"). */
+interface MemberSpec { name: string; isActive?: boolean; }
+
+/** Build an Agent Teams config. The lead's leadSessionId is the orchestrator
+ *  session; tmux members are the roster (sessionId always null on disk). */
+function teamConfig(opts: {
+  name?: string;
+  leadSessionId?: string;
+  leadCwd?: string;
+  members?: MemberSpec[];
+} = {}) {
+  const name = opts.name ?? 'test-team';
+  const leadCwd = opts.leadCwd ?? PROJECT_CWD;
+  const lead = {
+    agentId: `team-lead@${name}`, name: 'team-lead', agentType: 'team-lead',
+    model: 'opus', joinedAt: Date.now(), tmuxPaneId: '', cwd: leadCwd, subscriptions: [],
+  };
+  const members = (opts.members ?? [{ name: 'worker', isActive: true }]).map(m => ({
+    agentId: `${m.name}@${name}`, name: m.name, agentType: m.name, model: 'opus',
+    joinedAt: Date.now(), tmuxPaneId: '%1', cwd: leadCwd, subscriptions: [], backendType: 'tmux',
+    ...(m.isActive !== undefined ? { isActive: m.isActive } : {}),
+  }));
   return {
-    version: 1,
-    orchestrator: {
-      sessionId: 'orch-001',
-      name: 'Test Team',
-      startedAt: new Date().toISOString(),
-      cwd: '/Users/test/repos/project',
-    },
-    agents: [
-      {
-        sessionId: 'agent-001',
-        name: 'research-task',
-        cwd: '/Users/test/repos/project',
-        parentSessionId: 'orch-001',
-        depth: 1,
-        spawnedAt: new Date().toISOString(),
-        completedAt: null,
-        exitStatus: null,
-      },
-    ],
-    updatedAt: new Date().toISOString(),
-    ...overrides,
+    name,
+    description: 'Test team',
+    createdAt: Date.now(),
+    leadAgentId: `team-lead@${name}`,
+    leadSessionId: opts.leadSessionId ?? 'lead-001',
+    members: [lead, ...members],
   };
 }
 
-function writeManifest(teamId: string, manifest: Record<string, unknown>): void {
-  fs.writeFileSync(
-    path.join(teamsDir, `${teamId}.json`),
-    JSON.stringify(manifest),
-  );
+/** Back-compat alias used by the getTeamAgentFilePath helpers below. */
+function validAgentTeamsConfig(overrides: Record<string, unknown> = {}) {
+  return { ...teamConfig(), ...overrides };
 }
 
-/** Write an Agent Teams config in subdirectory format */
+/** Write an Agent Teams config at ~/.claude/teams/<teamName>/config.json. */
 function writeAgentTeamsConfig(teamName: string, config: Record<string, unknown>): void {
   const dir = path.join(teamsDir, teamName);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config));
-}
-
-function validAgentTeamsConfig(overrides: Record<string, unknown> = {}) {
-  return {
-    name: 'test-team',
-    description: 'Test team',
-    createdAt: Date.now(),
-    leadAgentId: 'team-lead@test-team',
-    leadSessionId: 'lead-001',
-    members: [
-      {
-        agentId: 'team-lead@test-team',
-        name: 'team-lead',
-        agentType: 'team-lead',
-        model: 'opus',
-        joinedAt: Date.now(),
-        tmuxPaneId: '',
-        cwd: '/Users/test/repos/project',
-        subscriptions: [],
-      },
-      {
-        agentId: 'worker@test-team',
-        name: 'worker',
-        agentType: 'Explore',
-        model: 'haiku',
-        joinedAt: Date.now(),
-        tmuxPaneId: '%1',
-        cwd: '/Users/test/repos/project',
-        subscriptions: [],
-        backendType: 'tmux',
-        isActive: true,
-      },
-    ],
-    ...overrides,
-  };
 }
 
 /** Create a dummy JSONL file so ensureSessionManager finds it */
@@ -158,6 +138,14 @@ function createJsonl(sessionId: string, cwd: string): void {
 
 function emptyMeta(): Map<string, SessionMeta> {
   return new Map();
+}
+
+function dismissedMeta(teamId: string): Map<string, SessionMeta> {
+  const meta = new Map<string, SessionMeta>();
+  meta.set(`team:${teamId}`, {
+    title: null, dismissed: true, acknowledged: false, acknowledgedAt: null, firstSeen: Date.now(),
+  });
+  return meta;
 }
 
 // ── Setup / Teardown ────────────────────────────────────────────────
@@ -183,28 +171,23 @@ afterEach(() => {
 
 describe('TeamDiscovery', () => {
   describe('scan()', () => {
-    it('discovers manifests and creates SessionManagers for known JONLs', async () => {
-      const manifest = validManifest();
-      writeManifest('team-1', manifest);
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+    it('discovers a config and creates a SessionManager for the lead', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      // Both orchestrator and agent should have SessionManagers
-      expect(mockManagers.has('orch-001')).toBe(true);
-      expect(mockManagers.has('agent-001')).toBe(true);
-
-      // Initial update() should have been called
-      expect(mockManagers.get('orch-001')!.updated).toBe(1);
-      expect(mockManagers.get('agent-001')!.updated).toBe(1);
+      // Only the lead gets a SessionManager; tmux members carry no session id.
+      expect(mockManagers.has('lead-001')).toBe(true);
+      expect(mockManagers.get('lead-001')!.updated).toBe(1);
+      // The roster member 'worker' has no session and therefore no manager.
+      expect(mockManagers.size).toBe(1);
 
       td.dispose();
     });
 
     it('tolerates missing teams directory', async () => {
-      // Remove the teams dir
       fs.rmSync(teamsDir, { recursive: true });
 
       const td = makeDiscovery();
@@ -214,8 +197,10 @@ describe('TeamDiscovery', () => {
       td.dispose();
     });
 
-    it('skips malformed manifests', async () => {
-      fs.writeFileSync(path.join(teamsDir, 'bad.json'), '{ broken json');
+    it('skips a config with malformed JSON', async () => {
+      const dir = path.join(teamsDir, 'broken');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'config.json'), '{ broken json');
 
       const td = makeDiscovery();
       await td.scan();
@@ -225,25 +210,25 @@ describe('TeamDiscovery', () => {
       td.dispose();
     });
 
-    it('skips non-JSON files', async () => {
+    it('skips flat (non-directory) files in the teams dir', async () => {
+      // Flat .json files were the removed Cornice sidecars; they are now ignored.
+      fs.writeFileSync(path.join(teamsDir, 'leftover.json'), JSON.stringify(teamConfig()));
       fs.writeFileSync(path.join(teamsDir, 'readme.txt'), 'ignore me');
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+      writeAgentTeamsConfig('my-team', teamConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      // Only the valid manifest should be processed
-      expect(mockManagers.has('orch-001')).toBe(true);
+      // Only the directory-format team is discovered.
+      expect(mockManagers.has('lead-001')).toBe(true);
+      expect(mockManagers.size).toBe(1);
       td.dispose();
     });
 
-    it('skips manifests older than 7 days', async () => {
-      writeManifest('old-team', validManifest());
-
-      // Backdate the file to 8 days ago
-      const filePath = path.join(teamsDir, 'old-team.json');
+    it('skips configs older than the age gate', async () => {
+      writeAgentTeamsConfig('old-team', teamConfig());
+      const filePath = path.join(teamsDir, 'old-team', 'config.json');
       const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
       fs.utimesSync(filePath, eightDaysAgo, eightDaysAgo);
 
@@ -254,125 +239,61 @@ describe('TeamDiscovery', () => {
       td.dispose();
     });
 
-    it('skips agents whose JSONL does not exist yet', async () => {
-      writeManifest('team-1', validManifest());
-      // Only create orchestrator JSONL, not agent
-      createJsonl('orch-001', '/Users/test/repos/project');
+    it('skips a team whose lead JSONL does not exist yet', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig());
+      // No lead JSONL created — the lead is "starting".
 
       const td = makeDiscovery();
       await td.scan();
 
-      expect(mockManagers.has('orch-001')).toBe(true);
-      expect(mockManagers.has('agent-001')).toBe(false);
+      expect(mockManagers.has('lead-001')).toBe(false);
       td.dispose();
     });
 
-    it('does not re-parse unchanged manifest on second scan', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+    it('does not re-parse an unchanged config on second scan', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
-      const firstUpdateCount = mockManagers.get('orch-001')!.updated;
+      const firstUpdateCount = mockManagers.get('lead-001')!.updated;
 
-      // Second scan without mtime change — should not re-create managers
       await td.scan();
 
-      // Manager should not have been recreated (still same instance with same update count)
-      expect(mockManagers.get('orch-001')!.updated).toBe(firstUpdateCount);
+      expect(mockManagers.get('lead-001')!.updated).toBe(firstUpdateCount);
       td.dispose();
     });
 
-    it('prunes manifests whose files have been deleted', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+    it('handles multiple teams', async () => {
+      writeAgentTeamsConfig('team-a', teamConfig({ name: 'team-a', leadSessionId: 'lead-001' }));
+      writeAgentTeamsConfig('team-b', teamConfig({ name: 'team-b', leadSessionId: 'lead-002', leadCwd: '/Users/test/repos/other' }));
+      createJsonl('lead-001', PROJECT_CWD);
+      createJsonl('lead-002', '/Users/test/repos/other');
 
       const td = makeDiscovery();
       await td.scan();
 
-      expect(mockManagers.has('orch-001')).toBe(true);
-
-      // Delete the manifest
-      fs.unlinkSync(path.join(teamsDir, 'team-1.json'));
-      await td.scan();
-
-      // Managers should be disposed
-      expect(mockManagers.get('orch-001')!.disposed).toBe(true);
-      expect(mockManagers.get('agent-001')!.disposed).toBe(true);
-      td.dispose();
-    });
-
-    it('handles multiple manifests', async () => {
-      const m1 = validManifest();
-      const m2 = validManifest({
-        orchestrator: {
-          sessionId: 'orch-002',
-          name: 'Second Team',
-          startedAt: new Date().toISOString(),
-          cwd: '/Users/test/repos/other',
-        },
-        agents: [{
-          sessionId: 'agent-002',
-          name: 'other-task',
-          cwd: '/Users/test/repos/other',
-          parentSessionId: 'orch-002',
-          depth: 1,
-          spawnedAt: new Date().toISOString(),
-          completedAt: null,
-          exitStatus: null,
-        }],
-      });
-
-      writeManifest('team-1', m1);
-      writeManifest('team-2', m2);
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
-      createJsonl('orch-002', '/Users/test/repos/other');
-      createJsonl('agent-002', '/Users/test/repos/other');
-
-      const td = makeDiscovery();
-      await td.scan();
-
-      expect(mockManagers.size).toBe(4);
+      // One SessionManager per lead.
+      expect(mockManagers.size).toBe(2);
+      expect(mockManagers.has('lead-001')).toBe(true);
+      expect(mockManagers.has('lead-002')).toBe(true);
       td.dispose();
     });
 
     it('discovers Agent Teams configs in subdirectories', async () => {
-      const config = validAgentTeamsConfig();
-      writeAgentTeamsConfig('test-team', config);
-      createJsonl('lead-001', '/Users/test/repos/project');
+      writeAgentTeamsConfig('test-team', validAgentTeamsConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      // Lead session should have a SessionManager
-      expect(mockManagers.has('lead-001')).toBe(true);
-      td.dispose();
-    });
-
-    it('discovers both Cornice sidecars and Agent Teams configs', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
-
-      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
-      createJsonl('lead-001', '/Users/test/repos/project');
-
-      const td = makeDiscovery();
-      await td.scan();
-
-      // Both should be discovered
-      expect(mockManagers.has('orch-001')).toBe(true);
-      expect(mockManagers.has('agent-001')).toBe(true);
       expect(mockManagers.has('lead-001')).toBe(true);
       td.dispose();
     });
 
     it('uses at: prefix for Agent Teams teamIds', async () => {
       writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
-      createJsonl('lead-001', '/Users/test/repos/project');
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
@@ -394,15 +315,14 @@ describe('TeamDiscovery', () => {
       td.dispose();
     });
 
-    it('prunes Agent Teams configs when directory is removed', async () => {
+    it('prunes Agent Teams configs when the directory is removed', async () => {
       writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
-      createJsonl('lead-001', '/Users/test/repos/project');
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
       expect(mockManagers.has('lead-001')).toBe(true);
 
-      // Remove the team directory
       fs.rmSync(path.join(teamsDir, 'my-team'), { recursive: true });
       await td.scan();
 
@@ -420,7 +340,6 @@ describe('TeamDiscovery', () => {
       }
       expect(td.shouldRescan()).toBe(true);
 
-      // Resets — next 9 are false
       for (let i = 0; i < 9; i++) {
         expect(td.shouldRescan()).toBe(false);
       }
@@ -431,50 +350,46 @@ describe('TeamDiscovery', () => {
   });
 
   describe('hasActiveAgents()', () => {
-    it('returns false when no agents exist', () => {
+    it('returns false when no teams exist', () => {
       const td = makeDiscovery();
       expect(td.hasActiveAgents()).toBe(false);
       td.dispose();
     });
 
-    it('returns true when an agent is running', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+    it('returns true when the lead is running', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      // Set one agent to running
-      mockManagers.get('agent-001')!.status = 'running';
+      mockManagers.get('lead-001')!.status = 'running';
 
       expect(td.hasActiveAgents()).toBe(true);
       td.dispose();
     });
 
-    it('returns true when an agent is waiting', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+    it('returns true when the lead is waiting', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      mockManagers.get('agent-001')!.status = 'waiting';
+      mockManagers.get('lead-001')!.status = 'waiting';
 
       expect(td.hasActiveAgents()).toBe(true);
       td.dispose();
     });
 
-    it('returns false when all agents are done', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+    it('returns false when the lead is done', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      // Both default to 'done' in our mock
+      // Lead defaults to 'done' in the mock.
       expect(td.hasActiveAgents()).toBe(false);
       td.dispose();
     });
@@ -482,84 +397,70 @@ describe('TeamDiscovery', () => {
 
   describe('poll()', () => {
     it('updates active sessions', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+      writeAgentTeamsConfig('my-team', teamConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      // Reset update counts after initial scan
-      mockManagers.get('orch-001')!.updated = 0;
-      mockManagers.get('agent-001')!.updated = 0;
-
-      // Mark orchestrator as running
-      mockManagers.get('orch-001')!.status = 'running';
+      mockManagers.get('lead-001')!.updated = 0;
+      mockManagers.get('lead-001')!.status = 'running';
 
       const changed = await td.poll();
 
-      // Running session should have been updated
-      expect(mockManagers.get('orch-001')!.updated).toBeGreaterThan(0);
+      expect(mockManagers.get('lead-001')!.updated).toBeGreaterThan(0);
       expect(changed).toBe(true);
       td.dispose();
     });
 
     it('stat-checks dormant sessions and updates woken ones', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+      // Two teams (two leads), both dormant; only lead-002 has a changed mtime.
+      writeAgentTeamsConfig('team-a', teamConfig({ name: 'team-a', leadSessionId: 'lead-001' }));
+      writeAgentTeamsConfig('team-b', teamConfig({ name: 'team-b', leadSessionId: 'lead-002', leadCwd: '/Users/test/repos/other' }));
+      createJsonl('lead-001', PROJECT_CWD);
+      createJsonl('lead-002', '/Users/test/repos/other');
 
       const td = makeDiscovery();
       await td.scan();
 
-      // Reset counts
-      mockManagers.get('orch-001')!.updated = 0;
-      mockManagers.get('agent-001')!.updated = 0;
-
-      // Both are done (dormant). Agent has changed mtime.
-      mockManagers.get('agent-001')!.mtimeChanged = true;
+      mockManagers.get('lead-001')!.updated = 0;
+      mockManagers.get('lead-002')!.updated = 0;
+      mockManagers.get('lead-002')!.mtimeChanged = true;
 
       const changed = await td.poll();
 
-      // Woken session should get a full update
-      expect(mockManagers.get('agent-001')!.updated).toBeGreaterThan(0);
-      // Dormant with no mtime change should NOT get updated
-      expect(mockManagers.get('orch-001')!.updated).toBe(0);
+      expect(mockManagers.get('lead-002')!.updated).toBeGreaterThan(0);
+      expect(mockManagers.get('lead-001')!.updated).toBe(0);
       expect(changed).toBe(true);
       td.dispose();
     });
 
-    it('picks up JONLs for agents that appeared after initial scan', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      // agent-001 JSONL not yet created
+    it('picks up the lead JSONL when it appears after the initial scan', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig());
+      // lead JSONL not yet created
 
       const td = makeDiscovery();
       await td.scan();
 
-      expect(mockManagers.has('agent-001')).toBe(false);
+      expect(mockManagers.has('lead-001')).toBe(false);
 
-      // Now create the JSONL
-      createJsonl('agent-001', '/Users/test/repos/project');
+      createJsonl('lead-001', PROJECT_CWD);
 
       const changed = await td.poll();
 
-      expect(mockManagers.has('agent-001')).toBe(true);
+      expect(mockManagers.has('lead-001')).toBe(true);
       expect(changed).toBe(true);
       td.dispose();
     });
 
     it('returns false when nothing changed', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+      writeAgentTeamsConfig('my-team', teamConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      // Reset — all dormant, no mtime changes
-      mockManagers.get('orch-001')!.updated = 0;
-      mockManagers.get('agent-001')!.updated = 0;
+      mockManagers.get('lead-001')!.updated = 0;
 
       const changed = await td.poll();
 
@@ -569,53 +470,43 @@ describe('TeamDiscovery', () => {
   });
 
   describe('getTeamSnapshots()', () => {
-    it('builds snapshots from manifest + session data', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+    it('builds snapshots from config + lead session data', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      // Set up snapshot data
-      mockManagers.get('orch-001')!.snapshot = {
+      mockManagers.get('lead-001')!.snapshot = {
         status: 'running',
         activity: 'Planning tasks',
         confidence: 'high',
         contextTokens: 50000,
         modelLabel: 'Opus',
       };
-      mockManagers.get('agent-001')!.snapshot = {
-        status: 'running',
-        activity: 'Researching competitors',
-        confidence: 'high',
-        subagents: [],
-        contextTokens: 30000,
-      };
 
       const snapshots = td.getTeamSnapshots(emptyMeta());
 
       expect(snapshots).toHaveLength(1);
       const team = snapshots[0];
-      expect(team.teamId).toBe('team-1');
-      expect(team.name).toBe('Test Team');
-      expect(team.orchestrator.sessionId).toBe('orch-001');
+      expect(team.teamId).toBe('at:my-team');
+      expect(team.name).toBe('test-team');
+      expect(team.orchestrator.sessionId).toBe('lead-001');
       expect(team.orchestrator.status).toBe('running');
       expect(team.orchestrator.activity).toBe('Planning tasks');
       expect(team.orchestrator.modelLabel).toBe('Opus');
+      // Roster: the single tmux member, status inferred from isActive (no session).
       expect(team.agents).toHaveLength(1);
-      expect(team.agents[0].sessionId).toBe('agent-001');
-      expect(team.agents[0].name).toBe('research-task');
+      expect(team.agents[0].sessionId).toBeNull();
+      expect(team.agents[0].name).toBe('worker');
       expect(team.agents[0].status).toBe('running');
-      expect(team.agents[0].activity).toBe('Researching competitors');
       expect(team.dismissed).toBe(false);
 
       td.dispose();
     });
 
-    it('infers running status for agents without JSONL yet', async () => {
-      writeManifest('team-1', validManifest());
-      // No JONLs created — agents are "starting"
+    it('infers running status for a member with no isActive flag (starting)', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'worker' }] }));
 
       const td = makeDiscovery();
       await td.scan();
@@ -623,18 +514,13 @@ describe('TeamDiscovery', () => {
       const snapshots = td.getTeamSnapshots(emptyMeta());
 
       expect(snapshots).toHaveLength(1);
-      // Agent without JSONL and no completedAt → running (starting)
       expect(snapshots[0].agents[0].status).toBe('running');
 
       td.dispose();
     });
 
-    it('uses done status for agents with completedAt in manifest', async () => {
-      const manifest = validManifest();
-      (manifest.agents[0] as Record<string, unknown>).completedAt = new Date().toISOString();
-      (manifest.agents[0] as Record<string, unknown>).exitStatus = 'success';
-      writeManifest('team-1', manifest);
-      // No JSONL — but completedAt is set
+    it('marks a member done when isActive is false', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'worker', isActive: false }] }));
 
       const td = makeDiscovery();
       await td.scan();
@@ -642,59 +528,34 @@ describe('TeamDiscovery', () => {
       const snapshots = td.getTeamSnapshots(emptyMeta());
 
       expect(snapshots[0].agents[0].status).toBe('done');
-      expect(snapshots[0].agents[0].exitStatus).toBe('success');
+      // Agent Teams configs never carry an exit status.
+      expect(snapshots[0].agents[0].exitStatus).toBeNull();
 
       td.dispose();
     });
 
     it('respects dismiss state from sessionMeta', async () => {
-      writeManifest('team-1', validManifest());
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
 
       const td = makeDiscovery();
       await td.scan();
 
-      const meta = new Map<string, SessionMeta>();
-      meta.set('team:team-1', {
-        title: null,
-        dismissed: true,
-        acknowledged: false,
-        acknowledgedAt: null,
-        firstSeen: Date.now(),
-      });
-
-      const snapshots = td.getTeamSnapshots(meta);
+      const snapshots = td.getTeamSnapshots(dismissedMeta('at:my-team'));
       expect(snapshots[0].dismissed).toBe(true);
 
       td.dispose();
     });
 
     it('aggregates status counts', async () => {
-      const manifest = validManifest();
-      manifest.agents.push({
-        sessionId: 'agent-002',
-        name: 'second-task',
-        cwd: '/Users/test/repos/project',
-        parentSessionId: 'orch-001',
-        depth: 1,
-        spawnedAt: new Date().toISOString(),
-        completedAt: null,
-        exitStatus: null,
-      });
-      writeManifest('team-1', manifest);
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
-      createJsonl('agent-002', '/Users/test/repos/project');
+      writeAgentTeamsConfig('my-team', teamConfig({
+        members: [
+          { name: 'worker-a', isActive: true },
+          { name: 'worker-b', isActive: false },
+        ],
+      }));
 
       const td = makeDiscovery();
       await td.scan();
-
-      // One running, one done
-      mockManagers.get('agent-001')!.snapshot = {
-        status: 'running', activity: '', confidence: 'high', subagents: [], contextTokens: 0,
-      };
-      mockManagers.get('agent-002')!.snapshot = {
-        status: 'done', activity: '', confidence: 'high', subagents: [], contextTokens: 0,
-      };
 
       const snapshots = td.getTeamSnapshots(emptyMeta());
 
@@ -704,83 +565,56 @@ describe('TeamDiscovery', () => {
     });
 
     it('sorts active teams before inactive teams', async () => {
-      const m1 = validManifest();
-      const m2 = validManifest({
-        orchestrator: {
-          sessionId: 'orch-002',
-          name: 'Active Team',
-          startedAt: new Date().toISOString(),
-          cwd: '/Users/test/repos/other',
-        },
-        agents: [{
-          sessionId: 'agent-002',
-          name: 'active-agent',
-          cwd: '/Users/test/repos/other',
-          parentSessionId: 'orch-002',
-          depth: 1,
-          spawnedAt: new Date().toISOString(),
-          completedAt: null,
-          exitStatus: null,
-        }],
-      });
-
-      writeManifest('team-done', m1);
-      writeManifest('team-active', m2);
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
-      createJsonl('orch-002', '/Users/test/repos/other');
-      createJsonl('agent-002', '/Users/test/repos/other');
+      // Both teams are local (same workspace) so both pass the scoping filter.
+      writeAgentTeamsConfig('team-done', teamConfig({
+        name: 'team-done', leadSessionId: 'lead-001', members: [{ name: 'worker', isActive: false }],
+      }));
+      writeAgentTeamsConfig('team-active', teamConfig({
+        name: 'team-active', leadSessionId: 'lead-002', members: [{ name: 'worker', isActive: true }],
+      }));
+      createJsonl('lead-001', PROJECT_CWD);
+      createJsonl('lead-002', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      // team-active has a running agent
-      mockManagers.get('agent-002')!.snapshot = {
-        status: 'running', activity: '', confidence: 'high', subagents: [], contextTokens: 0,
+      // The done team's lead is also done, so it has no active orchestrator either.
+      mockManagers.get('lead-001')!.snapshot = {
+        status: 'done', activity: '', confidence: 'high', contextTokens: 0, modelLabel: 'Opus',
       };
-      mockManagers.get('agent-002')!.status = 'running';
 
       const snapshots = td.getTeamSnapshots(emptyMeta());
 
-      expect(snapshots[0].name).toBe('Active Team');
-      expect(snapshots[1].name).toBe('Test Team');
+      expect(snapshots[0].name).toBe('team-active');
+      expect(snapshots[1].name).toBe('team-done');
 
       td.dispose();
     });
   });
 
   describe('getClaimedSessionIds()', () => {
-    it('returns all session IDs from non-dismissed teams', async () => {
-      writeManifest('team-1', validManifest());
+    it('returns the lead session id from non-dismissed teams', async () => {
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
 
       const td = makeDiscovery();
       await td.scan();
 
       const claimed = td.getClaimedSessionIds(emptyMeta());
 
-      expect(claimed.has('orch-001')).toBe(true);
-      expect(claimed.has('agent-001')).toBe(true);
-      expect(claimed.size).toBe(2);
+      // Only the lead session is claimable; tmux members carry no session id.
+      expect(claimed.has('lead-001')).toBe(true);
+      expect(claimed.size).toBe(1);
 
       td.dispose();
     });
 
     it('excludes session IDs from dismissed teams', async () => {
-      writeManifest('team-1', validManifest());
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
 
       const td = makeDiscovery();
       await td.scan();
 
-      const meta = new Map<string, SessionMeta>();
-      meta.set('team:team-1', {
-        title: null,
-        dismissed: true,
-        acknowledged: false,
-        acknowledgedAt: null,
-        firstSeen: Date.now(),
-      });
-
-      const claimed = td.getClaimedSessionIds(meta);
+      const claimed = td.getClaimedSessionIds(dismissedMeta('at:my-team'));
 
       expect(claimed.size).toBe(0);
 
@@ -788,16 +622,56 @@ describe('TeamDiscovery', () => {
     });
   });
 
-  describe('getSessionFilePath()', () => {
-    it('returns JSONL path for known sessions', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
+  describe('workspace scoping', () => {
+    it('omits a team whose orchestrator runs in another workspace', async () => {
+      // Local team (PROJECT_CWD) + foreign team (/other). Discovery is scoped to PROJECT_CWD.
+      writeAgentTeamsConfig('local-team', teamConfig({ name: 'local-team', leadSessionId: 'lead-001' }));
+      writeAgentTeamsConfig('foreign-team', teamConfig({ name: 'foreign-team', leadSessionId: 'lead-002', leadCwd: '/Users/test/repos/other' }));
+      createJsonl('lead-001', PROJECT_CWD);
+      createJsonl('lead-002', '/Users/test/repos/other');
 
       const td = makeDiscovery();
       await td.scan();
 
-      const filePath = td.getSessionFilePath('orch-001');
-      expect(filePath).toContain('orch-001.jsonl');
+      const snapshots = td.getTeamSnapshots(emptyMeta());
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0].teamId).toBe('at:local-team');
+
+      // The foreign team must not claim sessions in this workspace either.
+      const claimed = td.getClaimedSessionIds(emptyMeta());
+      expect(claimed.has('lead-001')).toBe(true);
+      expect(claimed.has('lead-002')).toBe(false);
+
+      td.dispose();
+    });
+
+    it('surfaces a team in the workspace its orchestrator runs in', async () => {
+      writeAgentTeamsConfig('foreign-team', teamConfig({ name: 'foreign-team', leadSessionId: 'lead-002', leadCwd: '/Users/test/repos/other' }));
+      createJsonl('lead-002', '/Users/test/repos/other');
+
+      // Scope this discovery to the /other workspace.
+      const otherKey = '/Users/test/repos/other'.replace(/[^a-zA-Z0-9]/g, '-');
+      const td = makeDiscovery(otherKey);
+      await td.scan();
+
+      const snapshots = td.getTeamSnapshots(emptyMeta());
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0].teamId).toBe('at:foreign-team');
+
+      td.dispose();
+    });
+  });
+
+  describe('getSessionFilePath()', () => {
+    it('returns the JSONL path for the lead session', async () => {
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
+      createJsonl('lead-001', PROJECT_CWD);
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      const filePath = td.getSessionFilePath('lead-001');
+      expect(filePath).toContain('lead-001.jsonl');
 
       td.dispose();
     });
@@ -809,29 +683,107 @@ describe('TeamDiscovery', () => {
     });
   });
 
-  describe('isSessionRunning()', () => {
-    it('returns true for running sessions', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
+  describe('getTeamAgentFilePath()', () => {
+    /** Write a transcript pair under the lead's subagents dir, the way an
+     *  in-process member surfaces on disk: agent-<hash>.meta.json (carrying
+     *  agentType) + sibling agent-<hash>.jsonl. Returns the jsonl path. */
+    function writeLeadSubagent(leadSessionId: string, leadCwd: string, hash: string, agentType: string): string {
+      const workspaceKey = leadCwd.replace(/[^a-zA-Z0-9]/g, '-');
+      const subagentsDir = path.join(projectsDir, workspaceKey, leadSessionId, 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, `agent-${hash}.meta.json`), JSON.stringify({ agentType }));
+      const jsonl = path.join(subagentsDir, `agent-${hash}.jsonl`);
+      fs.writeFileSync(jsonl, '');
+      return jsonl;
+    }
+
+    it('resolves a null-sessionId member via the lead subagents meta.json agentType', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      const expected = writeLeadSubagent('lead-001', PROJECT_CWD, 'deadbeef', 'defender');
 
       const td = makeDiscovery();
       await td.scan();
 
-      mockManagers.get('orch-001')!.status = 'running';
+      expect(td.getTeamAgentFilePath('at:my-team', 'defender')).toBe(expected);
+      td.dispose();
+    });
 
-      expect(td.isSessionRunning('orch-001')).toBe(true);
+    it('picks the newest transcript when a member has duplicate meta files', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      const older = writeLeadSubagent('lead-001', PROJECT_CWD, 'aaa111', 'defender');
+      const newer = writeLeadSubagent('lead-001', PROJECT_CWD, 'bbb222', 'defender');
+      // Force a stale mtime on the older transcript so 'newer' wins.
+      fs.utimesSync(older, new Date(2000, 0, 1), new Date(2000, 0, 1));
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.getTeamAgentFilePath('at:my-team', 'defender')).toBe(newer);
+      td.dispose();
+    });
+
+    it('does not collide with a plain Task subagent whose agentType is off-roster', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      // A non-roster agentType must never be returned for 'defender'.
+      writeLeadSubagent('lead-001', PROJECT_CWD, 'cafe01', 'Explore');
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.getTeamAgentFilePath('at:my-team', 'defender')).toBeNull();
+      td.dispose();
+    });
+
+    it('returns null when the lead has no subagents dir yet', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.getTeamAgentFilePath('at:my-team', 'defender')).toBeNull();
+      td.dispose();
+    });
+
+    it('returns null for an unknown team or member', async () => {
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
+      createJsonl('lead-001', PROJECT_CWD);
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.getTeamAgentFilePath('no-such-team', 'worker')).toBeNull();
+      expect(td.getTeamAgentFilePath('at:my-team', 'no-such-member')).toBeNull();
+      td.dispose();
+    });
+  });
+
+  describe('isSessionRunning()', () => {
+    it('returns true for running sessions', async () => {
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
+      createJsonl('lead-001', PROJECT_CWD);
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      mockManagers.get('lead-001')!.status = 'running';
+
+      expect(td.isSessionRunning('lead-001')).toBe(true);
 
       td.dispose();
     });
 
     it('returns false for non-running sessions', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
-      expect(td.isSessionRunning('orch-001')).toBe(false);
+      expect(td.isSessionRunning('lead-001')).toBe(false);
 
       td.dispose();
     });
@@ -845,60 +797,34 @@ describe('TeamDiscovery', () => {
 
   describe('dispose()', () => {
     it('disposes all SessionManagers and clears state', async () => {
-      writeManifest('team-1', validManifest());
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
+      writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
 
       td.dispose();
 
-      expect(mockManagers.get('orch-001')!.disposed).toBe(true);
-      expect(mockManagers.get('agent-001')!.disposed).toBe(true);
+      expect(mockManagers.get('lead-001')!.disposed).toBe(true);
     });
   });
 
   describe('shared sessions across teams', () => {
-    it('does not dispose a session shared between two teams when one is removed', async () => {
-      // Two teams share orch-001
-      const m1 = validManifest();
-      const m2 = validManifest({
-        orchestrator: {
-          sessionId: 'orch-002',
-          name: 'Second Team',
-          startedAt: new Date().toISOString(),
-          cwd: '/Users/test/repos/project',
-        },
-        agents: [{
-          sessionId: 'orch-001', // shared with team-1's orchestrator
-          name: 'reuse-agent',
-          cwd: '/Users/test/repos/project',
-          parentSessionId: 'orch-002',
-          depth: 1,
-          spawnedAt: new Date().toISOString(),
-          completedAt: null,
-          exitStatus: null,
-        }],
-      });
-
-      writeManifest('team-1', m1);
-      writeManifest('team-2', m2);
-      createJsonl('orch-001', '/Users/test/repos/project');
-      createJsonl('agent-001', '/Users/test/repos/project');
-      createJsonl('orch-002', '/Users/test/repos/project');
+    it('does not dispose a lead session shared between two teams when one is removed', async () => {
+      // Two team configs that (synthetically) share the same leadSessionId.
+      writeAgentTeamsConfig('team-1', teamConfig({ name: 'team-1', leadSessionId: 'lead-001' }));
+      writeAgentTeamsConfig('team-2', teamConfig({ name: 'team-2', leadSessionId: 'lead-001' }));
+      createJsonl('lead-001', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
+      expect(mockManagers.has('lead-001')).toBe(true);
 
-      // Delete team-1
-      fs.unlinkSync(path.join(teamsDir, 'team-1.json'));
+      // Remove team-1; lead-001 is still claimed by team-2, so it must survive.
+      fs.rmSync(path.join(teamsDir, 'team-1'), { recursive: true });
       await td.scan();
 
-      // orch-001 is shared with team-2, should NOT be disposed
-      expect(mockManagers.get('orch-001')!.disposed).toBe(false);
-      // agent-001 was only in team-1, should be disposed
-      expect(mockManagers.get('agent-001')!.disposed).toBe(true);
+      expect(mockManagers.get('lead-001')!.disposed).toBe(false);
 
       td.dispose();
     });

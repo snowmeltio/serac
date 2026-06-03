@@ -1,10 +1,10 @@
 /**
- * Discovers and manages Cornice agent teams from sidecar manifests.
+ * Discovers and manages native Claude Code Agent Teams.
  *
- * Scans ~/.claude/teams/ for JSON manifests written by Cornice. Each manifest
- * describes an orchestrator and its spawned agents. TeamDiscovery creates
- * SessionManager instances for each agent/orchestrator JSONL and produces
- * TeamSnapshot[] for the webview.
+ * Scans ~/.claude/teams/ for `<team-name>/config.json` files. Each config
+ * describes a lead (orchestrator) and its members; TeamDiscovery creates a
+ * SessionManager for the lead's JSONL (members carry no own session) and
+ * produces TeamSnapshot[] for the webview.
  *
  * Modelled after ForeignWorkspaceManager: periodic scan + active/dormant polling.
  */
@@ -13,19 +13,20 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
-import { parseTeamManifest, parseAgentTeamsConfig } from './teamManifest.js';
+import { parseAgentTeamsConfig } from './teamManifest.js';
 import { claudeStateDir } from './paths.js';
 import type {
   TeamManifest, TeamSnapshot, TeamAgentSnapshot,
   SessionMeta, StatusConfidence, DisplayStatus,
 } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { readSettings } from './settings.js';
+import { readSettings, ageGateDaysFor } from './settings.js';
 
-/** Read the active team-manifest age gate. Shared with the workspace and
- *  worktree managers via `serac.discovery.ageGateDays`. */
+/** Read the active team-manifest age gate. Resolves
+ *  `serac.discovery.teamsAgeGateDays` when set, else the shared
+ *  `serac.discovery.ageGateDays` base. */
 function ageGateMs(): number {
-  return readSettings().discovery.ageGateDays * 24 * 60 * 60 * 1000;
+  return ageGateDaysFor('teams') * 24 * 60 * 60 * 1000;
 }
 /** Full rescan every Nth poll cycle */
 const TEAM_SCAN_INTERVAL = 10;
@@ -37,6 +38,10 @@ const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 export class TeamDiscovery {
   private readonly teamsDir: string;
   private readonly projectsDir: string;
+  /** Workspace key this discovery is scoped to. Teams whose orchestrator runs
+   *  in a different workspace are read off disk but filtered out of the panel
+   *  read paths, so a team only appears in its originating workspace's window. */
+  private readonly localWorkspaceKey: string;
   private manifests: Map<string, TeamManifest> = new Map();
   /** All SessionManagers for team agents + orchestrators, keyed by sessionId */
   private agents: Map<string, SessionManager> = new Map();
@@ -46,10 +51,19 @@ export class TeamDiscovery {
 
   constructor(
     projectsDir: string,
+    localWorkspaceKey: string,
     private readonly log: Logger,
   ) {
     this.projectsDir = projectsDir;
+    this.localWorkspaceKey = localWorkspaceKey;
     this.teamsDir = path.join(claudeStateDir(), 'teams');
+  }
+
+  /** Whether a team's orchestrator runs in this discovery's workspace. Native
+   *  Agent Teams are single-workspace (the lead runs in one cwd), so a simple
+   *  equality on the sanitised lead cwd is exact. */
+  private isLocalTeam(manifest: TeamManifest): boolean {
+    return sanitiseWorkspaceKey(manifest.orchestrator.cwd) === this.localWorkspaceKey;
   }
 
   /** Whether it's time for a full rescan (every Nth poll cycle). */
@@ -106,13 +120,10 @@ export class TeamDiscovery {
         try {
           fstat = await fs.promises.stat(filePath);
         } catch { continue; } // No config.json in this directory
-        teamId = `at:${entry}`; // Prefix to avoid collision with Cornice sidecar IDs
-      } else if (entry.endsWith('.json')) {
-        // Cornice sidecar format: <id>.json
-        filePath = entryPath;
-        fstat = entryStat;
-        teamId = entry.replace('.json', '');
+        teamId = `at:${entry}`; // 'at:' namespaces the team id (historically also kept it clear of the removed Cornice flat-sidecar ids)
       } else {
+        // Only the Agent Teams directory format is supported. Flat <id>.json
+        // entries were the removed Cornice sidecars — skip them.
         continue;
       }
 
@@ -132,8 +143,7 @@ export class TeamDiscovery {
         continue;
       }
 
-      // Try both parsers: Cornice sidecar first, then Agent Teams config
-      const manifest = parseTeamManifest(content) ?? parseAgentTeamsConfig(content, entry);
+      const manifest = parseAgentTeamsConfig(content, entry);
       if (!manifest) {
         this.log.warn(`[teams] Skipping malformed manifest: ${entry}`);
         continue;
@@ -296,6 +306,9 @@ export class TeamDiscovery {
     const teams: TeamSnapshot[] = [];
 
     for (const [teamId, manifest] of this.manifests) {
+      // Only surface teams that originate in this workspace.
+      if (!this.isLocalTeam(manifest)) { continue; }
+
       const orchManager = this.agents.get(manifest.orchestrator.sessionId);
       const orchSnapshot = orchManager?.getSnapshot();
 
@@ -356,6 +369,7 @@ export class TeamDiscovery {
         },
         agents: agentSnapshots,
         counts,
+        updatedAt: orchSnapshot?.lastActivity ?? manifest.updatedAt,
         dismissed,
       });
     }
@@ -385,6 +399,9 @@ export class TeamDiscovery {
   getClaimedSessionIds(sessionMeta: Map<string, SessionMeta>): Set<string> {
     const claimed = new Set<string>();
     for (const [teamId, manifest] of this.manifests) {
+      // Symmetric with getTeamSnapshots: a team only claims sessions in the
+      // workspace it surfaces in, so a foreign team can't suppress local cards.
+      if (!this.isLocalTeam(manifest)) { continue; }
       const metaKey = `team:${teamId}`;
       if (sessionMeta.get(metaKey)?.dismissed) { continue; }
       claimed.add(manifest.orchestrator.sessionId);
@@ -398,6 +415,72 @@ export class TeamDiscovery {
   /** Get the file path for a team agent's JSONL (for transcript viewing). */
   getSessionFilePath(sessionId: string): string | null {
     return this.agents.get(sessionId)?.getFilePath() ?? null;
+  }
+
+  /** Resolve a team member's transcript JSONL by member NAME, for the detail
+   *  panel's per-agent reader. Two cases:
+   *   1. Member has its own sessionId → its JSONL. (Defensive: Agent Teams
+   *      members carry no session id, so this branch is currently unreachable;
+   *      it matches the nullable type and any future session-bearing member.)
+   *   2. In-process member (sessionId null, spawned from inside the lead) → it
+   *      writes to `<leadDir>/subagents/agent-<hash>.jsonl`, and the only bridge
+   *      from member name to hash is the sibling `agent-<hash>.meta.json` whose
+   *      `agentType` equals the member name (verified against native Agent Teams).
+   *  Returns null when the team/member is unknown or no transcript exists yet. */
+  getTeamAgentFilePath(teamId: string, agentName: string): string | null {
+    const manifest = this.manifests.get(teamId);
+    if (!manifest) { return null; }
+
+    const member = manifest.agents.find(a => a.name === agentName);
+    if (!member) { return null; }
+
+    // Case 1: the member has its own session — resolve directly.
+    if (member.sessionId) {
+      return this.getSessionFilePath(member.sessionId);
+    }
+
+    // Case 2: in-process member. Scan the lead's subagents dir for a meta.json
+    // whose agentType matches a roster name; pick the one matching this member.
+    // Re-runs leave stale duplicates, so prefer the newest by mtime. Match only
+    // against roster names so this can't collide with a plain Task subagent.
+    const leadWorkspaceKey = sanitiseWorkspaceKey(manifest.orchestrator.cwd);
+    const subagentsDir = path.join(
+      this.projectsDir, leadWorkspaceKey, manifest.orchestrator.sessionId, 'subagents',
+    );
+    const rosterNames = new Set(manifest.agents.map(a => a.name));
+
+    let files: string[];
+    try {
+      files = fs.readdirSync(subagentsDir);
+    } catch {
+      return null; // no subagents dir yet
+    }
+
+    let best: { jsonl: string; mtime: number } | null = null;
+    for (const f of files) {
+      if (!f.endsWith('.meta.json')) { continue; }
+      const metaPath = path.join(subagentsDir, f);
+      let agentType: unknown;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        agentType = parsed?.agentType;
+      } catch {
+        continue; // unreadable/corrupt meta — skip
+      }
+      if (typeof agentType !== 'string' || !rosterNames.has(agentType)) { continue; }
+      if (agentType !== agentName) { continue; }
+
+      const jsonl = metaPath.replace(/\.meta\.json$/, '.jsonl');
+      let mtime: number;
+      try {
+        mtime = fs.statSync(jsonl).mtimeMs;
+      } catch {
+        continue; // sibling transcript missing — skip
+      }
+      if (!best || mtime > best.mtime) { best = { jsonl, mtime }; }
+    }
+
+    return best?.jsonl ?? null;
   }
 
   /** Whether a team agent session is currently running. */

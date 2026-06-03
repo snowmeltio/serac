@@ -26,6 +26,10 @@ export interface PanelSession {
   contextTokens?: number;
   dismissed?: boolean;
   subagents?: PanelSubagent[];
+  /** Count of background shells (`run_in_background: true`) the agent launched
+   *  that are still running after its turn ended. Non-status: surfaced as a
+   *  quiet badge so a `done` card can flag "a build is still going". */
+  backgroundShellCount?: number;
   workspaceKey?: string;
   confidence?: PanelStatusConfidence;
   /** CWD of the originating worktree (set for both local and sibling-worktree

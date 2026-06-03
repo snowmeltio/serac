@@ -32,6 +32,10 @@
  * running       → done          computeDemotion (no active tools)        demoteIfStale()
  * running       → done          hard ceiling (3 min)                     computeDemotion()
  * waiting       → done          hard ceiling (10 min)                    computeDemotion()
+ * running       → done          registry-confirmed process death         demoteIfStale() + isConfirmedDeadByRegistry()
+ * waiting       → done          registry-confirmed process death         demoteIfStale() + isConfirmedDeadByRegistry()
+ *               (permission false-positive gate: a dead process can't be waiting on a prompt; also
+ *                suppresses the permission timer firing 'waiting' on a confirmed-dead session)
  *
  * Display-layer (not in SessionManager):
  * done          → stale         acknowledged + 10s elapsed               getSnapshots()
@@ -89,6 +93,7 @@ import { makeCompactBoundaryTracker, type CompactBoundaryTracker } from './track
 import { makeTurnLifecycleTracker, type TurnLifecycleTracker } from './trackers/turnLifecycleTracker.js';
 import { makeToolOutcomeTracker, type ToolOutcomeTracker } from './trackers/toolOutcomeTracker.js';
 import { makeSessionLifecycleTracker, type SessionLifecycleTracker } from './trackers/sessionLifecycleTracker.js';
+import { makeBackgroundShellTracker, type BackgroundShellTracker, BACKGROUND_SHELL_CEILING_MS } from './trackers/backgroundShellTracker.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 // Re-export for backward compatibility (tests import from sessionManager)
 export { computeDemotion, getToolProfile } from './toolProfiles.js';
@@ -166,6 +171,15 @@ export class SessionManager {
   private writerPid: number | null = null;
   /** Whether PID capture has been attempted (to avoid repeated fuser calls). */
   private pidCaptureAttempted = false;
+  /** Registry-backed liveness probe (injected by SessionDiscovery). Tri-state:
+   *  true = a live process backs this session, false = registry is active but
+   *  has no entry for it, null = registry inactive/unknown. Distinct from the
+   *  fuser-based isProcessAlive(); see isConfirmedDeadByRegistry(). */
+  private readonly livenessProbe?: () => boolean | null;
+  /** Latch: have we ever observed this session live in the registry? Only then
+   *  does a later "not live" reading mean it genuinely died (vs a session class
+   *  the registry never tracked). Guards against muting a real prompt. */
+  private everSeenLiveInRegistry = false;
   /** Tracks subagent lifecycle (spawn / progress / completion).
    *  JSONL-derived variant wraps SubagentTailerManager — hook variant
    *  (Phase 4) publishes lifecycle transitions from SubagentStart/Stop events. */
@@ -189,6 +203,9 @@ export class SessionManager {
   private toolOutcomeTracker: ToolOutcomeTracker;
   /** SessionEnd (enrichment) + PreCompact (compacting grace window). */
   private sessionLifecycleTracker: SessionLifecycleTracker;
+  /** SPIKE: outstanding backgrounded Bash shells. Display-only enrichment;
+   *  never moves status — `done` still means the turn ended. See BACKLOG.md. */
+  private backgroundShellTracker: BackgroundShellTracker;
   /** Safety timeout that closes the compacting grace window if no
    *  `compact_boundary` arrives. */
   private compactGraceTimerId?: ReturnType<typeof setTimeout>;
@@ -219,11 +236,13 @@ export class SessionManager {
     opts: {
       onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void;
       hookRouter?: HookEventRouter;
+      livenessProbe?: () => boolean | null;
     } = {},
   ) {
     const now = new Date();
     this.onTransition = opts.onTransition;
     this.hookRouter = opts.hookRouter;
+    this.livenessProbe = opts.livenessProbe;
     this.tailer = new JsonlTailer(filePath);
     this.subagentLifecycle = makeSubagentLifecycleTracker({
       isDisposed: () => this.disposed,
@@ -236,6 +255,9 @@ export class SessionManager {
       getLastToolResultAt: () => this.lastToolResultAt,
       onWaitingFired: (toolName?: string) => {
         if (this.state.status !== 'running') { return; }
+        // A registry-confirmed-dead process can't be blocked on a prompt — don't
+        // flash 'waiting'; demoteIfStale will resolve it to done. (Permission FP.)
+        if (this.isConfirmedDeadByRegistry()) { return; }
         // Key the label off the triggering tool. AskUserQuestion (userInput:
         // true) is a direct prompt to the user, not a permission gate, so it
         // must read "Waiting for your response" — matching the JSONL path in
@@ -283,6 +305,7 @@ export class SessionManager {
       onSessionEnd: (reason) => { this.state.endReason = reason; },
       onPreCompact: () => { this.openCompactWindow(); },
     }, { hookRouter: this.hookRouter, sessionId });
+    this.backgroundShellTracker = makeBackgroundShellTracker();
     this.state = {
       sessionId,
       slug: sessionId.slice(0, 8),
@@ -327,6 +350,7 @@ export class SessionManager {
     this.lastToolResultAt = 0;
     this.turnEndedByStop = false;
     this.earlyToolResults.clear();
+    this.backgroundShellTracker.reset();
     // Dispose all subagent resources before clearing
     this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
@@ -395,6 +419,7 @@ export class SessionManager {
         .filter(s => s.running || !s.acknowledged)
         .map(s => ({
           parentToolUseId: s.parentToolUseId,
+          agentId: s.agentId,
           description: s.description,
           running: s.running,
           waitingOnPermission: s.waitingOnPermission,
@@ -419,6 +444,7 @@ export class SessionManager {
       permissionMode: this.state.permissionMode,
       endReason: this.state.endReason,
       compacting: this.state.compacting,
+      backgroundShellCount: this.backgroundShellTracker.count() || undefined,
     };
   }
 
@@ -490,6 +516,22 @@ export class SessionManager {
     // Compacting grace window: never demote — compaction is expected silence.
     if (this.state.compacting) { return false; }
     const now = Date.now();
+    // SPIKE: drop background shells past the hard ceiling so the display-only
+    // signal can't stick on a card forever (abandoned / missed completion).
+    this.backgroundShellTracker.prune(now, BACKGROUND_SHELL_CEILING_MS);
+
+    // Registry-confirmed process death: a process that has exited cannot be
+    // running, nor waiting on a permission/input prompt. Resolve to done at
+    // once rather than waiting out the hard ceiling (10 min for 'waiting') —
+    // this is the permission-false-positive gate (a dead session must not keep
+    // showing "Waiting for your response"). Conservative: fires only when we
+    // previously saw THIS session live in the registry and it is now gone.
+    if ((this.state.status === 'waiting' || this.state.status === 'running')
+        && this.isConfirmedDeadByRegistry()) {
+      this.markSessionDone();
+      return true;
+    }
+
     const result = computeDemotion(
       this.state.status,
       this.state.lastActivity.getTime(),
@@ -561,6 +603,21 @@ export class SessionManager {
     });
   }
 
+  /** Registry-backed death check, distinct from the fuser-based isProcessAlive().
+   *  Returns true ONLY when we have positive prior evidence this session
+   *  registered a live process AND it is now absent — i.e. it genuinely exited.
+   *  A session the registry never tracked (probe never returned true) is never
+   *  "confirmed dead", so a real prompt on an unregistered session class is
+   *  never silently muted. Also latches everSeenLiveInRegistry as a side effect
+   *  whenever it observes the session live. */
+  private isConfirmedDeadByRegistry(): boolean {
+    if (!this.livenessProbe) { return false; }
+    const live = this.livenessProbe();
+    if (live === true) { this.everSeenLiveInRegistry = true; return false; }
+    if (live === null) { return false; }      // registry inactive/unknown
+    return this.everSeenLiveInRegistry;        // live === false: dead iff seen-before
+  }
+
   /** Check if the Claude Code process is still alive.
    *  Returns true if PID was never captured (conservative: assume alive). */
   private isProcessAlive(): boolean {
@@ -609,6 +666,7 @@ export class SessionManager {
     this.turnLifecycleTracker.dispose();
     this.toolOutcomeTracker.dispose();
     this.sessionLifecycleTracker.dispose();
+    this.backgroundShellTracker.dispose();
     this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
       subagent.permissionTracker.dispose();
@@ -735,6 +793,11 @@ export class SessionManager {
     for (const block of content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         this.lastToolResultAt = Date.now();
+        // SPIKE: detect backgrounded-Bash launch/completion from the result text
+        // (display-only; never affects status). A launch banner adds an
+        // outstanding shell; a terminal retrieval clears it.
+        const resultText = SessionManager.extractToolResultText(block);
+        if (resultText) { this.backgroundShellTracker.noteToolResult(resultText, this.lastToolResultAt); }
         const toolName = this.state.activeTools.get(block.tool_use_id);
         if (toolName === undefined) {
           // tool_result arrived before its tool_use record (out-of-order JSONL writes).
@@ -1247,6 +1310,32 @@ export class SessionManager {
       return input.prompt.slice(0, 60).replace(/\n/g, ' ').trim();
     }
     return 'Subagent';
+  }
+
+  /** Extract the full text of a tool_result block (all text parts joined),
+   *  bounded so a large background-shell output can't blow up the scan. Unlike
+   *  extractResultPreview this does NOT stop at the first block — the
+   *  background-shell markers (`<task_id>` … `<status>`) can span parts. The
+   *  bound comfortably covers the structured retrieval header, which always
+   *  precedes the `<output>` body. */
+  static extractToolResultText(block: JsonlContentBlock): string | null {
+    const content = block.content;
+    if (typeof content === 'string') { return content.slice(0, 2000); }
+    if (!Array.isArray(content)) { return null; }
+    const parts: string[] = [];
+    let len = 0;
+    for (const item of content) {
+      let part = '';
+      if (typeof item === 'string') { part = item; }
+      else if (item && typeof item === 'object' && typeof (item as { text?: string }).text === 'string') {
+        part = (item as { text: string }).text;
+      }
+      if (!part) { continue; }
+      parts.push(part);
+      len += part.length;
+      if (len >= 2000) { break; }
+    }
+    return parts.length ? parts.join('\n').slice(0, 2000) : null;
   }
 
   /** Extract a short result preview from a tool_result block */

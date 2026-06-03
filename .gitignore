@@ -5,6 +5,8 @@ dist/
 .snapshot-*
 media/panel.js
 media/panel.js.map
+media/detailView.js
+media/detailView.js.map
 logo-concepts/
 .locks/
 .local/
@@ -14,6 +16,7 @@ logo-concepts/
 # Internal dev artefacts — kept local, not published to the public repo
 .claude/
 .vscode/
+mockups/
 CLAUDE.md
 AUDIT.md
 AUDIT_PROMPT.md

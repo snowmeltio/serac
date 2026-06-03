@@ -61,7 +61,30 @@ export const ViewColumn = {
   Two: 2,
   Three: 3,
   Active: -1,
+  Beside: -2,
 };
+
+// --- WebviewPanel (editor-area panel, e.g. the workflow detail view) ---
+export function createMockWebviewPanel(webview?: MockWebview) {
+  const wv = webview ?? createMockWebview();
+  const disposeHandlers: Array<() => void> = [];
+  return {
+    webview: wv,
+    title: '',
+    visible: true,
+    active: true,
+    viewColumn: ViewColumn.Beside,
+    onDidDispose: vi.fn((h: () => void) => {
+      disposeHandlers.push(h);
+      return { dispose: vi.fn() };
+    }),
+    reveal: vi.fn(),
+    dispose: vi.fn(() => { for (const h of disposeHandlers) { h(); } }),
+    _fireDispose() { for (const h of disposeHandlers) { h(); } },
+  };
+}
+
+export type MockWebviewPanel = ReturnType<typeof createMockWebviewPanel>;
 
 // --- window ---
 export const window = {
@@ -75,6 +98,7 @@ export const window = {
     dispose: vi.fn(),
   })),
   registerWebviewViewProvider: vi.fn(() => ({ dispose: vi.fn() })),
+  createWebviewPanel: vi.fn((_viewType: string, _title: string, _showOptions: unknown, _options?: unknown) => createMockWebviewPanel()),
   showInformationMessage: vi.fn(),
   showWarningMessage: vi.fn(),
   showErrorMessage: vi.fn(),

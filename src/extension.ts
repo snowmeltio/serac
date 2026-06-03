@@ -6,6 +6,8 @@ import { claudeStateDir } from './paths.js';
 import { FooterSlotRegistry } from './footerSlots.js';
 import type { SeracExports } from './types.js';
 import { AgentPanelProvider } from './panelProvider.js';
+import { DetailPanel } from './detailPanel.js';
+import type { DetailSource } from './types.js';
 import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
@@ -209,6 +211,33 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     ),
   );
 
+  // Detail panel: an editor-area webview opened beside the conversation by a
+  // card's "view workflow/team/subagents" affordance. Source-keyed — reads live
+  // snapshots + resolves agent transcripts per source from discovery; "open
+  // conversation" reuses the companion editor.
+  const detailPanel = new DetailPanel(context.extensionUri, {
+    getWorkflows: () => discovery.getWorkflowSnapshots(),
+    getTeams: () => discovery.getTeamSnapshots(),
+    getSession: (sessionId: string) => discovery.getSnapshots().find(s => s.sessionId === sessionId),
+    resolveAgentFile: (source: DetailSource, containerId: string, groupKey: string, agentId: string) => {
+      if (source === 'workflow') { return discovery.getWorkflowAgentFilePath(groupKey, agentId); }
+      if (source === 'subagents') { return discovery.getSubagentFilePath(containerId, agentId); }
+      return discovery.getTeamAgentFilePath(containerId, agentId);
+    },
+    openConversation: (sessionId: string) => {
+      vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
+        undefined,
+        () => vscode.window.showInformationMessage(
+          'Could not open the conversation. Is the Claude Code extension installed?',
+        ),
+      );
+    },
+  });
+  context.subscriptions.push({ dispose: () => detailPanel.dispose() });
+  panelProvider.setOpenDetailHandler(
+    (source: DetailSource, containerId: string, sessionId: string) => detailPanel.show(source, containerId, sessionId),
+  );
+
   // Handle session focus: open Claude Code editor panel for the specific session.
   // claude-vscode.editor.open accepts (sessionId, initialPrompt, viewColumn).
   // When called with a session ID, it reveals the existing panel or creates one.
@@ -362,7 +391,38 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
 
   panelProvider.setUndismissTeamHandler((teamId: string) => {
     discovery.undismissTeam(teamId);
+    // Reopen the orchestrator conversation, mirroring session undismiss. Note
+    // the team id is NOT the orchestrator session id for Agent Teams (it's
+    // `at:<name>`), so resolve the lead session from the snapshot.
+    const orchSessionId = discovery.getTeamSnapshots().find(t => t.teamId === teamId)?.orchestrator.sessionId;
+    if (orchSessionId) {
+      vscode.commands.executeCommand('claude-vscode.editor.open', orchSessionId, undefined, vscode.ViewColumn.One).then(
+        () => sendUpdate(),
+        () => sendUpdate(),
+      );
+    } else {
+      sendUpdate();
+    }
+  });
+
+  // Handle workflow dismiss/undismiss (archive a run as a compact row)
+  panelProvider.setDismissWorkflowHandler((runId: string) => {
+    discovery.dismissWorkflow(runId);
     sendUpdate();
+  });
+
+  panelProvider.setUndismissWorkflowHandler((runId: string) => {
+    discovery.undismissWorkflow(runId);
+    // Reopen the invoking conversation (the session that owns the run).
+    const sessionId = discovery.getWorkflowSnapshots().find(w => w.runId === runId)?.sessionId;
+    if (sessionId) {
+      vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
+        () => sendUpdate(),
+        () => sendUpdate(),
+      );
+    } else {
+      sendUpdate();
+    }
   });
 
   // Handle "open another workspace" — used by foreign waiting cards and ws rows.
@@ -515,6 +575,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     lastSendTime = now;
     const sessions = discovery.getSnapshots();
     const teams = discovery.getTeamSnapshots();
+    const workflows = discovery.getWorkflowSnapshots();
     // Include team agents waiting on input in the badge count
     let waitingCount = discovery.getWaitingCount();
     for (const team of teams) {
@@ -532,7 +593,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     waitingCount += foreignWaiting.length;
     const olderSessionCount = discovery.getOlderSessionCount();
     const worktrees = buildWorktreeRows(discovery.getDiscoveredWorktrees(), sessions, wsPath);
-    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount, foreignRunning, worktrees);
+    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount, foreignRunning, worktrees, workflows);
+    detailPanel.refresh();
 
     // Auto-focus new session created via "+ New" button
     if (pendingNewChatKnownIds) {

@@ -3,6 +3,12 @@ import tsparser from '@typescript-eslint/parser';
 
 export default [
   {
+    // Test fixtures are data, not source. Workflow script fixtures legally use
+    // top-level `return` (they run in the Workflow runtime's async context),
+    // which the default parser rejects — exclude the whole fixtures tree.
+    ignores: ['src/__fixtures__/**'],
+  },
+  {
     files: ['src/**/*.ts'],
     ignores: ['src/**/*.test.ts'],
     languageOptions: {

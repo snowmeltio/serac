@@ -12,7 +12,11 @@ const VALID_COMMAND_TYPES = new Set([
   'focusSession', 'dismissSession', 'undismissSession', 'viewTranscript',
   'newChat', 'copyToClipboard', 'requestUpdate', 'cleanup', 'archiveRange',
   'dismissTeam', 'undismissTeam', 'openWorkspace', 'footerSlotClick',
+  'openDetail', 'dismissWorkflow', 'undismissWorkflow',
 ]);
+
+/** Valid detail-panel sources (mirrors DetailSource in types.ts). */
+const VALID_DETAIL_SOURCES = new Set(['workflow', 'team', 'subagents']);
 
 /** Slot ids must mirror FooterSlotRegistry's regex (kept in sync there). */
 const SLOT_ID_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
@@ -41,10 +45,31 @@ export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
     return { type: msg.type, sessionId: msg.sessionId } as WebviewCommand;
   }
 
+  // openDetail opens the source-keyed agent navigator. containerId is a
+  // sessionId (workflow/subagents) or teamId (team); both must pass the same
+  // path-traversal guard. source is a closed enum.
+  if (msg.type === 'openDetail') {
+    if (typeof msg.source !== 'string' || !VALID_DETAIL_SOURCES.has(msg.source)) { return null; }
+    if (!isValidSessionId(msg.containerId)) { return null; }
+    if (!isValidSessionId(msg.sessionId)) { return null; }
+    return {
+      type: 'openDetail',
+      source: msg.source as 'workflow' | 'team' | 'subagents',
+      containerId: msg.containerId,
+      sessionId: msg.sessionId,
+    };
+  }
+
   // Team commands with teamId
   if (msg.type === 'dismissTeam' || msg.type === 'undismissTeam') {
     if (!isValidSessionId(msg.teamId)) { return null; }
     return { type: msg.type, teamId: msg.teamId } as WebviewCommand;
+  }
+
+  // Workflow archive commands with runId (wf_<hash>; passes the session-id guard)
+  if (msg.type === 'dismissWorkflow' || msg.type === 'undismissWorkflow') {
+    if (!isValidSessionId(msg.runId)) { return null; }
+    return { type: msg.type, runId: msg.runId } as WebviewCommand;
   }
 
   // archiveRange needs a numeric rangeMs

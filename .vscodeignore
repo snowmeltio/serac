@@ -1,5 +1,7 @@
 .vscode/**
 src/**
+mockups/**
+BACKLOG.md
 node_modules/**
 .snapshot-*/**
 tsconfig.json

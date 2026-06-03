@@ -13,13 +13,13 @@ import { SessionManager } from './sessionManager.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { readSettings } from './settings.js';
+import { readSettings, ageGateDaysFor } from './settings.js';
 
-/** Read the active sibling-worktree age gate. Single source of truth is
- *  `serac.discovery.ageGateDays`, shared with ForeignWorkspaceManager and
- *  TeamDiscovery so the three never drift apart. */
+/** Read the active sibling-worktree age gate. Resolves
+ *  `serac.discovery.worktreesAgeGateDays` when set, else the shared
+ *  `serac.discovery.ageGateDays` base. */
 function ageGateMs(): number {
-  return readSettings().discovery.ageGateDays * 24 * 60 * 60 * 1000;
+  return ageGateDaysFor('worktrees') * 24 * 60 * 60 * 1000;
 }
 /** Full rescan every Nth poll cycle. */
 const SIBLING_SCAN_INTERVAL = 10;

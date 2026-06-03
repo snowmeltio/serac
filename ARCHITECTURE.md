@@ -33,6 +33,12 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `transcriptRenderer.ts` | 206 | JSONL to markdown converter. Renders user/assistant/system records with tool summaries. |
 | `types.ts` | 244 | All TypeScript interfaces. SessionState, SessionSnapshot, UsageSnapshot, WebviewMessage, JsonlRecord. |
 | `settings.ts` | 130 | Typed accessor and change subscriber for the `serac.*` configuration namespace. Single source of truth for defaults. |
+| `workflowSidecar.ts` | 166 | Pure parser. `parseWorkflowSidecar()` turns a completed run's `wf_<runId>.json` sidecar into a `WorkflowSnapshot`. Never-throw, version-tolerant, in the style of `teamManifest.ts`. |
+| `workflowScript.ts` | ~250 | Static (never-eval) extractors. `extractWorkflowMeta()` pulls `name`/`description`/`phases` from a workflow script's `meta` literal; `extractAgentCalls()` pulls each `agent(prompt, {label, phase})` call's static prompt segments + opts; `matchAgentCall()` correlates a running agent's record-0 prompt back to its call. All via brace/string matching. Used for the live tier. |
+| `workflowDiscovery.ts` | 336 | Two-tier workflow discovery, parallel to `teamDiscovery`. Scans each session dir for sidecars (Tier 1) and live run dirs (Tier 2), caches by mtime, prunes, applies the 7-day age gate and dismiss overlay. |
+| `processRegistry.ts` | ~190 | Reads Claude Code's live process registry (`~/.claude/sessions/<pid>.json`) and confirms each pid with `kill(pid, 0)`. The one source of *actual* process liveness in an otherwise disk-tailing monitor. Owned by `SessionDiscovery` (scanned on a relaxed cadence); exposes `getLiveProcesses()` / `isSessionLive()` / `isActive()`. Injected into each `SessionManager` as a tri-state `livenessProbe` that powers the permission-false-positive gate (a registry-confirmed-dead session can't be `waiting` — see Status inference §6). A hit is a strong positive, a miss is "unknown" (not every session class is guaranteed to register), and an inactive registry disables the gate. `isScanClean()` distinguishes a degraded scan (a non-ENOENT read error or unparseable content on a *present* file) from genuine absence, so a transient disk error on a live session's file degrades the probe to "unknown" rather than "dead" — only a clean scan's absence is trusted as death. |
+| `detailPanel.ts` | 305 | Source-keyed editor-area webview host (`createWebviewPanel`, `ViewColumn.Beside`). One reused instance serves three drill-ins (workflow / team / subagents); builds a normalised `DetailModel` per source and resolves agent transcripts on demand via injected deps. Dedups re-pushes (`lastPushed` JSON compare). |
+| `detailView.ts` | 286 | Detail-panel webview frontend. Two-pane navigator: left = groups → agents, right = transcript reader. Renders any `DetailModel` generically; redeclares its own view types (separate bundle). Clears its transcript cache when the drill-in identity (source + container) changes. |
 
 ## Status inference
 
@@ -53,7 +59,8 @@ done ──→ running          (user record arrives, dequeue, or compact_bounda
 running ──→ waiting       (AskUserQuestion, permission timer 3s/6s, all subagents blocked)
 running ──→ done          (idle timer 5s, all-subagents-done, hard ceiling 3min, or Stop hook)
 waiting ──→ running       (sidechain tool_result unblocks subagents, user record)
-waiting ──→ done          (waiting hard ceiling 10min)
+waiting ──→ done          (waiting hard ceiling 10min, or registry-confirmed process death)
+running ──→ done          (registry-confirmed process death)
 any ──→ done              (queue-operation: enqueue, JSONL truncation)
 done ──→ stale            (display-only: acknowledged + 10s elapsed)
 ```
@@ -69,7 +76,8 @@ Internal statuses are `running | waiting | done`. `stale` and `idle` are display
 3. **Idle timer (5s)** — fires only if status is `running` AND output has been seen in this turn AND no blocking subagents are active.
 4. **Extended thinking grace (30s)** — first 30s of a turn with no output yet uses PID-liveness check instead of demoting (covers slow first-token).
 5. **Hard ceiling (3 min running, 10 min waiting)** — safety net; forces done regardless of state. Covers laptop sleep, quota hits, abandoned permission prompts.
-6. **`Stop` hook (when present)** — accelerates `running → done` to the instant the turn ends, ahead of the 5s idle timer. Sets the `turnEndedByStop` guard so the turn's trailing assistant record (polled 0.5–2s later) cannot re-fire `running`; the guard is released by the next genuine new-turn reopener (user record, `dequeue`, or `compact_boundary`) or on `resetState`. Pure acceleration — `done` is still reached by the idle timer when no hook arrives, so hookless sessions are unchanged. See "Hook consumption".
+6. **Registry-confirmed death (permission-FP gate)** — `demoteIfStale` resolves a `running`/`waiting` session to `done` at once (ahead of the hard ceiling) when the process-liveness registry (`processRegistry.ts`) confirms the backing process has exited; the same check suppresses the permission timer firing a false `waiting`. A dead process can't be blocked on a prompt, so this kills the stale "Waiting for your response". Conservative by design: it fires only when the session was *seen live in the registry before* and is now gone (`isConfirmedDeadByRegistry()` latches `everSeenLiveInRegistry`), so a session class the registry never tracks is never wrongly silenced, and an absent/empty registry is a no-op.
+7. **`Stop` hook (when present)** — accelerates `running → done` to the instant the turn ends, ahead of the 5s idle timer. Sets the `turnEndedByStop` guard so the turn's trailing assistant record (polled 0.5–2s later) cannot re-fire `running`; the guard is released by the next genuine new-turn reopener (user record, `dequeue`, or `compact_boundary`) or on `resetState`. Pure acceleration — `done` is still reached by the idle timer when no hook arrives, so hookless sessions are unchanged. See "Hook consumption".
 
 ### Out-of-order tool_use/tool_result
 
@@ -91,6 +99,33 @@ Each subagent runs its own permission timer against `subagent.activeTools`. When
 Subagents are further classified for demotion:
 - **Blocking subagent** — `parentToolUseId` is still in the parent's `activeTools` (parent waiting for the Task/Agent result). Suppresses parent demotion.
 - **Background subagent** — parent has moved on (`parentToolUseId` no longer in `activeTools`). Does NOT suppress demotion; parent can demote to `done` while the background subagent finishes.
+
+### Background-shell signal (SPIKE — non-status enrichment)
+
+A `Bash` launched with `run_in_background: true` returns its `tool_result`
+immediately ("Command running in background with ID: `<id>`"), so the turn ends
+and the idle/`Stop` path correctly marks the session `done` — while a detached
+build/deploy keeps running, invisible to the JSONL until the agent retrieves it
+in a later turn. `BackgroundShellTracker` (`trackers/backgroundShellTracker.ts`)
+tracks those outstanding shells purely for display: it is **strictly
+non-status** (same charter as `ToolOutcomeTracker`) and never moves
+`running`/`waiting`/`done` — `done` still means the turn ended, which is true.
+
+- **Source:** main-thread `tool_result` text only (string-matched, hence
+  brittle — these are Claude Code surface strings, not an API). Launch banner
+  adds a shell; a terminal retrieval (`<task_id>` + `<status>completed|failed|
+  killed|…</status>`) clears it. A `<status>running</status>` poll does not.
+- **Hard ceiling:** a shell never observed completing is pruned after
+  `BACKGROUND_SHELL_CEILING_MS` (15 min) in `demoteIfStale`, mirroring the
+  status ceilings so the signal can't stick forever.
+- **Surface:** `SessionSnapshot.backgroundShellCount` (undefined when none),
+  carried through to the webview on `PanelSession`.
+- **Display:** rendered as a quiet `.bg-shell-badge` ("⚙ N shell(s) running",
+  running-accent tint) in the card meta row by `panel.ts:renderCardInner`,
+  whenever the count is `> 0` — on any status, including `done`. The badge is
+  additive and never changes the card's status class, so the flicker-prone
+  status path stays untouched. Ungated: the count is only non-zero when
+  detection fires, and the fail-safe on a wording change is to show nothing.
 
 ## Hook consumption
 
@@ -352,7 +387,7 @@ Sessions with no topic and no activity in idle/stale status are silently filtere
 
 ### Foreign workspace worktree picker
 
-When `groupForeignWorkspaces` aggregates 2+ foreign workspaces sharing a `repoRoot`, the synthetic row becomes click-to-expand (chevron, no `data-cwd`). Expanding inlines one child row per worktree of the repo (read from `<repoRoot>/.git/worktrees/*` by `ForeignWorkspaceManager`, refreshed on the same 60s cadence as the local `discoveredWorktrees`). Per-worktree counts come from the pre-aggregation `members` preserved on the synthetic row. Inactive worktrees (no Claude Code activity within `serac.discovery.ageGateDays`) still appear, marked with a quiet "no activity" tag. Picking a worktree posts `openWorkspace` and auto-collapses the parent; an idle expand collapses after `serac.worktrees.autoCollapseAfterSeconds`.
+When `groupForeignWorkspaces` aggregates 2+ foreign workspaces sharing a `repoRoot`, the synthetic row becomes click-to-expand (chevron, no `data-cwd`). Expanding inlines one child row per worktree of the repo (read from `<repoRoot>/.git/worktrees/*` by `ForeignWorkspaceManager`, refreshed on the same 60s cadence as the local `discoveredWorktrees`). Per-worktree counts come from the pre-aggregation `members` preserved on the synthetic row. Inactive worktrees (no Claude Code activity within the foreign-workspace age gate, `ageGateDaysFor('foreignWorkspaces')`) still appear, marked with a quiet "no activity" tag. Picking a worktree posts `openWorkspace` and auto-collapses the parent; an idle expand collapses after `serac.worktrees.autoCollapseAfterSeconds`.
 
 #### `/private/tmp` pseudo-repository
 
@@ -365,9 +400,9 @@ The extension exposes a `serac.*` namespace via `package.json#contributes.config
 - **Reading:** `readSettings(): SeracSettings` returns a complete snapshot, falling back to `DEFAULT_SETTINGS` for any unset key. Defaults match the historical hardcoded constants so an upgrade with no `serac.*` keys behaves identically.
 - **Reactivity:** `onSettingsChanged(cb)` wraps `vscode.workspace.onDidChangeConfiguration` and fires the callback with a fresh snapshot whenever any `serac.*` key changes. `extension.ts` posts a new `settings` message to the webview and (when `serac.refresh.intervalSeconds` changed) rebuilds the refresh timer.
 - **Webview side:** `panel.ts` caches the last received `SettingsMessage` in `currentSettings`. Render functions consult it directly for visibility gates (`show.foreignWorkspaces`, `show.worktrees`, `show.usage`, `show.subagents`, `show.teams`), thresholds (`usage.warnAtPercent`, `usage.criticalAtPercent`), and limits (`archive.maxDoneShown`, `worktrees.autoCollapseAfterSeconds`).
-- **Discovery managers** (`foreignWorkspaceManager`, `siblingWorktreeManager`, `teamDiscovery`) call `readSettings()` at the top of `scan()` / `poll()` to:
+- **Discovery managers** (`foreignWorkspaceManager`, `siblingWorktreeManager`, `teamDiscovery`, `workflowDiscovery`) call `readSettings()` at the top of `scan()` / `poll()` to:
   - Short-circuit when the corresponding `show.*` setting is false (no background work for hidden sections).
-  - Read the consolidated `discovery.ageGateDays` (single source of truth — replaces three previously identical 7-day constants).
+  - Resolve their section's age gate via `ageGateDaysFor(section)`. `discovery.ageGateDays` is the inherited base; each section (`foreignWorkspaces`, `worktrees`, `teams`, `workflows`) may override it with `discovery.<section>AgeGateDays` (null = inherit). The resolver is the only supported read path, so the inherit-when-unset rule lives in one place; a non-positive or absent override falls back to the base rather than disabling the gate.
 - **CSS reactivity:** Heights and animation timings are CSS custom properties on `:root` (`--serac-foreign-max-height`, `--serac-worktrees-max-height`, `--serac-transition-ms`, `--serac-foreign-slide-ms`), set by `applySettings()` in the webview. A `maxHeightPx` of `0` maps to `none` (no cap). `.card-archive-scroll` has a fixed `min-height: 200px` so cards can never be collapsed by the workspace/worktree panes; `#root` uses `overflow-y: auto` so the whole panel scrolls when the combined content exceeds the viewport.
 - **Per-workspace overrides:** All settings inherit VS Code's standard layering — user settings → workspace settings (`.vscode/settings.json`). Free, no additional plumbing.
 
@@ -402,3 +437,42 @@ Reloaded every poll cycle (500ms active, 2s idle), enabling external processes t
 5. Failures are silently suppressed (non-critical path)
 
 Called on session focus and undismiss operations.
+
+## Workflow discovery (Opus 4.8)
+
+Serac surfaces Opus 4.8 **Workflow** runs (the built-in fan-out orchestration tool) as ordinary session cards. The pipeline mirrors the Agent Teams path: `WorkflowDiscovery` → `WorkflowSnapshot` → `panelProvider` → `panel.js`, owned by `SessionDiscovery` alongside `teamDiscovery`.
+
+### On-disk model
+
+Per parent session at `~/.claude/projects/<workspaceKey>/<sessionId>/`:
+
+- `workflows/wf_<runId>.json` — the **completion-only** sidecar (written once, at the end of the run). Render-ready: top-level roll-ups plus a `workflowProgress[]` array interleaving `workflow_phase` and `workflow_agent` entries (`phaseIndex` is 1-based). Embeds the full script and result blobs, so it is 48–85 KB+ — read lazily and cache by mtime.
+- `workflows/scripts/<name>-<runId>.js` — the script. Begins with `export const meta = { name, description, phases }`. **Never eval'd** — `workflowScript.ts` extracts the meta statically.
+- `subagents/workflows/<runId>/agent-<agentId>.jsonl` — per-agent transcripts in the same `isSidechain` format the renderer already handles; `journal.jsonl` records `started`/`result` pairs.
+
+### Two tiers
+
+- **Tier 1 — completed (sidecar present), the common case.** `parseWorkflowSidecar()` reproduces the `/workflows` phase-grouped tree exactly: phase grouping, per-agent tokens/tools/duration/state, roll-up metrics, and `log()` narrator lines all read directly. Zero correlation, no heuristics.
+- **Tier 2 — live (run dir exists, no sidecar yet).** Phase scaffold from the script's `meta.phases`; agents listed from the journal. Each running agent is correlated back to its phase by `extractAgentCalls()` (the static `agent(prompt, {label, phase})` call sites, never eval'd) matched against the agent's record-0 prompt: the longest distinctive *static* segment of a call's prompt that appears verbatim in the expanded prompt wins (interpolated `${...}` parts differ per agent, so we key off the static text around them). An agent whose prompt is a bare expression (e.g. `agent(c.prompt)` in a loop) has no static segment to match, so it falls back to a flat, ungrouped entry labelled by its journal key. Low-stakes either way: completion immediately materialises the perfect sidecar. Stale live runs that never produce a sidecar (killed/abandoned) are filtered by the 7-day age gate and marked `incomplete`.
+
+### Status mapping
+
+The sidecar's per-agent `state` maps to `DisplayStatus`; run `status` maps to `WorkflowRunStatus` (`completed` / `running` / `failed` / `incomplete`). Sidecar roll-up numbers are preferred over recomputation (retries are surfaced via `attempt`).
+
+### Rendering
+
+A session that owns run(s) renders as a normal card with: a clickable **`view workflow →` chip** in the meta row (tinted to the card's status accent) that opens the detail panel; a compact roll-up (progress bar + per-phase counts + token/tool/duration metrics). Card-body click opens the **invoking conversation**; the chip opens the **detail panel** (`detailPanel.ts`). All gated behind `serac.show.workflows`.
+
+Compatibility/safety: malformed agent entries are skipped (the rest still parses); `getWorkflowAgentFilePath` validates `runId`/`agentId` against path traversal and existence-checks before returning.
+
+## Detail panel (source-keyed agent navigator)
+
+One reused editor-area webview (`detailPanel.ts` host + `detailView.ts` frontend, `ViewColumn.Beside`) serves three drill-ins that share a parent → children shape. The card/header chip posts `openDetail { source, containerId, sessionId }`; the host builds a normalised `DetailModel` (header chips + metrics, left-pane groups → agents) and the frontend renders it generically. The reader resolves the selected agent's transcript on demand (`viewAgent` → injected `resolveAgentFile` → `parseTranscript()`), and the header's "↗ open conversation" jumps back to the invoking session.
+
+| Source | Chip / entry point | Left-pane grouping | Transcript resolver |
+|--------|--------------------|--------------------|---------------------|
+| `workflow` | `view workflow →` on the session card | phases → agents (`runId` is the group key) | `getWorkflowAgentFilePath(runId, agentId)` |
+| `subagents` | `view subagents →` on the session card (gated on `serac.show.subagents`) | flat list of the session's Task subagents | `getSubagentFilePath(sessionId, agentId)` → `<sessionDir>/subagents/agent-<agentId>.jsonl` |
+| `team` | `view agent team →` on the team-group header | flat roster, keyed by member name | `getTeamAgentFilePath(teamId, memberName)` |
+
+`getTeamAgentFilePath` resolves a member with its own `sessionId` directly; for a null-sessionId member it scans the lead session's `subagents/agent-*.meta.json` for `agentType === memberName` (matched only against roster names so it can't collide with a plain Task subagent), returning the sibling `agent-<hash>.jsonl` (newest by mtime when re-runs leave duplicates). All resolvers validate ids against path traversal and existence-check before returning; an unresolved agent yields a graceful "Transcript not available yet." note.

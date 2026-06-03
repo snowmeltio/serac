@@ -13,6 +13,6 @@
     "declaration": false,
     "sourceMap": true
   },
-  "include": ["src/panel.ts", "src/panelUtils.ts"],
+  "include": ["src/panel.ts", "src/panelUtils.ts", "src/detailView.ts"],
   "exclude": ["node_modules"]
 }

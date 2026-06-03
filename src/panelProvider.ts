@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
-import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, FooterSlotPayload, WorktreeRow } from './types.js';
+import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, FooterSlotPayload, WorktreeRow, DetailSource } from './types.js';
 import type { CompactSettings } from './claudeSettings.js';
 import { parseWebviewCommand } from './validation.js';
 import { readSettings, type SeracSettings } from './settings.js';
@@ -20,6 +20,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private foreignWaiting: SessionSnapshot[] = [];
   private foreignRunning: SessionSnapshot[] = [];
   private teams: TeamSnapshot[] = [];
+  private workflows: WorkflowSnapshot[] = [];
   private compactSettings: CompactSettings | undefined;
   private olderSessionCount = 0;
   private worktrees: WorktreeRow[] | undefined;
@@ -32,6 +33,9 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private onArchiveRange: ((rangeMs: number) => void) | undefined;
   private onDismissTeam: ((teamId: string) => void) | undefined;
   private onUndismissTeam: ((teamId: string) => void) | undefined;
+  private onDismissWorkflow: ((runId: string) => void) | undefined;
+  private onUndismissWorkflow: ((runId: string) => void) | undefined;
+  private onOpenDetail: ((source: DetailSource, containerId: string, sessionId: string) => void) | undefined;
   private onOpenWorkspace: ((cwd: string, sessionId?: string) => void) | undefined;
   private onFooterSlotClick: ((slotId: string) => void) | undefined;
   private getFooterSlotPayloads: (() => FooterSlotPayload[]) | undefined;
@@ -83,6 +87,18 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
   setUndismissTeamHandler(handler: (teamId: string) => void): void {
     this.onUndismissTeam = handler;
+  }
+
+  setDismissWorkflowHandler(handler: (runId: string) => void): void {
+    this.onDismissWorkflow = handler;
+  }
+
+  setUndismissWorkflowHandler(handler: (runId: string) => void): void {
+    this.onUndismissWorkflow = handler;
+  }
+
+  setOpenDetailHandler(handler: (source: DetailSource, containerId: string, sessionId: string) => void): void {
+    this.onOpenDetail = handler;
   }
 
   setOpenWorkspaceHandler(handler: (cwd: string, sessionId?: string) => void): void {
@@ -150,6 +166,12 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         this.onDismissTeam(message.teamId);
       } else if (message.type === 'undismissTeam' && this.onUndismissTeam) {
         this.onUndismissTeam(message.teamId);
+      } else if (message.type === 'dismissWorkflow' && this.onDismissWorkflow) {
+        this.onDismissWorkflow(message.runId);
+      } else if (message.type === 'undismissWorkflow' && this.onUndismissWorkflow) {
+        this.onUndismissWorkflow(message.runId);
+      } else if (message.type === 'openDetail' && this.onOpenDetail) {
+        this.onOpenDetail(message.source, message.containerId, message.sessionId);
       } else if (message.type === 'openWorkspace' && this.onOpenWorkspace) {
         this.onOpenWorkspace(message.cwd, message.sessionId);
       } else if (message.type === 'footerSlotClick' && this.onFooterSlotClick) {
@@ -164,7 +186,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /** Update the panel with new session data */
-  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[], olderSessionCount?: number, foreignRunning?: SessionSnapshot[], worktrees?: WorktreeRow[]): void {
+  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[], olderSessionCount?: number, foreignRunning?: SessionSnapshot[], worktrees?: WorktreeRow[], workflows?: WorkflowSnapshot[]): void {
     this.sessions = sessions;
     this.waitingCount = waitingCount;
     this.workspacePath = workspacePath;
@@ -173,6 +195,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.foreignWaiting = foreignWaiting ?? [];
     this.foreignRunning = foreignRunning ?? [];
     this.teams = teams ?? [];
+    this.workflows = workflows ?? [];
     this.compactSettings = compactSettings;
     this.olderSessionCount = olderSessionCount ?? 0;
     this.worktrees = worktrees;
@@ -221,6 +244,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       foreignWaiting: this.foreignWaiting.length > 0 ? this.foreignWaiting : undefined,
       foreignRunning: this.foreignRunning.length > 0 ? this.foreignRunning : undefined,
       teams: this.teams.length > 0 ? this.teams : undefined,
+      workflows: this.workflows.length > 0 ? this.workflows : undefined,
       compactSettings: this.compactSettings,
       footerSlots: footerSlots.length > 0 ? footerSlots : undefined,
       olderSessionCount: this.olderSessionCount > 0 ? this.olderSessionCount : undefined,

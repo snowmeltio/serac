@@ -28,17 +28,28 @@ const webviewConfig = {
   target: 'es2022',
 };
 
+// The detail panel is a separate editor-area webview (createWebviewPanel), so it
+// ships as its own IIFE bundle alongside panel.js. Source-keyed: serves
+// workflow / team / subagents drill-ins.
+const detailViewConfig = {
+  ...webviewConfig,
+  entryPoints: ['src/detailView.ts'],
+  outfile: 'media/detailView.js',
+};
+
 if (watch) {
-  const [extCtx, webCtx] = await Promise.all([
+  const [extCtx, webCtx, wfCtx] = await Promise.all([
     esbuild.context(extensionConfig),
     esbuild.context(webviewConfig),
+    esbuild.context(detailViewConfig),
   ]);
-  await Promise.all([extCtx.watch(), webCtx.watch()]);
+  await Promise.all([extCtx.watch(), webCtx.watch(), wfCtx.watch()]);
   console.log('Watching for changes...');
 } else {
   await Promise.all([
     esbuild.build(extensionConfig),
     esbuild.build(webviewConfig),
+    esbuild.build(detailViewConfig),
   ]);
   console.log(production ? 'Production build complete.' : 'Build complete.');
 }

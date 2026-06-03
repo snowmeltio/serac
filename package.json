@@ -2,7 +2,7 @@
   "name": "serac-claude-code",
   "displayName": "Serac Session Monitor",
   "description": "Session monitor for Claude Code — status cards, subagent tracking, usage quotas, and transcript viewer in the VS Code sidebar",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",
@@ -157,7 +157,12 @@
         "serac.show.teams": {
           "type": "boolean",
           "default": true,
-          "description": "Show the Agent Teams section (Cornice integration)."
+          "description": "Show the Agent Teams section."
+        },
+        "serac.show.workflows": {
+          "type": "boolean",
+          "default": true,
+          "description": "Surface Opus 4.8 Workflow runs on their session cards (tag, roll-up, and detail panel)."
         },
         "serac.archive.defaultRange": {
           "type": "string",
@@ -200,7 +205,43 @@
           "type": "number",
           "default": 7,
           "minimum": 1,
-          "description": "Ignore foreign workspaces, worktrees, and agent teams whose latest activity is older than this many days."
+          "description": "Base staleness window: ignore foreign workspaces, worktrees, agent teams, and workflows whose latest activity is older than this many days. Each section can override this below; leave an override empty to inherit this value."
+        },
+        "serac.discovery.foreignWorkspacesAgeGateDays": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "description": "Staleness window (days) for the \"Other workspaces\" section only. Leave empty to inherit serac.discovery.ageGateDays."
+        },
+        "serac.discovery.worktreesAgeGateDays": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "description": "Staleness window (days) for the worktrees shown inline in the main list. Leave empty to inherit serac.discovery.ageGateDays."
+        },
+        "serac.discovery.teamsAgeGateDays": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "description": "Staleness window (days) for Agent Teams. Leave empty to inherit serac.discovery.ageGateDays."
+        },
+        "serac.discovery.workflowsAgeGateDays": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "description": "Staleness window (days) for Opus 4.8 Workflow runs. Leave empty to inherit serac.discovery.ageGateDays."
         },
         "serac.foreignWorkspaces.maxHeightPx": {
           "type": "number",

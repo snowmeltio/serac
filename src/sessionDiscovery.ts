@@ -7,8 +7,11 @@ import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
 import { resolveRepoRoot, discoverWorktrees, type WorktreeInfo } from './gitWorktreeUtil.js';
 import { TeamDiscovery } from './teamDiscovery.js';
+import { WorkflowDiscovery } from './workflowDiscovery.js';
+import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
 import { claudeStateDir } from './paths.js';
-import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot } from './types.js';
+import { isValidSessionId } from './validation.js';
+import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 
 /** Minimal log interface matching VS Code's LogOutputChannel */
@@ -73,8 +76,13 @@ export class SessionDiscovery {
   private foreignManager: ForeignWorkspaceManager;
   /** Manages sibling-worktree (same-repo, different CWD) session discovery */
   private siblingManager: SiblingWorktreeManager;
-  /** Manages Cornice agent team discovery and polling */
+  /** Manages Agent Teams discovery and polling */
   private teamDiscovery: TeamDiscovery;
+  /** Manages Opus 4.8 Workflow run discovery (sidecar + live tiers) */
+  private workflowDiscovery: WorkflowDiscovery;
+  /** Reads Claude Code's live process registry (~/.claude/sessions/<pid>.json).
+   *  Exposed for consumers; no behaviour is gated on it yet. */
+  private processRegistry: ProcessRegistry;
   /** Extended archive: lightweight snapshots for sessions older than SCAN_AGE_GATE_MS.
    *  Only populated when archiveRangeMs > SCAN_AGE_GATE_MS. Keyed by sessionId. */
   private extendedArchive: Map<string, SessionSnapshot> = new Map();
@@ -105,7 +113,10 @@ export class SessionDiscovery {
     this.foreignManager = new ForeignWorkspaceManager(this.projectsDir, this.workspaceKey, this.log);
     this.siblingManager = new SiblingWorktreeManager(this.projectsDir, this.workspaceKey, this.log);
     this.foreignManager.setSiblingKeysProvider(() => this.siblingManager.getSiblingKeys());
-    this.teamDiscovery = new TeamDiscovery(this.projectsDir, this.log);
+    this.teamDiscovery = new TeamDiscovery(this.projectsDir, this.workspaceKey, this.log);
+    this.workflowDiscovery = new WorkflowDiscovery(this.projectsDir, this.workspaceKey, this.log);
+    // Sessions registry is a sibling of projects/ under the Claude state dir.
+    this.processRegistry = new ProcessRegistry(path.join(path.dirname(this.projectsDir), 'sessions'), this.log);
   }
 
   // ── Meta persistence ──────────────────────────────────────────────
@@ -314,6 +325,8 @@ export class SessionDiscovery {
     await this.siblingManager.scan();
     await this.foreignManager.scan();
     await this.teamDiscovery.scan();
+    await this.workflowDiscovery.scan();
+    await this.processRegistry.scan();
 
     // Start adaptive poll loop
     this.schedulePoll();
@@ -341,6 +354,7 @@ export class SessionDiscovery {
       if (status === 'running' || status === 'waiting') { return true; }
     }
     if (this.teamDiscovery.hasActiveAgents()) { return true; }
+    if (this.workflowDiscovery.hasActiveRuns()) { return true; }
     return false;
   }
 
@@ -361,6 +375,8 @@ export class SessionDiscovery {
     this.siblingManager.dispose();
     this.foreignManager.dispose();
     this.teamDiscovery.dispose();
+    this.workflowDiscovery.dispose();
+    this.processRegistry.dispose();
   }
 
   /** Re-enumerate worktrees of the local repo AND every foreign repo currently
@@ -727,9 +743,71 @@ export class SessionDiscovery {
     return this.teamDiscovery.getSessionFilePath(sessionId);
   }
 
+  /** Resolve a team member's transcript JSONL by member name, for the detail
+   *  panel reader. Handles both spawned-session and in-process members. */
+  getTeamAgentFilePath(teamId: string, agentName: string): string | null {
+    return this.teamDiscovery.getTeamAgentFilePath(teamId, agentName);
+  }
+
   /** Whether a team agent session is currently running. */
   isTeamSessionRunning(sessionId: string): boolean {
     return this.teamDiscovery.isSessionRunning(sessionId);
+  }
+
+  /** Resolve a plain Task subagent's transcript JSONL for the detail panel
+   *  reader. Subagents live at <sessionDir>/subagents/agent-<agentId>.jsonl,
+   *  where sessionDir is the session's JSONL path with `.jsonl` stripped. */
+  getSubagentFilePath(sessionId: string, agentId: string): string | null {
+    if (!isValidSessionId(agentId)) { return null; }
+    const jsonlPath = this.getSessionFilePath(sessionId);
+    if (!jsonlPath) { return null; }
+    const sessionDir = jsonlPath.replace(/\.jsonl$/, '');
+    const file = path.join(sessionDir, 'subagents', `agent-${agentId}.jsonl`);
+    return fs.existsSync(file) ? file : null;
+  }
+
+  // ── Workflow API ──────────────────────────────────────────────────
+
+  /** Get workflow-run snapshots for the webview. */
+  getWorkflowSnapshots(): WorkflowSnapshot[] {
+    return this.workflowDiscovery.getWorkflowSnapshots(this.sessionMeta);
+  }
+
+  /** Resolve a workflow agent's transcript JSONL (for the detail panel reader). */
+  getWorkflowAgentFilePath(runId: string, agentId: string): string | null {
+    return this.workflowDiscovery.getWorkflowAgentFilePath(runId, agentId);
+  }
+
+  /** Dismiss a workflow run (archive). Stored in sessionMeta as workflow:<runId>;
+   *  getWorkflowSnapshots overlays this onto WorkflowSnapshot.dismissed. */
+  dismissWorkflow(runId: string): void {
+    const meta = this.getOrCreateMeta(`workflow:${runId}`);
+    meta.dismissed = true;
+    this.metaDirty = true;
+    this.enqueueSave();
+  }
+
+  /** Undismiss a workflow run. */
+  undismissWorkflow(runId: string): void {
+    const meta = this.getOrCreateMeta(`workflow:${runId}`);
+    meta.dismissed = false;
+    this.metaDirty = true;
+    this.enqueueSave();
+  }
+
+  // ── Process-liveness API ──────────────────────────────────────────
+  // Backed by ~/.claude/sessions/<pid>.json + a kill(pid,0) probe. A hit is a
+  // strong positive ("this session has a live process"); a miss is "unknown",
+  // not proof of death (not every session class is guaranteed to register).
+
+  /** All currently-live Claude processes. */
+  getLiveProcesses(): LiveProcess[] {
+    return this.processRegistry.getLiveProcesses();
+  }
+
+  /** True when a live process is backing this session id. */
+  isSessionLive(sessionId: string): boolean {
+    return this.processRegistry.isSessionLive(sessionId);
   }
 
   // ── Discovery and polling ─────────────────────────────────────────
@@ -770,7 +848,16 @@ export class SessionDiscovery {
             }
           } catch { continue; }
 
-          const manager = new SessionManager(sessionId, filePath, workspaceKey, { hookRouter: this.hookRouter });
+          const manager = new SessionManager(sessionId, filePath, workspaceKey, {
+            hookRouter: this.hookRouter,
+            // Registry-backed liveness, bound to this session id. Tri-state:
+            // null when the registry isn't in use OR the last scan was degraded
+            // (so absence never reads as death from a missing registry or a
+            // transient disk error), else whether a live process backs it.
+            livenessProbe: () => (this.processRegistry.isActive() && this.processRegistry.isScanClean())
+              ? this.processRegistry.isSessionLive(sessionId)
+              : null,
+          });
           this.sessions.set(sessionId, manager);
           // Ensure meta entry exists for newly discovered sessions
           this.getOrCreateMeta(sessionId);
@@ -964,6 +1051,19 @@ export class SessionDiscovery {
       }
       const teamChanged = await this.teamDiscovery.poll();
       if (teamChanged) { changed = true; }
+
+      // Workflow discovery: scan periodically, poll for sidecar/live changes
+      if (this.workflowDiscovery.shouldRescan()) {
+        await this.workflowDiscovery.scan();
+      }
+      const workflowChanged = await this.workflowDiscovery.poll();
+      if (workflowChanged) { changed = true; }
+
+      // Process-liveness registry: refresh on a relaxed cadence. No consumer
+      // gates a panel update on it yet, so it never sets `changed`.
+      if (this.processRegistry.shouldRescan()) {
+        await this.processRegistry.scan();
+      }
 
       // Poll performance log [v0.4]
       const updatedCount = updateResults.filter(r => r.hadNewData).length;

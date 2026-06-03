@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.10.0 (2026-06-03) — Workflow viewer, detail panel, process liveness
+
+Serac becomes a viewer for Claude Code's terminal-native orchestration: Opus 4.8 **Workflow** runs and **Agent Teams** now render as ordinary session cards with a drill-in navigator, and a new process-liveness reader closes a class of stuck-status false positives.
+
+### Added
+- **Workflow viewer.** Opus 4.8 Workflow runs surface as session cards: a sidecar-first phase tree for completed runs (Tier 1) and a reconstructed live tier for in-progress runs (Tier 2), correlating each running agent to its phase from the static `agent()` call sites (never eval'd). Gated behind `serac.show.workflows`.
+- **Detail navigation panel.** One source-keyed panel serves `workflow` / `team` / `subagents` drill-ins — a phase/roster/agent list on the left, the selected agent's transcript rendered in the reader on the right. Plain session cards gain a **View subagents** pill; in-process team members resolve to their orchestrator's subagent transcripts.
+- **Process-liveness reader.** Reads `~/.claude/sessions/<pid>.json` and confirms each pid with `kill(pid, 0)`. Used to resolve a registry-confirmed-dead session out of a stuck "Waiting for your response" without ever muting a live prompt (`everSeenLive` latch + degraded-scan guard).
+- **Background-shell badge.** When a `run_in_background` shell outlives the agent's turn, a quiet running-tinted "⚙ N shell(s) running" badge appears on the card. Non-status — the card keeps its real status, so the Stop/idle path is untouched.
+- **Per-section discovery age gates.** `serac.discovery.ageGateDays` is now an inherited base; each of `discovery.foreignWorkspacesAgeGateDays` / `worktreesAgeGateDays` / `teamsAgeGateDays` / `workflowsAgeGateDays` (empty = inherit) can override it.
+
+### Changed
+- **Team workspace-scoping.** Agent Teams are filtered to the workspace whose orchestrator they belong to, so a team no longer shows in every window.
+- **Continuous archive.** Dismissed sessions, teams, and workflows interleave by recency as compact archive rows; clicking reopens the invoking conversation.
+
+### Removed
+- **Cornice deprecation.** Removed the legacy `version 1` sidecar parser and the vendored team-manifest schema; only the native Agent Teams `config.json` parser remains.
+
 ## v1.9.1 (2026-06-03) — Title-bar declutter + tunable confidence decay
 
 ### Changed
@@ -161,7 +179,7 @@ A focused simplification of how Serac surfaces sessions running outside the curr
 ## v1.3.3 (2026-05-04) — Other-workspaces pane bugfix
 
 ### Fixed
-- **Other-workspaces flicker** — Workspaces (e.g. a workspace) appeared and disappeared as the panel re-rendered, and active foreign agents (e.g. a client) only surfaced briefly. Root cause was a race in `ForeignWorkspaceManager` between `scan()` populating `this.sessions` and `loadMeta()` populating `this.meta`: concurrent `getWorkspaces()` calls during await yields could observe sessions whose dismiss state was unloaded, intermittently filtering them out.
+- **Other-workspaces flicker** — Workspaces appeared and disappeared as the panel re-rendered, and active foreign agents only surfaced briefly. Root cause was a race in `ForeignWorkspaceManager` between `scan()` populating `this.sessions` and `loadMeta()` populating `this.meta`: concurrent `getWorkspaces()` calls during await yields could observe sessions whose dismiss state was unloaded, intermittently filtering them out.
 - **Right-anchored W/R/D counts** — In the other-workspaces row, the `xxW yyR zzD` triplet is now laid out on a fixed 3-column grid with tabular numerals so columns align across rows regardless of digit width.
 
 ### Changed

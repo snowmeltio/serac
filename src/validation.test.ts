@@ -136,6 +136,34 @@ describe('parseWebviewCommand', () => {
     expect(parseWebviewCommand({ type: 'footerSlotClick' })).toBeNull();
     expect(parseWebviewCommand({ type: 'footerSlotClick', slotId: '1starts-with-digit' })).toBeNull();
   });
+
+  it('parses dismissTeam / undismissTeam with a valid teamId', () => {
+    expect(parseWebviewCommand({ type: 'dismissTeam', teamId: 'at:my-team' }))
+      .toEqual({ type: 'dismissTeam', teamId: 'at:my-team' });
+    expect(parseWebviewCommand({ type: 'undismissTeam', teamId: 'at:my-team' }))
+      .toEqual({ type: 'undismissTeam', teamId: 'at:my-team' });
+  });
+
+  it('rejects team commands with a traversal-bearing teamId', () => {
+    expect(parseWebviewCommand({ type: 'dismissTeam', teamId: '../etc' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'undismissTeam', teamId: 123 })).toBeNull();
+    expect(parseWebviewCommand({ type: 'dismissTeam' })).toBeNull();
+  });
+
+  it('parses dismissWorkflow / undismissWorkflow with a valid runId', () => {
+    expect(parseWebviewCommand({ type: 'dismissWorkflow', runId: 'wf_889eb23a-c48' }))
+      .toEqual({ type: 'dismissWorkflow', runId: 'wf_889eb23a-c48' });
+    expect(parseWebviewCommand({ type: 'undismissWorkflow', runId: 'wf_889eb23a-c48' }))
+      .toEqual({ type: 'undismissWorkflow', runId: 'wf_889eb23a-c48' });
+  });
+
+  it('rejects workflow commands with a traversal-bearing or missing runId', () => {
+    expect(parseWebviewCommand({ type: 'dismissWorkflow', runId: '../../etc' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'dismissWorkflow', runId: 'wf/../escape' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'undismissWorkflow', runId: 42 })).toBeNull();
+    expect(parseWebviewCommand({ type: 'dismissWorkflow' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'undismissWorkflow', runId: '' })).toBeNull();
+  });
 });
 
 describe('isValidSessionId — boundary and traversal cases', () => {

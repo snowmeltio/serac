@@ -20,7 +20,7 @@ import {
   createMockWebview,
   ViewColumn,
 } from './__mocks__/vscode.js';
-import type { SessionSnapshot, UsageSnapshot } from './types.js';
+import type { SessionSnapshot, UsageSnapshot, WorkflowSnapshot } from './types.js';
 
 function makeSnapshot(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
@@ -60,6 +60,30 @@ function makeUsage(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
     currentWorkspaceKey: 'test-workspace',
     loaded: true,
     lastPoll: Date.now(),
+    ...overrides,
+  };
+}
+
+function makeWorkflow(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
+  return {
+    runId: 'wf_abc123',
+    sessionId: 'abc12345',
+    taskId: 'task_1',
+    name: 'consistency-audit',
+    summary: 'Audit the plan for consistency',
+    status: 'completed',
+    source: 'sidecar',
+    startTime: Date.now() - 95_000,
+    durationMs: 95_000,
+    defaultModel: 'Opus',
+    agentCount: 3,
+    totalTokens: 120_000,
+    totalToolCalls: 18,
+    phases: [{ index: 1, title: 'Audit', detail: '' }],
+    agents: [],
+    counts: { done: 3 },
+    logs: [],
+    dismissed: false,
     ...overrides,
   };
 }
@@ -188,6 +212,16 @@ describe('AgentPanelProvider', () => {
       expect(h.cleanup).toHaveBeenCalled();
     });
 
+    it('routes openDetail to the open-detail handler', () => {
+      const webview2 = createMockWebview();
+      const view = createMockWebviewView(webview2);
+      const onOpenDetail = vi.fn();
+      provider.setOpenDetailHandler(onOpenDetail);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview2._fireMessage({ type: 'openDetail', source: 'workflow', containerId: 'wf-sess', sessionId: 'wf-sess' });
+      expect(onOpenDetail).toHaveBeenCalledWith('workflow', 'wf-sess', 'wf-sess');
+    });
+
     it('exposes registered newChat handler via getNewChatHandler', () => {
       const h = setupWithHandlers();
       expect(provider.getNewChatHandler()).toBe(h.newChat);
@@ -241,6 +275,35 @@ describe('AgentPanelProvider', () => {
           workspacePath: '/test/ws',
         }),
       );
+    });
+
+    it('includes workflows in the update payload when non-empty', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview.postMessage.mockClear();
+
+      const workflows = [makeWorkflow()];
+      // workflows is the 12th positional arg on updateSessions.
+      provider.updateSessions([makeSnapshot()], 0, '/test/ws', null,
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, workflows);
+
+      expect(webview.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'update', workflows }),
+      );
+    });
+
+    it('omits workflows from the payload when empty', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview.postMessage.mockClear();
+
+      provider.updateSessions([makeSnapshot()], 0, '/test/ws', null);
+
+      const payload = webview.postMessage.mock.calls.at(-1)![0];
+      expect(payload.type).toBe('update');
+      expect(payload.workflows).toBeUndefined();
     });
 
     it('sets badge when waiting count > 0', () => {

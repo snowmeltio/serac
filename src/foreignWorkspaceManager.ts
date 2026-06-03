@@ -16,13 +16,15 @@ import { resolveRepoRoot, discoverWorktrees, type WorktreeInfo } from './gitWork
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { readSettings } from './settings.js';
+import { readSettings, ageGateDaysFor } from './settings.js';
 
-/** Read the active foreign-workspace age gate from `serac.discovery.ageGateDays`.
- *  Called at the top of each scan / housekeeping pass so the value is always
- *  current; reactive to settings changes without restart. */
+/** Read the active foreign-workspace age gate. Resolves
+ *  `serac.discovery.foreignWorkspacesAgeGateDays` when set, else the shared
+ *  `serac.discovery.ageGateDays` base. Called at the top of each scan /
+ *  housekeeping pass so the value is always current; reactive to settings
+ *  changes without restart. */
 function ageGateMs(): number {
-  return readSettings().discovery.ageGateDays * 24 * 60 * 60 * 1000;
+  return ageGateDaysFor('foreignWorkspaces') * 24 * 60 * 60 * 1000;
 }
 /** Full rescan every Nth poll cycle */
 const FOREIGN_SCAN_INTERVAL = 10;
