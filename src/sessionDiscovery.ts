@@ -1044,6 +1044,18 @@ export class SessionDiscovery {
         }
       }
 
+      // Background-shell maintenance on dormant cards (done/stale/idle). The
+      // demote loop above only prunes shells for active/woken sessions, so an
+      // idle `done` card with an outstanding background shell would never prune
+      // (ceiling never fires) nor clear on confirmed process death. Sweep them
+      // here, decoupled from mtime/new-data; a count drop sets `changed` so the
+      // cleared badge reaches the webview (demote can't — the status stays
+      // `done`). Cheap: each call returns early unless the session has shells.
+      const shellSweepNow = Date.now();
+      for (const session of dormantSessions) {
+        if (session.sweepBackgroundShells(shellSweepNow)) { changed = true; }
+      }
+
       // Reconcile meta: clear acknowledged state for sessions that resumed [H2]
       for (const session of this.sessions.values()) {
         const status = session.getStatus();

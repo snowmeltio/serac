@@ -466,6 +466,9 @@ export interface DetailAgentView {
   attempt?: number;
   promptPreview?: string;
   resultPreview?: string | null;
+  /** This agent is a teammate of an Agent Team (in-process members surface
+   *  through the subagents source), not a plain Task subagent — render distinctly. */
+  teammate?: boolean;
 }
 
 /** A left-pane group: a workflow phase, or a single flat group (team/subagents). */
@@ -478,11 +481,15 @@ export interface DetailGroupView {
   agents: DetailAgentView[];
 }
 
-/** A selectable workflow run in the detail header's run switcher. Present only
- *  when a parent session owns more than one workflow run; the panel shows one
- *  run at a time (the active one) and these chips switch between them. */
-export interface DetailRunChoice {
-  runId: string;
+/** A selectable view in the detail header's view switcher. A session card's
+ *  agents can come from more than one source — each workflow run it owns, plus
+ *  its plain Task subagents — so the panel shows one view at a time and these
+ *  chips switch between them. Present only when a session exposes >1 view.
+ *  `id` is the runId for a workflow view, or the literal 'subagents' for the
+ *  subagents view; `kind` tells the host which model-builder to run. */
+export interface DetailViewChoice {
+  id: string;
+  kind: DetailSource;
   label: string;
   status: string;
   active: boolean;
@@ -499,8 +506,11 @@ export interface DetailModel {
   chips: string[];
   metrics: string;
   groups: DetailGroupView[];
-  /** Run switcher (workflow source, >1 run only); omitted otherwise. */
-  runs?: DetailRunChoice[];
+  /** View switcher (session-card sources, >1 view only); omitted otherwise. */
+  views?: DetailViewChoice[];
+  /** Set to the team name when this session is an Agent Team orchestrator — the
+   *  webview then frames its subagents as teammates (heading + per-agent badge). */
+  team?: string;
 }
 
 /** Message types sent from extension to webview */
@@ -561,7 +571,7 @@ export type WebviewCommand =
   | { type: 'undismissTeam'; teamId: string }
   | { type: 'openWorkspace'; cwd: string; sessionId?: string }
   | { type: 'footerSlotClick'; slotId: string }
-  | { type: 'openDetail'; source: DetailSource; containerId: string; sessionId: string }
+  | { type: 'openDetail'; source: DetailSource; containerId: string; sessionId: string; agentId?: string; groupKey?: string }
   | { type: 'dismissWorkflow'; runId: string }
   | { type: 'undismissWorkflow'; runId: string };
 
@@ -639,7 +649,11 @@ export interface JsonlRecord {
   parentUuid?: string;
   isSidechain?: boolean;
   message?: {
-    content?: JsonlContentBlock[];
+    // The Anthropic message shape allows `content` to be either an array of
+    // blocks or a plain string. Main-session records use the array form, but a
+    // workflow/agent record-0 (the inception brief) arrives as a string — see
+    // getContentBlocks(), which normalises the string case to a single text block.
+    content?: JsonlContentBlock[] | string;
   };
   data?: {
     type?: string;

@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.11.0 (2026-06-09) — Calmer cards, one agent interface, status false-positive fixes
+
+A UX pass that collapses the per-kind agent affordances into one consistent interface, folds teams into their orchestrator card, and renders agent transcripts markdown-friendly — plus two status false-positive fixes (the lingering background-shell badge and the slow-tool "Waiting for permission" flicker).
+
+### Changed — cards
+- **One name for everything: "agents".** A card now shows a single `agents →` chip whether its children are workflow agents, plain subagents, or teammates (the drill-in's source still routes correctly). Replaces the old per-kind `workflow`/`workflows`/`subagents`/`team` chip labels.
+- **Inline rows show only the still-working agents.** A card lists its running/awaiting agents inline (capped, then scrolls); click a row to drill straight to that agent. When all are done there's no list and no count — the chip is the click-through.
+- **Removed the workflow progress bar and the "✓ N agents" roll-up tick.** A finished run is just the chip; a running run is its live inline rows. The card stays calm for cross-window glance.
+- **Teams fold into the orchestrator card — no separate "Agent teams" section.** You always go through the lead, and its in-process teammates already surface as that session's subagents, so the team rides on the orchestrator's normal card.
+
+### Changed — detail panel
+- **Source-grouped switcher promoted to the top of the pane**, always shown, under a heading; the selected chip is tinted to its status colour (done/running/waiting/failed).
+- **Light markdown rendering of agent text** — headings, lists, tables, bold/italic/inline code, links; framing pseudo-tags (e.g. `<teammate-message>`) are recessed rather than shown raw. Reclaimed vertical space on prompts and tightened list spacing to match the archive rows.
+- **Teammates are visually distinct from subagents** (teal badge); the nav auto-collapses to a tinted rail on agent click; the header carries a heading + an "open parent session" jump and no longer repeats the parent id.
+- **Inline card rows deep-link into the panel** — clicking an inline agent opens the drill-in already focused on that agent.
+
+### Fixed
+- **Background-shell badge no longer sticks on idle `done` cards.** A new dormant-session sweep prunes shells past the 15-min ceiling and clears them at once on registry-confirmed process death, pushing the cleared count even though the status stays `done` (the demote path never did). The badge previously could linger indefinitely.
+- **Background-shell age survives a reload.** A shell's start time is anchored to its launch record's timestamp, not wall-clock-at-processing, so the ceiling reflects true age instead of resetting every restart.
+- **"Waiting for permission" false positive on slow tools.** The slow-tool permission timer moved 6s→15s: routine long Bash (tests, builds, packaging) finishes before the timer mistakes it for a prompt. With no `PermissionRequest` hook wired, the timer is the sole signal and can't tell slow-executing from blocked — this is a mitigation; the cure is wiring the hook.
+- **Killed / in-flight workflow sidecars parse correctly.** Live-tier agent states (`progress`/`start`/`queued`/`completed`) map to the right display status, and a `killed` run resolves to `incomplete` rather than masquerading as a completed run with running agents.
+
 ## v1.10.1 (2026-06-03) — Detail-panel fixes, accessibility, robustness audit
 
 Follow-up to v1.10.0: six reported detail-panel/UX issues fixed, plus a 22-finding adversarial audit across the codebase (key collisions, dropped state, races/leaks, accessibility, parser hardening). 23 new regression tests.

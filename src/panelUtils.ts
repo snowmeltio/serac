@@ -40,6 +40,10 @@ export interface PanelSession {
 }
 
 export interface PanelSubagent {
+  /** Maps to <session>/subagents/agent-<agentId>.jsonl; null until resolved.
+   *  Present at runtime (host sends the full snapshot) — lets a card's inline
+   *  agent row deep-link the detail panel to this specific agent. */
+  agentId?: string | null;
   description: string;
   running: boolean;
   waitingOnPermission?: boolean;

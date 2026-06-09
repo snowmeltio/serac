@@ -4,8 +4,11 @@
   --sm-blizzard-blue: #6185f7;
   --sm-blizzard-blue-rgb: 97, 133, 247;
   --sm-teal-bright: #7acdd0;
+  --sm-teal-bright-rgb: 122, 205, 208;
   --sm-snow-blue: #b0c2fb;
   --sm-salmon-red: #f76361;
+  --sm-salmon-red-rgb: 247, 99, 97;
+  --sm-orange-rgb: 217, 162, 58;
 }
 
 * { box-sizing: border-box; }
@@ -24,75 +27,74 @@ body {
   font-size: 12px;
 }
 
-/* ── Header ── */
+/* ── Header ──
+ * Top of the pane: a heading + the switcher (the selectable groupings), then the
+ * selected view's metrics. The heading names what the chips are; the parent
+ * session id is deliberately not shown (identical across every chip). */
 .wf-head {
-  padding: 12px 18px;
+  padding: 11px 18px 10px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
 }
-.wf-head-title {
-  font-size: 15px;
-  font-weight: 600;
+.wf-head-top {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
 }
-.wf-head-meta { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 4px; }
-.wf-head-summary { font-size: 12px; color: var(--sm-snow-blue); margin-top: 6px; font-style: italic; }
-.wf-head-metrics { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 5px; }
-
-.wf-chip {
+.wf-head-heading {
   font-size: 10px;
-  font-weight: 400;
-  padding: 0 5px;
-  border-radius: 3px;
-  line-height: 1.3;
-  border: 1px solid currentColor;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
   color: var(--vscode-descriptionForeground);
-  opacity: 0.75;
-  text-transform: none;
 }
+.wf-head-metrics { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 8px; }
 
-/* ── Run switcher (multi-run sessions) ── */
-.wf-runs {
+/* ── View switcher — the selectable groupings (workflow runs / subagents /
+ * team), shown at the top so they're obviously pickable. The selected chip is
+ * tinted to its own status colour so the selection matches the status bubble. */
+.wf-switch {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  margin-top: 9px;
 }
-.wf-run-chip {
+.wf-switch-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  padding: 2px 9px;
-  border-radius: 4px;
+  gap: 6px;
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 5px;
   cursor: pointer;
-  color: var(--vscode-descriptionForeground);
-  border: 1px solid rgba(128, 128, 128, 0.3);
+  color: var(--vscode-foreground);
+  border: 1px solid rgba(128, 128, 128, 0.32);
+  background: var(--vscode-editor-background);
   white-space: nowrap;
 }
-.wf-run-chip:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
-.wf-run-chip:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
-.wf-run-chip.active {
-  color: var(--vscode-foreground);
-  border-color: var(--sm-blizzard-blue);
-  background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.18));
-  cursor: default;
-}
-.wf-run-chip-label { overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.wf-switch-chip:hover { background: var(--vscode-list-hoverBackground); }
+.wf-switch-chip:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
+.wf-switch-chip.active { cursor: default; font-weight: 600; }
+/* Selected tint keyed to status — same palette as the status dots. */
+.wf-switch-chip.active.status-done { border-color: var(--sm-teal-bright); background: rgba(var(--sm-teal-bright-rgb), 0.16); }
+.wf-switch-chip.active.status-running { border-color: var(--sm-blizzard-blue); background: rgba(var(--sm-blizzard-blue-rgb), 0.16); }
+.wf-switch-chip.active.status-waiting { border-color: var(--vscode-charts-orange, #d9a23a); background: rgba(var(--sm-orange-rgb), 0.16); }
+.wf-switch-chip.active.status-failed { border-color: var(--sm-salmon-red); background: rgba(var(--sm-salmon-red-rgb), 0.16); }
+.wf-switch-chip.active.status-incomplete { border-color: var(--vscode-charts-orange, #d9a23a); background: rgba(var(--sm-orange-rgb), 0.16); }
+.wf-switch-chip.active:not([class*="status-"]) { border-color: var(--sm-blizzard-blue); background: rgba(var(--sm-blizzard-blue-rgb), 0.14); }
+.wf-switch-chip-label { overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 
 .wf-openconv {
   display: inline-flex;
   gap: 4px;
-  margin-top: 9px;
+  flex-shrink: 0;
   font-size: 10px;
   cursor: pointer;
   color: var(--vscode-descriptionForeground);
   border: 1px solid rgba(128, 128, 128, 0.3);
   padding: 3px 9px;
   border-radius: 4px;
+  white-space: nowrap;
 }
 .wf-openconv:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
 .wf-openconv:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
@@ -105,6 +107,56 @@ body {
   border-right: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   overflow-y: auto;
   max-height: calc(100vh - 130px);
+}
+/* Collapsed to a thin rail — frees the reader to full width. The re-expand
+ * trigger sits at the top and is tinted so it reads as the way back to the
+ * roster, not a stray glyph. */
+.wf-nav.collapsed {
+  width: 34px;
+  min-width: 34px;
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 8px;
+}
+.wf-nav-head {
+  display: flex;
+  align-items: center;
+  padding: 5px 8px 5px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  position: sticky;
+  top: 0;
+  background: var(--vscode-editor-background);
+  z-index: 1;
+}
+.wf-nav-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  font-family: inherit;
+  padding: 3px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.wf-nav-toggle:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
+.wf-nav-toggle:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
+.wf-nav.collapsed .wf-nav-toggle {
+  padding: 5px 7px;
+  font-size: 14px;
+  color: var(--sm-blizzard-blue);
+  background: rgba(var(--sm-blizzard-blue-rgb), 0.12);
+  border: 1px solid rgba(var(--sm-blizzard-blue-rgb), 0.4);
+}
+.wf-nav.collapsed .wf-nav-toggle:hover {
+  color: var(--sm-blizzard-blue);
+  background: rgba(var(--sm-blizzard-blue-rgb), 0.22);
 }
 .wf-reader {
   flex: 1;
@@ -132,18 +184,20 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.4px;
   color: var(--vscode-descriptionForeground);
-  padding: 9px 12px 4px;
+  padding: 7px 8px 3px;
   font-weight: 600;
   display: flex;
   justify-content: space-between;
 }
 .wf-nav-count { opacity: 0.7; }
 
+/* Row metrics match the main pane's archived list (.compact-row: 4px 8px, 11px,
+ * gap 7px) so the two agent lists read as the same density. */
 .wf-nav-row {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 6px 12px;
+  padding: 4px 8px;
   font-size: 11px;
   cursor: pointer;
   border-left: 2px solid transparent;
@@ -155,6 +209,21 @@ body {
 }
 .wf-nav-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wf-nav-tokens { font-size: 9px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+/* Teammate marker — sets Agent Team members apart from plain Task subagents in
+ * the same list (teal, the team accent, vs the neutral subagent row). */
+.wf-teammate-badge {
+  font-size: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 1.5;
+  flex-shrink: 0;
+  color: var(--sm-teal-bright);
+  border: 1px solid rgba(var(--sm-teal-bright-rgb), 0.5);
+  background: rgba(var(--sm-teal-bright-rgb), 0.12);
+}
 
 .wf-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: #888; }
 .wf-dot.done { background: var(--sm-teal-bright); }
@@ -173,28 +242,134 @@ body {
 }
 .wf-reader-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .wf-reader-meta { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 4px; }
-.wf-reader-body { padding: 14px 18px; }
+/* A reading measure (max-width) keeps prose comfortable in a wide editor column;
+ * it's a no-op in a narrow side panel where the column is already < the cap. */
+.wf-reader-body { padding: 16px 20px; }
+.wf-reader-body > * { max-width: 80ch; }
 
-.wf-turn { margin-bottom: 13px; font-size: 12px; line-height: 1.55; }
-.wf-who { font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; color: var(--vscode-descriptionForeground); }
-.wf-turn.prompt .wf-bubble { background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.1)); border-radius: 6px; padding: 8px 11px; color: var(--sm-snow-blue); }
+/* ── Inception brief (pinned at top of the reader) ── */
+.wf-brief {
+  margin: 0 0 12px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  border-radius: 6px;
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.06));
+}
+.wf-brief-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--vscode-descriptionForeground);
+  user-select: none;
+}
+.wf-brief-head:hover { color: var(--vscode-foreground); }
+.wf-brief-head:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
+.wf-brief-caret { font-size: 9px; width: 9px; }
+.wf-brief.collapsed { background: none; }
+.wf-brief-body {
+  padding: 2px 13px 10px 13px;
+  max-height: 34vh;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--vscode-foreground);
+}
+
+/* ── Turns ──
+ * Body prose is the theme foreground (high contrast in both light and dark);
+ * the snow-blue accent is reserved for the small role label, not the text. */
+.wf-turn { margin-bottom: 12px; font-size: 13px; line-height: 1.45; }
+.wf-who {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 5px;
+  color: var(--vscode-descriptionForeground);
+}
+.wf-turn.prompt .wf-who { color: var(--sm-blizzard-blue); }
+.wf-turn.prompt .wf-bubble {
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.08));
+  border-left: 2px solid rgba(var(--sm-blizzard-blue-rgb), 0.55);
+  border-radius: 0 6px 6px 0;
+  padding: 7px 11px;
+  color: var(--vscode-foreground);
+}
 .wf-turn.assistant .wf-bubble { color: var(--vscode-foreground); }
 .wf-turn.system .wf-bubble { color: var(--vscode-descriptionForeground); font-style: italic; }
-.wf-line { margin-bottom: 4px; white-space: pre-wrap; word-break: break-word; }
+/* A run of prose lines as one pre-wrap block: spacing is pure line-height
+ * (uniform within and across wrapped lines); a blank source line becomes a
+ * one-line paragraph gap. One margin separates the block from what follows. */
+.wf-prose { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 8px; }
+.wf-prose:last-child { margin-bottom: 0; }
+
+/* ── Light markdown (headings / lists / tables / rules / framing tags) ──
+ * Compact margins so structure reads without eating the vertical space the
+ * pre-wrap prose blocks just reclaimed. */
+.wf-md-h1, .wf-md-h2, .wf-md-h3, .wf-md-h4 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 12px 0 5px;
+}
+.wf-md-h1:first-child, .wf-md-h2:first-child, .wf-md-h3:first-child, .wf-md-h4:first-child { margin-top: 0; }
+.wf-md-h1 { font-size: 16px; }
+.wf-md-h2 { font-size: 14px; }
+.wf-md-h3 { font-size: 12.5px; }
+.wf-md-h4 { font-size: 12px; color: var(--vscode-descriptionForeground); text-transform: uppercase; letter-spacing: 0.4px; }
+.wf-md-list { margin: 4px 0 8px; padding-left: 22px; }
+.wf-md-list li { margin: 1px 0; line-height: 1.45; }
+.wf-md-hr { border: none; border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3)); margin: 10px 0; }
+.wf-md-table {
+  border-collapse: collapse;
+  margin: 6px 0 10px;
+  font-size: 12px;
+  width: auto;
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+.wf-md-table th, .wf-md-table td {
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  padding: 3px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.wf-md-table th { font-weight: 600; background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.08)); }
+.wf-md-table code { white-space: nowrap; }
+/* Framing wrapper tags (<teammate-message …>, closing tags) — kept for context
+ * but recessed so the brief leads with the instruction, not the envelope. */
+.wf-md-tag {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10.5px;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.7;
+  margin: 2px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wf-md-list i, .wf-prose i, .wf-bubble i, .wf-brief-body i { font-style: italic; }
+/* Tool calls are secondary — muted and recessive so prose stands out; the tool
+ * name (bold) lifts back to foreground. */
 .wf-tool {
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 11px;
-  color: var(--sm-snow-blue);
+  font-size: 11.5px;
+  color: var(--vscode-descriptionForeground);
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.1));
   border-radius: 4px;
-  padding: 4px 8px;
-  margin: 3px 0;
+  padding: 5px 9px;
+  margin: 6px 0;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
+.wf-tool b { color: var(--vscode-foreground); font-weight: 600; }
 .wf-bubble code {
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 11px;
+  font-size: 12px;
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
   padding: 0 3px;
   border-radius: 3px;

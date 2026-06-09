@@ -586,6 +586,9 @@ body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach
   flex-shrink: 0;
   white-space: nowrap;
 }
+/* A running shell is inherently a live signal (blue); dim it when the parent
+ * card is seen/stale, matching the detail chips. */
+.card.stale .bg-shell-badge { opacity: 0.5; }
 
 .card-detail {
   font-size: 11px;
@@ -621,6 +624,19 @@ body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach
 .subagent-summary .waiting-count { color: var(--sm-frozen-peach); }
 .subagent-overflow { font-size: 9px; color: #666666; padding-left: 9px; line-height: 1.5; }
 .subagent-toggle { cursor: pointer; color: var(--sm-blizzard-light); font-size: 9px; margin-left: 4px; }
+
+/* Inline not-done agent rows under a card (teammates / subagents / workflow
+ * agents) — the live "who's still working" list. Capped to ~6 rows, then it
+ * scrolls. Each row deep-links the detail panel to that agent. */
+.card-agent-list { margin-top: 3px; display: flex; flex-direction: column; gap: 1px; max-height: 116px; overflow-y: auto; }
+.card-agent-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 3px; cursor: pointer; font-size: 10px; color: #b0b0b0; }
+.card-agent-row:hover { background: rgba(255, 255, 255, 0.05); color: var(--vscode-foreground, #e0e0e0); }
+.card-agent-row:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: -1px; }
+.card-agent-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+.card-agent-dot.running { background: var(--sm-blizzard-blue); box-shadow: 0 0 3px rgba(var(--sm-blizzard-blue-rgb), 0.4); }
+.card-agent-dot.waiting { background: var(--sm-frozen-peach); box-shadow: 0 0 3px rgba(var(--sm-frozen-peach-rgb), 0.4); }
+.card-agent-dot.failed { background: var(--sm-salmon-red); }
+.card-agent-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .subagent-toggle:hover { text-decoration: underline; }
 .mini-spinner { display: inline-block; width: 7px; height: 7px; border: 1px solid rgba(var(--sm-blizzard-blue-rgb), 0.2); border-top-color: var(--sm-blizzard-blue); border-radius: 50%; animation: spin 1s linear infinite; flex-shrink: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1006,18 +1022,18 @@ body.vscode-light .team-agent-subagent-dot.done { background: #cccccc; }
 body.vscode-light .team-depth-badge { background: rgba(0, 0, 0, 0.06); color: #999999; }
 body.vscode-light .team-dismiss-btn:hover { background: rgba(0, 0, 0, 0.06); }
 body.vscode-light .team-compact-row:hover { background: var(--vscode-list-hoverBackground, #f0f0f0); }
-body.vscode-light .wf-dismiss:hover { background: rgba(0, 0, 0, 0.06); }
 body.vscode-light .workflow-compact-row:hover { background: var(--vscode-list-hoverBackground, #f0f0f0); }
 body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-teal-rgb), 0.12); }
 
-/* ── Workflow run roll-up on a session card ──────────────────────────
- * A session that ran one or more Opus 4.8 Workflows gets a quiet WF tag on
- * the meta line, a roll-up (bar + phase counts + metrics), and a neutral
- * "View workflow" pill that opens the detail panel. The card body still
- * opens the invoking conversation. */
+/* ── Workflow / agents on a session card ─────────────────────────────
+ * A session that ran one or more Opus 4.8 Workflows (or spawned subagents /
+ * teammates) gets a single quiet "agents →" chip on the meta line that opens
+ * the detail panel, plus inline rows for any still-working agents (see
+ * .card-agent-list). No progress bar or roll-up tick — a finished run is just
+ * the chip. The card body still opens the invoking conversation. */
 
-/* WF tag: the proven .ws-main-chip recipe, but text-transform:none so "WF"
- * stays upper-case (the chip class force-lowercases). */
+/* WF tag: the proven .ws-main-chip recipe, but text-transform:none so the
+ * label keeps its authored casing (the chip class force-lowercases). */
 .wf-tag {
   font-size: 9px;
   font-weight: 400;
@@ -1034,69 +1050,6 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
   opacity: 0.75;
 }
 
-.wf-rollup { margin-top: 7px; }
-
-.wf-bar {
-  height: 5px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-  margin-bottom: 6px;
-}
-.wf-bar-fill {
-  display: block;
-  height: 100%;
-  border-radius: 3px;
-  background: var(--sm-teal-bright);
-  transition: width 0.4s ease;
-}
-.wf-bar-fill.running { background: var(--sm-blizzard-blue); }
-.wf-bar-fill.failed { background: var(--sm-salmon-red); }
-
-.wf-phases {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 10px;
-  color: var(--vscode-descriptionForeground, #888888);
-  margin-bottom: 4px;
-}
-.wf-phase b { color: var(--vscode-foreground, #cccccc); font-weight: 600; }
-
-.wf-status-line { font-size: 10px; margin-bottom: 4px; }
-.wf-status-line.failed { color: var(--sm-salmon-red); }
-
-.wf-metaline {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  color: var(--vscode-descriptionForeground, #888888);
-  opacity: 0.85;
-  margin-bottom: 6px;
-}
-.wf-meta-text { flex: 1; min-width: 0; }
-
-/* Archive (×) for a workflow run — mirrors .team-dismiss-btn: invisible until
- * the owning card is hovered, so the calm roll-up stays calm. It is a role=button
- * span (not a native <button>) so keydown wiring lives in panel.ts. */
-.wf-dismiss {
-  font-size: 14px;
-  width: 18px;
-  height: 18px;
-  line-height: 18px;
-  text-align: center;
-  flex-shrink: 0;
-  color: var(--vscode-descriptionForeground, #666666);
-  cursor: pointer;
-  border-radius: 3px;
-  opacity: 0;
-  transition: opacity 0.15s, background 0.1s;
-}
-.card:hover .wf-dismiss { opacity: 0.6; }
-.wf-dismiss:hover { opacity: 1 !important; background: rgba(255, 255, 255, 0.08); }
-.wf-dismiss:focus-visible { opacity: 1; outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: 1px; }
-
 /* Archived workflow run, rendered as a compact archive row (mirrors
  * .team-compact-row). Un-dismisses + reopens the parent conversation on click. */
 .workflow-compact-row { display: flex; align-items: center; padding: 4px 8px; border-radius: 4px; cursor: pointer; gap: 7px; transition: background 0.1s; }
@@ -1111,10 +1064,10 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
 .wf-badge { font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; line-height: 13px; color: var(--sm-arctic-teal); background: rgba(var(--sm-arctic-teal-rgb), 0.15); }
 
 /* The WF chip doubles as the detail-panel trigger: clickable, tinted to the
- * owning card's status accent (so it reads as "part of this card"), with a
- * trailing arrow. Builds on the .wf-tag recipe; here we add interactivity and
- * lift the muted opacity so the tint stays crisp. No per-TYPE colour — the
- * tint tracks status, which we always colour. */
+ * agents' own aggregate state (wf-chip-* class, set at render), with a trailing
+ * arrow. Builds on the .wf-tag recipe; here we add interactivity and lift the
+ * muted opacity so the tint stays crisp. No per-TYPE colour — the tint tracks
+ * state (running/waiting/done/failed), dimmed when the parent card is seen. */
 .wf-view-chip {
   display: inline-flex;
   align-items: center;
@@ -1123,27 +1076,21 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
   opacity: 1;
   transition: background 0.1s, color 0.1s, border-color 0.1s;
 }
-.card.running .wf-view-chip { color: var(--sm-blizzard-blue); }
-.card.waiting .wf-view-chip { color: var(--sm-frozen-peach); }
-.card.done    .wf-view-chip { color: var(--sm-arctic-teal); }
-/* A completed run's parent card commonly ages done -> stale; the chip must stay
- * visibly interactive (tint the teal accent, just dimmed) rather than dropping
- * to the inert muted .wf-tag colour. */
-.card.stale   .wf-view-chip { color: var(--sm-arctic-teal); opacity: 0.7; }
-/* The "view agent team" chip rides the team-group header, not a .card, so it
- * needs its own status-tint rules mirroring the card ones. Default (running)
- * team-group has no modifier class. */
-.team-group .wf-view-chip { color: var(--sm-blizzard-blue); }
-.team-group.team-waiting .wf-view-chip { color: var(--sm-frozen-peach); }
-.team-group.team-done .wf-view-chip { color: var(--sm-arctic-teal); }
+/* The chip is tinted by its OWN aggregate state (wf-chip-* class set at render),
+ * not the parent card/team status — a live workflow under an idle session still
+ * reads as running. Set on workflow, subagents, and team chips alike. */
+.wf-view-chip.wf-chip-running { color: var(--sm-blizzard-blue); }
+.wf-view-chip.wf-chip-waiting { color: var(--sm-frozen-peach); }
+.wf-view-chip.wf-chip-done    { color: var(--sm-arctic-teal); }
+.wf-view-chip.wf-chip-failed  { color: var(--sm-salmon-red); }
+/* "Seen": a stale (acknowledged) parent card dims its chip rather than dropping
+ * it to the inert muted .wf-tag colour — the state tint stays, just quieter. */
+.card.stale .wf-view-chip { opacity: 0.6; }
 .wf-view-chip:hover { background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06)); }
-.card.running .wf-view-chip:hover,
-.team-group .wf-view-chip:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.14); }
-.card.waiting .wf-view-chip:hover,
-.team-group.team-waiting .wf-view-chip:hover { background: rgba(var(--sm-frozen-peach-rgb), 0.14); }
-.card.done    .wf-view-chip:hover,
-.card.stale   .wf-view-chip:hover,
-.team-group.team-done .wf-view-chip:hover { background: rgba(var(--sm-arctic-teal-rgb), 0.14); }
+.wf-view-chip.wf-chip-running:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.14); }
+.wf-view-chip.wf-chip-waiting:hover { background: rgba(var(--sm-frozen-peach-rgb), 0.14); }
+.wf-view-chip.wf-chip-done:hover    { background: rgba(var(--sm-arctic-teal-rgb), 0.14); }
+.wf-view-chip.wf-chip-failed:hover  { background: rgba(var(--sm-salmon-red-rgb), 0.14); }
 .wf-view-chip:focus-visible {
   outline: 1px solid currentColor;
   outline-offset: 1px;
@@ -1151,4 +1098,3 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
 .wf-arrow { opacity: 0.7; font-size: 10px; line-height: 1; }
 
 body.vscode-light .wf-tag { color: #777777; }
-body.vscode-light .wf-bar { background: rgba(0, 0, 0, 0.08); }

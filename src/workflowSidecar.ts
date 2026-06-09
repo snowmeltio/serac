@@ -34,8 +34,12 @@ function num(v: unknown): number | null {
 function mapAgentState(state: unknown): DisplayStatus {
   switch (state) {
     case 'done': return 'done';
+    case 'completed': return 'done';
     case 'running': return 'running';
+    case 'progress': return 'running';
+    case 'start': return 'running';
     case 'waiting': return 'waiting';
+    case 'queued': return 'waiting';
     case 'failed': return 'done';
     default: return 'running';
   }
@@ -50,6 +54,7 @@ function mapRunStatus(status: unknown): WorkflowRunStatus {
     case 'failed': return 'failed';
     case 'running': return 'running';
     case 'incomplete': return 'incomplete';
+    case 'killed': return 'incomplete';
     default: return 'completed';
   }
 }

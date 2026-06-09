@@ -16,6 +16,7 @@ vi.mock('./jsonlTailer.js', () => ({
 
 // Import after mock is registered
 const { SessionManager, setConfidenceThresholds } = await import('./sessionManager.js');
+import { BACKGROUND_SHELL_CEILING_MS } from './trackers/backgroundShellTracker.js';
 
 function makeManager(): InstanceType<typeof SessionManager> {
   return new SessionManager('test-session-id', '/tmp/test.jsonl', 'test-workspace');
@@ -156,15 +157,15 @@ describe('SessionManager state machine', () => {
     expect(mgr.getStatus()).toBe('waiting');
   });
 
-  it('uses longer timer for slow tools (6s)', async () => {
+  it('uses longer timer for slow tools (15s)', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);
     await feedRecords(mgr, [assistantToolUseRecord('Bash', 'tool-1')]);
     expect(mgr.getStatus()).toBe('running');
-    vi.advanceTimersByTime(5_000);
-    expect(mgr.getStatus()).toBe('running'); // still running at 5s
+    vi.advanceTimersByTime(14_000);
+    expect(mgr.getStatus()).toBe('running'); // still running below the 15s slow delay
     vi.advanceTimersByTime(2_000);
-    expect(mgr.getStatus()).toBe('waiting'); // triggers at 6s
+    expect(mgr.getStatus()).toBe('waiting'); // fires past 15s
   });
 
   it('uses longer timer for MCP tools', async () => {
@@ -523,5 +524,81 @@ describe('SessionManager state machine', () => {
       // Restore defaults so global state doesn't bleed into other tests.
       setConfidenceThresholds(5_000, 30_000);
     }
+  });
+});
+
+describe('SessionManager.sweepBackgroundShells (idle done-card maintenance)', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  /** A tool_result record carrying the background-launch banner, so the tracker
+   *  registers an outstanding shell (mirrors how a real backgrounded Bash
+   *  returns immediately). */
+  function launchRecord(shellId: string, toolId = 't1', timestamp = new Date().toISOString()): JsonlRecord {
+    return {
+      type: 'user',
+      timestamp,
+      message: { content: [{ type: 'tool_result', tool_use_id: toolId, content: `Command running in background with ID: ${shellId}` }] },
+    } as JsonlRecord;
+  }
+
+  it('is a no-op (returns false) when there are no outstanding shells', () => {
+    const mgr = makeManager();
+    expect(mgr.sweepBackgroundShells(Date.now())).toBe(false);
+  });
+
+  it('keeps a shell within the ceiling when death is not confirmed', async () => {
+    // makeManager() passes no livenessProbe → registry signal is unknown (null).
+    const mgr = makeManager();
+    await feedRecords(mgr, [launchRecord('shell_a')]);
+    expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
+    expect(mgr.sweepBackgroundShells(Date.now())).toBe(false);
+    expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
+  });
+
+  it('prunes a shell past the hard ceiling and reports the drop (fix a + b)', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [launchRecord('shell_a')]);
+    const past = Date.now() + BACKGROUND_SHELL_CEILING_MS + 1000;
+    expect(mgr.sweepBackgroundShells(past)).toBe(true);
+    expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
+  });
+
+  it('clears every outstanding shell at once on confirmed process death, before the ceiling (fix c)', async () => {
+    let live: boolean | null = true;
+    const mgr = new SessionManager('dead-sess', '/tmp/dead.jsonl', 'ws', { livenessProbe: () => live });
+    await feedRecords(mgr, [launchRecord('shell_a'), launchRecord('shell_b', 't2')]);
+    expect(mgr.getSnapshot().backgroundShellCount).toBe(2);
+    // First sweep sees the session live → latches "ever seen live", no drop.
+    expect(mgr.sweepBackgroundShells(Date.now())).toBe(false);
+    expect(mgr.getSnapshot().backgroundShellCount).toBe(2);
+    // Process exits: registry now reports dead → clear both immediately, well
+    // within the 15-min ceiling.
+    live = false;
+    expect(mgr.sweepBackgroundShells(Date.now())).toBe(true);
+    expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
+  });
+
+  it('anchors a shell start to the record timestamp, so a reloaded old launch is pruned at once', async () => {
+    // Simulates a reload replaying yesterday's JSONL: the launch record's
+    // timestamp is already past the ceiling. startedAt must come from the record,
+    // not wall-clock-at-processing — otherwise the age would reset to ~0 on reload.
+    const mgr = makeManager();
+    const oldTs = new Date(Date.now() - BACKGROUND_SHELL_CEILING_MS - 60_000).toISOString();
+    await feedRecords(mgr, [launchRecord('shell_old', 't9', oldTs)]);
+    expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
+    // Sweeping at "now" (NOT now+ceiling) already drops it: its real age exceeds
+    // the ceiling because the start is anchored to the old record timestamp.
+    expect(mgr.sweepBackgroundShells(Date.now())).toBe(true);
+    expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
+  });
+
+  it('does NOT clear on a registry miss (never seen live → unknown, not dead)', async () => {
+    // live=false from the start, never latched → conservative: not "confirmed
+    // dead", so only the ceiling can drop it (and we are within it).
+    const mgr = new SessionManager('unk-sess', '/tmp/unk.jsonl', 'ws', { livenessProbe: () => false });
+    await feedRecords(mgr, [launchRecord('shell_a')]);
+    expect(mgr.sweepBackgroundShells(Date.now())).toBe(false);
+    expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
   });
 });

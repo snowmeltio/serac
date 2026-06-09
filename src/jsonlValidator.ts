@@ -76,9 +76,16 @@ export function isMetadataRecord(record: JsonlRecord): boolean {
 // ── Content block extraction ───────────────────────────────────────
 
 /** Get the content blocks array from a record, defaulting to empty.
- *  Safe for both user and assistant records. */
+ *  Safe for both user and assistant records. `message.content` may be a plain
+ *  string (the Anthropic message shape permits it; a workflow/agent record-0
+ *  inception brief arrives this way) — normalise it to a single text block so
+ *  callers that iterate blocks don't walk the string character-by-character. */
 export function getContentBlocks(record: JsonlRecord): JsonlContentBlock[] {
-  return record.message?.content || [];
+  const content = record.message?.content;
+  if (typeof content === 'string') {
+    return content ? [{ type: 'text', text: content }] : [];
+  }
+  return content || [];
 }
 
 /** Extract all text blocks from a record's content. */

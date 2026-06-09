@@ -172,7 +172,7 @@ describe('panel.ts integration', () => {
     expect(ranges).toContain('all');
   });
 
-  it('renders subagents on cards', () => {
+  it('renders not-done subagents as inline agent rows on cards', () => {
     sendUpdate({
       sessions: [makeSession({
         subagents: [
@@ -182,9 +182,10 @@ describe('panel.ts integration', () => {
       })],
     });
     const card = document.querySelector('.card')!;
-    // Should have subagent elements
-    const subagentEls = card.querySelectorAll('.subagent, .subagent-row, [class*="subagent"]');
-    expect(subagentEls.length).toBeGreaterThan(0);
+    // The still-working subagent shows inline; the done one is click-through only.
+    const rows = card.querySelectorAll('.card-agent-row[data-detail-source="subagents"]');
+    expect(rows.length).toBe(1);
+    expect(rows[0].querySelector('.card-agent-name')!.textContent).toBe('Explore code');
   });
 
   it('posts focusSession on card click', () => {
@@ -592,69 +593,82 @@ describe('panel.ts integration', () => {
       };
     }
 
-    it('appends a WF view chip to the card meta row when the session owns a run', () => {
+    it('appends one "agents" view chip to the card meta row when the session owns a run', () => {
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess' })],
         workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
       });
       const chip = document.querySelector('.card-meta .wf-view-chip') as HTMLElement;
       expect(chip).toBeTruthy();
-      expect(chip.textContent).toContain('workflow');
+      // One umbrella name for everything under a card — "agents".
+      expect(chip.textContent).toContain('agents');
       expect(chip.querySelector('.wf-arrow')).toBeTruthy();
       expect(chip.classList.contains('detail-chip')).toBe(true);
       expect(chip.dataset.detailSource).toBe('workflow');
       expect(chip.dataset.detailContainer).toBe('wf-sess');
-      expect(chip.dataset.detailSession).toBe('wf-sess');
-      expect(chip.getAttribute('aria-label')).toBe('workflow');
+      expect(chip.getAttribute('aria-label')).toBe('agents');
     });
 
-    it('renders the roll-up bar and phase pills (no full-width view bar)', () => {
+    it('a completed run shows the chip but NO bar, count tick, or inline rows', () => {
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess' })],
-        workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
+        workflows: [makeWorkflow({ sessionId: 'wf-sess' })], // default: completed, all done
       });
       const card = document.querySelector('.card')!;
-      expect(card.querySelector('.wf-rollup')).toBeTruthy();
-      expect(card.querySelector('.wf-bar .wf-bar-fill')).toBeTruthy();
-      const phases = card.querySelectorAll('.wf-phases .wf-phase');
-      expect(phases.length).toBe(2);
-      expect(phases[0].textContent).toContain('Audit');
-      expect(phases[0].textContent).toContain('✓2');
-      // The old full-width pill is gone; the view trigger lives in the meta row.
-      expect(card.querySelector('.wf-view-pill')).toBeFalsy();
-      expect(card.querySelector('.wf-rollup .wf-view-chip')).toBeFalsy();
+      expect(card.querySelector('.wf-view-chip')).toBeTruthy();
+      // No progress bar, no "✓ N agents" tick — done agents are click-through only.
+      expect(card.querySelector('.wf-bar')).toBeFalsy();
+      expect(card.querySelector('.wf-rollup')).toBeFalsy();
+      expect(card.querySelector('.card-agent-row')).toBeFalsy();
     });
 
-    it('shows roll-up metrics (agents, tokens, tools, duration) on the metaline', () => {
+    it('a running run lists its still-working agents inline (excludes done), no bar', () => {
       sendUpdate({
-        sessions: [makeSession({ sessionId: 'wf-sess' })],
-        workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
+        sessions: [makeSession({ sessionId: 'wf-sess', status: 'running' })],
+        workflows: [makeWorkflow({
+          runId: 'wf_live1', sessionId: 'wf-sess', status: 'running', counts: { done: 1, running: 2 },
+          agents: [
+            { phaseIndex: 1, status: 'done', agentId: 'd1', label: 'done one' },
+            { phaseIndex: 1, status: 'running', agentId: 'r1', label: 'reviewer' },
+            { phaseIndex: 2, status: 'waiting', agentId: 'w1', label: 'waiter' },
+          ],
+        })],
       });
-      const meta = document.querySelector('.wf-metaline')!.textContent!;
-      expect(meta).toContain('3 agents');
-      expect(meta).toContain('tokens');
-      expect(meta).toContain('18 tools');
-      expect(meta).toContain('1m 35s');
+      const card = document.querySelector('.card')!;
+      expect(card.querySelector('.wf-bar')).toBeFalsy();
+      const rows = card.querySelectorAll('.card-agent-row[data-detail-source="workflow"]');
+      // Only the still-working agents appear inline; the done one is click-through only.
+      expect(Array.from(rows).map(r => r.querySelector('.card-agent-name')!.textContent)).toEqual(['reviewer', 'waiter']);
+      // Each row deep-links to its agent under the run's groupKey (= runId).
+      expect((rows[0] as HTMLElement).dataset.group).toBe('wf_live1');
+      expect((rows[0] as HTMLElement).dataset.agent).toBe('r1');
+      expect((rows[0] as HTMLElement).dataset.detailSession).toBe('wf-sess');
     });
 
-    it('fills the bar to 100% for a completed run with all agents done', () => {
+    it('a killed/incomplete run shows no inline rows (terminal — chip only)', () => {
       sendUpdate({
-        sessions: [makeSession({ sessionId: 'wf-sess' })],
-        workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
+        sessions: [makeSession({ sessionId: 'wf-sess', status: 'stale' })],
+        workflows: [makeWorkflow({
+          sessionId: 'wf-sess', status: 'incomplete', counts: {},
+          agents: [
+            { phaseIndex: 1, status: 'running', agentId: 'r1', label: 'abandoned' },
+          ],
+        })],
       });
-      const fill = document.querySelector('.wf-bar-fill') as HTMLElement;
-      expect(fill.style.width).toBe('100%');
+      const card = document.querySelector('.card')!;
+      expect(card.querySelector('.card-agent-row')).toBeFalsy();
+      expect(card.querySelector('.wf-bar')).toBeFalsy();
+      expect(card.querySelector('.wf-view-chip')).toBeTruthy();
     });
 
-    it('plain session (no run) shows no WF chip or roll-up', () => {
+    it('plain session (no run) shows no chip and no inline rows', () => {
       sendUpdate({ sessions: [makeSession({ sessionId: 'plain' })] });
       const card = document.querySelector('.card')!;
-      expect(card.querySelector('.wf-tag')).toBeFalsy();
       expect(card.querySelector('.wf-view-chip')).toBeFalsy();
-      expect(card.querySelector('.wf-rollup')).toBeFalsy();
+      expect(card.querySelector('.card-agent-row')).toBeFalsy();
     });
 
-    it('clicking the WF chip posts openDetail for the workflow source', () => {
+    it('clicking the chip posts openDetail for the workflow source and focuses the conversation', () => {
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess' })],
         workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
@@ -664,20 +678,10 @@ describe('panel.ts integration', () => {
       expect(postedMessages).toContainEqual({
         type: 'openDetail', source: 'workflow', containerId: 'wf-sess', sessionId: 'wf-sess',
       });
+      expect(postedMessages.filter((m: any) => m.type === 'focusSession')).toEqual([{ type: 'focusSession', sessionId: 'wf-sess' }]);
     });
 
-    it('clicking the chip does NOT also fire the card focus (no double-fire)', () => {
-      sendUpdate({
-        sessions: [makeSession({ sessionId: 'wf-sess' })],
-        workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
-      });
-      postedMessages = [];
-      (document.querySelector('.wf-view-chip') as HTMLElement).click();
-      const focusMsgs = postedMessages.filter((m: any) => m.type === 'focusSession');
-      expect(focusMsgs.length).toBe(0);
-    });
-
-    it('Enter on the focused WF chip posts openDetail', () => {
+    it('Enter on the focused chip posts openDetail', () => {
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess' })],
         workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
@@ -690,19 +694,54 @@ describe('panel.ts integration', () => {
       });
     });
 
-    it('show.workflows=false removes the chip and roll-up', () => {
-      sendSettings({ show: { workflows: false } });
-      sendUpdate({
-        sessions: [makeSession({ sessionId: 'wf-sess' })],
-        workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
-      });
-      const card = document.querySelector('.card')!;
-      expect(card.querySelector('.wf-tag')).toBeFalsy();
-      expect(card.querySelector('.wf-view-chip')).toBeFalsy();
-      expect(card.querySelector('.wf-rollup')).toBeFalsy();
+    it('tints the chip by the run state (completed → done, running → running, failed → failed)', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'wf-sess' })], workflows: [makeWorkflow({ sessionId: 'wf-sess', status: 'completed' })] });
+      expect((document.querySelector('.wf-view-chip') as HTMLElement).classList.contains('wf-chip-done')).toBe(true);
+
+      sendUpdate({ sessions: [makeSession({ sessionId: 'wf-sess' })], workflows: [makeWorkflow({ sessionId: 'wf-sess', status: 'running' })] });
+      expect((document.querySelector('.wf-view-chip') as HTMLElement).classList.contains('wf-chip-running')).toBe(true);
+
+      sendUpdate({ sessions: [makeSession({ sessionId: 'wf-sess' })], workflows: [makeWorkflow({ sessionId: 'wf-sess', status: 'failed' })] });
+      expect((document.querySelector('.wf-view-chip') as HTMLElement).classList.contains('wf-chip-failed')).toBe(true);
     });
 
-    it('re-enabling show.workflows restores the affordances on the next update', () => {
+    it('tints the chip running for a live run even when the parent card is done/idle', () => {
+      sendUpdate({
+        sessions: [makeSession({ sessionId: 'wf-sess', status: 'done' })],
+        workflows: [makeWorkflow({ sessionId: 'wf-sess', status: 'running' })],
+      });
+      const chip = document.querySelector('.wf-view-chip') as HTMLElement;
+      expect(chip.classList.contains('wf-chip-running')).toBe(true);
+      expect(chip.classList.contains('wf-chip-done')).toBe(false);
+    });
+
+    it('consolidates to ONE "agents" chip when the session has both a run and subagents', () => {
+      sendUpdate({
+        sessions: [makeSession({ sessionId: 'wf-sess', subagents: [{ description: 'explore', running: false }] })],
+        workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
+      });
+      const chips = document.querySelectorAll('.card-meta .detail-chip');
+      expect(chips).toHaveLength(1);
+      const chip = chips[0] as HTMLElement;
+      expect(chip.textContent).toContain('agents');
+      // Initial source is the workflow (richer); the in-pane switcher carries the
+      // subagents view, so there is no separate subagents chip on the card.
+      expect(chip.dataset.detailSource).toBe('workflow');
+      expect(document.querySelector('.detail-chip[data-detail-source="subagents"]')).toBeFalsy();
+    });
+
+    it('show.workflows=false removes the chip and any inline rows', () => {
+      sendSettings({ show: { workflows: false } });
+      sendUpdate({
+        sessions: [makeSession({ sessionId: 'wf-sess', status: 'running' })],
+        workflows: [makeWorkflow({ sessionId: 'wf-sess', status: 'running', agents: [{ phaseIndex: 1, status: 'running', agentId: 'r1', label: 'x' }] })],
+      });
+      const card = document.querySelector('.card')!;
+      expect(card.querySelector('.wf-view-chip')).toBeFalsy();
+      expect(card.querySelector('.card-agent-row[data-detail-source="workflow"]')).toBeFalsy();
+    });
+
+    it('re-enabling show.workflows restores the chip on the next update', () => {
       sendSettings({ show: { workflows: false } });
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess' })],
@@ -718,68 +757,7 @@ describe('panel.ts integration', () => {
       expect(document.querySelector('.wf-view-chip')).toBeTruthy();
     });
 
-    it('a running run marks the bar running and shows fractional phase counts', () => {
-      sendUpdate({
-        sessions: [makeSession({ sessionId: 'wf-sess', status: 'running' })],
-        workflows: [makeWorkflow({
-          sessionId: 'wf-sess',
-          status: 'running',
-          counts: { done: 1, running: 2 },
-          agents: [
-            { phaseIndex: 1, status: 'done' },
-            { phaseIndex: 1, status: 'running' },
-            { phaseIndex: 2, status: 'running' },
-          ],
-        })],
-      });
-      const card = document.querySelector('.card')!;
-      expect(card.querySelector('.wf-bar.running')).toBeTruthy();
-      expect(card.querySelector('.wf-bar-fill.running')).toBeTruthy();
-      // Pin the partial-progress maths: done 1 / total 3 → 33%.
-      expect((card.querySelector('.wf-bar-fill') as HTMLElement).style.width).toBe('33%');
-      const phases = card.querySelectorAll('.wf-phases .wf-phase');
-      expect(phases[0].textContent).toContain('1/2');
-      expect(phases[1].textContent).toContain('0/1');
-    });
-
-    it('an incomplete run shows a 0% non-failed/non-running bar, no status line, no checkmarks', () => {
-      sendUpdate({
-        sessions: [makeSession({ sessionId: 'wf-sess', status: 'stale' })],
-        workflows: [makeWorkflow({
-          sessionId: 'wf-sess',
-          status: 'incomplete',
-          agentCount: 3,
-          counts: {},
-          agents: [
-            { phaseIndex: 1, status: 'running' },
-            { phaseIndex: 1, status: 'running' },
-            { phaseIndex: 2, status: 'running' },
-          ],
-        })],
-      });
-      const card = document.querySelector('.card')!;
-      const fill = card.querySelector('.wf-bar-fill') as HTMLElement;
-      expect(fill.classList.contains('failed')).toBe(false);
-      expect(fill.classList.contains('running')).toBe(false);
-      expect(fill.style.width).toBe('0%');
-      expect(card.querySelector('.wf-status-line')).toBeFalsy();
-      // Partial run must not imply success — fractions, never ✓.
-      expect(card.querySelector('.wf-phases')!.textContent).not.toContain('✓');
-    });
-
-    it('a failed run shows the failed status line and failed bar fill', () => {
-      sendUpdate({
-        sessions: [makeSession({ sessionId: 'wf-sess' })],
-        workflows: [makeWorkflow({ sessionId: 'wf-sess', status: 'failed' })],
-      });
-      const card = document.querySelector('.card')!;
-      expect(card.querySelector('.wf-bar-fill.failed')).toBeTruthy();
-      const line = card.querySelector('.wf-status-line.failed');
-      expect(line).toBeTruthy();
-      expect(line!.textContent).toContain('run failed');
-    });
-
-    it('multiple runs on one session collapse to one block with "+N earlier" and a plural pill', () => {
+    it('multiple runs on one session still collapse to ONE chip', () => {
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess' })],
         workflows: [
@@ -787,11 +765,7 @@ describe('panel.ts integration', () => {
           makeWorkflow({ sessionId: 'wf-sess', runId: 'wf_older' }),
         ],
       });
-      const card = document.querySelector('.card')!;
-      expect(card.querySelectorAll('.wf-rollup').length).toBe(1);
-      expect(card.querySelectorAll('.wf-view-chip').length).toBe(1);
-      expect(card.querySelector('.wf-metaline')!.textContent).toContain('+1 earlier');
-      expect(card.querySelector('.wf-view-chip')!.getAttribute('aria-label')).toBe('workflows');
+      expect(document.querySelector('.card')!.querySelectorAll('.wf-view-chip').length).toBe(1);
     });
   });
 
@@ -844,17 +818,16 @@ describe('panel.ts integration', () => {
       expect(postedMessages).toContainEqual({ type: 'undismissWorkflow', runId: 'wf_archived' });
     });
 
-    it('clicking the × on an active run posts dismissWorkflow without focusing the card', () => {
+    it('shows no dismiss affordance on an active run — a workflow follows its parent session', () => {
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess' })],
         workflows: [makeRun({ dismissed: false })],
       });
-      postedMessages = [];
-      const x = document.querySelector('.wf-rollup .wf-dismiss[data-dismiss-workflow]') as HTMLElement;
-      expect(x).toBeTruthy();
-      x.click();
-      expect(postedMessages).toContainEqual({ type: 'dismissWorkflow', runId: 'wf_archived' });
-      expect(postedMessages.filter((m: any) => m.type === 'focusSession').length).toBe(0);
+      // The "agents" chip surfaces the run, but there is no per-run × to archive
+      // it: a workflow belongs to its parent session and is dismissed with it.
+      expect(document.querySelector('.card[data-session-id="wf-sess"] .wf-view-chip')).toBeTruthy();
+      expect(document.querySelector('.wf-dismiss')).toBeFalsy();
+      expect(document.querySelector('[data-dismiss-workflow]')).toBeFalsy();
     });
 
     it('interleaves archived sessions, teams, and workflows newest-first', () => {
@@ -916,11 +889,12 @@ describe('panel.ts integration', () => {
       { description: 'explore db', running: true },
     ];
 
-    it('appends a "view subagents" chip when the session has subagents', () => {
+    it('appends an "agents" chip (subagents source) when the session has subagents', () => {
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: subs })] });
       const chip = document.querySelector('.card-meta .detail-chip[data-detail-source="subagents"]') as HTMLElement;
       expect(chip).toBeTruthy();
-      expect(chip.textContent).toContain('subagents');
+      // One umbrella name; the source attribute still routes the drill-in.
+      expect(chip.textContent).toContain('agents');
       expect(chip.dataset.detailContainer).toBe('sa-sess');
       expect(chip.dataset.detailSession).toBe('sa-sess');
     });
@@ -939,6 +913,16 @@ describe('panel.ts integration', () => {
       expect(document.querySelector('.detail-chip[data-detail-source="subagents"]')).toBeFalsy();
     });
 
+    it('tints the subagents chip by state (running, or waiting when one awaits permission)', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: subs })] }); // explore db is running
+      expect((document.querySelector('.detail-chip[data-detail-source="subagents"]') as HTMLElement)
+        .classList.contains('wf-chip-running')).toBe(true);
+
+      sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: [{ description: 'gated', running: true, waitingOnPermission: true }] })] });
+      expect((document.querySelector('.detail-chip[data-detail-source="subagents"]') as HTMLElement)
+        .classList.contains('wf-chip-waiting')).toBe(true);
+    });
+
     it('omits the chip when show.subagents is false', () => {
       sendSettings({ show: { subagents: false } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: subs })] });
@@ -946,45 +930,120 @@ describe('panel.ts integration', () => {
     });
   });
 
-  describe('view agent team chip', () => {
+  describe('team folds into the orchestrator card', () => {
+    // A team has no separate section: it rides on its orchestrator's normal
+    // session card (we always go through the lead), and its in-process teammates
+    // surface as that session's subagents — framed as teammates.
     function makeTeam(overrides: Record<string, unknown> = {}) {
       return {
-        teamId: 'orch-1',
-        name: 'scope-demo',
+        teamId: 'at:cupcake-lab',
+        name: 'cupcake-lab',
         orchestrator: {
-          sessionId: 'orch-1', status: 'done', activity: 'done',
+          sessionId: 'orch-1', status: 'running', activity: 'leading',
           confidence: 'high', contextTokens: 5000, modelLabel: 'Opus',
         },
-        agents: [
-          { sessionId: null, name: 'defender', cwd: '/x', parentSessionId: 'orch-1', depth: 1, spawnedAt: Date.now(), status: 'done', activity: '', confidence: 'high', subagents: [], contextTokens: 1000, exitStatus: 'success' },
-        ],
-        counts: { done: 1 },
+        agents: [],
+        counts: {},
+        updatedAt: Date.now(),
         dismissed: false,
         ...overrides,
       };
     }
+    const teammates = [
+      { description: 'crumb', running: true },
+      { description: 'frosting', running: false },
+    ];
 
-    it('appends a "view agent team" chip to the orchestrator meta row', () => {
-      sendUpdate({ sessions: [], teams: [makeTeam()] });
-      const chip = document.querySelector('.team-orchestrator .detail-chip[data-detail-source="team"]') as HTMLElement;
-      expect(chip).toBeTruthy();
-      expect(chip.textContent).toContain('agent team');
-      expect(chip.dataset.detailContainer).toBe('orch-1');
-      expect(chip.dataset.detailSession).toBe('orch-1');
+    it('renders no separate Agent teams section', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'orch-1', subagents: teammates })], teams: [makeTeam()] });
+      expect(document.querySelector('.team-section')).toBeFalsy();
+      expect(document.querySelector('.team-orchestrator')).toBeFalsy();
     });
 
-    it('clicking it posts openDetail for the team source', () => {
-      sendUpdate({ sessions: [], teams: [makeTeam()] });
+    it('gives the orchestrator card the same "agents" chip (subagents source)', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'orch-1', subagents: teammates })], teams: [makeTeam()] });
+      const card = document.querySelector('.card[data-session-id="orch-1"]')!;
+      const chip = card.querySelector('.detail-chip[data-detail-source="subagents"]') as HTMLElement;
+      expect(chip).toBeTruthy();
+      // One name for all agents; the teammate framing lives in the detail panel,
+      // not the card. No special "team" label, no summary line on the card.
+      expect(chip.textContent).toContain('agents');
+      expect(card.querySelector('.subagent-summary')).toBeFalsy();
+    });
+
+    it('opens the drill-in (subagents source, where teammates live) on click', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'orch-1', subagents: teammates })], teams: [makeTeam()] });
       postedMessages = [];
-      (document.querySelector('.detail-chip[data-detail-source="team"]') as HTMLElement).click();
+      (document.querySelector('.card[data-session-id="orch-1"] .detail-chip[data-detail-source="subagents"]') as HTMLElement).click();
       expect(postedMessages).toContainEqual({
-        type: 'openDetail', source: 'team', containerId: 'orch-1', sessionId: 'orch-1',
+        type: 'openDetail', source: 'subagents', containerId: 'orch-1', sessionId: 'orch-1',
       });
     });
 
-    it('omits the chip on a team with no members', () => {
-      sendUpdate({ sessions: [], teams: [makeTeam({ agents: [], counts: {} })] });
-      expect(document.querySelector('.detail-chip[data-detail-source="team"]')).toBeFalsy();
+    it('uses the same "agents" chip on a session that is not a team', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'plain', subagents: teammates })] });
+      const chip = document.querySelector('.card[data-session-id="plain"] .detail-chip[data-detail-source="subagents"]') as HTMLElement;
+      expect(chip.textContent).toContain('agents');
+      expect(document.querySelector('.card[data-session-id="plain"] .subagent-summary')).toBeFalsy();
+    });
+  });
+
+  describe('inline not-done agent rows', () => {
+    it('lists not-done subagents inline and excludes done ones', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'sa', status: 'running', subagents: [
+        { agentId: 'a1', description: 'running one', running: true },
+        { agentId: 'a2', description: 'waiting one', running: true, waitingOnPermission: true },
+        { agentId: 'a3', description: 'done one', running: false },
+      ] })] });
+      const rows = document.querySelectorAll('.card[data-session-id="sa"] .card-agent-row');
+      expect(rows.length).toBe(2);
+      expect(Array.from(rows).map(r => r.querySelector('.card-agent-name')!.textContent)).toEqual(['running one', 'waiting one']);
+    });
+
+    it('caps height for scroll (renders all not-done rows; CSS scrolls past ~6)', () => {
+      const many = Array.from({ length: 9 }, (_, i) => ({ agentId: 'a' + i, description: 'agent ' + i, running: true }));
+      sendUpdate({ sessions: [makeSession({ sessionId: 'sa', status: 'running', subagents: many })] });
+      expect(document.querySelectorAll('.card[data-session-id="sa"] .card-agent-list .card-agent-row').length).toBe(9);
+    });
+
+    it('clicking an inline subagent row deep-links openDetail to that agent', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'sa', status: 'running', subagents: [
+        { agentId: 'a1', description: 'running one', running: true },
+      ] })] });
+      postedMessages = [];
+      (document.querySelector('.card[data-session-id="sa"] .card-agent-row') as HTMLElement).click();
+      expect(postedMessages).toContainEqual({ type: 'openDetail', source: 'subagents', containerId: 'sa', sessionId: 'sa', agentId: 'a1', groupKey: '' });
+    });
+
+    it('lists not-done workflow agents inline and deep-links with the runId as groupKey', () => {
+      sendUpdate({
+        sessions: [makeSession({ sessionId: 'wf-sess', status: 'running' })],
+        workflows: [{
+          runId: 'wf_live', sessionId: 'wf-sess', name: 'live-run', status: 'running', source: 'sidecar',
+          phases: [{ index: 1, title: 'Go' }], counts: { running: 1, done: 1 }, agentCount: 2,
+          totalTokens: 0, totalToolCalls: 0, durationMs: 0, startTime: Date.now() - 1000, dismissed: false,
+          agents: [
+            { phaseIndex: 1, status: 'running', agentId: 'wfa1', label: 'reviewer' },
+            { phaseIndex: 1, status: 'done', agentId: 'wfa2', label: 'done one' },
+          ],
+        }],
+      });
+      const rows = document.querySelectorAll('.card[data-session-id="wf-sess"] .card-agent-row[data-detail-source="workflow"]');
+      expect(rows.length).toBe(1);
+      expect(rows[0].querySelector('.card-agent-name')!.textContent).toBe('reviewer');
+      postedMessages = [];
+      (rows[0] as HTMLElement).click();
+      expect(postedMessages).toContainEqual({ type: 'openDetail', source: 'workflow', containerId: 'wf-sess', sessionId: 'wf-sess', agentId: 'wfa1', groupKey: 'wf_live' });
+    });
+
+    it('Enter on an inline row activates the deep-link (not the card-body open)', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'sa', status: 'running', subagents: [
+        { agentId: 'a1', description: 'running one', running: true },
+      ] })] });
+      postedMessages = [];
+      const row = document.querySelector('.card[data-session-id="sa"] .card-agent-row') as HTMLElement;
+      row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(postedMessages.some((m: any) => m.type === 'openDetail' && m.agentId === 'a1')).toBe(true);
     });
   });
 

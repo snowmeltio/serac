@@ -705,8 +705,8 @@ describe('SessionManager sidechain tests', () => {
         ]),
       ]);
 
-      // Permission timer should fire after 8s (Bash is a slow tool)
-      vi.advanceTimersByTime(8_100);
+      // Permission timer should fire past the 15s slow-tool delay (Bash is slow).
+      vi.advanceTimersByTime(15_100);
       expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(true);
       expect(mgr.getStatus()).toBe('waiting');
     });

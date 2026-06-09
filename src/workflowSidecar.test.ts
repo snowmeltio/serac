@@ -91,6 +91,46 @@ describe('parseWorkflowSidecar', () => {
     expect(snap!.status).toBe('incomplete');
   });
 
+  it('maps a "killed" run status to incomplete (a killed run still writes a sidecar)', () => {
+    const obj = {
+      runId: 'wf_killed-001',
+      workflowName: 'killed-run',
+      status: 'killed',
+      phases: [{ title: 'Only', detail: '' }],
+      workflowProgress: [
+        { type: 'workflow_phase', index: 1, title: 'Only' },
+        { type: 'workflow_agent', index: 1, agentId: 'a01', phaseIndex: 1, state: 'progress' },
+      ],
+    };
+    const snap = parseWorkflowSidecar(JSON.stringify(obj), SID);
+    expect(snap!.status).toBe('incomplete');
+  });
+
+  it('maps the live-tier agent states (progress/start/queued/completed) onto DisplayStatus', () => {
+    // A killed/in-flight sidecar carries transient states the completion path
+    // never uses: progress/start are in-flight (→ running), queued is pending
+    // (→ waiting), completed is terminal (→ done). Pinning these was the fix for
+    // the "all-done card showing agents as running" bug.
+    const obj = {
+      runId: 'wf_livestates-001',
+      workflowName: 'live-states',
+      status: 'killed',
+      phases: [{ title: 'Only', detail: '' }],
+      workflowProgress: [
+        { type: 'workflow_phase', index: 1, title: 'Only' },
+        { type: 'workflow_agent', index: 1, agentId: 'aprog', phaseIndex: 1, state: 'progress' },
+        { type: 'workflow_agent', index: 2, agentId: 'astart', phaseIndex: 1, state: 'start' },
+        { type: 'workflow_agent', index: 3, agentId: 'aqueue', phaseIndex: 1, state: 'queued' },
+        { type: 'workflow_agent', index: 4, agentId: 'adone', phaseIndex: 1, state: 'completed' },
+      ],
+    };
+    const snap = parseWorkflowSidecar(JSON.stringify(obj), SID);
+    expect(snap!.agents.find(a => a.agentId === 'aprog')!.status).toBe('running');
+    expect(snap!.agents.find(a => a.agentId === 'astart')!.status).toBe('running');
+    expect(snap!.agents.find(a => a.agentId === 'aqueue')!.status).toBe('waiting');
+    expect(snap!.agents.find(a => a.agentId === 'adone')!.status).toBe('done');
+  });
+
   it('maps agent "waiting" state through and falls unknown/absent states back to "running"', () => {
     const obj = {
       runId: 'wf_states-001',

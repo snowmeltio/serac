@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
 import type {
-  DetailAgentView, DetailGroupView, DetailModel, DetailRunChoice, DetailSource,
+  DetailAgentView, DetailGroupView, DetailModel, DetailViewChoice, DetailSource,
   SessionSnapshot, TeamSnapshot, WorkflowSnapshot,
 } from './types.js';
 import { parseTranscript } from './transcriptRenderer.js';
@@ -43,24 +43,33 @@ export class DetailPanel {
   private sessionId: string | null = null;
   /** Which workflow run the panel is showing when a session owns several. Reset
    *  on every show() so a fresh drill-in defaults to the most recent run; the
-   *  header run switcher updates it. Ignored by the team/subagents sources. */
+   *  header view switcher updates it. Ignored by the team/subagents sources. */
   private selectedRunId: string | null = null;
   /** JSON of the last render payload pushed; lets the periodic refresh() tick
    *  skip re-posting when nothing changed (a full re-render resets reader scroll
    *  + focus, jarring on an idle panel). */
   private lastPushed: string | null = null;
+  /** One-shot deep-link target from an inline card agent row: the webview selects
+   *  this agent on the next render, then it's cleared so refresh ticks don't yank
+   *  the selection back. */
+  private pendingSelect: { groupKey: string; agentId: string } | null = null;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly deps: DetailPanelDeps,
   ) {}
 
-  /** Open (or reveal) the panel for a drill-in and push its model. */
-  show(source: DetailSource, containerId: string, sessionId: string): void {
+  /** Open (or reveal) the panel for a drill-in and push its model. `target`
+   *  deep-links to a specific agent (from an inline card row): the right run is
+   *  selected for a workflow, and the webview selects the agent on first render. */
+  show(source: DetailSource, containerId: string, sessionId: string, target?: { groupKey: string; agentId: string }): void {
     this.source = source;
     this.containerId = containerId;
     this.sessionId = sessionId;
-    this.selectedRunId = null; // fresh drill-in → default to the most recent run
+    // For a workflow deep-link the groupKey IS the runId — show that run, not the
+    // most recent. Otherwise a fresh drill-in defaults to the most recent run.
+    this.selectedRunId = (source === 'workflow' && target?.groupKey) ? target.groupKey : null;
+    this.pendingSelect = target ?? null;
 
     if (!this.panel) {
       this.panel = vscode.window.createWebviewPanel(
@@ -114,7 +123,11 @@ export class DetailPanel {
     const json = JSON.stringify(model);
     if (!force && json === this.lastPushed) { return; }
     this.lastPushed = json;
-    void this.panel.webview.postMessage({ type: 'render', model });
+    const message: { type: 'render'; model: DetailModel; select?: { groupKey: string; agentId: string } } = { type: 'render', model };
+    // Deep-link selection rides the first render after show(), then clears so
+    // periodic refresh ticks don't drag the user back to it.
+    if (this.pendingSelect) { message.select = this.pendingSelect; this.pendingSelect = null; }
+    void this.panel.webview.postMessage(message);
   }
 
   // ── Model builders (source → normalised DetailModel) ────────────────
@@ -123,6 +136,15 @@ export class DetailPanel {
     if (source === 'team') { return this.buildTeamModel(containerId, sessionId); }
     if (source === 'subagents') { return this.buildSubagentsModel(containerId, sessionId); }
     return this.buildWorkflowModel(containerId, sessionId);
+  }
+
+  /** The Agent Team this session orchestrates, if any. In-process teammates are
+   *  skipped by the team parser and surface instead through the subagents source,
+   *  so a team orchestrator's "subagents" are really its teammates — this lets the
+   *  models frame them as such (label + per-agent badge) rather than as plain
+   *  Task subagents. */
+  private teamFor(sessionId: string): TeamSnapshot | undefined {
+    return this.deps.getTeams().find(t => t.orchestrator.sessionId === sessionId);
   }
 
   private buildWorkflowModel(sessionId: string, invokingSessionId: string): DetailModel {
@@ -160,6 +182,7 @@ export class DetailPanel {
       ? [selected.agentCount + ' agents', fmtTokens(selected.totalTokens) + ' tokens', selected.totalToolCalls + ' tools']
       : [];
     if (selected?.durationMs) { const d = fmtDuration(selected.durationMs); if (d) { metricsBits.push(d); } }
+    const team = this.teamFor(sessionId);
     return {
       source: 'workflow',
       containerId: sessionId,
@@ -168,23 +191,47 @@ export class DetailPanel {
       chips: selected ? [selected.source === 'live' ? 'live' : 'workflow', selected.status] : ['workflow'],
       metrics: metricsBits.join(' · '),
       groups,
-      runs: multi ? this.buildRunChoices(runs, selected) : undefined,
+      views: this.buildViewChoices(runs, selected?.runId ?? null, 'workflow', this.collectSubagents(sessionId), team?.name),
+      team: team?.name,
     };
   }
 
-  /** Build the header run-switcher entries. Runs are already most-recent-first.
-   *  When several share a workflow name they get a recency ordinal (#1 = newest)
-   *  so the chips stay distinguishable. */
-  private buildRunChoices(runs: WorkflowSnapshot[], selected: WorkflowSnapshot | undefined): DetailRunChoice[] {
+  /** Build the header view-switcher entries for a session card's drill-in: one
+   *  per workflow run the session owns (most-recent-first, with a recency
+   *  ordinal when names collide), plus a 'Subagents' view when the session also
+   *  spawned plain Task subagents. Returned even for a single view — the switcher
+   *  doubles as a labelled heading of what's under this session, so showing the
+   *  lone grouping (under its heading) is clearer than hiding it. Undefined only
+   *  when there are no groupings at all. `activeSource`/`activeRunId` mark which
+   *  chip is current; `subs` is the session's plain subagents (already collected
+   *  by the caller, so the dir-scan happens once per model build). */
+  private buildViewChoices(
+    runs: WorkflowSnapshot[],
+    activeRunId: string | null,
+    activeSource: DetailSource,
+    subs: { agents: DetailAgentView[]; running: number },
+    teamName?: string,
+  ): DetailViewChoice[] | undefined {
+    const views: DetailViewChoice[] = [];
     const nameTotals = new Map<string, number>();
     for (const r of runs) { nameTotals.set(r.name, (nameTotals.get(r.name) ?? 0) + 1); }
     const nameSeen = new Map<string, number>();
-    return runs.map(r => {
+    for (const r of runs) {
       const n = (nameSeen.get(r.name) ?? 0) + 1;
       nameSeen.set(r.name, n);
       const label = (nameTotals.get(r.name) ?? 0) > 1 ? r.name + ' #' + n : r.name;
-      return { runId: r.runId, label, status: r.status, active: r.runId === selected?.runId };
-    });
+      views.push({ id: r.runId, kind: 'workflow', label, status: r.status, active: activeSource === 'workflow' && r.runId === activeRunId });
+    }
+    if (subs.agents.length > 0) {
+      views.push({
+        id: 'subagents',
+        kind: 'subagents',
+        label: teamName ? 'Teammates' : 'Subagents',
+        status: subs.running > 0 ? 'running' : 'completed',
+        active: activeSource === 'subagents',
+      });
+    }
+    return views.length > 0 ? views : undefined;
   }
 
   private workflowAgentView(a: WorkflowSnapshot['agents'][number]): DetailAgentView {
@@ -203,7 +250,10 @@ export class DetailPanel {
     };
   }
 
-  private buildSubagentsModel(sessionId: string, invokingSessionId: string): DetailModel {
+  /** Collect a session's plain Task subagents — live-tracked (rich progress)
+   *  unioned with on-disk transcripts the tracker missed, so none is dropped.
+   *  Shared by the subagents model and the view switcher's count. */
+  private collectSubagents(sessionId: string): { agents: DetailAgentView[]; running: number } {
     const session = this.deps.getSession(sessionId);
     // Live-tracked subagents carry rich progress (running state, tool counts,
     // result preview) but only once tracking resolved an agentId. Agent-tool
@@ -236,17 +286,34 @@ export class DetailPanel {
         model: '',
       } satisfies DetailAgentView);
     }
-    const running = tracked.filter(s => s.running).length;
-    const metricsBits = [agents.length + ' subagent' + (agents.length === 1 ? '' : 's')];
+    return { agents, running: tracked.filter(s => s.running).length };
+  }
+
+  private buildSubagentsModel(sessionId: string, invokingSessionId: string): DetailModel {
+    const subs = this.collectSubagents(sessionId);
+    const { running } = subs;
+    // When this session orchestrates a team, its (in-process) subagents ARE the
+    // teammates — frame them as such: a teammate badge per agent, a "Teammates"
+    // label, and the team name on the model for the header.
+    const team = this.teamFor(sessionId);
+    const agents = team ? subs.agents.map(a => ({ ...a, teammate: true })) : subs.agents;
+    const noun = team ? 'teammate' : 'subagent';
+    const metricsBits = [agents.length + ' ' + noun + (agents.length === 1 ? '' : 's')];
     if (running > 0) { metricsBits.push(running + ' running'); }
+    // Most-recent-first so the switcher matches the workflow view's ordering.
+    const runs = this.deps.getWorkflows()
+      .filter(w => w.sessionId === sessionId)
+      .sort((a, b) => b.startTime - a.startTime);
     return {
       source: 'subagents',
       containerId: sessionId,
       sessionId: invokingSessionId,
-      title: 'Subagents',
-      chips: ['subagents'],
+      title: team ? 'Teammates' : 'Subagents',
+      chips: team ? ['team'] : ['subagents'],
       metrics: metricsBits.join(' · '),
       groups: [{ key: '', title: null, status: null, agents }],
+      views: this.buildViewChoices(runs, null, 'subagents', { agents, running }, team?.name),
+      team: team?.name,
     };
   }
 
@@ -293,10 +360,13 @@ export class DetailPanel {
         && typeof msg.groupKey === 'string'
         && typeof msg.agentId === 'string') {
       await this.sendAgentTranscript(msg.source, msg.containerId, msg.groupKey, msg.agentId);
-    } else if (msg.type === 'selectWorkflowRun' && typeof msg.runId === 'string') {
-      // Header run switcher: re-render the workflow model for the chosen run.
-      // Force, since the run change always alters the visible groups.
-      this.selectedRunId = msg.runId;
+    } else if (msg.type === 'selectDetailView'
+        && (msg.kind === 'workflow' || msg.kind === 'subagents')
+        && typeof msg.id === 'string') {
+      // Header view switcher: flip the active source (and, for a workflow view,
+      // the run). Force, since the view change always alters the visible groups.
+      this.source = msg.kind;
+      this.selectedRunId = msg.kind === 'workflow' ? msg.id : null;
       this.postRender(true);
     } else if (msg.type === 'openConversation' && isValidSessionId(msg.sessionId)) {
       this.deps.openConversation(msg.sessionId);

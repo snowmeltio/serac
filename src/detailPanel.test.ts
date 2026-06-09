@@ -190,6 +190,25 @@ describe('DetailPanel', () => {
       expect(m.metrics).toContain('3 agents');
     });
 
+    it('deep-links to a target agent on show() via a one-shot select hint', () => {
+      const h = setup();
+      h.panel.show('workflow', 'sess-1', 'sess-1', { groupKey: 'wf_abc', agentId: 'a2' });
+      const render = h.posted().find(m => m.type === 'render');
+      expect(render.select).toEqual({ groupKey: 'wf_abc', agentId: 'a2' });
+      // The workflow target's groupKey selects that run.
+      expect(h.lastModel().groups.every((g: any) => g.key === 'wf_abc')).toBe(true);
+    });
+
+    it('does not re-send the select hint on a later refresh tick', () => {
+      const h = setup();
+      h.panel.show('workflow', 'sess-1', 'sess-1', { groupKey: 'wf_abc', agentId: 'a2' });
+      vi.mocked(h.webview.postMessage).mockClear();
+      h.panel.refresh(); // unchanged model dedupes; if it posts, it carries no select
+      for (const r of h.posted().filter(m => m.type === 'render')) {
+        expect(r.select).toBeUndefined();
+      }
+    });
+
     it('builds a flat subagents model and filters out agentless entries', () => {
       const h = setup();
       h.panel.show('subagents', 'sess-1', 'sess-1');
@@ -369,7 +388,12 @@ describe('DetailPanel', () => {
     });
   });
 
-  describe('multi-run switcher', () => {
+  describe('view switcher', () => {
+    // No plain subagents → the switcher reflects workflow runs alone.
+    const noSubs = () => ({
+      getSession: vi.fn(() => makeSession({ subagents: [] })),
+      listSubagents: vi.fn(() => []),
+    });
     function twoRuns() {
       return [
         makeWorkflow({ runId: 'wf_new', name: 'review', startTime: 5000, status: 'running', source: 'live' }),
@@ -377,33 +401,55 @@ describe('DetailPanel', () => {
       ];
     }
 
-    it('shows only the most recent run by default, with a run switcher', () => {
-      const h = setup({ getWorkflows: vi.fn(() => twoRuns()) });
+    it('shows only the most recent run by default, with a view switcher', () => {
+      const h = setup({ getWorkflows: vi.fn(() => twoRuns()), ...noSubs() });
       h.panel.show('workflow', 'sess-1', 'sess-1');
       const m = h.lastModel();
       // groups belong to the newest run only (key = wf_new)
       expect(m.groups.every((g: any) => g.key === 'wf_new')).toBe(true);
-      expect(m.runs).toHaveLength(2);
+      expect(m.views).toHaveLength(2);
       // most-recent-first, ordinal-disambiguated (same name)
-      expect(m.runs[0]).toMatchObject({ runId: 'wf_new', label: 'review #1', active: true });
-      expect(m.runs[1]).toMatchObject({ runId: 'wf_old', label: 'review #2', active: false });
+      expect(m.views[0]).toMatchObject({ id: 'wf_new', kind: 'workflow', label: 'review #1', active: true });
+      expect(m.views[1]).toMatchObject({ id: 'wf_old', kind: 'workflow', label: 'review #2', active: false });
       expect(m.chips).toContain('live'); // newest run is live
     });
 
-    it('omits the switcher for a single run', () => {
-      const h = setup(); // default getWorkflows = single run
+    it('still surfaces a single view in the switcher (it doubles as the scope heading)', () => {
+      const h = setup({ ...noSubs() }); // single run, no subagents
       h.panel.show('workflow', 'sess-1', 'sess-1');
-      expect(h.lastModel().runs).toBeUndefined();
+      const views = h.lastModel().views;
+      expect(views).toHaveLength(1);
+      expect(views[0]).toMatchObject({ kind: 'workflow', active: true });
     });
 
-    it('selectWorkflowRun switches the visible run', async () => {
-      const h = setup({ getWorkflows: vi.fn(() => twoRuns()) });
+    it('selectDetailView switches the visible run', async () => {
+      const h = setup({ getWorkflows: vi.fn(() => twoRuns()), ...noSubs() });
       h.panel.show('workflow', 'sess-1', 'sess-1');
-      await h.webview._fireMessage({ type: 'selectWorkflowRun', runId: 'wf_old' });
+      await h.webview._fireMessage({ type: 'selectDetailView', id: 'wf_old', kind: 'workflow' });
       const m = h.lastModel();
       expect(m.groups.every((g: any) => g.key === 'wf_old')).toBe(true);
-      expect(m.runs.find((r: any) => r.runId === 'wf_old').active).toBe(true);
+      expect(m.views.find((v: any) => v.id === 'wf_old').active).toBe(true);
       expect(m.chips).toContain('completed');
+    });
+
+    it('adds a Subagents view when the session also has plain subagents', () => {
+      // default getSession has subagents sa1 (done) + sa2 (running); single run.
+      const h = setup();
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      const m = h.lastModel();
+      expect(m.views).toHaveLength(2);
+      expect(m.views[0]).toMatchObject({ kind: 'workflow', active: true });
+      expect(m.views[1]).toMatchObject({ id: 'subagents', kind: 'subagents', label: 'Subagents', status: 'running', active: false });
+    });
+
+    it('selectDetailView flips the source to the subagents view', async () => {
+      const h = setup(); // default: one workflow run + subagents
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      await h.webview._fireMessage({ type: 'selectDetailView', id: 'subagents', kind: 'subagents' });
+      const m = h.lastModel();
+      expect(m.source).toBe('subagents');
+      expect(m.groups[0].agents.map((a: any) => a.agentId)).toEqual(['sa1', 'sa2']);
+      expect(m.views.find((v: any) => v.id === 'subagents').active).toBe(true);
     });
   });
 

@@ -236,7 +236,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   });
   context.subscriptions.push({ dispose: () => detailPanel.dispose() });
   panelProvider.setOpenDetailHandler(
-    (source: DetailSource, containerId: string, sessionId: string) => detailPanel.show(source, containerId, sessionId),
+    (source: DetailSource, containerId: string, sessionId: string, target?: { groupKey: string; agentId: string }) =>
+      detailPanel.show(source, containerId, sessionId, target),
   );
 
   // Handle session focus: open Claude Code editor panel for the specific session.

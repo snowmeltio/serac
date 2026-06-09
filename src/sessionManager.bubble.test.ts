@@ -246,9 +246,9 @@ describe('MCP progress reset', () => {
     // One progress, then silence.
     vi.advanceTimersByTime(1_000);
     await feed(mgr, [mcpProgress()]);
-    // From the last progress, the slow delay (6s) must elapse with no further
+    // From the last progress, the slow delay (15s) must elapse with no further
     // events for the indicator to fire.
-    vi.advanceTimersByTime(6_001);
+    vi.advanceTimersByTime(15_001);
 
     expect(mgr.getStatus()).toBe('waiting');
     expect(mgr.getSnapshot().activity).toContain('Waiting for permission');

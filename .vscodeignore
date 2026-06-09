@@ -10,6 +10,8 @@ esbuild.config.mjs
 eslint.config.mjs
 vitest.config.ts
 smoke.mjs
+confirm-publish.mjs
+media/screenshot-*.png
 **/*.map
 *.test.ts
 *.vsix

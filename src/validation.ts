@@ -52,12 +52,22 @@ export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
     if (typeof msg.source !== 'string' || !VALID_DETAIL_SOURCES.has(msg.source)) { return null; }
     if (!isValidSessionId(msg.containerId)) { return null; }
     if (!isValidSessionId(msg.sessionId)) { return null; }
-    return {
+    const result: WebviewCommand = {
       type: 'openDetail',
       source: msg.source as 'workflow' | 'team' | 'subagents',
       containerId: msg.containerId,
       sessionId: msg.sessionId,
     };
+    // Optional deep-link target (an inline card agent row). agentId resolves the
+    // transcript; groupKey is '' for subagents/team, the runId for a workflow.
+    if (msg.agentId !== undefined) {
+      if (!isValidSessionId(msg.agentId)) { return null; }
+      const gk = typeof msg.groupKey === 'string' ? msg.groupKey : '';
+      if (gk !== '' && !isValidSessionId(gk)) { return null; }
+      result.agentId = msg.agentId;
+      result.groupKey = gk;
+    }
+    return result;
   }
 
   // Team commands with teamId

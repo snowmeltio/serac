@@ -100,10 +100,10 @@ describe('PermissionTracker', () => {
     });
     const t = makePermissionTracker(h.host);
     t.reschedule();
-    // Should NOT fire at slow delay (6s)
+    // Should NOT fire at the single slow delay
     vi.advanceTimersByTime(SLOW_PERMISSION_DELAY_MS + 100);
     expect(h.getFired()).toBe(0);
-    // SHOULD fire at doubled slow delay (12s)
+    // SHOULD fire at the doubled slow delay
     vi.advanceTimersByTime(SLOW_PERMISSION_DELAY_MS);
     expect(h.getFired()).toBe(1);
   });

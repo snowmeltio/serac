@@ -37,8 +37,8 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `workflowScript.ts` | ~250 | Static (never-eval) extractors. `extractWorkflowMeta()` pulls `name`/`description`/`phases` from a workflow script's `meta` literal; `extractAgentCalls()` pulls each `agent(prompt, {label, phase})` call's static prompt segments + opts; `matchAgentCall()` correlates a running agent's record-0 prompt back to its call. All via brace/string matching. Used for the live tier. |
 | `workflowDiscovery.ts` | 336 | Two-tier workflow discovery, parallel to `teamDiscovery`. Scans each session dir for sidecars (Tier 1) and live run dirs (Tier 2), caches by mtime, prunes, applies the 7-day age gate and dismiss overlay. |
 | `processRegistry.ts` | ~190 | Reads Claude Code's live process registry (`~/.claude/sessions/<pid>.json`) and confirms each pid with `kill(pid, 0)`. The one source of *actual* process liveness in an otherwise disk-tailing monitor. Owned by `SessionDiscovery` (scanned on a relaxed cadence); exposes `getLiveProcesses()` / `isSessionLive()` / `isActive()`. Injected into each `SessionManager` as a tri-state `livenessProbe` that powers the permission-false-positive gate (a registry-confirmed-dead session can't be `waiting` — see Status inference §6). A hit is a strong positive, a miss is "unknown" (not every session class is guaranteed to register), and an inactive registry disables the gate. `isScanClean()` distinguishes a degraded scan (a non-ENOENT read error or unparseable content on a *present* file) from genuine absence, so a transient disk error on a live session's file degrades the probe to "unknown" rather than "dead" — only a clean scan's absence is trusted as death. |
-| `detailPanel.ts` | 305 | Source-keyed editor-area webview host (`createWebviewPanel`, `ViewColumn.Beside`). One reused instance serves three drill-ins (workflow / team / subagents); builds a normalised `DetailModel` per source and resolves agent transcripts on demand via injected deps. Dedups re-pushes (`lastPushed` JSON compare). |
-| `detailView.ts` | 286 | Detail-panel webview frontend. Two-pane navigator: left = groups → agents, right = transcript reader. Renders any `DetailModel` generically; redeclares its own view types (separate bundle). Clears its transcript cache when the drill-in identity (source + container) changes. |
+| `detailPanel.ts` | 403 | Source-keyed editor-area webview host (`createWebviewPanel`, `ViewColumn.Beside`). One reused instance serves three drill-ins (workflow / team / subagents); builds a normalised `DetailModel` per source (with a cross-source view switcher for session-card sources) and resolves agent transcripts on demand via injected deps. Dedups re-pushes (`lastPushed` JSON compare). |
+| `detailView.ts` | 404 | Detail-panel webview frontend. Two-pane navigator: left = collapsible groups → agents, right = transcript reader led by the agent's inception brief. Renders any `DetailModel` generically; redeclares its own view types (separate bundle). Clears its transcript cache when the drill-in identity (source + container) changes. |
 
 ## Status inference
 
@@ -56,7 +56,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 
 ```
 done ──→ running          (user record arrives, dequeue, or compact_boundary)
-running ──→ waiting       (AskUserQuestion, permission timer 3s/6s, all subagents blocked)
+running ──→ waiting       (AskUserQuestion, permission timer 3s/15s, all subagents blocked)
 running ──→ done          (idle timer 5s, all-subagents-done, hard ceiling 3min, or Stop hook)
 waiting ──→ running       (sidechain tool_result unblocks subagents, user record)
 waiting ──→ done          (waiting hard ceiling 10min, or registry-confirmed process death)
@@ -72,7 +72,7 @@ Internal statuses are `running | waiting | done`. `stale` and `idle` are display
 `turn_duration` system records were never observed in production JSONL and were removed as a state signal in v0.9. Status now derives from record cadence and tool-completion signals.
 
 1. **Tool completion signals** — `tool_result` blocks remove tools from `activeTools`; the all-subagents-done shortcut marks orchestrator turns complete immediately.
-2. **Permission timer** — heuristic for stuck permission prompts. Base delay **3s** for normal tools, **6s** for slow tools (Bash, WebSearch, WebFetch, Skill, MCP). Doubled (max **6s/12s**) if a tool result arrived within the last 3s, to absorb sequential auto-approved tools.
+2. **Permission timer** — heuristic for stuck permission prompts. Base delay **3s** for normal tools, **15s** for slow tools (Bash, WebSearch, WebFetch, Skill, MCP). Doubled (max **6s/30s**) if a tool result arrived within the last 3s, to absorb sequential auto-approved tools. The slow delay is deliberately generous: the `PermissionRequest` hook (ground truth) is not wired yet, so the timer is the sole signal and cannot distinguish a slow-*executing* tool from one *blocked* on a prompt — a long Bash (test/build/package) must be given time to finish before it is mistaken for a wait. See `permissionTracker.ts` FALSE-POSITIVE NOTE.
 3. **Idle timer (5s)** — fires only if status is `running` AND output has been seen in this turn AND no blocking subagents are active.
 4. **Extended thinking grace (30s)** — first 30s of a turn with no output yet uses PID-liveness check instead of demoting (covers slow first-token).
 5. **Hard ceiling (3 min running, 10 min waiting)** — safety net; forces done regardless of state. Covers laptop sleep, quota hits, abandoned permission prompts.
@@ -115,9 +115,19 @@ non-status** (same charter as `ToolOutcomeTracker`) and never moves
   brittle — these are Claude Code surface strings, not an API). Launch banner
   adds a shell; a terminal retrieval (`<task_id>` + `<status>completed|failed|
   killed|…</status>`) clears it. A `<status>running</status>` poll does not.
-- **Hard ceiling:** a shell never observed completing is pruned after
-  `BACKGROUND_SHELL_CEILING_MS` (15 min) in `demoteIfStale`, mirroring the
-  status ceilings so the signal can't stick forever.
+- **Clearing (three paths):** (1) a terminal retrieval clears its shell on the
+  normal update path; (2) a shell never observed completing is pruned after
+  `BACKGROUND_SHELL_CEILING_MS` (15 min), mirroring the status ceilings so the
+  signal can't stick forever; (3) confirmed process death clears all outstanding
+  shells at once. Paths 2–3 run in `SessionManager.sweepBackgroundShells(now)`,
+  which the poll loop calls over **dormant** (done/stale/idle) sessions every
+  cycle — decoupled from mtime/new-data, because an idle `done` card never
+  re-enters `demoteIfStale` and would otherwise never prune or clear. The sweep
+  returns true when the count actually drops so `pollInner` sets `changed` and
+  pushes the cleared badge (a `done` card's status never changes, so the demote
+  path alone would never trigger a push). The death clear reuses the conservative
+  registry tri-state (`isConfirmedDeadByRegistry()`, same as the permission-FP
+  gate above).
 - **Surface:** `SessionSnapshot.backgroundShellCount` (undefined when none),
   carried through to the webview on `PanelSession`.
 - **Display:** rendered as a quiet `.bg-shell-badge` ("⚙ N shell(s) running",
@@ -461,18 +471,20 @@ The sidecar's per-agent `state` maps to `DisplayStatus`; run `status` maps to `W
 
 ### Rendering
 
-A session that owns run(s) renders as a normal card with: a clickable **`view workflow →` chip** in the meta row (tinted to the card's status accent) that opens the detail panel; a compact roll-up (progress bar + per-phase counts + token/tool/duration metrics). Card-body click opens the **invoking conversation**; the chip opens the **detail panel** (`detailPanel.ts`). All gated behind `serac.show.workflows`.
+A session that owns run(s) renders as a normal card with: a clickable detail chip in the meta row (labelled `workflow`/`workflows`, or `agents` when the session also has plain subagents) that opens the detail panel **and** focuses the conversation; a **glance-only** roll-up (progress bar + a single count, e.g. `2/4 agents` / `✓ 4 agents` / `run failed`). The per-phase pills, token/tool/duration metrics, and per-agent rows are **not** on the card — they live in the detail panel. Likewise the subagent section on a session card is just the summary line (`3 subagents: 1 waiting, 2 running`); the per-agent rows + result previews are panel-only. The chip is tinted by the **agents' own** aggregate state (`wf-chip-*`: running/waiting/failed/done), dimmed when the parent card is seen/stale. Card-body click opens the **invoking conversation**; the chip opens the **detail panel** (`detailPanel.ts`) beside it. All gated behind `serac.show.workflows`.
 
 Compatibility/safety: malformed agent entries are skipped (the rest still parses); `getWorkflowAgentFilePath` validates `runId`/`agentId` against path traversal and existence-checks before returning.
 
 ## Detail panel (source-keyed agent navigator)
 
-One reused editor-area webview (`detailPanel.ts` host + `detailView.ts` frontend, `ViewColumn.Beside`) serves three drill-ins that share a parent → children shape. The card/header chip posts `openDetail { source, containerId, sessionId }`; the host builds a normalised `DetailModel` (header chips + metrics, left-pane groups → agents) and the frontend renders it generically. The reader resolves the selected agent's transcript on demand (`viewAgent` → injected `resolveAgentFile` → `parseTranscript()`), and the header's "↗ open conversation" jumps back to the invoking session.
+One reused editor-area webview (`detailPanel.ts` host + `detailView.ts` frontend, `ViewColumn.Beside`) serves three drill-ins that share a parent → children shape. The card/header chip posts `openDetail { source, containerId, sessionId }` and also focuses the invoking conversation (the panel docks beside it); the host builds a normalised `DetailModel` (header chips + metrics, left-pane groups → agents) and the frontend renders it generically. The reader resolves the selected agent's transcript on demand (`viewAgent` → injected `resolveAgentFile` → `parseTranscript()`), leads with the agent's **inception brief** (its first prompt turn, pulled out and pinned in a collapsible block at the top), and the header's "↗ open conversation" jumps back to the invoking session. The left nav collapses to a rail to free reader width.
+
+**View switcher (session-card sources).** A session's agents can come from more than one source — each workflow run it owns, plus its plain Task subagents — so the card shows a **single** chip (specifically labelled when one source exists, neutral `agents` when both) and the panel header carries a **view switcher** (`buildViewChoices`, generalising the old run switcher) across every workflow run + a `Subagents` entry. Selecting a chip posts `selectDetailView { id, kind }`; the host flips `source` (and `selectedRunId` for a workflow view) and re-renders. `views` is omitted when only one view exists. The `team` source is a separate surface (team-group header) and has no view switcher.
 
 | Source | Chip / entry point | Left-pane grouping | Transcript resolver |
 |--------|--------------------|--------------------|---------------------|
-| `workflow` | `view workflow →` on the session card | phases → agents (`runId` is the group key) | `getWorkflowAgentFilePath(runId, agentId)` |
-| `subagents` | `view subagents →` on the session card (gated on `serac.show.subagents`) | flat list of the session's Task subagents | `getSubagentFilePath(sessionId, agentId)` → `<sessionDir>/subagents/agent-<agentId>.jsonl` |
+| `workflow` | session-card chip (`workflow`/`workflows`, or `agents` when subagents also present) | phases → agents (`runId` is the group key) | `getWorkflowAgentFilePath(runId, agentId)` |
+| `subagents` | session-card chip (`subagents`, or folded into `agents`; gated on `serac.show.subagents`) | flat list of the session's Task subagents | `getSubagentFilePath(sessionId, agentId)` → `<sessionDir>/subagents/agent-<agentId>.jsonl` |
 | `team` | `view agent team →` on the team-group header | flat roster, keyed by member name | `getTeamAgentFilePath(teamId, memberName)` |
 
 `getTeamAgentFilePath` resolves a member with its own `sessionId` directly; for a null-sessionId member it scans the lead session's `subagents/agent-*.meta.json` for `agentType === memberName` (matched only against roster names so it can't collide with a plain Task subagent), returning the sibling `agent-<hash>.jsonl` (newest by mtime when re-runs leave duplicates). All resolvers validate ids against path traversal and existence-check before returning; an unresolved agent yields a graceful "Transcript not available yet." note.

@@ -177,6 +177,24 @@ describe('parseWebviewCommand', () => {
     expect(parseWebviewCommand({ type: 'dismissWorkflow' })).toBeNull();
     expect(parseWebviewCommand({ type: 'undismissWorkflow', runId: '' })).toBeNull();
   });
+
+  it('parses openDetail without a target', () => {
+    expect(parseWebviewCommand({ type: 'openDetail', source: 'subagents', containerId: 'sess-1', sessionId: 'sess-1' }))
+      .toEqual({ type: 'openDetail', source: 'subagents', containerId: 'sess-1', sessionId: 'sess-1' });
+  });
+
+  it('parses openDetail with a deep-link target (agentId + groupKey)', () => {
+    expect(parseWebviewCommand({ type: 'openDetail', source: 'workflow', containerId: 'sess-1', sessionId: 'sess-1', agentId: 'a2', groupKey: 'wf_run-1' }))
+      .toEqual({ type: 'openDetail', source: 'workflow', containerId: 'sess-1', sessionId: 'sess-1', agentId: 'a2', groupKey: 'wf_run-1' });
+    // subagents target: empty groupKey is valid (flat group).
+    expect(parseWebviewCommand({ type: 'openDetail', source: 'subagents', containerId: 'sess-1', sessionId: 'sess-1', agentId: 'a1', groupKey: '' }))
+      .toEqual({ type: 'openDetail', source: 'subagents', containerId: 'sess-1', sessionId: 'sess-1', agentId: 'a1', groupKey: '' });
+  });
+
+  it('rejects openDetail with a traversal-bearing agentId or groupKey', () => {
+    expect(parseWebviewCommand({ type: 'openDetail', source: 'workflow', containerId: 'sess-1', sessionId: 'sess-1', agentId: '../etc' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'openDetail', source: 'workflow', containerId: 'sess-1', sessionId: 'sess-1', agentId: 'a1', groupKey: '../../x' })).toBeNull();
+  });
 });
 
 describe('isValidSessionId — boundary and traversal cases', () => {

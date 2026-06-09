@@ -84,7 +84,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { JsonlTailer } from './jsonlTailer.js';
-import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType } from './jsonlValidator.js';
+import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType, getContentBlocks } from './jsonlValidator.js';
 import { computeDemotion, getToolProfile, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS } from './toolProfiles.js';
 import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
@@ -566,6 +566,38 @@ export class SessionManager {
     return true;
   }
 
+  /** Per-poll background-shell maintenance for a DORMANT (done/stale/idle)
+   *  session, decoupled from mtime/new-data.
+   *
+   *  `demoteIfStale()` is the only caller of the tracker's `prune()`, and the
+   *  poll loop only runs it for active or freshly-woken sessions. So an idle
+   *  `done` card with an outstanding background shell — the exact case the badge
+   *  targets — would otherwise never prune (the 15-min ceiling never fires) nor
+   *  clear on process death. This runs both, every poll:
+   *    (a) prune shells past the hard ceiling, and
+   *    (b) when the backing process is confirmed dead via the registry, clear
+   *        every outstanding shell at once — a dead parent has no detached
+   *        children worth flagging — rather than waiting out the ceiling.
+   *
+   *  Returns true iff the outstanding count actually dropped, so the caller can
+   *  push the cleared count to the UI. The demote path can't: on a `done` card
+   *  `computeDemotion` short-circuits to null and `demoteIfStale` returns false,
+   *  so a prune-driven drop would never set `changed`. Cheap — returns early
+   *  unless the session actually has outstanding shells. */
+  sweepBackgroundShells(now: number): boolean {
+    if (!this.backgroundShellTracker.hasOutstanding()) { return false; }
+    const before = this.backgroundShellTracker.count();
+    this.backgroundShellTracker.prune(now, BACKGROUND_SHELL_CEILING_MS);
+    // Confirmed process death is decisive. Conservative tri-state (see
+    // isConfirmedDeadByRegistry): fires only when this session was previously
+    // seen live in the registry and is now gone — never for a session class the
+    // registry doesn't track, which falls back to the ceiling prune above.
+    if (this.isConfirmedDeadByRegistry()) {
+      this.backgroundShellTracker.reset();
+    }
+    return this.backgroundShellTracker.count() < before;
+  }
+
   /** Mark session as done and clean up all running state */
   private markSessionDone(): void {
     this.setStatus('done', 'session_done');
@@ -740,7 +772,7 @@ export class SessionManager {
     if (this.state.firstUserMessages.length < 3) {
       const totalChars = this.state.firstUserMessages.reduce((sum, m) => sum + m.length, 0);
       if (totalChars < 500) {
-        const content = record.message?.content || [];
+        const content = getContentBlocks(record);
         for (const block of content) {
           if (block.type === 'text' && block.text) {
             const text = block.text.trim();
@@ -757,7 +789,7 @@ export class SessionManager {
 
     // Extract topic from first user message with text content
     if (!this.state.topic) {
-      const content = record.message?.content || [];
+      const content = getContentBlocks(record);
       for (const block of content) {
         if (block.type === 'text' && block.text) {
           // Skip system injections and path-style prompts
@@ -793,7 +825,7 @@ export class SessionManager {
     }
 
     // Process tool_result blocks — mark tools as complete
-    const content = record.message?.content || [];
+    const content = getContentBlocks(record);
     for (const block of content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         this.lastToolResultAt = Date.now();
@@ -801,7 +833,15 @@ export class SessionManager {
         // (display-only; never affects status). A launch banner adds an
         // outstanding shell; a terminal retrieval clears it.
         const resultText = SessionManager.extractToolResultText(block);
-        if (resultText) { this.backgroundShellTracker.noteToolResult(resultText, this.lastToolResultAt); }
+        if (resultText) {
+          // Anchor the shell's start to the RECORD's own timestamp, not wall-clock
+          // at processing time. A reload replays the whole JSONL, so Date.now()
+          // would re-stamp every past launch to ~now and reset its 15-min ceiling
+          // (a genuinely-abandoned shell would get a fresh grace on every restart).
+          // The record timestamp reflects true launch age and survives reloads.
+          const launchedAt = parseTimestamp(record.timestamp).getTime();
+          this.backgroundShellTracker.noteToolResult(resultText, launchedAt);
+        }
         const toolName = this.state.activeTools.get(block.tool_use_id);
         if (toolName === undefined) {
           // tool_result arrived before its tool_use record (out-of-order JSONL writes).
@@ -866,7 +906,7 @@ export class SessionManager {
     // Mark that output has arrived in this turn (thinking phase over)
     this.seenOutputInTurn = true;
 
-    const content = record.message?.content || [];
+    const content = getContentBlocks(record);
 
     // Capture first assistant text for title generation
     if (!this.state.firstAssistantResponse) {
@@ -1261,7 +1301,7 @@ export class SessionManager {
   private applySubagentAssistantRecord(subagent: SubagentInfo, record: JsonlRecord): void {
     this.updateSubagentActivity(subagent);
     this.seenOutputInTurn = true;
-    const content = record.message?.content || [];
+    const content = getContentBlocks(record);
     for (const block of content) {
       if (block.type === 'tool_use' && block.id && block.name) {
         if (this.earlyToolResults.has(block.id)) {
@@ -1278,7 +1318,7 @@ export class SessionManager {
    *  clear permission state, recover parent status if unblocked. */
   private applySubagentUserRecord(subagent: SubagentInfo, record: JsonlRecord): void {
     this.updateSubagentActivity(subagent);
-    const content = record.message?.content || [];
+    const content = getContentBlocks(record);
     for (const block of content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         if (subagent.activeTools.has(block.tool_use_id)) {

@@ -96,10 +96,14 @@ interface PanelTeam {
  *  because the webview bundle cannot import extension-side modules). */
 type DetailSource = 'workflow' | 'team' | 'subagents';
 
-/** Workflow agent (subset of WorkflowAgentSnapshot the card needs). */
+/** Workflow agent (subset of WorkflowAgentSnapshot the card needs). agentId and
+ *  label are present at runtime (host sends the full snapshot) — they drive the
+ *  inline not-done rows and their deep-link into the detail panel. */
 interface PanelWorkflowAgent {
   phaseIndex: number | null;
   status: string;
+  agentId?: string;
+  label?: string;
 }
 
 /** Workflow run snapshot (mirrors WorkflowSnapshot from types.ts; the card
@@ -267,10 +271,7 @@ const RANGE_MS: Record<string, number> = {
   // Status debounce: tracks when each session entered waiting
   const needsInputSince: Record<string, number> = {};
 
-  // Subagent list expansion state (persisted via vscode setState)
-  const expandedSessions = new Set<string>(
-    (savedState && Array.isArray(savedState.expandedSessions)) ? savedState.expandedSessions as string[] : []
-  );
+  // Team roster expansion state (persisted via vscode setState)
   const expandedTeams = new Set<string>(
     (savedState && Array.isArray(savedState.expandedTeams)) ? savedState.expandedTeams as string[] : []
   );
@@ -287,7 +288,6 @@ const RANGE_MS: Record<string, number> = {
   function saveState(): void {
     vscode.setState({
       archiveRange,
-      expandedSessions: Array.from(expandedSessions),
       expandedTeams: Array.from(expandedTeams),
       expandedWorkspaces: Array.from(expandedWorkspaces),
     });
@@ -370,6 +370,36 @@ const RANGE_MS: Record<string, number> = {
       const sessionId = detailChip.dataset.detailSession;
       if (source && containerId && sessionId) {
         vscode.postMessage({ type: 'openDetail', source, containerId, sessionId });
+        // Opening the drill-in also focuses the invoking conversation — the
+        // detail panel docks beside it, so you keep talking to the parent on
+        // the left and read its agents on the right. Mirrors a card-body click
+        // (focusedSessionId + re-render for the focused state, plus focusSession
+        // to reveal the conversation editor).
+        focusedSessionId = sessionId;
+        vscode.postMessage({ type: 'focusSession', sessionId });
+        if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+      }
+      return;
+    }
+
+    // Inline agent row (not-done teammate / subagent / workflow agent) — opens
+    // the detail panel deep-linked to that agent. Checked before the generic
+    // card-body handler (focusSession) that would otherwise swallow it.
+    const agentRow = target.closest<HTMLElement>('.card-agent-row');
+    if (agentRow) {
+      e.stopPropagation();
+      const source = agentRow.dataset.detailSource;
+      const containerId = agentRow.dataset.detailContainer;
+      const sessionId = agentRow.dataset.detailSession;
+      const agentId = agentRow.dataset.agent;
+      if (source && containerId && sessionId) {
+        const detailMsg: Record<string, unknown> = { type: 'openDetail', source, containerId, sessionId };
+        if (agentId) { detailMsg.agentId = agentId; detailMsg.groupKey = agentRow.dataset.group ?? ''; }
+        vscode.postMessage(detailMsg);
+        // Mirror the detail chip: dock beside + focus the parent conversation.
+        focusedSessionId = sessionId;
+        vscode.postMessage({ type: 'focusSession', sessionId });
+        if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
       }
       return;
     }
@@ -416,34 +446,11 @@ const RANGE_MS: Record<string, number> = {
       return;
     }
 
-    // Subagent toggle
-    const toggleBtn = target.closest<HTMLElement>('[data-toggle-session]');
-    if (toggleBtn) {
-      e.stopPropagation();
-      const sid = toggleBtn.dataset.toggleSession!;
-      if (expandedSessions.has(sid)) {
-        expandedSessions.delete(sid);
-      } else {
-        expandedSessions.add(sid);
-      }
-      saveState();
-      if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
-      return;
-    }
-
     // Team dismiss button
     const teamDismissBtn = target.closest<HTMLElement>('[data-dismiss-team]');
     if (teamDismissBtn) {
       e.stopPropagation();
       vscode.postMessage({ type: 'dismissTeam', teamId: teamDismissBtn.dataset.dismissTeam });
-      return;
-    }
-
-    // Workflow run dismiss (archive) — the × on the in-card roll-up meta row
-    const wfDismissBtn = target.closest<HTMLElement>('[data-dismiss-workflow]');
-    if (wfDismissBtn) {
-      e.stopPropagation();
-      vscode.postMessage({ type: 'dismissWorkflow', runId: wfDismissBtn.dataset.dismissWorkflow });
       return;
     }
 
@@ -575,13 +582,6 @@ const RANGE_MS: Record<string, number> = {
       detailChip.click();
       return;
     }
-    // Workflow archive × — a role=button span, so Enter/Space need wiring
-    const wfDismiss = target.closest<HTMLElement>('[data-dismiss-workflow]');
-    if (wfDismiss) {
-      e.preventDefault();
-      wfDismiss.click();
-      return;
-    }
     // Companion footer slots — role=button rows, need Enter/Space wiring
     const footerSlot = target.closest<HTMLElement>('.usage-slot-row[data-slot-id]');
     if (footerSlot && footerSlot.classList.contains('clickable')) {
@@ -589,18 +589,20 @@ const RANGE_MS: Record<string, number> = {
       footerSlot.click();
       return;
     }
-    // Subagent / team expand toggles — role=button spans/divs nested in the card,
-    // so they must be matched before the generic .card branch swallows them.
-    const toggleSess = target.closest<HTMLElement>('[data-toggle-session]');
-    if (toggleSess) {
-      e.preventDefault();
-      toggleSess.click();
-      return;
-    }
+    // Team expand toggle — a role=button div nested in the team group, so it
+    // must be matched before the generic .card branch swallows it.
     const toggleTeam = target.closest<HTMLElement>('[data-toggle-team]');
     if (toggleTeam) {
       e.preventDefault();
       toggleTeam.click();
+      return;
+    }
+    // Inline agent row — a role=button div, matched before the generic .card
+    // branch so Enter/Space drills to the agent instead of focusing the card.
+    const agentRow = target.closest<HTMLElement>('.card-agent-row');
+    if (agentRow) {
+      e.preventDefault();
+      agentRow.click();
       return;
     }
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
@@ -787,12 +789,10 @@ const RANGE_MS: Record<string, number> = {
       scrollWrap.querySelector('.foreign-waiting-section')?.remove();
     }
 
-    // === Team section (before individual session cards) ===
-    if (currentSettings.show.teams) {
-      renderTeamSection(scrollWrap, now);
-    } else {
-      scrollWrap.querySelector('.team-section')?.remove();
-    }
+    // === Teams === No separate section: a team folds into its orchestrator's
+    // normal card (see teamByOrchestrator). We're always going through the lead,
+    // so the team rides on its session rather than duplicating it above.
+    scrollWrap.querySelector('.team-section')?.remove();
 
     // === Card section (running/waiting/stale) ===
     let cardSection = scrollWrap.querySelector('.card-section:not(.done-section)') as HTMLElement | null;
@@ -1122,68 +1122,18 @@ const RANGE_MS: Record<string, number> = {
     existing.innerHTML = html;
   }
 
-  // ===== SUBAGENT ITEM HELPER =====
-  function renderSubagentItem(agent: PanelSession['subagents'][0], now: number): string {
-    const isBackground = agent.running && !agent.blocking;
-    const dotClass = agent.waitingOnPermission ? 'waiting'
-      : isBackground ? 'background'
-      : agent.running ? 'running'
-      : 'done';
-    let statusHtml: string;
-    if (agent.waitingOnPermission) {
-      statusHtml = '<span class="subagent-status waiting-status">waiting</span>';
-    } else if (isBackground) {
-      const toolsLabel = agent.toolsCompleted > 0 ? agent.toolsCompleted + ' tools' : '';
-      statusHtml = '<span class="subagent-status background-status">'
-        + (toolsLabel ? '<span class="subagent-tools">' + toolsLabel + '</span>' : '')
-        + 'background</span>';
-    } else if (agent.running) {
-      const toolsLabel = agent.toolsCompleted > 0 ? agent.toolsCompleted + ' tools' : '';
-      statusHtml = '<span class="subagent-status running-status">'
-        + (toolsLabel ? '<span class="subagent-tools">' + toolsLabel + '</span>' : '')
-        + '<span class="mini-spinner"></span></span>';
-    } else {
-      const durationMs = agent.startedAt ? now - agent.startedAt : 0;
-      const durationLabel = durationMs > 1000 ? formatAge(durationMs) : '';
-      statusHtml = '<span class="subagent-status">'
-        + (durationLabel ? durationLabel + ' · ' : '')
-        + 'done'
-        + (agent.toolsCompleted > 0 ? ' · ' + agent.toolsCompleted + ' tools' : '')
-        + '</span>';
-    }
-    let resultHtml = '';
-    if (!agent.running && agent.resultPreview) {
-      resultHtml = '<div class="subagent-result">' + escapeHtml(agent.resultPreview) + '</div>';
-    }
-    return '<div class="subagent-item' + (isBackground ? ' subagent-background' : '') + '">'
-      + '<div class="subagent-dot ' + dotClass + '"></div>'
-      + '<div class="subagent-content">'
-      + '<div class="subagent-header">'
-      + '<span class="subagent-text">' + escapeHtml(agent.description) + '</span>'
-      + statusHtml
-      + '</div>'
-      + resultHtml
-      + '</div>'
-      + '</div>';
-  }
-
   // ===== CARD INNER HTML =====
-  /** Compact "Nm Ns" / "Ns" duration. */
-  function formatDurationShort(ms: number): string {
-    const secs = Math.round(ms / 1000);
-    if (secs < 60) { return secs + 's'; }
-    const mins = Math.floor(secs / 60);
-    const rem = secs % 60;
-    return rem > 0 ? mins + 'm ' + rem + 's' : mins + 'm';
-  }
 
   /** A clickable meta-row chip that opens the source-keyed detail panel.
    *  `source` selects the drill-in (workflow | team | subagents); `containerId`
    *  is the sessionId (workflow/subagents) or teamId (team); `sessionId` is the
    *  invoking conversation the panel header jumps back to. Styling reuses the
-   *  status-tinted `.wf-view-chip` recipe; `.detail-chip` is the click hook. */
-  function renderDetailChip(label: string, source: DetailSource, containerId: string, sessionId: string): string {
-    return '<span class="wf-tag wf-view-chip detail-chip"'
+   *  status-tinted `.wf-view-chip` recipe; `.detail-chip` is the click hook.
+   *  `state` (running | waiting | failed | done) tints the chip to reflect the
+   *  agents' OWN aggregate state, not the parent card's turn state — a stale
+   *  (seen) parent dims it via CSS. */
+  function renderDetailChip(label: string, source: DetailSource, containerId: string, sessionId: string, state: string): string {
+    return '<span class="wf-tag wf-view-chip detail-chip wf-chip-' + escapeHtml(state) + '"'
       + ' data-detail-source="' + escapeHtml(source) + '"'
       + ' data-detail-container="' + escapeHtml(containerId) + '"'
       + ' data-detail-session="' + escapeHtml(sessionId) + '"'
@@ -1191,51 +1141,58 @@ const RANGE_MS: Record<string, number> = {
       + '">' + escapeHtml(label) + '<span class="wf-arrow">→</span></span>';
   }
 
-  /** Roll-up block for a session that owns workflow run(s): a thin progress
-   *  bar, per-phase done counts, and run metrics. The card body opens the
-   *  invoking conversation; the "view workflow →" chip in the meta row (not
-   *  here) opens the detail panel. `wfs` is non-empty and most-relevant-first. */
-  function renderWorkflowBlock(wfs: PanelWorkflow[]): string {
-    const run = wfs[0];
-    const total = run.agentCount || run.agents.length || 0;
-    const done = run.counts['done'] || 0;
-    const running = run.status === 'running';
-    const failed = run.status === 'failed';
-    const completed = run.status === 'completed';
-    // A terminal 'completed' run is 100% by definition (an unknown/non-done
-    // agent state must not make a finished run look in-progress). Failed /
-    // incomplete show how far they actually got.
-    const pct = completed
-      ? 100
-      : (total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0);
-    const barFillCls = 'wf-bar-fill' + (running ? ' running' : failed ? ' failed' : '');
+  /** Aggregate state for a session card's detail chip — reflects what the chip
+   *  opens (its workflow run(s) and/or plain Task subagents), so a live workflow
+   *  under an idle session still reads as running. Precedence: a permission wait
+   *  outranks running, which outranks a failed/incomplete run, else done. */
+  function detailChipState(wfs: PanelWorkflow[] | undefined, subs: PanelSession['subagents'] | undefined): string {
+    if ((subs ?? []).some(a => a.waitingOnPermission)) { return 'waiting'; }
+    if ((wfs ?? []).some(w => w.status === 'running') || (subs ?? []).some(a => a.running)) { return 'running'; }
+    if ((wfs ?? []).some(w => w.status === 'failed' || w.status === 'incomplete')) { return 'failed'; }
+    return 'done';
+  }
 
-    let pills = '';
-    for (const ph of run.phases) {
-      const inPhase = run.agents.filter(a => a.phaseIndex === ph.index);
-      const phaseDone = inPhase.filter(a => a.status === 'done').length;
-      // Only a completed run earns the success check; failed / incomplete /
-      // running show the fraction so a partial run never implies success.
-      const count = completed ? '✓' + phaseDone : phaseDone + '/' + inPhase.length;
-      pills += '<span class="wf-phase"><b>' + escapeHtml(ph.title) + '</b> ' + count + '</span>';
+  /** Inline rows for the still-working agents under a card — the at-a-glance
+   *  "who's active" list (one name for all kinds: agents). Capped to ~6 rows by
+   *  CSS max-height + scroll. Each row deep-links the detail panel to that agent
+   *  (groupKey + agentId). Empty list → nothing rendered. */
+  function renderInlineAgents(
+    agents: { agentId?: string | null; label: string; status: string }[],
+    source: DetailSource,
+    containerId: string,
+    sessionId: string,
+    groupKey: string,
+  ): string {
+    if (agents.length === 0) { return ''; }
+    let html = '<div class="card-agent-list" role="list">';
+    for (const a of agents) {
+      const dot = a.status === 'waiting' ? 'waiting' : a.status === 'failed' ? 'failed' : 'running';
+      html += '<div class="card-agent-row" role="listitem button" tabindex="0"'
+        + ' data-detail-source="' + escapeHtml(source) + '"'
+        + ' data-detail-container="' + escapeHtml(containerId) + '"'
+        + ' data-detail-session="' + escapeHtml(sessionId) + '"'
+        + ' data-group="' + escapeHtml(groupKey) + '"'
+        + ' data-agent="' + escapeHtml(a.agentId ?? '') + '"'
+        + ' title="' + escapeHtml(a.label) + '">'
+        + '<span class="card-agent-dot ' + dot + '"></span>'
+        + '<span class="card-agent-name">' + escapeHtml(a.label) + '</span>'
+        + '</div>';
     }
-
-    const metaBits: string[] = [total + ' agent' + (total === 1 ? '' : 's')];
-    if (run.totalTokens > 0) { metaBits.push(formatTokenCount(run.totalTokens) + ' tokens'); }
-    if (run.totalToolCalls > 0) { metaBits.push(run.totalToolCalls + ' tools'); }
-    if (run.durationMs && run.durationMs > 0) { metaBits.push(formatDurationShort(run.durationMs)); }
-    if (wfs.length > 1) { metaBits.push('+' + (wfs.length - 1) + ' earlier'); }
-
-    let html = '<div class="wf-rollup">';
-    html += '<div class="wf-bar' + (running ? ' running' : '') + '"><i class="' + barFillCls + '" style="width:' + pct + '%"></i></div>';
-    if (pills) { html += '<div class="wf-phases">' + pills + '</div>'; }
-    if (failed) { html += '<div class="wf-status-line failed">run failed</div>'; }
-    html += '<div class="wf-metaline">'
-      + '<span class="wf-meta-text">' + escapeHtml(metaBits.join(' · ')) + '</span>'
-      + '<span class="wf-dismiss" role="button" tabindex="0" title="Archive run" aria-label="Archive workflow run" data-dismiss-workflow="' + escapeHtml(run.runId) + '">×</span>'
-      + '</div>';
     html += '</div>';
     return html;
+  }
+
+  /** A session's current workflow run contributes only its still-working agents
+   *  as inline rows — no progress bar, no "✓ N agents" tick (decided by Murray:
+   *  a finished run needs neither; the "agents →" chip carries the click-through).
+   *  A terminal run (completed / failed / killed→incomplete) renders nothing. */
+  function renderWorkflowBlock(wfs: PanelWorkflow[]): string {
+    const run = wfs[0];
+    if (run.status !== 'running') { return ''; }
+    const active = run.agents.filter(a => a.status === 'running' || a.status === 'waiting');
+    return renderInlineAgents(
+      active.map(a => ({ agentId: a.agentId, label: a.label || (a.agentId ? a.agentId.slice(0, 8) : 'agent'), status: a.status })),
+      'workflow', run.sessionId, run.sessionId, run.runId);
   }
 
   function renderCardInner(s: PanelSession, now: number, isFocused: boolean): string {
@@ -1248,54 +1205,13 @@ const RANGE_MS: Record<string, number> = {
       && currentSettings.show.subagents
       && (s.status === 'running' || s.status === 'waiting' || isFocused);
     if (showSubagents && s.subagents) {
-      const waitingAgents = s.subagents.filter(a => a.waitingOnPermission);
-      const runningOnly = s.subagents.filter(a => a.running && !a.waitingOnPermission);
-      const doneAgents = s.subagents.filter(a => !a.running);
-      const doneCount = doneAgents.length;
-      const activeAgents = waitingAgents.concat(runningOnly); // always shown individually
-
-      const COMPACT_THRESHOLD = 5;
-      const EXPAND_CAP = currentSettings.archive.maxDoneShown; // max done items shown even when expanded
-      const shouldCompact = s.subagents.length > COMPACT_THRESHOLD;
-      const isExpanded = shouldCompact && expandedSessions.has(s.sessionId);
-
-      subagentHtml = '<div class="subagent-section">';
-
-      // Always show active (waiting + running) agents individually
-      for (const agent of activeAgents) {
-        subagentHtml += renderSubagentItem(agent, now);
-      }
-
-      // Done agents: show individually only when focused+expanded (capped)
-      if (isFocused && isExpanded && doneCount > 0) {
-        const visible = doneAgents.slice(0, EXPAND_CAP);
-        for (const agent of visible) {
-          subagentHtml += renderSubagentItem(agent, now);
-        }
-        if (doneCount > EXPAND_CAP) {
-          subagentHtml += '<div class="subagent-overflow">and ' + (doneCount - EXPAND_CAP) + ' more done</div>';
-        }
-      } else if (!shouldCompact && isFocused) {
-        // Small list (<= threshold): show all done too
-        for (const agent of doneAgents) {
-          subagentHtml += renderSubagentItem(agent, now);
-        }
-      }
-
-      // Summary line
-      const summaryParts: string[] = [];
-      if (waitingAgents.length > 0) summaryParts.push('<span class="waiting-count">' + waitingAgents.length + ' waiting</span>');
-      if (runningOnly.length > 0) summaryParts.push('<span class="running-count">' + runningOnly.length + ' running</span>');
-      if (doneCount > 0) summaryParts.push('<span>' + doneCount + ' done</span>');
-      subagentHtml += '<div class="subagent-summary">'
-        + s.subagents.length + ' subagent' + (s.subagents.length > 1 ? 's' : '') + ': ' + summaryParts.join(', ');
-      if (shouldCompact && isFocused && doneCount > 0) {
-        subagentHtml += ' <span class="subagent-toggle" role="button" tabindex="0"'
-          + ' aria-label="Toggle done subagents" data-toggle-session="' + escapeHtml(s.sessionId) + '">'
-          + (isExpanded ? '▾ collapse' : '▸ show done') + '</span>';
-      }
-      subagentHtml += '</div>';
-      subagentHtml += '</div>';
+      // Only the still-working agents are listed inline (running / awaiting
+      // permission); click one to drill straight to it. When all are done there's
+      // no list and no count tick — the "agents →" chip is the click-through.
+      const active = s.subagents.filter(a => a.running || a.waitingOnPermission);
+      subagentHtml = renderInlineAgents(
+        active.map(a => ({ agentId: a.agentId, label: a.description, status: a.waitingOnPermission ? 'waiting' : 'running' })),
+        'subagents', s.sessionId, s.sessionId, '');
     }
 
     const isLive = s.status === 'running' || s.status === 'waiting';
@@ -1322,16 +1238,22 @@ const RANGE_MS: Record<string, number> = {
       const bgLabel = bgShells + ' shell' + (bgShells === 1 ? '' : 's') + ' running';
       metaHtml += '<span class="bg-shell-badge" title="Background shells launched with run_in_background still running">' + bgLabel + '</span>';
     }
-    if (wfs && wfs.length > 0) {
-      const wfLabel = wfs.length > 1 ? 'workflows' : 'workflow';
-      metaHtml += renderDetailChip(wfLabel, 'workflow', s.sessionId, s.sessionId);
-    }
-    // "view subagents" chip — opens the same detail panel keyed to this
-    // session's Task subagents. Additive to the inline summary below; gated on
-    // the same subagent-visibility setting but not the status/focus gate, so a
-    // finished session still offers the drill-in.
-    if (hasSubagents && currentSettings.show.subagents) {
-      metaHtml += renderDetailChip('subagents', 'subagents', s.sessionId, s.sessionId);
+    // A session's agents can come from workflow run(s) and/or plain Task
+    // subagents. Both open the same detail panel (keyed to this session), which
+    // surfaces a view switcher across them, so collapse to ONE chip rather than
+    // two: workflow-specific label when only workflows, "subagents" when only
+    // those, and a neutral "agents" when both — the switcher carries the rest.
+    // Initial source is the workflow when present (richer), else subagents.
+    const hasWf = !!wfs && wfs.length > 0;
+    const showSubChip = hasSubagents && currentSettings.show.subagents;
+    const chipState = detailChipState(wfs, s.subagents);
+    // One name for everything beneath a card — agents (be they workflow agents,
+    // subagents, or teammates). The source still routes the drill-in: prefer the
+    // workflow view when a run is present (richer), else the subagents view.
+    if (hasWf) {
+      metaHtml += renderDetailChip('agents', 'workflow', s.sessionId, s.sessionId, chipState);
+    } else if (showSubChip) {
+      metaHtml += renderDetailChip('agents', 'subagents', s.sessionId, s.sessionId, chipState);
     }
     metaHtml += actionsHtml;
     metaHtml += '</div>';
@@ -1920,7 +1842,10 @@ const RANGE_MS: Record<string, number> = {
     }
     metaHtml += '<span class="team-badge">orchestrator</span>';
     if (team.agents.length > 0) {
-      metaHtml += renderDetailChip('agent team', 'team', team.teamId, o.sessionId);
+      const teamChipState = team.agents.some(a => a.status === 'waiting') || o.status === 'waiting' ? 'waiting'
+        : team.agents.some(a => a.status === 'running') || o.status === 'running' ? 'running'
+        : 'done';
+      metaHtml += renderDetailChip('agent team', 'team', team.teamId, o.sessionId, teamChipState);
     }
 
     const teamLive = team.agents.some(a => a.status === 'running' || a.status === 'waiting')

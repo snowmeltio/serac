@@ -171,6 +171,19 @@ describe('content block extraction', () => {
     expect(getContentBlocks({ type: 'user' })).toEqual([]);
   });
 
+  it('getContentBlocks normalises a string message.content to a single text block', () => {
+    // Workflow/agent record-0 (the inception brief) arrives as a string, not a
+    // block array. Without normalisation, callers iterate it character-by-char.
+    const stringRecord: JsonlRecord = { type: 'user', message: { content: 'Audit the codebase.' } };
+    expect(getContentBlocks(stringRecord)).toEqual([{ type: 'text', text: 'Audit the codebase.' }]);
+    expect(getTextBlocks(stringRecord)).toHaveLength(1);
+    expect(getTextBlocks(stringRecord)[0].text).toBe('Audit the codebase.');
+  });
+
+  it('getContentBlocks returns empty for an empty string content', () => {
+    expect(getContentBlocks({ type: 'user', message: { content: '' } })).toEqual([]);
+  });
+
   it('getTextBlocks filters to text blocks with text', () => {
     const texts = getTextBlocks(record);
     expect(texts).toHaveLength(2);

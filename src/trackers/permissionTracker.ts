@@ -2,12 +2,23 @@
  * PermissionTracker — owns timer scheduling for permission-wait detection.
  *
  * Behaviour:
- *   - Base delay PERMISSION_DELAY_MS=3s; SLOW_PERMISSION_DELAY_MS=6s for slow tools.
- *   - Doubled (max 6s/12s) if a tool result arrived within TOOL_RECENCY_MS=3s.
+ *   - Base delay PERMISSION_DELAY_MS=3s; SLOW_PERMISSION_DELAY_MS=15s for slow tools.
+ *   - Doubled (max 6s/30s) if a tool result arrived within TOOL_RECENCY_MS=3s.
  *   - Exempt tools never trigger the timer.
  *   - `onWaitingFired` only fires if activeTools is non-empty at fire time;
  *     the host then applies any additional guards (e.g. status === 'running',
  *     subagent bubble policy).
+ *
+ * FALSE-POSITIVE NOTE: the `PermissionRequest` hook (ground truth, 25-29 ms)
+ * is not wired in production yet (hookEventRouter is a stub), so the TIMER is
+ * the sole signal — and a timer alone cannot tell a slow-EXECUTING tool from
+ * one BLOCKED on a permission prompt (both look like "tool_use, then silence").
+ * The slow delay is therefore generous (15s) so a routine long Bash — tests,
+ * builds, packaging — completes and clears before the timer flags it, instead
+ * of flickering the card to "Waiting for permission" mid-run. A genuine wait
+ * is still surfaced within 15s (or 30s in a rapid command sequence, via the
+ * recency doubling); the real cure is wiring the hook. See BACKLOG.md and
+ * project_permission_false_positives.
  *
  * Used in two scopes per session:
  *   1. Session-level — host reads session activeTools, sets "Waiting for permission".
@@ -24,8 +35,11 @@ import type { HookEventRouter } from '../hookEventRouter.js';
 
 /** Base permission delay for normal (non-slow) tools. */
 export const PERMISSION_DELAY_MS = 3_000;
-/** Permission delay for slow tools (Bash, WebSearch, WebFetch, Skill, MCP). */
-export const SLOW_PERMISSION_DELAY_MS = 6_000;
+/** Permission delay for slow tools (Bash, WebSearch, WebFetch, Skill, MCP).
+ *  Generous on purpose — see the FALSE-POSITIVE NOTE in the module header: with
+ *  no hook ground truth, this is long enough that a routine slow Bash (test /
+ *  build / package run) finishes before the timer mistakes it for a prompt. */
+export const SLOW_PERMISSION_DELAY_MS = 15_000;
 /** Recency window: doubled delay only when tool_result arrived within this window. */
 export const TOOL_RECENCY_MS = 3_000;
 

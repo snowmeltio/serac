@@ -36,7 +36,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private onUndismissTeam: ((teamId: string) => void) | undefined;
   private onDismissWorkflow: ((runId: string) => void) | undefined;
   private onUndismissWorkflow: ((runId: string) => void) | undefined;
-  private onOpenDetail: ((source: DetailSource, containerId: string, sessionId: string) => void) | undefined;
+  private onOpenDetail: ((source: DetailSource, containerId: string, sessionId: string, target?: { groupKey: string; agentId: string }) => void) | undefined;
   private onOpenWorkspace: ((cwd: string, sessionId?: string) => void) | undefined;
   private onFooterSlotClick: ((slotId: string) => void) | undefined;
   private getFooterSlotPayloads: (() => FooterSlotPayload[]) | undefined;
@@ -98,7 +98,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.onUndismissWorkflow = handler;
   }
 
-  setOpenDetailHandler(handler: (source: DetailSource, containerId: string, sessionId: string) => void): void {
+  setOpenDetailHandler(handler: (source: DetailSource, containerId: string, sessionId: string, target?: { groupKey: string; agentId: string }) => void): void {
     this.onOpenDetail = handler;
   }
 
@@ -172,7 +172,10 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       } else if (message.type === 'undismissWorkflow' && this.onUndismissWorkflow) {
         this.onUndismissWorkflow(message.runId);
       } else if (message.type === 'openDetail' && this.onOpenDetail) {
-        this.onOpenDetail(message.source, message.containerId, message.sessionId);
+        const target = message.agentId !== undefined
+          ? { groupKey: message.groupKey ?? '', agentId: message.agentId }
+          : undefined;
+        this.onOpenDetail(message.source, message.containerId, message.sessionId, target);
       } else if (message.type === 'openWorkspace' && this.onOpenWorkspace) {
         this.onOpenWorkspace(message.cwd, message.sessionId);
       } else if (message.type === 'footerSlotClick' && this.onFooterSlotClick) {

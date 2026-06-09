@@ -64,6 +64,21 @@ describe('renderTranscript', async () => {
       expect(md).toContain('Hello Claude');
     });
 
+    it('renders a string-typed message.content (workflow/agent inception brief)', async () => {
+      // record-0 of a workflow agent carries the brief as a plain string, not a
+      // block array. It must surface as a user turn, not be dropped or iterated
+      // character-by-character.
+      const md = await render([
+        {
+          type: 'user',
+          timestamp: '2026-03-11T10:00:00Z',
+          message: { content: 'Audit the codebase for security issues.' },
+        },
+      ]);
+      expect(md).toContain('### You');
+      expect(md).toContain('Audit the codebase for security issues.');
+    });
+
     it('skips system-reminder injections', async () => {
       const md = await render([
         {

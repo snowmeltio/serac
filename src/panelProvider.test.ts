@@ -219,7 +219,18 @@ describe('AgentPanelProvider', () => {
       provider.setOpenDetailHandler(onOpenDetail);
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       webview2._fireMessage({ type: 'openDetail', source: 'workflow', containerId: 'wf-sess', sessionId: 'wf-sess' });
-      expect(onOpenDetail).toHaveBeenCalledWith('workflow', 'wf-sess', 'wf-sess');
+      // No deep-link target on a plain chip open → undefined 4th arg.
+      expect(onOpenDetail).toHaveBeenCalledWith('workflow', 'wf-sess', 'wf-sess', undefined);
+    });
+
+    it('forwards a deep-link target (groupKey + agentId) to the open-detail handler', () => {
+      const webview2 = createMockWebview();
+      const view = createMockWebviewView(webview2);
+      const onOpenDetail = vi.fn();
+      provider.setOpenDetailHandler(onOpenDetail);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview2._fireMessage({ type: 'openDetail', source: 'workflow', containerId: 'wf-sess', sessionId: 'wf-sess', groupKey: 'wf_run-1', agentId: 'a1' });
+      expect(onOpenDetail).toHaveBeenCalledWith('workflow', 'wf-sess', 'wf-sess', { groupKey: 'wf_run-1', agentId: 'a1' });
     });
 
     it('exposes registered newChat handler via getNewChatHandler', () => {
