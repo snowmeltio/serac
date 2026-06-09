@@ -63,6 +63,7 @@ Origin: a card showed `DONE · 49s` while the chat had launched `./deploy.sh` wi
 - **Collapsing the agent list should widen the transcript to full (Murray, 2026-06-04).** When the user *does* collapse the agent list, reclaim the freed space — expand the transcript view to fill the full panel width rather than leaving a gap.
 - **Agent list should expand/compress smoothly (Murray, 2026-06-04).** Animate the collapse/expand transition rather than snapping — a smooth width/visibility transition as the list opens and closes (in concert with the transcript widening above).
 - **Separately group workflows, subagents, and agent teams at the top of the view (Murray, 2026-06-04).** Rather than a single flat agent list, split the top of the detail view into distinct groups by source — workflows, subagents, and agent teams — so each kind is visually delineated rather than intermixed.
+- **Timestamps on transcript records (Murray, 2026-06-09).** Agent transcripts currently carry no per-record time. Add a timestamp on each transcript entry using the familiar relative-then-absolute pattern: "XX ago" while recent, crossing over to an absolute date/time once the record is staler (the well-trodden GitHub / Slack / `formatDistanceToNow` / `timeago` UX). Keep it light — a quiet, unobtrusive label, not a heavy column. Source data is the per-record `timestamp` already present in the JSONL; needs a crossover threshold (e.g. ≥ ~24h → show the date) and probably a hover/title with the full absolute time regardless.
 
 ## Other workspaces
 
