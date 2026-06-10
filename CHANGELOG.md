@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.12.0 (2026-06-10) — Workflow viewer v2, status correctness, glance pack
+
+A two-batch cycle driven by a 7-lens adversarial audit (38 confirmed findings) plus a product-ideation pass. Workflow drill-ins now render real labels for live runs, status inference closes its registry gaps, cards carry more glanceable signal, and the detail panel gets a quality-of-life batch.
+
+### Workflow viewer v2
+- **Live runs resolve identifier-bound prompts statically** — the canonical `pipeline(DIMS, d => agent(d.prompt))` pattern now matches agents to phases by extracting prompt templates from top-level const arrays and function bodies (never eval). On the run that exposed the bug: 0/58 agents matched before, 82/82 after.
+- **Journal keys are never shown** — an unmatched live agent renders as `Agent · <shortId>` with its prompt preview filled in.
+- **Live tokens/tool-call counts** from agent JSONLs (size-capped, cached) instead of hardcoded zeros; failure roll-up in the header and failed-first nav ordering.
+- **Team roster drill-in restored** (unreachable since the v1.11 card folding) via a `Roster · <team>` switcher chip.
+
+### Status correctness
+- **Registry death-gate survives reloads** — the per-session seen-live latch persists in session-meta.json, and the probe no longer collapses when the registry empties (the single-session structural hole).
+- **Orphan/live signal on terminal cards** — Done/Seen pills gain a quiet `live` (process still attached, resumable) or `ended` (registry-confirmed gone) qualifier; unknown shows nothing; active cards are never annotated.
+- **Permission recency-doubling resurrected** (was dead code — the same call zeroed its own input) and **extended-thinking grace no longer killed by subagent records** (premature `done` on thinking sessions).
+- **Hook ingress validated end-to-end** — positive-path PermissionRequest tests replay the real captured payloads through router → tracker; a fresh CC 2.1.159 fixture pins the extended Stop payload (`background_tasks`, `session_crons`, `last_assistant_message`). The 15s slow-tool timer stays by design: with hooks live a real prompt surfaces in ~25ms, so the timer only covers hook-silence modes.
+- **Background-shell lifecycle proven end-to-end** — launch → badge on done card → completion re-invocation → retrieval clears → cold replay never resurrects.
+
+### Freshness parity
+- Foreign, sibling-worktree, and team sessions get the same registry probe, background-shell sweep, and adaptive fast-poll as local cards; sibling waiting sessions bump the needs-input badge; dismissed foreign sessions no longer leak into strips or the badge.
+
+### Glance pack (cards)
+- **Waiting-age on the pill** (`Waiting · 20m` — which blocked card has waited longest).
+- **Model-tinted pills** — hash-derived hue per model (stable across sessions/builds), a separate colour register from status.
+- **Git branch pill**, **tool-error badge** (`N tool errors` — done-but-look-closer), and the **last assistant reply as the done-card preview** (what it finished with, not the last tool name).
+- **Same-file collision badge** — two ACTIVE sessions editing the same file get a quiet `N shared files` chip (paths in the tooltip).
+- **MCP needs-auth footer chip** (servers awaiting `/mcp` re-auth, 24h freshness) and an **IDE tag** on Other-workspace rows open in a live VS Code window (pid-verified locks; the lock's authToken is never read).
+
+### Other workspaces
+- **Visibility presets** — `serac.discovery.foreignWorkspacesWindow`: `inherit` / `live-only` / `1d` / `7d` / `30d` / `forever`. Live-only keys off the process registry (live shows regardless of age, confirmed-absent hides regardless of youth) and falls back to the time window on degraded scans.
+
+### Detail panel
+- **Text selection survives the live refresh** — an unchanged transcript skips the re-render.
+- **Selection, nav collapse, and brief collapse persist** across webview rebuilds (`vscode.setState`); switcher chips carry agent roll-up tooltips (failed-first); relative timestamps refresh in place on a 60s tick; a column flex chain replaces the hardcoded viewport offsets (the composer now shrinks the panes automatically).
+- **Teammate inbox read-side** — pending (undrained) messages appear as "Queued for delivery" turns in the teammate's transcript, gated on the same server-side settings as the composer; the read path reuses the write path's confinement, size caps, and schema kill-switch, strictly read-only.
+
+### Hardening
+- ReDoS fix in the workflow script parser (exponential backtracking on backslash runs); `teammateMessaging`/`operatorName` settings moved to application scope (workspace configs can no longer flip the gate); composer in-flight/draft isolation across teammate switches; inbox: U+061C rejected, byte-accurate ring cap, 4 MiB read cap; transcript cache keys owner-prefixed against cross-container bleed.
+
 ## v1.11.1 (2026-06-10) — Usage cache correctness on credential change
 
 ### Fixed
