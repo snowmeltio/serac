@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.12.1 (2026-06-10) — Active teams visible again, loops badge, stall surfacing
+
+### Fixed
+- **Active teams were invisible (v1.11 regression).** The v1.11 fold renders a team on its orchestrator's normal session card, but the pre-fold suppression of that card (`getClaimedSessionIds`) was never lifted — an active team's lead had no card anywhere, in its own workspace's window. The orchestrator is no longer claimed; member-session claims remain.
+- **Branch pill suppressed in non-git workspaces.** Claude Code stamps the literal `gitBranch:"HEAD"` outside git repos (and in detached HEAD) — everything is in HEAD by definition, so the pill differentiated nothing.
+- **Truncation reset covers the glance fields.** A JSONL truncation without a compaction signal now clears branch/tool-error/preview/tracked-file enrichment, which rebuilds from the replayed content (stale values could previously survive into the new timeline).
+- **Tool-error badge removed from cards.** Non-actionable and badly correlated with real trouble (benign failed greps/probes inflate the count); the underlying count stays in the snapshot for a future actionable surface.
+
+### Added
+- **Loops badge.** A pending `ScheduleWakeup` renders a quiet `sleeping · Xm` chip (the card is sleeping, not finished); session crons (`CronCreate`/`CronDelete`, `/loop` interval mode) render a `loop` chip. Stop-hook `session_crons` applied as ground truth when hooks are live; registry-confirmed death clears all.
+- **Stall surfacing.** A running card silent past 5 minutes reads `Running · quiet 12m` — neither healthy-running nor waiting; a hung tool or silent build you want to know about either way.
+- **Shared-files chip is now opt-in** (`serac.show.fileCollisions`, default off) — rarely fires when parallelising via worktrees.
+
+### Internal
+- Test gaps closed: truncation-sans-PreCompact replay, `workspaceOpener.ts` co-located tests, extension activation wiring assertions. Suite at 1250 tests.
+
 ## v1.12.0 (2026-06-10) — Workflow viewer v2, status correctness, glance pack
 
 A two-batch cycle driven by a 7-lens adversarial audit (38 confirmed findings) plus a product-ideation pass. Workflow drill-ins now render real labels for live runs, status inference closes its registry gaps, cards carry more glanceable signal, and the detail panel gets a quality-of-life batch.
