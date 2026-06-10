@@ -149,6 +149,21 @@ non-status** (same charter as `ToolOutcomeTracker`) and never moves
   status path stays untouched. Ungated: the count is only non-zero when
   detection fires, and the fail-safe on a wording change is to show nothing.
 
+### Loops badge (pendingWakeup / session crons)
+
+`trackers/sessionLoopTracker.ts` — non-status enrichment (BackgroundShellTracker
+charter) answering "finished, or just sleeping?". A `ScheduleWakeup` tool_use
+(input `{delaySeconds, reason, prompt}`) sets a pending wakeup that self-expires
+at fire time and is cleared by any later genuine user-text turn (the fired
+prompt lands as one). `CronCreate`/`CronDelete` maintain a session-cron count
+(job ids paired leniently from create-result text; entries also carry the
+server-side 7-day expiry ceiling). When hooks are live, every `Stop` payload's
+`session_crons` is applied as ground truth (empty clears, populated replaces).
+Registry-confirmed death clears everything (a dead session has no scheduler).
+Surfaced as `SessionSnapshot.pendingWakeupAt/-Reason` and
+`sessionCronCount/-Label`; rendered as quiet `sleeping · Xm` / `loop` chips in
+the card meta row (same `.bg-shell-badge` chrome).
+
 ### Orphan/live annotation (processLive)
 
 `SessionSnapshot.processLive` is the registry tri-state surfaced for display:

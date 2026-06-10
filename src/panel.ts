@@ -1263,6 +1263,22 @@ const RANGE_MS: Record<string, number> = {
       const bgLabel = bgShells + ' shell' + (bgShells === 1 ? '' : 's') + ' running';
       metaHtml += '<span class="bg-shell-badge" title="Background shells launched with run_in_background still running">' + bgLabel + '</span>';
     }
+    // Loops badge — the card is sleeping (ScheduleWakeup pending) or looping
+    // (session crons live). Same quiet running-tinted chip as the shell badge:
+    // a "done" card that will re-invoke itself is not finished, just idle.
+    if (s.pendingWakeupAt && s.pendingWakeupAt > now) {
+      const wakeTitle = 'Wakes at ' + new Date(s.pendingWakeupAt).toLocaleTimeString()
+        + (s.pendingWakeupReason ? ' — ' + s.pendingWakeupReason : '');
+      metaHtml += '<span class="bg-shell-badge" title="' + escapeHtml(wakeTitle) + '">'
+        + 'sleeping · ' + formatAge(s.pendingWakeupAt - now) + '</span>';
+    }
+    const cronN = s.sessionCronCount ?? 0;
+    if (cronN > 0) {
+      const cronTitle = 'Session cron' + (cronN === 1 ? '' : 's') + ' — re-invokes on schedule'
+        + (s.sessionCronLabel ? ': ' + s.sessionCronLabel : '');
+      metaHtml += '<span class="bg-shell-badge" title="' + escapeHtml(cronTitle) + '">'
+        + 'loop' + (cronN > 1 ? ' · ' + cronN : '') + '</span>';
+    }
     // A session's agents can come from workflow run(s) and/or plain Task
     // subagents. Both open the same detail panel (keyed to this session), which
     // surfaces a view switcher across them, so collapse to ONE chip rather than

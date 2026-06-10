@@ -94,6 +94,7 @@ import { makeTurnLifecycleTracker, type TurnLifecycleTracker } from './trackers/
 import { makeToolOutcomeTracker, type ToolOutcomeTracker } from './trackers/toolOutcomeTracker.js';
 import { makeSessionLifecycleTracker, type SessionLifecycleTracker } from './trackers/sessionLifecycleTracker.js';
 import { makeBackgroundShellTracker, type BackgroundShellTracker, BACKGROUND_SHELL_CEILING_MS } from './trackers/backgroundShellTracker.js';
+import { makeSessionLoopTracker, type SessionLoopTracker } from './trackers/sessionLoopTracker.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 // Re-export for backward compatibility (tests import from sessionManager)
 export { computeDemotion, getToolProfile } from './toolProfiles.js';
@@ -212,6 +213,7 @@ export class SessionManager {
   /** SPIKE: outstanding backgrounded Bash shells. Display-only enrichment;
    *  never moves status — `done` still means the turn ended. See BACKLOG.md. */
   private backgroundShellTracker: BackgroundShellTracker;
+  private readonly loopTracker: SessionLoopTracker;
   /** Safety timeout that closes the compacting grace window if no
    *  `compact_boundary` arrives. */
   private compactGraceTimerId?: ReturnType<typeof setTimeout>;
@@ -329,6 +331,7 @@ export class SessionManager {
       onPreCompact: () => { this.openCompactWindow(); },
     }, { hookRouter: this.hookRouter, sessionId });
     this.backgroundShellTracker = makeBackgroundShellTracker();
+    this.loopTracker = makeSessionLoopTracker({ hookRouter: this.hookRouter, sessionId });
     this.state = {
       sessionId,
       slug: sessionId.slice(0, 8),
@@ -374,6 +377,7 @@ export class SessionManager {
     this.turnEndedByStop = false;
     this.earlyToolResults.clear();
     this.backgroundShellTracker.reset();
+    this.loopTracker.clearAll();
     // Dispose all subagent resources before clearing
     this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
@@ -486,6 +490,20 @@ export class SessionManager {
       lastAssistantText: this.lastAssistantText || undefined,
       processLive: this.registryLiveness(),
       trackedFiles: this.trackedFiles.length > 0 ? this.trackedFiles : undefined,
+      ...this.loopSnapshotFields(),
+    };
+  }
+
+  /** Display-only loop/wakeup enrichment (see SessionLoopTracker). */
+  private loopSnapshotFields(): Pick<SessionSnapshot, 'pendingWakeupAt' | 'pendingWakeupReason' | 'sessionCronCount' | 'sessionCronLabel'> {
+    const now = Date.now();
+    const wakeup = this.loopTracker.pendingWakeup(now);
+    const cronCount = this.loopTracker.cronCount(now);
+    return {
+      pendingWakeupAt: wakeup ? wakeup.fireAt : undefined,
+      pendingWakeupReason: wakeup && wakeup.reason ? wakeup.reason : undefined,
+      sessionCronCount: cronCount > 0 ? cronCount : undefined,
+      sessionCronLabel: cronCount > 0 ? this.loopTracker.cronLabels(now).join(', ') : undefined,
     };
   }
 
@@ -635,6 +653,7 @@ export class SessionManager {
     // registry doesn't track, which falls back to the ceiling prune above.
     if (this.isConfirmedDeadByRegistry()) {
       this.backgroundShellTracker.reset();
+      this.loopTracker.clearAll(); // a dead session has no scheduler
     }
     return this.backgroundShellTracker.count() < before;
   }
@@ -755,6 +774,7 @@ export class SessionManager {
     this.clearSessionTimers();
     this.permissionTracker.dispose();
     this.turnLifecycleTracker.dispose();
+    this.loopTracker.dispose();
     this.toolOutcomeTracker.dispose();
     this.sessionLifecycleTracker.dispose();
     this.backgroundShellTracker.dispose();
@@ -903,6 +923,7 @@ export class SessionManager {
           // The record timestamp reflects true launch age and survives reloads.
           const launchedAt = parseTimestamp(record.timestamp).getTime();
           this.backgroundShellTracker.noteToolResult(resultText, launchedAt);
+          this.loopTracker.noteToolResult(block.tool_use_id, resultText);
         }
         const toolName = this.state.activeTools.get(block.tool_use_id);
         if (toolName === undefined) {
@@ -940,7 +961,13 @@ export class SessionManager {
     // carrying tool_result blocks is tool plumbing mid-sequence — zeroing it
     // here killed the permission timer's recency doubling on the very records
     // that establish recency (the stamp set above never survived the method).
-    if (!hadToolResult) { this.lastToolResultAt = 0; }
+    if (!hadToolResult) {
+      this.lastToolResultAt = 0;
+      // A genuine user-text turn after scheduling means the wakeup fired (the
+      // harness re-enqueued the prompt) or the user interrupted — either way
+      // the session is no longer sleeping.
+      this.loopTracker.noteUserTurn(timestamp.getTime());
+    }
     // A user record is a genuine new-turn reopener — release the Stop guard.
     this.turnEndedByStop = false;
     this.setRunning();
@@ -994,6 +1021,12 @@ export class SessionManager {
 
     for (const block of content) {
       if (block.type === 'tool_use' && block.id && block.name) {
+        // Loop/wakeup orchestration is display-only and must observe the call
+        // even when the activeTools guards below skip it (trailing tool of a
+        // Stop-closed turn, out-of-order results).
+        if (block.name === 'ScheduleWakeup' || block.name === 'CronCreate' || block.name === 'CronDelete') {
+          this.loopTracker.noteToolUse(block.name, block.id, block.input, parseTimestamp(record.timestamp).getTime());
+        }
         // Out-of-order JSONL writes: tool_result may have been processed before
         // its tool_use record. Skip tracking to avoid leaking activeTools.
         if (this.earlyToolResults.has(block.id)) {

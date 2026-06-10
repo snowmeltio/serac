@@ -40,6 +40,11 @@ export interface PanelSession {
   /** Files this session has edited (latest file-history-snapshot). Feeds the
    *  same-file collision badge. */
   trackedFiles?: string[];
+  /** Loop/wakeup enrichment (display-only chips; see SessionLoopTracker). */
+  pendingWakeupAt?: number;
+  pendingWakeupReason?: string;
+  sessionCronCount?: number;
+  sessionCronLabel?: string;
   workspaceKey?: string;
   confidence?: PanelStatusConfidence;
   /** CWD of the originating worktree (set for both local and sibling-worktree

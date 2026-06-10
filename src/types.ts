@@ -178,6 +178,15 @@ export interface SessionSnapshot {
    *  session has edited. Feeds the same-file collision badge (two active
    *  sessions touching one file). Capped at 200; absent when none. */
   trackedFiles?: string[];
+  /** Epoch ms a ScheduleWakeup is due to re-invoke the session — the card is
+   *  sleeping, not finished. Absent when none pending / already fired. */
+  pendingWakeupAt?: number;
+  /** The agent's stated wakeup reason (capped). */
+  pendingWakeupReason?: string;
+  /** Count of believed-live session crons (CronCreate / Stop session_crons). */
+  sessionCronCount?: number;
+  /** Display label: the cron expressions, comma-joined, capped. */
+  sessionCronLabel?: string;
 }
 
 export interface SubagentSnapshot {

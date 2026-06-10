@@ -241,3 +241,45 @@ describe('file-history-snapshot → SessionSnapshot.trackedFiles', () => {
     await fs.promises.rm(dir, { recursive: true, force: true });
   });
 });
+
+describe('Loops badge e2e — ScheduleWakeup → sleeping snapshot → fired turn clears', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function rec(type: string, content: object[], at: number): object {
+    return { type, timestamp: new Date(at).toISOString(), message: { content } };
+  }
+
+  it('mirrors the real 048e4bbb capture: input {delaySeconds, reason, prompt}', async () => {
+    const t0 = Date.now() - 10_000;
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'loop-e2e-'));
+    const file = path.join(dir, 's.jsonl');
+    await fs.promises.writeFile(file, [
+      rec('user', [{ type: 'text', text: 'run the loop' }], t0),
+      rec('assistant', [{ type: 'tool_use', id: 'tu-wake', name: 'ScheduleWakeup',
+        input: { delaySeconds: 240, reason: 'Waiting on 3 Wave 3 subagents', prompt: 'Continue robot pull-list execution' } }], t0 + 1000),
+      rec('user', [{ type: 'tool_result', tool_use_id: 'tu-wake',
+        content: [{ type: 'text', text: 'Next wakeup scheduled for 11:56:00 (in 245s).' }] }], t0 + 2000),
+      rec('assistant', [{ type: 'text', text: 'Sleeping until the wave completes.' }], t0 + 3000),
+    ].map(r => JSON.stringify(r)).join('\n') + '\n');
+    const mgr = new SessionManager('loop-sid', file, 'ws');
+    await mgr.update();
+
+    // Turn over (idle done) — the card sleeps, not finishes.
+    await vi.advanceTimersByTimeAsync(6_000);
+    const snap = mgr.getSnapshot();
+    expect(mgr.getStatus()).toBe('done');
+    expect(snap.pendingWakeupAt).toBe(t0 + 1000 + 240_000);
+    expect(snap.pendingWakeupReason).toBe('Waiting on 3 Wave 3 subagents');
+
+    // The harness fires the wakeup → the prompt lands as a genuine user turn.
+    await fs.promises.appendFile(file, JSON.stringify(
+      rec('user', [{ type: 'text', text: 'Continue robot pull-list execution' }], Date.now())) + '\n');
+    await mgr.update();
+    expect(mgr.getSnapshot().pendingWakeupAt).toBeUndefined();
+    expect(mgr.getStatus()).toBe('running');
+
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+});
