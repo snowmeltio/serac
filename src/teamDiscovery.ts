@@ -15,12 +15,19 @@ import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { parseAgentTeamsConfig } from './teamManifest.js';
 import { claudeStateDir } from './paths.js';
+import { isValidSessionId } from './validation.js';
 import type {
   TeamManifest, TeamSnapshot, TeamAgentSnapshot,
   SessionMeta, StatusConfidence, DisplayStatus,
 } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { readSettings, ageGateDaysFor } from './settings.js';
+
+/** A strict identifier used as a single on-disk path component for the inbox
+ *  write path — no traversal, no separators, no leading dot. Stricter than
+ *  isValidMemberName (which only has to be traversal-safe for discovery): the
+ *  write path fails closed on anything outside this allowlist. */
+const SAFE_PATH_COMPONENT = /^[A-Za-z0-9_-]+$/;
 
 /** Read the active team-manifest age gate. Resolves
  *  `serac.discovery.teamsAgeGateDays` when set, else the shared
@@ -104,11 +111,22 @@ export class TeamDiscovery {
     const seenTeamIds = new Set<string>();
 
     for (const entry of entries) {
+      // The directory name becomes the team id and (with `at:` stripped) the
+      // on-disk path component for the inbox write path. isValidSessionId guards
+      // the webview-supplied containerId but never the dir name itself, so guard
+      // it here at the source: a strict identifier, never a traversal candidate.
+      if (!/^[A-Za-z0-9._-]+$/.test(entry) || entry === '.' || entry === '..'
+          || entry.includes('..') || entry.startsWith('.')) {
+        continue;
+      }
       const entryPath = path.join(this.teamsDir, entry);
       let entryStat: fs.Stats;
       try {
-        entryStat = await fs.promises.stat(entryPath);
+        entryStat = await fs.promises.lstat(entryPath);
       } catch { continue; }
+      // Skip a symlinked teams/ entry — a planted symlink must never surface as
+      // a messageable team (defence-in-depth alongside the write-path realpath check).
+      if (entryStat.isSymbolicLink()) { continue; }
 
       let teamId: string;
       let filePath: string;
@@ -134,6 +152,14 @@ export class TeamDiscovery {
       seenTeamIds.add(teamId);
       const lastMtime = this.manifestMtimes.get(teamId) ?? 0;
       if (fstat.mtimeMs === lastMtime && this.manifests.has(teamId)) { continue; }
+
+      // Cap the manifest read — a planted multi-GB config.json would otherwise be
+      // slurped whole on every scan (mirrors the meta.json size cap below). A
+      // real Agent Teams config is a few KB.
+      if (fstat.size > 1024 * 1024) {
+        this.log.warn(`[teams] Manifest exceeds size cap, skipping: ${entry}`);
+        continue;
+      }
 
       let content: string;
       try {
@@ -469,6 +495,7 @@ export class TeamDiscovery {
       const metaPath = path.join(subagentsDir, f);
       let agentType: unknown;
       try {
+        if (fs.statSync(metaPath).size > 64 * 1024) { continue; } // size cap (matches resolveInboxTarget)
         const parsed = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
         agentType = parsed?.agentType;
       } catch {
@@ -488,6 +515,56 @@ export class TeamDiscovery {
     }
 
     return best?.jsonl ?? null;
+  }
+
+  /**
+   * Resolve the inbox write target for an in-process teammate selected in the
+   * detail panel (the subagents source): map the orchestrator session + the
+   * webview's subagent hash to the on-disk team directory and roster member
+   * name. Reads the ONE `agent-<hash>.meta.json` directly (no full-dir scan —
+   * avoids a synchronous enumeration DoS), size-caps the trusted read, and
+   * accepts the member only if its `agentType` is a current roster name; both
+   * the dir and member must be strict path components. Returns null (= refuse)
+   * on any mismatch. The caller still realpath-confines the final path.
+   */
+  resolveInboxTarget(orchestratorSessionId: string, agentId: string): { teamDir: string; member: string } | null {
+    if (!isValidSessionId(orchestratorSessionId) || !isValidSessionId(agentId) || agentId.length > 64) { return null; }
+
+    let teamId: string | null = null;
+    let manifest: TeamManifest | null = null;
+    for (const [id, m] of this.manifests) {
+      if (m.orchestrator.sessionId === orchestratorSessionId) { teamId = id; manifest = m; break; }
+    }
+    if (!teamId || !manifest || !teamId.startsWith('at:')) { return null; }
+    const teamDir = teamId.slice(3);
+    if (!SAFE_PATH_COMPONENT.test(teamDir)) { return null; }
+
+    // hash → member name via the SPECIFIC meta file (agentId is path-safe + bounded).
+    const metaPath = path.join(
+      this.projectsDir, sanitiseWorkspaceKey(manifest.orchestrator.cwd),
+      manifest.orchestrator.sessionId, 'subagents', `agent-${agentId}.meta.json`,
+    );
+    let agentType: unknown;
+    try {
+      if (fs.statSync(metaPath).size > 64 * 1024) { return null; } // cap the trusted meta read
+      const parsed: unknown = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      agentType = (parsed && typeof parsed === 'object') ? (parsed as Record<string, unknown>).agentType : undefined;
+    } catch {
+      return null;
+    }
+
+    const rosterNames = new Set(manifest.agents.map(a => a.name));
+    if (typeof agentType !== 'string' || !rosterNames.has(agentType) || !SAFE_PATH_COMPONENT.test(agentType)) {
+      return null;
+    }
+    return { teamDir, member: agentType };
+  }
+
+  /** The absolute `~/.claude/teams` directory this discovery scans. Exposed so
+   *  the teammate-inbox writer is anchored to the SAME root the scan validated
+   *  (single source of truth for the write-path confinement). */
+  getTeamsDir(): string {
+    return this.teamsDir;
   }
 
   /** Whether a team agent session is currently running. */

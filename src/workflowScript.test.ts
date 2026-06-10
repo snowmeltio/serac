@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { extractWorkflowMeta, extractAgentCalls, matchAgentCall } from './workflowScript.js';
+import { extractWorkflowMeta, extractAgentCalls, matchAgentCall, recoverInterpolatedLabel, _matchStringFieldForTest, type WorkflowAgentCall } from './workflowScript.js';
 
 function loadScript(name: string): string {
   return fs.readFileSync(path.resolve(__dirname, '__fixtures__', 'workflows', 'scripts', name), 'utf8');
@@ -129,6 +129,21 @@ describe('extractAgentCalls', () => {
     expect(call.label).toBeNull();
   });
 
+  it('stays linear on a backslash run with no closing quote (ReDoS regression)', () => {
+    // The old `(?:\\.|(?!\1).)*` body alternation was ambiguous over backslash
+    // runs — each pair doubled the backtracking (exponential; ~10ms at 28,
+    // host-freezing by ~60). The disjoint form must stay flat at any length.
+    // Tested via the private matcher: public callers pre-balance their text,
+    // so the no-close failure path can't be reached through extractAgentCalls.
+    const evil = 'label: `' + '\\'.repeat(5000);
+    const t0 = Date.now();
+    expect(_matchStringFieldForTest(evil, 'label')).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(200);
+    // And the success paths still decode as before.
+    expect(_matchStringFieldForTest("label: 'it\\'s'", 'label')).toBe("it's");
+    expect(_matchStringFieldForTest('label: `audit:${d.key}`', 'label')).toBe('audit:${d.key}');
+  });
+
   it('ignores a phantom agent( written inside a string/template literal', () => {
     // A decoy `agent(...)` embedded in another prompt's text must not register
     // as its own call site (the /\bagent\s*\(/ scan would otherwise match it).
@@ -140,9 +155,9 @@ describe('extractAgentCalls', () => {
 });
 
 describe('matchAgentCall', () => {
-  const calls = [
-    { label: 'review', phase: 'Review', staticSegments: ['Carefully review the authentication module for bugs'] },
-    { label: 'verify', phase: 'Verify', staticSegments: ['Verify the populated list and report any discrepancies'] },
+  const calls: WorkflowAgentCall[] = [
+    { label: 'review', phase: 'Review', staticSegments: ['Carefully review the authentication module for bugs'], promptTemplate: null, labelTemplate: null },
+    { label: 'verify', phase: 'Verify', staticSegments: ['Verify the populated list and report any discrepancies'], promptTemplate: null, labelTemplate: null },
   ];
 
   it('matches the call whose static segment appears in the expanded prompt', () => {
@@ -155,11 +170,72 @@ describe('matchAgentCall', () => {
   });
 
   it('prefers the call with the longest matched segment when several match', () => {
-    const ambiguous = [
-      { label: 'short', phase: 'A', staticSegments: ['shared distinctive prefix'] },
-      { label: 'long', phase: 'B', staticSegments: ['shared distinctive prefix that continues much further'] },
+    const ambiguous: WorkflowAgentCall[] = [
+      { label: 'short', phase: 'A', staticSegments: ['shared distinctive prefix'], promptTemplate: null, labelTemplate: null },
+      { label: 'long', phase: 'B', staticSegments: ['shared distinctive prefix that continues much further'], promptTemplate: null, labelTemplate: null },
     ];
     const prompt = 'x: shared distinctive prefix that continues much further — y';
     expect(matchAgentCall(prompt, ambiguous)!.label).toBe('long');
+  });
+});
+
+describe('extractAgentCalls — template parts for interpolation recovery', () => {
+  it('captures the prompt template parts and an interpolated label template', () => {
+    const src = "agent(`=== YOUR DIMENSION: ${d.key} ===\\n\\nAudit it thoroughly here.`, { label: `audit:${d.key}`, phase: 'Audit' })";
+    const [call] = extractAgentCalls(src);
+    // The label keeps its raw template (resolved later, not at extraction time).
+    expect(call.label).toBe('audit:${d.key}');
+    expect(call.labelTemplate).toEqual({ statics: ['audit:', ''], exprs: ['d.key'] });
+    // The prompt template exposes the same expr, bracketed by static anchors.
+    expect(call.promptTemplate!.exprs).toEqual(['d.key']);
+    expect(call.promptTemplate!.statics[0]).toBe('=== YOUR DIMENSION: ');
+    expect(call.promptTemplate!.statics[1].startsWith(' ===')).toBe(true);
+  });
+
+  it('leaves labelTemplate null for a plain literal label', () => {
+    const [call] = extractAgentCalls("agent('a distinctive plain prompt here', { label: 'review:auth' })");
+    expect(call.label).toBe('review:auth');
+    expect(call.labelTemplate).toBeNull();
+  });
+});
+
+describe('recoverInterpolatedLabel', () => {
+  // Mirrors the real fan-out shape: one agent() call site, distinct ${d.key}
+  // per agent. Build the call once, recover per expanded prompt.
+  const [call] = extractAgentCalls(
+    "agent(`=== YOUR DIMENSION: ${d.key} ===\\n\\nAudit this dimension in depth.`, { label: `audit:${d.key}`, phase: 'Audit' })",
+  );
+
+  it('recovers the per-agent interpolated value from the expanded prompt', () => {
+    const prompt = 'CONTEXT…\n\n=== YOUR DIMENSION: privacy ===\n\nAudit this dimension in depth.';
+    expect(recoverInterpolatedLabel(call, prompt)).toBe('audit:privacy');
+  });
+
+  it('yields distinct labels for distinct fan-out agents from one call site', () => {
+    const mk = (k: string) => `=== YOUR DIMENSION: ${k} ===\n\nAudit this dimension in depth.`;
+    expect(recoverInterpolatedLabel(call, mk('security'))).toBe('audit:security');
+    expect(recoverInterpolatedLabel(call, mk('performance'))).toBe('audit:performance');
+  });
+
+  it('returns null for a plain (non-interpolated) label', () => {
+    const [plain] = extractAgentCalls("agent('a distinctive plain prompt here', { label: 'audit:plan' })");
+    expect(recoverInterpolatedLabel(plain, 'a distinctive plain prompt here')).toBeNull();
+  });
+
+  it('returns null when the static anchors cannot be aligned to the prompt', () => {
+    expect(recoverInterpolatedLabel(call, 'a wholly unrelated prompt with no dimension marker')).toBeNull();
+  });
+
+  it('returns null when the label uses an expr the prompt never exposes', () => {
+    // Label interpolates ${d.name}; the prompt only ever exposes ${d.key}.
+    const [c] = extractAgentCalls(
+      "agent(`=== YOUR DIMENSION: ${d.key} ===\\n\\ndistinctive body text here`, { label: `audit:${d.name}` })",
+    );
+    expect(recoverInterpolatedLabel(c, '=== YOUR DIMENSION: privacy ===\n\ndistinctive body text here')).toBeNull();
+  });
+
+  it('never emits a raw ${…} even when recovery partially fails', () => {
+    const out = recoverInterpolatedLabel(call, 'no anchors at all');
+    expect(out === null || !out.includes('${')).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isValidSessionId, parseWebviewCommand } from './validation.js';
+import { isValidSessionId, parseWebviewCommand, parseTeammateMessageCommand } from './validation.js';
 
 describe('isValidSessionId', () => {
   it('accepts a normal UUID-style session ID', () => {
@@ -226,6 +226,45 @@ describe('isValidSessionId — boundary and traversal cases', () => {
     expect(isValidSessionId('end..')).toBe(false);
     expect(isValidSessionId('mid..dle')).toBe(false);
     expect(isValidSessionId('foo/../bar')).toBe(false);
+  });
+});
+
+describe('parseTeammateMessageCommand', () => {
+  const ok = { type: 'sendTeammateMessage', source: 'subagents', containerId: 'lead-001', agentId: 'deadbeef', text: 'hello' };
+
+  it('accepts a well-formed subagents-source command', () => {
+    expect(parseTeammateMessageCommand(ok)).toEqual({
+      source: 'subagents', containerId: 'lead-001', agentId: 'deadbeef', text: 'hello',
+    });
+  });
+
+  it('rejects a wrong type', () => {
+    expect(parseTeammateMessageCommand({ ...ok, type: 'viewAgent' })).toBeNull();
+  });
+
+  it('pins source to subagents (workflow/team rejected)', () => {
+    expect(parseTeammateMessageCommand({ ...ok, source: 'workflow' })).toBeNull();
+    expect(parseTeammateMessageCommand({ ...ok, source: 'team' })).toBeNull();
+    expect(parseTeammateMessageCommand({ ...ok, source: undefined })).toBeNull();
+  });
+
+  it('rejects traversal / over-long ids', () => {
+    expect(parseTeammateMessageCommand({ ...ok, containerId: '../etc' })).toBeNull();
+    expect(parseTeammateMessageCommand({ ...ok, agentId: 'a/b' })).toBeNull();
+    expect(parseTeammateMessageCommand({ ...ok, agentId: 'a'.repeat(65) })).toBeNull();
+    expect(parseTeammateMessageCommand({ ...ok, containerId: 'a'.repeat(65) })).toBeNull();
+  });
+
+  it('rejects empty or over-long text', () => {
+    expect(parseTeammateMessageCommand({ ...ok, text: '' })).toBeNull();
+    expect(parseTeammateMessageCommand({ ...ok, text: 'a'.repeat(8001) })).toBeNull();
+    expect(parseTeammateMessageCommand({ ...ok, text: 123 })).toBeNull();
+  });
+
+  it('never surfaces a webview-supplied `from`', () => {
+    const withFrom = parseTeammateMessageCommand({ ...ok, from: 'team-lead' });
+    expect(withFrom).not.toBeNull();
+    expect(withFrom as object).not.toHaveProperty('from');
   });
 });
 

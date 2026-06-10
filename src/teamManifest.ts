@@ -26,10 +26,15 @@ function isValidCwd(value: unknown): value is string {
 
 // ── Agent Teams config parser ────────────────────────────────────────
 
-/** Validate an Agent Teams member name (non-empty, no path-traversal chars). */
+/** Validate an Agent Teams member name. A member name is later used as a path
+ *  component when resolving its inbox file (`inboxes/<member>.json`), so it must
+ *  not be a path-traversal candidate: no separators/null, and never `.`/`..`,
+ *  a `..` substring, or a leading dot (hidden file). This is the parse-time half
+ *  of the inbox-path confinement (the write path also realpath-confines). */
 function isValidMemberName(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 200) { return false; }
   if (value.includes('/') || value.includes('\\') || value.includes('\0')) { return false; }
+  if (value === '.' || value === '..' || value.includes('..') || value.startsWith('.')) { return false; }
   return true;
 }
 

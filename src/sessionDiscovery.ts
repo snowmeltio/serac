@@ -767,6 +767,18 @@ export class SessionDiscovery {
     return this.teamDiscovery.isSessionRunning(sessionId);
   }
 
+  /** The `~/.claude/teams` root this discovery scans (for the inbox writer). */
+  getTeamsDir(): string {
+    return this.teamDiscovery.getTeamsDir();
+  }
+
+  /** Resolve the inbox write target for an in-process teammate (subagents
+   *  source): map orchestrator session + subagent hash → { teamDir, member },
+   *  roster-validated, or null to refuse. For teammate messaging only. */
+  resolveInboxTarget(orchestratorSessionId: string, agentId: string): { teamDir: string; member: string } | null {
+    return this.teamDiscovery.resolveInboxTarget(orchestratorSessionId, agentId);
+  }
+
   /** Resolve a plain Task subagent's transcript JSONL for the detail panel
    *  reader. Subagents live at <sessionDir>/subagents/agent-<agentId>.jsonl,
    *  where sessionDir is the session's JSONL path with `.jsonl` stripped. */

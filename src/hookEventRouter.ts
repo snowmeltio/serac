@@ -1,8 +1,9 @@
 /**
  * HookEventRouter — fan-out + buffer-with-TTL primitive for Claude Code hook
- * events. Stub: no production caller wires this yet — it sits as a singleton
- * in extension.ts so the future hook-wiring PR can attach an inbound forwarder
- * (Unix socket / HTTP) on one side and tracker subscribers on the other.
+ * events. Wired in production: `extension.ts` attaches the inbound forwarder
+ * via `startHookIngress` (Unix socket + leader election, fed by
+ * `bin/serac-hook-forward.cjs`) on one side, and `SessionDiscovery` injects
+ * the router into each `SessionManager` so trackers subscribe on the other.
  *
  * Design (per HOOK-MONITORING.md):
  *   - Payloads typed `unknown` — Claude Code's hook schema is un-versioned;

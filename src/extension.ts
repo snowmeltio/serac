@@ -19,6 +19,7 @@ import { HookEventRouter } from './hookEventRouter.js';
 import { startHookIngress, type IngressHandle } from './hookIngress/index.js';
 import { applyForwarderPatch, removeForwarderPatch } from './hookSettings/patcher.js';
 import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
+import { appendInboxMessage } from './teammateInbox.js';
 
 export function activate(context: vscode.ExtensionContext): SeracExports {
   // Footer slot registry must be created up-front: companions resolve
@@ -233,6 +234,18 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         ),
       );
     },
+    // Teammate messaging (experimental). Re-read on every send; the webview's
+    // copy is display-only. operatorName is synthesized here, never from the
+    // webview. The writer is anchored to discovery's validated teams root.
+    getMessagingSettings: () => {
+      const ex = readSettings().experimental;
+      return { enabled: ex.teammateMessaging, operatorName: ex.operatorName };
+    },
+    resolveInboxTarget: (orchestratorSessionId: string, agentId: string) =>
+      discovery.resolveInboxTarget(orchestratorSessionId, agentId),
+    appendTeammateMessage: (teamDir: string, member: string, from: string, text: string) =>
+      appendInboxMessage({ teamsDir: discovery.getTeamsDir(), teamDir, member, from, text }),
+    logMessaging: (line: string) => log.info(line),
   });
   context.subscriptions.push({ dispose: () => detailPanel.dispose() });
   panelProvider.setOpenDetailHandler(
@@ -647,6 +660,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       seracSettings = next;
       applyConfidenceThresholds(next);
       panelProvider.sendSettings(next);
+      detailPanel.sendSettings(); // refresh the composer gate (experimental.*)
       if (intervalChanged) { rebuildRefreshTimer(next.refresh.intervalSeconds); }
       sendUpdate();
     }),

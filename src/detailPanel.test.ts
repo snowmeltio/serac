@@ -281,7 +281,7 @@ describe('DetailPanel', () => {
       expect(h.deps.resolveAgentFile).toHaveBeenCalledWith('workflow', 'sess-1', 'wf_abc', 'a1');
       const msg = h.posted().find(m => m.type === 'agentTranscript');
       expect(msg).toBeTruthy();
-      expect(msg.key).toBe('wf_abc|a1');
+      expect(msg.key).toBe('workflow:sess-1|wf_abc|a1');
       expect(msg.entries).toHaveLength(1);
     });
 
@@ -292,7 +292,7 @@ describe('DetailPanel', () => {
       await new Promise(r => setTimeout(r, 0));
       const msg = h.posted().find(m => m.type === 'agentTranscriptError');
       expect(msg).toBeTruthy();
-      expect(msg.key).toBe('|sa1');
+      expect(msg.key).toBe('subagents:sess-1||sa1');
     });
 
     it('posts agentTranscriptError when parseTranscript throws', async () => {
@@ -341,6 +341,126 @@ describe('DetailPanel', () => {
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'openConversation', sessionId: '../../etc/passwd' });
       expect(h.deps.openConversation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('sendTeammateMessage handler (the only write into ~/.claude/)', () => {
+    /** Wire the messaging deps with sensible defaults; override per-test. */
+    function messagingSetup(over: Partial<DetailPanelDeps> = {}) {
+      const append = vi.fn(async () => { /* ok */ });
+      const resolve = vi.fn(() => ({ teamDir: 'my-team', member: 'defender' }));
+      const getSettings = vi.fn(() => ({ enabled: true, operatorName: 'murray' }));
+      const logMessaging = vi.fn();
+      const h = setup({
+        getMessagingSettings: getSettings,
+        resolveInboxTarget: resolve,
+        appendTeammateMessage: append,
+        logMessaging,
+        ...over,
+      });
+      return { h, append, resolve, getSettings, logMessaging };
+    }
+    const VALID = { type: 'sendTeammateMessage', source: 'subagents', containerId: 'lead-001', agentId: 'deadbeef', text: 'ping' };
+    const reply = (h: Harness) => h.posted().find(m => m.type === 'teammateMessageSent');
+    const settle = () => new Promise(r => setTimeout(r, 0));
+
+    it('writes and replies ok on a valid send', async () => {
+      const { h, append } = messagingSetup();
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(append).toHaveBeenCalledWith('my-team', 'defender', 'murray', 'ping');
+      expect(reply(h)).toMatchObject({ type: 'teammateMessageSent', ok: true });
+    });
+
+    it('refuses (and never writes) when the flag is off — re-checked server-side', async () => {
+      const { h, append } = messagingSetup({ getMessagingSettings: vi.fn(() => ({ enabled: false, operatorName: 'murray' })) });
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(append).not.toHaveBeenCalled();
+      expect(reply(h)).toMatchObject({ ok: false });
+    });
+
+    it('synthesizes `from` from settings, ignoring a webview-supplied from', async () => {
+      const { h, append } = messagingSetup();
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage({ ...VALID, from: 'team-lead' });
+      await settle();
+      expect(append).toHaveBeenCalledWith('my-team', 'defender', 'murray', 'ping');
+    });
+
+    it('rejects an invalid command (wrong source) without writing', async () => {
+      const { h, append } = messagingSetup();
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage({ ...VALID, source: 'workflow' });
+      await settle();
+      expect(append).not.toHaveBeenCalled();
+      expect(reply(h)).toMatchObject({ ok: false });
+    });
+
+    it('rejects an invalid operatorName without writing', async () => {
+      const { h, append } = messagingSetup({ getMessagingSettings: vi.fn(() => ({ enabled: true, operatorName: 'bad name!' })) });
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(append).not.toHaveBeenCalled();
+      expect(reply(h)).toMatchObject({ ok: false });
+    });
+
+    it('rejects an over-long operatorName without writing', async () => {
+      const { h, append } = messagingSetup({ getMessagingSettings: vi.fn(() => ({ enabled: true, operatorName: 'a'.repeat(101) })) });
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(append).not.toHaveBeenCalled();
+      expect(reply(h)).toMatchObject({ ok: false });
+    });
+
+    it('refuses when the target cannot be resolved', async () => {
+      const { h, append } = messagingSetup({ resolveInboxTarget: vi.fn(() => null) });
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(append).not.toHaveBeenCalled();
+      expect(reply(h)).toMatchObject({ ok: false });
+    });
+
+    it('surfaces a write error in-webview and logs metadata only (never the message text)', async () => {
+      const { h, logMessaging } = messagingSetup({ appendTeammateMessage: vi.fn(async () => { throw new Error('inbox file is a symlink'); }) });
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage({ ...VALID, text: 'SECRET-token-xyz' });
+      await settle();
+      expect(reply(h)).toMatchObject({ ok: false, error: 'inbox file is a symlink' });
+      // No toast (focus theft); and no log line carries the message body.
+      expect(window.showErrorMessage).not.toHaveBeenCalled();
+      for (const call of logMessaging.mock.calls) {
+        expect(String(call[0])).not.toContain('SECRET-token-xyz');
+      }
+    });
+
+    it('is inert when the messaging deps are not wired', async () => {
+      const h = setup(); // no messaging deps
+      h.panel.show('subagents', 'sess-1', 'sess-1');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(reply(h)).toMatchObject({ ok: false });
+    });
+  });
+
+  describe('sendSettings', () => {
+    it('posts the experimental settings to the webview on show', () => {
+      const h = setup({ getMessagingSettings: vi.fn(() => ({ enabled: true, operatorName: 'murray' })) });
+      h.panel.show('subagents', 'sess-1', 'sess-1');
+      const msg = h.posted().find(m => m.type === 'settings');
+      expect(msg).toMatchObject({ type: 'settings', experimental: { teammateMessaging: true, operatorName: 'murray' } });
+    });
+
+    it('reports the feature disabled when no deps are wired', () => {
+      const h = setup();
+      h.panel.show('subagents', 'sess-1', 'sess-1');
+      const msg = h.posted().find(m => m.type === 'settings');
+      expect(msg).toMatchObject({ experimental: { teammateMessaging: false } });
     });
   });
 

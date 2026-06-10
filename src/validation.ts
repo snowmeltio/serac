@@ -31,6 +31,39 @@ function isValidCwd(p: unknown): p is string {
   return true;
 }
 
+/**
+ * Strict validator for the detail panel's `sendTeammateMessage` command.
+ *
+ * Teammate messaging is the extension's ONLY write into `~/.claude/`, so this is
+ * deliberately stricter than the other (inline) detail-panel checks and lives
+ * here — central and unit-testable — rather than inline in the handler:
+ *  - `source` is pinned to `'subagents'` (the feature targets in-process
+ *    teammates only, which render through the subagents source);
+ *  - both ids must pass the path-traversal guard AND a tight 64-char cap;
+ *  - `text` is a bounded string (the handler re-normalises + charset-checks it).
+ *
+ * It NEVER reads `from`/operatorName from the webview — the host synthesizes the
+ * sender label from settings, so a hostile webview cannot spoof the sender.
+ */
+export interface TeammateMessageCommand {
+  source: 'subagents';
+  containerId: string;
+  agentId: string;
+  text: string;
+}
+
+export function parseTeammateMessageCommand(raw: unknown): TeammateMessageCommand | null {
+  if (!raw || typeof raw !== 'object') { return null; }
+  const msg = raw as Record<string, unknown>;
+  if (msg.type !== 'sendTeammateMessage') { return null; }
+  // Pinned source — exact, not the looser enum check the other commands use.
+  if (msg.source !== 'subagents') { return null; }
+  if (!isValidSessionId(msg.containerId) || msg.containerId.length > 64) { return null; }
+  if (!isValidSessionId(msg.agentId) || msg.agentId.length > 64) { return null; }
+  if (typeof msg.text !== 'string' || msg.text.length < 1 || msg.text.length > 8000) { return null; }
+  return { source: 'subagents', containerId: msg.containerId, agentId: msg.agentId, text: msg.text };
+}
+
 /** Validate a raw webview message into a typed WebviewCommand, or return null */
 export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
   if (!raw || typeof raw !== 'object') { return null; }

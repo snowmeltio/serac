@@ -64,6 +64,15 @@ export interface SeracSettings {
   cleanup: {
     confirmRequired: boolean;
   };
+  experimental: {
+    /** Master gate for direct teammate messaging (write into a member's inbox).
+     *  Default off — Serac's only write path into `~/.claude/`; re-checked
+     *  server-side on every send, never trusted from the webview. */
+    teammateMessaging: boolean;
+    /** The honest sender label written as the inbox entry's `from`. Synthesized
+     *  server-side (never accepted from the webview) and validated. */
+    operatorName: string;
+  };
 }
 
 /** Defaults that match today's hardcoded values. Single source of truth for
@@ -93,6 +102,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
   usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
   animations: { enabled: true },
   cleanup: { confirmRequired: true },
+  experimental: { teammateMessaging: false, operatorName: 'operator' },
 };
 
 /** Read the current `serac.*` configuration into a typed snapshot.
@@ -147,6 +157,10 @@ export function readSettings(): SeracSettings {
     },
     cleanup: {
       confirmRequired: cfg.get<boolean>('cleanup.confirmRequired', d.cleanup.confirmRequired),
+    },
+    experimental: {
+      teammateMessaging: cfg.get<boolean>('experimental.teammateMessaging', d.experimental.teammateMessaging),
+      operatorName: cfg.get<string>('experimental.operatorName', d.experimental.operatorName),
     },
   };
 }

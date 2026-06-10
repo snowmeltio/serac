@@ -5,7 +5,7 @@ import type {
   SessionSnapshot, TeamSnapshot, WorkflowSnapshot,
 } from './types.js';
 import { parseTranscript } from './transcriptRenderer.js';
-import { isValidSessionId } from './validation.js';
+import { isValidSessionId, parseTeammateMessageCommand } from './validation.js';
 
 /**
  * The detail view: a single editor-area webview (ViewColumn.Beside) laid out as
@@ -34,6 +34,26 @@ export interface DetailPanelDeps {
   resolveAgentFile: (source: DetailSource, containerId: string, groupKey: string, agentId: string) => string | null;
   /** Open the invoking conversation for a session (companion editor). */
   openConversation: (sessionId: string) => void;
+
+  // ── Teammate messaging (experimental; all optional) ──────────────────
+  // The detail panel is the ONLY place Serac writes into ~/.claude/. These deps
+  // are wired only when the feature is built into the host; absent (e.g. in
+  // unit tests) the composer is reported disabled and no write path is reachable.
+
+  /** Re-read the teammate-messaging settings. Called server-side on EVERY send
+   *  (and to gate the composer) — a webview-cached flag is never trusted. */
+  getMessagingSettings?: () => { enabled: boolean; operatorName: string };
+  /** Map (orchestrator session, in-process subagent hash) → inbox target, or
+   *  null to refuse. Resolves the member by roster server-side; the webview
+   *  never names a file. */
+  resolveInboxTarget?: (orchestratorSessionId: string, agentId: string) => { teamDir: string; member: string } | null;
+  /** Append a message to the resolved teammate's inbox (atomic, queued, confined,
+   *  schema-guarded). Rejects on any refusal; the reason is safe to surface
+   *  (carries no message content). */
+  appendTeammateMessage?: (teamDir: string, member: string, from: string, text: string) => Promise<void>;
+  /** Structured log sink for write-path metadata. NEVER receives message content
+   *  (the OutputChannel persists to disk; a message could carry a pasted secret). */
+  logMessaging?: (line: string) => void;
 }
 
 export class DetailPanel {
@@ -98,8 +118,25 @@ export class DetailPanel {
       // keeps the panel where it already is.
       this.panel.reveal(this.panel.viewColumn);
     }
+    // Push the current messaging settings so the webview can gate the composer
+    // (also re-pushed on settings change via the public sendSettings()).
+    this.sendSettings();
     // Opening/revealing must always render (the user just asked for it).
     this.postRender(true);
+  }
+
+  /** Push the current teammate-messaging settings to the webview (composer gate
+   *  + disclosure label). Safe no-op when the panel is closed or the feature
+   *  deps aren't wired. Call on panel open and whenever `serac.experimental.*`
+   *  changes — the webview's flag is display-only; every send is re-checked
+   *  server-side regardless. */
+  sendSettings(): void {
+    if (!this.panel) { return; }
+    const s = this.deps.getMessagingSettings?.() ?? { enabled: false, operatorName: 'operator' };
+    void this.panel.webview.postMessage({
+      type: 'settings',
+      experimental: { teammateMessaging: s.enabled, operatorName: s.operatorName },
+    });
   }
 
   /** Re-push if open (from the host's update tick). Deduped: an unchanged model
@@ -296,7 +333,16 @@ export class DetailPanel {
     // teammates — frame them as such: a teammate badge per agent, a "Teammates"
     // label, and the team name on the model for the header.
     const team = this.teamFor(sessionId);
-    const agents = team ? subs.agents.map(a => ({ ...a, teammate: true })) : subs.agents;
+    // Only roster-matched subagents are teammates: a team lead can also spawn
+    // ordinary Task subagents (Explore, general-purpose, …) whose inbox sends
+    // could never resolve — those must not get a composer or a team badge.
+    // Membership is keyed the same way resolveInboxTarget resolves it: the
+    // on-disk meta's agentType equals the member name.
+    const roster = new Set((team?.agents ?? []).map(a => a.name));
+    const typeById = new Map(this.deps.listSubagents(sessionId).map(d => [d.agentId, d.agentType]));
+    const agents = team
+      ? subs.agents.map(a => ({ ...a, teammate: roster.has(typeById.get(a.agentId) ?? '') }))
+      : subs.agents;
     const noun = team ? 'teammate' : 'subagent';
     const metricsBits = [agents.length + ' ' + noun + (agents.length === 1 ? '' : 's')];
     if (running > 0) { metricsBits.push(running + ' running'); }
@@ -370,6 +416,69 @@ export class DetailPanel {
       this.postRender(true);
     } else if (msg.type === 'openConversation' && isValidSessionId(msg.sessionId)) {
       this.deps.openConversation(msg.sessionId);
+    } else if (msg.type === 'sendTeammateMessage') {
+      await this.handleSendTeammateMessage(raw);
+    }
+  }
+
+  /**
+   * Handle the composer's `sendTeammateMessage`. This is the single entry to
+   * Serac's only write into `~/.claude/`, so it fails closed at every step and
+   * surfaces errors IN-WEBVIEW ONLY (never a toast — that would steal focus).
+   * Order is deliberate: re-check the flag BEFORE any parsing or I/O.
+   */
+  private async handleSendTeammateMessage(raw: unknown): Promise<void> {
+    const panel = this.panel;
+    if (!panel) { return; }
+    const log = this.deps.logMessaging ?? (() => { /* no sink wired */ });
+    const reply = (ok: boolean, error?: string): void => {
+      if (this.panel !== panel) { return; } // disposed/replaced mid-flight
+      void panel.webview.postMessage({ type: 'teammateMessageSent', ok, error });
+    };
+
+    // 1. Re-check the master flag server-side, first, before touching anything.
+    const settings = this.deps.getMessagingSettings?.();
+    if (!settings || !settings.enabled || !this.deps.resolveInboxTarget || !this.deps.appendTeammateMessage) {
+      log('[messaging] refused: feature disabled');
+      reply(false, 'Teammate messaging is disabled.');
+      return;
+    }
+
+    // 2. Strict central validation. Pins source==='subagents', path-safe + capped
+    //    ids, bounded text — and NEVER reads a webview-supplied `from`.
+    const cmd = parseTeammateMessageCommand(raw);
+    if (!cmd) {
+      log('[messaging] refused: invalid command');
+      reply(false, 'Message rejected (invalid request).');
+      return;
+    }
+
+    // 3. Synthesize the sender label server-side and validate it.
+    const from = settings.operatorName;
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(from)) {
+      log('[messaging] refused: invalid operatorName (len=' + (typeof from === 'string' ? from.length : -1) + ')');
+      reply(false, 'Operator name is invalid — check serac.experimental.operatorName (letters, digits, - or _).');
+      return;
+    }
+
+    // 4. Resolve the inbox target by roster, server-side. The webview names a
+    //    subagent hash; the host maps it to a current roster member or refuses.
+    const target = this.deps.resolveInboxTarget(cmd.containerId, cmd.agentId);
+    if (!target) {
+      log('[messaging] refused: unresolved target (container=' + cmd.containerId.slice(0, 8) + ' agent=' + cmd.agentId.slice(0, 8) + ')');
+      reply(false, 'Could not resolve this teammate (it may have finished).');
+      return;
+    }
+
+    // 5. Write. Metadata-only logging — never the message text.
+    try {
+      await this.deps.appendTeammateMessage(target.teamDir, target.member, from, cmd.text);
+      log('[messaging] sent: team=' + target.teamDir + ' member=' + target.member + ' from=' + from + ' chars=' + cmd.text.length);
+      reply(true);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'write failed';
+      log('[messaging] failed: team=' + target.teamDir + ' member=' + target.member + ' chars=' + cmd.text.length + ' reason=' + reason);
+      reply(false, reason);
     }
   }
 
@@ -380,7 +489,9 @@ export class DetailPanel {
     // throws; posting to a reused one bleeds a stale transcript into the new view.
     const panel = this.panel;
     if (!panel) { return; }
-    const key = groupKey + '|' + agentId;
+    // Owner-prefixed so a response in flight across a drill-in switch can never
+    // collide with the new container's keys. Mirrors detailView's tkey().
+    const key = source + ':' + containerId + '|' + groupKey + '|' + agentId;
     const file = this.deps.resolveAgentFile(source, containerId, groupKey, agentId);
     if (!file) {
       void panel.webview.postMessage({ type: 'agentTranscriptError', key, message: 'Transcript not available yet.' });
@@ -415,6 +526,21 @@ export class DetailPanel {
 <body>
   <div id="wf-root">
     <div class="wf-empty">Loading…</div>
+  </div>
+  <!-- The composer lives OUTSIDE #wf-root: render() replaces #wf-root's innerHTML
+       every tick, which would wipe a textarea mid-typing. As a sibling it
+       persists; the webview only toggles its [hidden] + .value. -->
+  <div id="wf-composer" hidden>
+    <div class="wf-composer-disclosure">Direct message — bypasses the lead. No delivery guarantee; resend if unconfirmed.</div>
+    <div class="wf-composer-row">
+      <textarea id="wf-composer-input" rows="2" maxlength="8000"
+        placeholder="Message this teammate directly…" aria-label="Message this teammate"></textarea>
+      <button id="wf-composer-send" type="button">Send</button>
+    </div>
+    <div class="wf-composer-foot">
+      <span id="wf-composer-status" class="wf-composer-status" role="status" aria-live="polite"></span>
+      <span id="wf-composer-count" class="wf-composer-count"></span>
+    </div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

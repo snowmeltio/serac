@@ -1,0 +1,54 @@
+# v1.12 plan — agreed 2026-06-10 (Murray + Fable)
+
+Source: multi-agent audit (7 lenses, adversarially verified, 38 confirmed findings) + 4 ideation lenses + value-prop review. Delete this file at release; residuals go to BACKLOG.md.
+
+## Track A — Harden the uncommitted 2026-06-09 batch, then commit ⟵ IN PROGRESS
+
+- [ ] ReDoS in `workflowScript.ts:matchStringField` — ambiguous `(?:\\.|(?!\1).)*` alternation, empirically exponential (10ms @ 28 backslashes, ×2 per +2). Replace with unambiguous pattern or bounded scan.
+- [ ] `serac.experimental.teammateMessaging` + `operatorName` → `"scope": "application"` (untrusted workspace can currently flip the gate / spoof operator name).
+- [ ] Scroll intent defeated: agent select lands at bottom (detailView.ts — cache-hit second render misclassifies as same-agent-at-bottom).
+- [ ] Stale transcript cache across container switch + no in-flight sequencing on the 2.5s live refresh (cache key lacks source/container; out-of-order responses can stick).
+- [ ] `isAgentChange` compares agentId only — same-named agents across teams skip scroll reset (key by group too).
+- [ ] Composer: Cmd+Enter bypasses in-flight guard; draft/pendingSendText survive agent switch (cross-teammate leak); plain Task subagents of a team lead get a dead composer (`teammate: true` blanket).
+- [ ] Inbox lows: U+061C (ALM) missing from UNSAFE_CHARS; `readExistingEntries` uncapped read; ring-buffer cap counts UTF-16 units not bytes.
+- [ ] Docs drift: hookEventRouter stale "stub" header; CLAUDE.md "panel.js vanilla JS" (actually src/panel.ts TS); BACKLOG transcript-timestamps contradiction; ARCHITECTURE settings-invariant claim vs serac.hooks.* direct reads; permission-exempt list missing TeamCreate/TeamDelete/NotebookEdit, slow list missing Monitor.
+- [ ] Stale memory: hook forwarder is WIRED (extension.ts startHookIngress + src/hookIngress/) — update project memory + BACKLOG hook item.
+- [ ] Full test suite green → commit batch.
+
+## Track B — Status correctness
+
+- [ ] Registry death-gate latch is in-memory only → inert after every reload (sessionManager.ts ~649). Persist seen-live or rework semantics.
+- [ ] `isActive()` goes false when the only registered process dies → gate structurally off in single-session case (sessionDiscovery.ts ~927).
+- [ ] Permission recency-doubling dead code: processUserRecord zeroes lastToolResultAt in the same call that sets it (sessionManager.ts ~877).
+- [ ] Subagent/sidechain records set parent `seenOutputInTurn` → kills 30s extended-thinking grace, premature done (sessionManager.ts ~1303).
+- [ ] Silent-subagent scan can claim a sibling's transcript — dedup ignores relay-known/completed agentIds (subagentTailerManager.ts ~181).
+- [ ] enqueue replay stamps wall-clock enqueuedAt, not record timestamp (sessionManager.ts ~1089).
+- [ ] PermissionRequest positive-path tests with realistic payloads (fixture is pre-session_crons; refresh shape per CC ≥2.1.159). Then: slow-tool delay 15s→6s when hook ingress is live (hook = ground truth; timer = backstop).
+
+## Track C — Freshness parity (closes the 2026-06-04 backlog item)
+
+- [ ] Inject registry livenessProbe into foreign/sibling/team SessionManagers (currently primary-only).
+- [ ] Run `sweepBackgroundShells` for dormant sibling/foreign sessions.
+- [ ] Sibling-worktree waiting sessions must bump the needs-input badge.
+- [ ] Dismissed foreign sessions leak into waiting/running strips + badge (filter metaCache in get*Snapshots).
+- [ ] Adaptive fast-poll keyed to local+teams+workflows only — include active foreign/sibling.
+- [ ] (opt) Foreign/sibling scan cadence: active bypass for the 10-cycle counter; align confidence capping.
+
+## Track D — Workflow viewer v2
+
+- [ ] Never display a journal key: unmatched live agents → `Agent · <shortId>` + promptPreview fill.
+- [ ] Resolve identifier-bound prompts statically (canonical `pipeline(DIMS, d => agent(d.prompt))` pattern): extract `prompt:` templates from top-level const arrays, associate via pipeline/map extent; resolve fn-returned template for `agent(fn(x))`.
+- [ ] Live tokens/toolCalls from agent JSONLs (currently hardcoded 0).
+- [ ] recoverInterpolatedLabel first-occurrence anchor bug.
+- [ ] Failure roll-up in detail header + failed-first nav ordering.
+- [ ] Waiting workflow agent tints the card detail chip (parity with subagents).
+- [ ] Team roster drill-in unreachable since v1.11 card folding — restore via detail chip with source 'team'.
+
+## Features
+
+- [ ] **Glance pack:** waiting-age on the Waiting pill; done-with-errors badge (is_error tool_results); git branch pill (JSONL `gitBranch`, read nowhere today); last_assistant_message as done-card preview (Stop hook already carries it).
+- [ ] **Model-tinted pills (Murray 2026-06-10):** tint the model pill per model — separate colour register from status colours, unique + consistent per model, hash-derived hue (stable across sessions/builds).
+
+## Deferred to BACKLOG (not in this cycle)
+
+Loops/wakeup badge (groundwork captured: /loop interval = CronCreate not ScheduleWakeup; Stop payload carries session_crons + background_tasks → also future shell-tracker hardening). Cost/quota pack (per-session spend, top burners). Plans/todos surfacing. Inbox read-side thread + pulse. MCP needs-auth chip. IDE lock attribution. Detail-panel UX batch (streaming dedup, tooltip roll-up, state persistence, relative-time tick, flex layout). Test-gap items not covered above (bg-shell completion replay e2e, truncation-sans-PreCompact, workspaceOpener tests, extension.ts wiring assertions).

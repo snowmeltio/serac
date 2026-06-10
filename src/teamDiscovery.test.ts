@@ -210,6 +210,22 @@ describe('TeamDiscovery', () => {
       td.dispose();
     });
 
+    it('skips a manifest that exceeds the size cap (resource-exhaustion guard)', async () => {
+      const cfg = teamConfig({ members: [{ name: 'worker', isActive: true }] }) as Record<string, unknown>;
+      cfg.description = 'x'.repeat(1024 * 1024 + 16); // push config.json past the 1MB cap
+      writeAgentTeamsConfig('big-team', cfg);
+      createJsonl('lead-001', PROJECT_CWD);
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      // The oversized manifest is never read/parsed → no manager, no snapshot.
+      expect(mockManagers.size).toBe(0);
+      expect(td.getTeamSnapshots(emptyMeta()).some(t => t.teamId === 'at:big-team')).toBe(false);
+      expect(log.warn).toHaveBeenCalled();
+      td.dispose();
+    });
+
     it('skips flat (non-directory) files in the teams dir', async () => {
       // Flat .json files were the removed Cornice sidecars; they are now ignored.
       fs.writeFileSync(path.join(teamsDir, 'leftover.json'), JSON.stringify(teamConfig()));
@@ -772,6 +788,23 @@ describe('TeamDiscovery', () => {
       td.dispose();
     });
 
+    it('skips an oversized meta.json when resolving a member transcript', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      // An on-roster agentType, but the meta file exceeds the 64KB cap → skipped,
+      // leaving no resolvable transcript (resource-exhaustion guard).
+      const subagentsDir = path.join(projectsDir, PROJECT_CWD.replace(/[^a-zA-Z0-9]/g, '-'), 'lead-001', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-big.meta.json'), JSON.stringify({ agentType: 'defender', pad: 'x'.repeat(70 * 1024) }));
+      fs.writeFileSync(path.join(subagentsDir, 'agent-big.jsonl'), '');
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.getTeamAgentFilePath('at:my-team', 'defender')).toBeNull();
+      td.dispose();
+    });
+
     it('returns null for an unknown team or member', async () => {
       writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
       createJsonl('lead-001', PROJECT_CWD);
@@ -781,6 +814,86 @@ describe('TeamDiscovery', () => {
 
       expect(td.getTeamAgentFilePath('no-such-team', 'worker')).toBeNull();
       expect(td.getTeamAgentFilePath('at:my-team', 'no-such-member')).toBeNull();
+      td.dispose();
+    });
+  });
+
+  describe('resolveInboxTarget()', () => {
+    /** Write only the meta.json for an in-process member (no sibling .jsonl is
+     *  needed — resolveInboxTarget reads the meta alone). Returns the meta path. */
+    function writeLeadMeta(leadSessionId: string, leadCwd: string, hash: string, body: unknown): string {
+      const workspaceKey = leadCwd.replace(/[^a-zA-Z0-9]/g, '-');
+      const subagentsDir = path.join(projectsDir, workspaceKey, leadSessionId, 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      const metaPath = path.join(subagentsDir, `agent-${hash}.meta.json`);
+      fs.writeFileSync(metaPath, typeof body === 'string' ? body : JSON.stringify(body));
+      return metaPath;
+    }
+
+    it('maps orchestrator session + subagent hash to { teamDir, member } via the roster', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      writeLeadMeta('lead-001', PROJECT_CWD, 'deadbeef', { agentType: 'defender' });
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.resolveInboxTarget('lead-001', 'deadbeef')).toEqual({ teamDir: 'my-team', member: 'defender' });
+      td.dispose();
+    });
+
+    it('refuses an off-roster agentType (no plain-Task-subagent collision)', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      writeLeadMeta('lead-001', PROJECT_CWD, 'cafe01', { agentType: 'Explore' });
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.resolveInboxTarget('lead-001', 'cafe01')).toBeNull();
+      td.dispose();
+    });
+
+    it('refuses when the meta.json is missing, unreadable, or oversized', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      // Missing meta entirely.
+      const td = makeDiscovery();
+      await td.scan();
+      expect(td.resolveInboxTarget('lead-001', 'nometa')).toBeNull();
+
+      // Oversized (> 64 KB) meta — refused even though agentType is on-roster.
+      writeLeadMeta('lead-001', PROJECT_CWD, 'bigmeta',
+        JSON.stringify({ agentType: 'defender', pad: 'x'.repeat(70 * 1024) }));
+      expect(td.resolveInboxTarget('lead-001', 'bigmeta')).toBeNull();
+
+      // Corrupt JSON.
+      writeLeadMeta('lead-001', PROJECT_CWD, 'badjson', '{ not json');
+      expect(td.resolveInboxTarget('lead-001', 'badjson')).toBeNull();
+      td.dispose();
+    });
+
+    it('refuses a traversal/oversized agentId before touching disk', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.resolveInboxTarget('lead-001', '../../etc/x')).toBeNull();
+      expect(td.resolveInboxTarget('lead-001', 'a/b')).toBeNull();
+      expect(td.resolveInboxTarget('lead-001', 'a'.repeat(65))).toBeNull();
+      td.dispose();
+    });
+
+    it('refuses an unknown orchestrator session', async () => {
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      writeLeadMeta('lead-001', PROJECT_CWD, 'deadbeef', { agentType: 'defender' });
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.resolveInboxTarget('no-such-session', 'deadbeef')).toBeNull();
       td.dispose();
     });
   });

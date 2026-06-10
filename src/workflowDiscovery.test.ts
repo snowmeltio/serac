@@ -317,6 +317,69 @@ describe('WorkflowDiscovery', () => {
     d.dispose();
   });
 
+  it('recovers distinct interpolated labels per fan-out agent (audit:${d.key} bug)', async () => {
+    // The reported regression: every fan-out agent rendered the raw template
+    // `audit:${d.key}`. They must now read as audit:privacy / audit:security /…
+    const runId = 'wf_interp-001';
+    const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'journal.jsonl'), [
+      JSON.stringify({ type: 'started', key: 'v2:p', agentId: 'agprivacy' }),
+      JSON.stringify({ type: 'started', key: 'v2:s', agentId: 'agsecurit' }),
+    ].join('\n'), 'utf-8');
+    const mkPrompt = (dim: string) =>
+      `=== YOUR DIMENSION: ${dim} ===\n\nAudit the claude profile system for this dimension.`;
+    fs.writeFileSync(path.join(runDir, 'agent-agprivacy.jsonl'),
+      JSON.stringify({ type: 'user', message: { content: mkPrompt('privacy') } }) + '\n', 'utf-8');
+    fs.writeFileSync(path.join(runDir, 'agent-agsecurit.jsonl'),
+      JSON.stringify({ type: 'user', message: { content: mkPrompt('security') } }) + '\n', 'utf-8');
+    const scriptsDir = path.join(sessionDir(), 'workflows', 'scripts');
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    const script = [
+      "export const meta = { name: 'audit-claude-profile-system', description: 'd', phases: [{ title: 'Audit' }] }",
+      "phase('Audit')",
+      "await parallel(DIMENSIONS.map(d => () => agent(`=== YOUR DIMENSION: ${d.key} ===\\n\\nAudit the claude profile system for this dimension.`, { label: `audit:${d.key}`, phase: 'Audit' })))",
+    ].join('\n');
+    fs.writeFileSync(path.join(scriptsDir, `audit-claude-profile-system-${runId}.js`), script, 'utf-8');
+
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+    const labels = snap.agents.map(a => a.label).sort();
+    expect(labels).toEqual(['audit:privacy', 'audit:security']);
+    // And no row leaks the raw template source.
+    expect(snap.agents.every(a => !a.label.includes('${'))).toBe(true);
+    d.dispose();
+  });
+
+  it('falls back to a phase-scoped, agent-distinct label when interpolation cannot be recovered', async () => {
+    // Matched call (shares the static head) but the prompt never exposes the
+    // label's interpolation value, so recovery fails → no raw ${…}, no clones.
+    const runId = 'wf_interp-002';
+    const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+      JSON.stringify({ type: 'started', key: 'v2:x', agentId: 'agonexyz' }) + '\n', 'utf-8');
+    // Prompt matches the call's distinctive static head, but carries no value
+    // in the ${name} slot the label needs.
+    fs.writeFileSync(path.join(runDir, 'agent-agonexyz.jsonl'),
+      JSON.stringify({ type: 'user', message: { content: 'Run the distinctive synthesis stage now please.' } }) + '\n', 'utf-8');
+    const scriptsDir = path.join(sessionDir(), 'workflows', 'scripts');
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    const script = [
+      "export const meta = { name: 'fb', description: 'd', phases: [{ title: 'Synthesise' }] }",
+      "agent('Run the distinctive synthesis stage now please.', { label: `synth:${d.name}`, phase: 'Synthesise' })",
+    ].join('\n');
+    fs.writeFileSync(path.join(scriptsDir, `fb-${runId}.js`), script, 'utf-8');
+
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    const agent = d.getWorkflowSnapshots(emptyMeta())[0].agents[0];
+    expect(agent.label).toBe('Synthesise · agonexyz');
+    expect(agent.label.includes('${')).toBe(false);
+    d.dispose();
+  });
+
   it('prefers the sidecar over the live dir once a run completes', async () => {
     // Both a sidecar AND a run dir exist (the normal completed case).
     writeSidecar('wf_done-001', validSidecar('wf_done-001'));

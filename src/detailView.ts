@@ -5,6 +5,8 @@
 // (bundled to media/detailView.js). Cannot import extension-side modules, so the
 // data shapes are redeclared here to mirror types.ts.
 
+import { isNearBottom, chooseReaderScrollTop, STICK_THRESHOLD_PX } from './detailViewScroll.js';
+
 interface DetailAgentView {
   agentId: string;
   label: string;
@@ -64,7 +66,11 @@ declare function acquireVsCodeApi(): VsCodeApi;
   let model: DetailModel | null = null;
   let selectedGroupKey: string | null = null;
   let selectedAgentId: string | null = null;
-  /** Left-nav collapsed to a thin rail to free horizontal space for the reader. */
+  /** Left-nav collapsed to a thin rail to free horizontal space for the reader.
+   *  Reflected as a `nav-collapsed` class on the persistent #wf-root (not baked
+   *  into the nav markup) so toggling it animates the existing .wf-nav width via
+   *  CSS — a full innerHTML re-render would destroy the element and kill the
+   *  transition. Manual only: selecting an agent no longer auto-collapses. */
   let navCollapsed = false;
   /** Inception-brief block collapsed in the reader. Default expanded (shown). */
   let briefCollapsed = false;
@@ -76,7 +82,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
   let cacheOwner: string | null = null;
   const transcripts = new Map<string, TranscriptState>(); // key: groupKey|agentId
 
-  function tkey(groupKey: string, agentId: string): string { return groupKey + '|' + agentId; }
+  /** Experimental settings pushed from the host (composer gate + disclosure
+   *  label). The flag here is DISPLAY-ONLY — every send is re-checked server-side
+   *  regardless, so a tampered webview value cannot enable the write path. */
+  const experimental = { teammateMessaging: false, operatorName: 'operator' };
+
+  /** Cache key for one agent's transcript. Prefixed with the drill-in owner so
+   *  an in-flight response from a PREVIOUS container can never collide with the
+   *  current one's keys (e.g. same member name across two teams). Mirrors the
+   *  host's key in detailPanel.sendAgentTranscript — keep the two in sync. */
+  function tkey(groupKey: string, agentId: string): string {
+    return (model ? model.source + ':' + model.containerId : '') + '|' + groupKey + '|' + agentId;
+  }
 
   function escapeHtml(s: string): string {
     return s.replace(/[&<>"']/g, c =>
@@ -95,6 +112,33 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const m = Math.floor(secs / 60);
     const r = secs % 60;
     return r > 0 ? m + 'm ' + r + 's' : m + 'm';
+  }
+
+  /** A per-record time label: relative while recent ("just now", "5m ago",
+   *  "2h ago"), crossing over to an absolute date once ≥ ~24h old (the
+   *  GitHub/Slack timeago pattern). `t`/`now` are epoch ms; the webview is a
+   *  browser context so Date is unrestricted here. */
+  function formatRelativeTime(t: number, now: number): string {
+    const diff = now - t;
+    if (diff < 60000) { return 'just now'; }            // < 1 min (also covers small clock skew)
+    if (diff < 3600000) { return Math.floor(diff / 60000) + 'm ago'; }
+    if (diff < 86400000) { return Math.floor(diff / 3600000) + 'h ago'; }
+    const d = new Date(t);
+    const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' };
+    if (d.getFullYear() !== new Date(now).getFullYear()) { opts.year = 'numeric'; }
+    return d.toLocaleDateString(undefined, opts);
+  }
+
+  /** A quiet timestamp span for a transcript turn: relative-then-absolute text,
+   *  with the full local date-time always on hover. Empty when the record has no
+   *  (parseable) timestamp. */
+  function renderTime(iso?: string): string {
+    if (!iso) { return ''; }
+    const t = Date.parse(iso);
+    if (isNaN(t)) { return ''; }
+    const rel = formatRelativeTime(t, Date.now());
+    const abs = new Date(t).toLocaleString();
+    return '<span class="wf-turn-time" title="' + escapeHtml(abs) + '">' + escapeHtml(rel) + '</span>';
   }
 
   function findAgent(groupKey: string | null, agentId: string | null): DetailAgentView | undefined {
@@ -128,6 +172,44 @@ declare function acquireVsCodeApi(): VsCodeApi;
       vscode.postMessage({ type: 'viewAgent', source: model.source, containerId: model.containerId, groupKey, agentId });
     }
     render();
+  }
+
+  // ── Live refresh ────────────────────────────────────────────────────
+  // A running agent's transcript must stream. The host re-reads + re-posts the
+  // transcript on each `viewAgent`, so we re-request the SELECTED agent on a
+  // steady interval *only while it is running*. We do NOT touch the transcript
+  // cache here, so the reader keeps showing the current turns until the refreshed
+  // ones arrive — no loading flash. Paused while the panel is hidden.
+  const STEADY_REFRESH_MS = 2500;
+  // After a teammate send, briefly poll faster to catch the member's reply (it
+  // drains its inbox on a ~5-6s cycle), then fall back to the steady cadence.
+  const BURST_REFRESH_MS = 1000;
+  const BURST_DURATION_MS = 15000;
+  let refreshTimer: ReturnType<typeof setInterval> | null = null;
+  let burstUntil = 0;
+
+  function startRefreshLoop(intervalMs: number): void {
+    if (refreshTimer !== null) { clearInterval(refreshTimer); }
+    refreshTimer = setInterval(refreshTick, intervalMs);
+  }
+
+  /** Switch the refresh loop to the fast cadence for a short window. */
+  function burstRefresh(): void {
+    burstUntil = Date.now() + BURST_DURATION_MS;
+    startRefreshLoop(BURST_REFRESH_MS);
+  }
+
+  function refreshTick(): void {
+    // Expired burst → revert to the steady cadence (then still tick this cycle).
+    if (burstUntil && Date.now() > burstUntil) { burstUntil = 0; startRefreshLoop(STEADY_REFRESH_MS); }
+    if (typeof document !== 'undefined' && document.hidden) { return; } // don't poll a hidden panel
+    if (!model || selectedGroupKey === null || selectedAgentId === null) { return; }
+    const agent = findAgent(selectedGroupKey, selectedAgentId);
+    if (!agent || agent.status !== 'running') { return; } // only live agents stream
+    vscode.postMessage({
+      type: 'viewAgent', source: model.source, containerId: model.containerId,
+      groupKey: selectedGroupKey, agentId: selectedAgentId,
+    });
   }
 
   // ── Rendering ──────────────────────────────────────────────────────
@@ -191,7 +273,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
     // to the sidecar promptPreview before the transcript loads.
     const briefIdx = entries.findIndex(e => e.role === 'user');
     const briefText = briefIdx !== -1 ? entries[briefIdx].content : (agent.promptPreview || '');
-    if (briefText) { body += renderBrief(briefText); }
+    const briefTs = briefIdx !== -1 ? entries[briefIdx].timestamp : '';
+    if (briefText) { body += renderBrief(briefText, briefTs); }
 
     const rest = briefIdx !== -1 ? entries.filter((_, i) => i !== briefIdx) : entries;
     if (rest.length > 0) {
@@ -214,24 +297,25 @@ declare function acquireVsCodeApi(): VsCodeApi;
   /** The inception brief — the agent's spawning prompt — pinned at the top of
    *  the reader. Collapsible (briefs can run to tens of KB); height-capped with
    *  internal scroll when expanded so it never buries the response. */
-  function renderBrief(text: string): string {
+  function renderBrief(text: string, timestamp?: string): string {
     const caret = briefCollapsed ? '▸' : '▾';
     const head = '<div class="wf-brief-head" role="button" tabindex="0" aria-expanded="'
       + (briefCollapsed ? 'false' : 'true') + '">'
       + '<span class="wf-brief-caret">' + caret + '</span>'
-      + '<span class="wf-brief-label">Inception brief</span></div>';
+      + '<span class="wf-brief-label">Inception brief</span>'
+      + renderTime(timestamp) + '</div>';
     const inner = briefCollapsed ? '' : '<div class="wf-brief-body">' + renderLines(text) + '</div>';
     return '<div class="wf-brief' + (briefCollapsed ? ' collapsed' : '') + '">' + head + inner + '</div>';
   }
 
   function renderTurn(e: TranscriptEntry): string {
     const who = e.role === 'user' ? 'prompt' : e.role === 'assistant' ? 'assistant' : 'system';
-    return renderTurnRaw(who, e.content);
+    return renderTurnRaw(who, e.content, e.timestamp);
   }
 
-  function renderTurnRaw(who: string, content: string): string {
+  function renderTurnRaw(who: string, content: string, timestamp?: string): string {
     return '<div class="wf-turn ' + escapeHtml(who) + '">'
-      + '<div class="wf-who">' + escapeHtml(who) + '</div>'
+      + '<div class="wf-who">' + escapeHtml(who) + renderTime(timestamp) + '</div>'
       + '<div class="wf-bubble">' + renderLines(content) + '</div></div>';
   }
 
@@ -325,13 +409,21 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return s.split('|').map(c => c.trim());
   }
 
+  // Caps for the markdown echo path. A teammate's REPLY renders here too — i.e.
+  // arbitrary, possibly-hostile agent output — so bound the work a single
+  // construct can force (wide tables, very long lines) defensively.
+  const MAX_TABLE_COLS = 24;
+  const MAX_TABLE_ROWS = 200;
+  const MAX_INLINE_LEN = 50000;
+
   function renderTable(rows: string[][]): string {
     if (rows.length === 0) { return ''; }
-    const cols = rows[0].length;
+    const cols = Math.min(rows[0].length, MAX_TABLE_COLS);
+    const bodyRows = rows.slice(1, MAX_TABLE_ROWS);
     let h = '<table class="wf-md-table"><thead><tr>';
-    for (const c of rows[0]) { h += '<th>' + formatInline(c) + '</th>'; }
+    for (let c = 0; c < cols; c++) { h += '<th>' + formatInline(rows[0][c] || '') + '</th>'; }
     h += '</tr></thead><tbody>';
-    for (const r of rows.slice(1)) {
+    for (const r of bodyRows) {
       h += '<tr>';
       for (let c = 0; c < cols; c++) { h += '<td>' + formatInline(r[c] || '') + '</td>'; }
       h += '</tr>';
@@ -341,12 +433,16 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   /** Minimal inline markdown: **bold**, *italic*, `code`, and [text](url) (the
    *  url is dropped — the reader is read-only). Everything escaped first; bold is
-   *  consumed before italic so `**x**` doesn't get mangled by the single-`*` rule. */
+   *  consumed before italic so `**x**` doesn't get mangled by the single-`*` rule.
+   *  The italic span is length-bounded and a pathologically long line skips inline
+   *  passes entirely — both guard against regex backtracking on hostile output. */
   function formatInline(text: string): string {
-    let s = escapeHtml(text);
+    const s0 = escapeHtml(text);
+    if (s0.length > MAX_INLINE_LEN) { return s0; } // too long to risk inline regex passes
+    let s = s0;
     s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-    s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<i>$2</i>');
+    s = s.replace(/(^|[^*])\*([^*\s][^*]{0,200}?)\*(?!\*)/g, '$1<i>$2</i>');
     s = s.replace(/\[([^\]]+)\]\((?:[^)]+)\)/g, '$1');
     return s;
   }
@@ -409,77 +505,261 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return 'Agents in this session';
   }
 
+  function renderChip(v: DetailViewChoice): string {
+    const dot = dotClass(v.status);
+    return '<span class="wf-switch-chip' + (v.active ? ' active' : '') + (dot ? ' status-' + dot : '') + '"'
+      + ' data-view-id="' + escapeHtml(v.id) + '" data-view-kind="' + escapeHtml(v.kind) + '"'
+      + ' role="button" tabindex="0"'
+      + ' title="' + escapeHtml(v.label) + ' · ' + escapeHtml(v.status) + '">'
+      + '<span class="wf-dot ' + dot + '"></span>'
+      + '<span class="wf-switch-chip-label">' + escapeHtml(v.label) + '</span></span>';
+  }
+
+  /** The label for a source group in the switcher. */
+  function groupLabel(kind: string, count: number): string {
+    if (kind === 'workflow') { return count > 1 ? 'Workflows' : 'Workflow'; }
+    if (kind === 'subagents') { return 'Subagents'; }
+    if (kind === 'team') { return 'Agent team'; }
+    return 'Agents';
+  }
+
+  /** Render the switcher chips, separately grouped by source (workflows /
+   *  subagents / agent teams) so each kind is visually delineated rather than
+   *  intermixed. A single-source view renders a flat chip row (no sub-labels —
+   *  the heading already names it); two or more sources render labelled groups. */
+  function renderSwitcher(chips: DetailViewChoice[]): string {
+    if (chips.length === 0) { return ''; }
+    const order = ['workflow', 'subagents', 'team'];
+    const kinds = order.filter(k => chips.some(c => c.kind === k));
+    for (const c of chips) { if (!kinds.includes(c.kind)) { kinds.push(c.kind); } }
+    const grouped = kinds.length > 1;
+    let html = '<div class="wf-switch' + (grouped ? ' grouped' : '') + '">';
+    for (const kind of kinds) {
+      const inKind = chips.filter(c => c.kind === kind);
+      if (inKind.length === 0) { continue; }
+      if (grouped) {
+        html += '<div class="wf-switch-group">'
+          + '<div class="wf-switch-group-label">' + escapeHtml(groupLabel(kind, inKind.length)) + '</div>'
+          + '<div class="wf-switch-chips">';
+      }
+      for (const v of inKind) { html += renderChip(v); }
+      if (grouped) { html += '</div></div>'; }
+    }
+    return html + '</div>';
+  }
+
   /** The pane header: a heading + the switcher chips (the selectable groupings,
-   *  selected one tinted to its status), the selected view's metrics, and a jump
-   *  back to the parent session. The parent session id is intentionally omitted
-   *  — it's identical across every chip, so it added noise, not information. */
+   *  grouped by source and the selected one tinted to its status), the selected
+   *  view's metrics, and a jump back to the parent session. The parent session id
+   *  is intentionally omitted — it's identical across every chip, so it added
+   *  noise, not information. */
   function renderHeader(): string {
     if (!model) { return ''; }
     const metrics = model.metrics
       ? '<div class="wf-head-metrics">' + escapeHtml(model.metrics) + '</div>' : '';
-    const chips = viewChips();
-    let switcher = '';
-    if (chips.length > 0) {
-      switcher = '<div class="wf-switch">';
-      for (const v of chips) {
-        const dot = dotClass(v.status);
-        switcher += '<span class="wf-switch-chip' + (v.active ? ' active' : '') + (dot ? ' status-' + dot : '') + '"'
-          + ' data-view-id="' + escapeHtml(v.id) + '" data-view-kind="' + escapeHtml(v.kind) + '"'
-          + ' role="button" tabindex="0"'
-          + ' title="' + escapeHtml(v.label) + ' · ' + escapeHtml(v.status) + '">'
-          + '<span class="wf-dot ' + dot + '"></span>'
-          + '<span class="wf-switch-chip-label">' + escapeHtml(v.label) + '</span></span>';
-      }
-      switcher += '</div>';
-    }
     return '<div class="wf-head">'
       + '<div class="wf-head-top">'
       + '<div class="wf-head-heading">' + escapeHtml(switcherHeading()) + '</div>'
       + '<div class="wf-openconv" role="button" tabindex="0" title="Open the parent agent session">↗ open parent session</div>'
       + '</div>'
-      + switcher
+      + renderSwitcher(viewChips())
       + metrics
       + '</div>';
   }
 
+  /** Re-render fully replaces the tree via innerHTML, resetting both panes'
+   *  scroll. The reader is restored with intent (see below); the nav just keeps
+   *  its offset. Reader scroll model — log/terminal style:
+   *   • switching agents      → start at the TOP (read the brief/first turns);
+   *   • same agent, was at the bottom → stick to the BOTTOM (live tail follows
+   *     new turns as a running agent streams);
+   *   • same agent, scrolled up → preserve the offset, so appended content stays
+   *     below the fold and what you're reading never jumps. */
+  let lastRenderedKey: string | null = null;
+  /** A top-reset is OWED to the reader after a selection change, but must not
+   *  be consumed by the interim loading-placeholder render: that render's tiny
+   *  scrollHeight reads as "at bottom", so the follow-up ready render would
+   *  stick to the BOTTOM of the freshly loaded transcript instead of the top.
+   *  The flag stays set until a settled (ready/error) render applies it. */
+  let pendingTopOnSettle = false;
+
   function render(): void {
-    // Re-render replaces the whole tree via innerHTML, which resets the scroll
-    // of the two independently-scrollable panes. On a live run the host re-posts
-    // the model whenever an agent's status flips, so without this a user reading
-    // a transcript gets snapped back to the top each tick. Capture and restore.
     const prevReader = root.querySelector('.wf-reader') as HTMLElement | null;
     const prevNav = root.querySelector('.wf-nav') as HTMLElement | null;
-    const readerTop = prevReader ? prevReader.scrollTop : 0;
+    const prevTop = prevReader ? prevReader.scrollTop : 0;
+    const wasAtBottom = prevReader
+      ? isNearBottom(prevReader.scrollTop, prevReader.clientHeight, prevReader.scrollHeight, STICK_THRESHOLD_PX)
+      : false;
     const navTop = prevNav ? prevNav.scrollTop : 0;
+    // Selection identity is the full transcript key (owner + group + agent), so
+    // same-named agents across containers still register as a change.
+    const selKey = (selectedGroupKey !== null && selectedAgentId !== null)
+      ? tkey(selectedGroupKey, selectedAgentId) : null;
+    if (selKey !== lastRenderedKey) { pendingTopOnSettle = true; }
+    const isAgentChange = pendingTopOnSettle;
+    // Collapse lives as a class on the persistent #wf-root, not in the nav
+    // markup — so the toggle can animate the existing .wf-nav width (see the
+    // toggle handler). The full roster is always rendered; CSS clips it when
+    // collapsed, so a width transition has real content to slide over.
+    root.classList.toggle('nav-collapsed', navCollapsed);
     if (!model || model.groups.every(g => g.agents.length === 0)) {
       // The header carries the switcher, so it stays visible even when the
       // selected view has no agents — the user can switch to one that does.
       root.innerHTML = renderHeader()
         + '<div class="wf-empty">No agents to show for this view.</div>';
+      lastRenderedKey = null;
+      updateComposer();
       return;
     }
-    const navInner = navCollapsed
-      ? '<button class="wf-nav-toggle" title="Show agents" aria-label="Show agents">☰</button>'
-      : '<div class="wf-nav-head"><button class="wf-nav-toggle" title="Hide agent list"'
-        + ' aria-label="Hide agent list">‹ <span>Agents</span></button></div>' + renderNav();
+    const navInner = '<div class="wf-nav-head"><button class="wf-nav-toggle"'
+      + ' title="Toggle agent list" aria-label="Toggle agent list">'
+      + '<span class="wf-nav-toggle-icon" aria-hidden="true"></span>'
+      + '<span class="wf-nav-toggle-text">Agents</span></button></div>' + renderNav();
     root.innerHTML = renderHeader()
       + '<div class="wf-2pane">'
-      + '<div class="wf-nav' + (navCollapsed ? ' collapsed' : '') + '">' + navInner + '</div>'
+      + '<div class="wf-nav">' + navInner + '</div>'
       + '<div class="wf-reader">' + renderReader() + '</div>'
       + '</div>';
     const newReader = root.querySelector('.wf-reader') as HTMLElement | null;
     const newNav = root.querySelector('.wf-nav') as HTMLElement | null;
-    if (newReader && readerTop) { newReader.scrollTop = readerTop; }
+    if (newReader) {
+      newReader.scrollTop = chooseReaderScrollTop({
+        isAgentChange, wasAtBottom, prevTop, scrollHeight: newReader.scrollHeight,
+      });
+    }
     if (newNav && navTop) { newNav.scrollTop = navTop; }
+    // The owed top-reset is consumed only once the selected transcript has
+    // settled (ready or error); a loading placeholder keeps it pending.
+    const st = selKey ? transcripts.get(selKey) : undefined;
+    if (!st || st.state !== 'loading') { pendingTopOnSettle = false; }
+    lastRenderedKey = selKey;
+    updateComposer();
   }
+
+  // ── Teammate composer (experimental) ────────────────────────────────
+  // Lives OUTSIDE #wf-root (a persistent sibling) so render()'s innerHTML swap
+  // never wipes a draft. We only toggle [hidden] / .value here; listeners are
+  // attached once. Shown only when the flag is on AND the selected agent is a
+  // RUNNING teammate. The host re-checks the flag on every send regardless.
+  const composerEl = document.getElementById('wf-composer');
+  const composerInput = document.getElementById('wf-composer-input') as HTMLTextAreaElement | null;
+  const composerSend = document.getElementById('wf-composer-send') as HTMLButtonElement | null;
+  const composerStatus = document.getElementById('wf-composer-status');
+  const composerCount = document.getElementById('wf-composer-count');
+  const COMPOSER_MAX = 8000;
+  // C0 controls (except \t \n \r), DEL, zero-width, and bidi overrides — the
+  // same set the host rejects. Stripped client-side so the user sees what will
+  // actually be sent (the host is still the authority and re-checks).
+  const UNSAFE_CHARS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
+  let composing = false;          // IME composition in progress — don't mangle mid-compose
+  let pendingSendText: string | null = null; // stashed during an in-flight send (restored on error)
+  let pendingSendKey: string | null = null;  // selection key the in-flight send belongs to
+  let composerForKey: string | null = null;  // selection key the current draft belongs to
+
+  function setComposerStatus(text: string, kind?: 'ok' | 'error'): void {
+    if (!composerStatus) { return; }
+    composerStatus.textContent = text;
+    composerStatus.className = 'wf-composer-status' + (kind ? ' ' + kind : '');
+  }
+
+  function updateComposerCount(): void {
+    if (!composerInput || !composerCount) { return; }
+    const n = composerInput.value.length;
+    composerCount.textContent = n >= COMPOSER_MAX - 200 ? n + ' / ' + COMPOSER_MAX : '';
+  }
+
+  /** Strip invisible/bidi chars from the draft (skipped mid-IME-composition),
+   *  flagging when something was removed so it isn't silent. */
+  function sanitiseComposerInput(): void {
+    if (composing || !composerInput) { return; }
+    const cleaned = composerInput.value.replace(UNSAFE_CHARS, '');
+    if (cleaned !== composerInput.value) {
+      const pos = composerInput.selectionStart;
+      composerInput.value = cleaned;
+      if (typeof pos === 'number') {
+        const p = Math.min(pos, cleaned.length);
+        composerInput.selectionStart = composerInput.selectionEnd = p;
+      }
+      setComposerStatus('Removed invisible characters.');
+    }
+    updateComposerCount();
+  }
+
+  /** Decide composer visibility from the (display-only) flag + selection. */
+  function updateComposer(): void {
+    if (!composerEl) { return; }
+    const agent = findAgent(selectedGroupKey, selectedAgentId);
+    const show = experimental.teammateMessaging === true
+      && !!model && model.source === 'subagents'
+      && !!agent && agent.teammate === true && agent.status === 'running';
+    composerEl.hidden = !show;
+    if (typeof document !== 'undefined' && document.body) {
+      document.body.classList.toggle('composer-open', show);
+    }
+    if (show && composerInput && agent) {
+      // A draft belongs to ONE teammate: switching selection clears it (and any
+      // failed-send restore) so text composed for A can never be sent to B.
+      // Same-agent re-renders and brief hide/show flickers keep the draft.
+      const ckey = tkey(selectedGroupKey!, selectedAgentId!);
+      if (ckey !== composerForKey) {
+        composerForKey = ckey;
+        composerInput.value = '';
+        pendingSendText = null;
+        setComposerStatus('');
+        updateComposerCount();
+      }
+      composerInput.placeholder = 'Message ' + agent.label + ' as ' + experimental.operatorName + ' — direct, bypasses the lead…';
+    } else if (!show) {
+      setComposerStatus('');
+    }
+  }
+
+  function sendComposer(): void {
+    if (!model || !composerInput || !composerSend) { return; }
+    if (composerSend.disabled) { return; } // in-flight guard — Cmd/Ctrl+Enter must honour it too
+    if (!experimental.teammateMessaging) { return; }
+    const agent = findAgent(selectedGroupKey, selectedAgentId);
+    if (!agent || agent.teammate !== true || agent.status !== 'running') {
+      setComposerStatus('This teammate is no longer running.', 'error');
+      return;
+    }
+    const text = composerInput.value.replace(UNSAFE_CHARS, '').trim();
+    if (!text) { setComposerStatus('Type a message first.', 'error'); return; }
+    if (text.length > COMPOSER_MAX) { setComposerStatus('Too long (max ' + COMPOSER_MAX + ').', 'error'); return; }
+    pendingSendText = text;
+    pendingSendKey = composerForKey;
+    composerInput.value = '';        // optimistic clear; restored if the send fails
+    updateComposerCount();
+    composerSend.disabled = true;
+    setComposerStatus('Sending…');
+    vscode.postMessage({
+      type: 'sendTeammateMessage', source: model.source,
+      containerId: model.containerId, agentId: selectedAgentId, text,
+    });
+  }
+
+  if (composerInput) {
+    composerInput.addEventListener('input', sanitiseComposerInput);
+    composerInput.addEventListener('compositionstart', () => { composing = true; });
+    composerInput.addEventListener('compositionend', () => { composing = false; sanitiseComposerInput(); });
+    composerInput.addEventListener('keydown', (e: KeyboardEvent) => {
+      // Cmd/Ctrl+Enter sends; a bare Enter keeps inserting newlines (multiline).
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendComposer(); }
+    });
+  }
+  if (composerSend) { composerSend.addEventListener('click', sendComposer); }
 
   // ── Events ─────────────────────────────────────────────────────────
 
   root.addEventListener('click', (e: MouseEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest('.wf-nav-toggle')) {
+      // Toggle collapse by flipping the class on the persistent root, NOT a
+      // re-render — so the existing .wf-nav width transitions smoothly (and the
+      // reader, flex:1, widens in lockstep). A render() here would rebuild the
+      // element and the animation would never fire.
       navCollapsed = !navCollapsed;
-      render();
+      root.classList.toggle('nav-collapsed', navCollapsed);
       return;
     }
     if (target.closest('.wf-brief-head')) {
@@ -489,11 +769,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     const navRow = target.closest<HTMLElement>('.wf-nav-row');
     if (navRow) {
-      // Picking an agent collapses the list to a thin rail, handing the freed
-      // width to the reader. The list stays expanded on first open (the initial
-      // auto-select goes straight through selectAgent, not this click path), so
-      // you see the roster before you commit to one; re-expand via the rail.
-      navCollapsed = true;
+      // Selecting an agent keeps the list expanded so you can click straight
+      // through the roster without re-expanding each time — collapse is manual,
+      // via the toggle (which then hands the freed width to the reader).
       selectAgent(navRow.dataset.group!, navRow.dataset.agent!);
       return;
     }
@@ -530,7 +808,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       // A different drill-in (source or container) invalidates the cache and
       // any carried-over selection — the empty-groupKey cache keys would
       // otherwise collide across containers.
-      const owner = model.source + ' ' + model.containerId;
+      const owner = model.source + ' ' + model.containerId;
       if (owner !== cacheOwner) {
         cacheOwner = owner;
         transcripts.clear();
@@ -552,11 +830,49 @@ declare function acquireVsCodeApi(): VsCodeApi;
       }
       render();
     } else if (msg.type === 'agentTranscript') {
-      transcripts.set(String(msg.key), { state: 'ready', entries: (msg.entries as TranscriptEntry[]) || [] });
-      if (String(msg.key) === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
+      const key = String(msg.key);
+      const incoming = (msg.entries as TranscriptEntry[]) || [];
+      const existing = transcripts.get(key);
+      // An agent transcript only grows; a response that lost the race against a
+      // newer one would step the reader backwards — drop it (the steady tick
+      // re-converges, and an owner change clears the cache outright).
+      if (!(existing && existing.state === 'ready' && incoming.length < existing.entries.length)) {
+        transcripts.set(key, { state: 'ready', entries: incoming });
+      }
+      if (key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
     } else if (msg.type === 'agentTranscriptError') {
       transcripts.set(String(msg.key), { state: 'error', message: String(msg.message || 'Failed to load transcript.') });
       if (String(msg.key) === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
+    } else if (msg.type === 'settings') {
+      const ex = (msg.experimental || {}) as { teammateMessaging?: unknown; operatorName?: unknown };
+      experimental.teammateMessaging = ex.teammateMessaging === true;
+      experimental.operatorName = typeof ex.operatorName === 'string' ? ex.operatorName : 'operator';
+      updateComposer();
+    } else if (msg.type === 'teammateMessageSent') {
+      if (composerSend) { composerSend.disabled = false; }
+      if (msg.ok) {
+        pendingSendText = null;
+        pendingSendKey = null;
+        setComposerStatus('Sent.', 'ok');
+        burstRefresh(); // catch the teammate's reply (~5-6s) on a fast poll
+      } else {
+        // Restore the optimistically-cleared draft so the user doesn't lose it
+        // — but only into the SAME teammate's composer it was typed for; if the
+        // selection moved while the send was in flight, drop it instead.
+        if (composerInput && pendingSendText !== null && composerInput.value === ''
+          && pendingSendKey !== null && pendingSendKey === composerForKey) {
+          composerInput.value = pendingSendText;
+          updateComposerCount();
+          setComposerStatus(String(msg.error || 'Send failed.'), 'error');
+        } else if (pendingSendKey !== null && pendingSendKey === composerForKey) {
+          setComposerStatus(String(msg.error || 'Send failed.'), 'error');
+        }
+        pendingSendText = null;
+        pendingSendKey = null;
+      }
     }
   });
+
+  // Stream the selected running agent's transcript (no-op for terminal agents).
+  startRefreshLoop(STEADY_REFRESH_MS);
 })();

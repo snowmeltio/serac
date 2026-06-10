@@ -123,181 +123,232 @@
         }
       ]
     },
-    "configuration": {
-      "title": "Serac",
-      "properties": {
-        "serac.hooks.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Register Serac's Claude Code hook forwarder in this workspace's .claude/settings.json. When enabled, permission-wait detection becomes hook-driven (sub-second) instead of heuristic (3-6 seconds). Each workspace opts in independently; disabling cleanly removes Serac-managed entries."
-        },
-        "serac.hooks.debug": {
-          "type": "boolean",
-          "default": false,
-          "description": "Log every inbound hook event to the 'Serac (Hooks)' output channel. Useful for debugging hook flow when serac.hooks.enabled is on. Off by default — leader-bound and liveness-warning lines log regardless."
-        },
-        "serac.show.foreignWorkspaces": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show the \"Other workspaces\" section. When off, the section is hidden and discovery scanning is skipped."
-        },
-        "serac.show.worktrees": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show the \"Worktrees\" section. When off, the section is hidden and worktree scanning is skipped."
-        },
-        "serac.show.usage": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show the usage / quota section at the bottom of the panel."
-        },
-        "serac.show.subagents": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show subagent rows inside session cards."
-        },
-        "serac.show.teams": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show the Agent Teams section."
-        },
-        "serac.show.workflows": {
-          "type": "boolean",
-          "default": true,
-          "description": "Surface Opus 4.8 Workflow runs on their session cards (tag, roll-up, and detail panel)."
-        },
-        "serac.archive.defaultRange": {
-          "type": "string",
-          "enum": [
-            "1d",
-            "3d",
-            "7d",
-            "30d",
-            "all"
-          ],
-          "default": "1d",
-          "description": "Default time range for archived sessions. The bottom pills override this per-session."
-        },
-        "serac.archive.maxDoneShown": {
-          "type": "number",
-          "default": 20,
-          "minimum": 1,
-          "description": "Maximum number of completed (done) items shown in the archive when expanded."
-        },
-        "serac.sessions.highConfidenceSeconds": {
-          "type": "number",
-          "default": 5,
-          "minimum": 1,
-          "description": "A running or waiting session's status is shown at high confidence while its last activity is younger than this many seconds. After this, the card dims to medium confidence. Lower = quicker to flag a possibly-stalled session."
-        },
-        "serac.sessions.mediumConfidenceSeconds": {
-          "type": "number",
-          "default": 30,
-          "minimum": 1,
-          "description": "A running or waiting session shows medium confidence until its last activity is older than this many seconds, then drops to low confidence. Should be greater than serac.sessions.highConfidenceSeconds."
-        },
-        "serac.refresh.intervalSeconds": {
-          "type": "number",
-          "default": 5,
-          "minimum": 1,
-          "maximum": 300,
-          "description": "Panel refresh interval in seconds. Lower = more responsive timestamps, higher = lower CPU."
-        },
-        "serac.discovery.ageGateDays": {
-          "type": "number",
-          "default": 7,
-          "minimum": 1,
-          "description": "Base staleness window: ignore foreign workspaces, worktrees, agent teams, and workflows whose latest activity is older than this many days. Each section can override this below; leave an override empty to inherit this value."
-        },
-        "serac.discovery.foreignWorkspacesAgeGateDays": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "default": null,
-          "minimum": 1,
-          "description": "Staleness window (days) for the \"Other workspaces\" section only. Leave empty to inherit serac.discovery.ageGateDays."
-        },
-        "serac.discovery.worktreesAgeGateDays": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "default": null,
-          "minimum": 1,
-          "description": "Staleness window (days) for the worktrees shown inline in the main list. Leave empty to inherit serac.discovery.ageGateDays."
-        },
-        "serac.discovery.teamsAgeGateDays": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "default": null,
-          "minimum": 1,
-          "description": "Staleness window (days) for Agent Teams. Leave empty to inherit serac.discovery.ageGateDays."
-        },
-        "serac.discovery.workflowsAgeGateDays": {
-          "type": [
-            "number",
-            "null"
-          ],
-          "default": null,
-          "minimum": 1,
-          "description": "Staleness window (days) for Opus 4.8 Workflow runs. Leave empty to inherit serac.discovery.ageGateDays."
-        },
-        "serac.foreignWorkspaces.maxHeightPx": {
-          "type": "number",
-          "default": 280,
-          "minimum": 0,
-          "description": "Maximum pixel height of the \"Other workspaces\" pane before it scrolls internally. Rows are ~18px, so 280 ≈ 15 rows. Set to 0 for auto (no cap)."
-        },
-        "serac.worktrees.maxHeightPx": {
-          "type": "number",
-          "default": 280,
-          "minimum": 0,
-          "description": "Maximum pixel height of the \"Worktrees\" pane before it scrolls internally. Rows are ~18px, so 280 ≈ 15 rows. Set to 0 for auto (no cap)."
-        },
-        "serac.worktrees.autoCollapseAfterSeconds": {
-          "type": "number",
-          "default": 20,
-          "minimum": 1,
-          "description": "Auto-collapse the worktree picker after this many seconds of idle."
-        },
-        "serac.worktrees.consolidateTmp": {
-          "type": "boolean",
-          "default": false,
-          "description": "Consolidate worktree display: group scratch sessions under /private/tmp (and /tmp) into a single \"tmp\" pseudo-repository row in \"Other workspaces\", instead of one flat row per directory. Expand the row to pick a specific directory."
-        },
-        "serac.usage.showWeekly": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show the weekly usage row."
-        },
-        "serac.usage.warnAtPercent": {
-          "type": "number",
-          "default": 85,
-          "minimum": 1,
-          "maximum": 100,
-          "description": "Tint usage as 'warn' when burn rate reaches this percentage."
-        },
-        "serac.usage.criticalAtPercent": {
-          "type": "number",
-          "default": 100,
-          "minimum": 1,
-          "description": "Tint usage as 'critical' when burn rate reaches this percentage."
-        },
-        "serac.animations.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable card-slide and FLIP animations. Disable for snappier rendering or to respect reduced-motion preferences."
-        },
-        "serac.cleanup.confirmRequired": {
-          "type": "boolean",
-          "default": true,
-          "description": "Require a second click to confirm the title-bar cleanup action (the arm-then-confirm dance)."
+    "configuration": [
+      {
+        "title": "Display & sections",
+        "order": 1,
+        "properties": {
+          "serac.show.foreignWorkspaces": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the \"Other workspaces\" section. When off, the section is hidden and discovery scanning is skipped."
+          },
+          "serac.show.worktrees": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the \"Worktrees\" section. When off, the section is hidden and worktree scanning is skipped."
+          },
+          "serac.show.usage": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the usage / quota section at the bottom of the panel."
+          },
+          "serac.show.subagents": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show subagent rows inside session cards."
+          },
+          "serac.show.teams": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the Agent Teams section."
+          },
+          "serac.show.workflows": {
+            "type": "boolean",
+            "default": true,
+            "description": "Surface Opus 4.8 Workflow runs on their session cards (tag, roll-up, and detail panel)."
+          },
+          "serac.animations.enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable card-slide and FLIP animations. Disable for snappier rendering or to respect reduced-motion preferences."
+          },
+          "serac.foreignWorkspaces.maxHeightPx": {
+            "type": "number",
+            "default": 280,
+            "minimum": 0,
+            "description": "Maximum pixel height of the \"Other workspaces\" pane before it scrolls internally. Rows are ~18px, so 280 ≈ 15 rows. Set to 0 for auto (no cap)."
+          },
+          "serac.worktrees.maxHeightPx": {
+            "type": "number",
+            "default": 280,
+            "minimum": 0,
+            "description": "Maximum pixel height of the \"Worktrees\" pane before it scrolls internally. Rows are ~18px, so 280 ≈ 15 rows. Set to 0 for auto (no cap)."
+          },
+          "serac.worktrees.autoCollapseAfterSeconds": {
+            "type": "number",
+            "default": 20,
+            "minimum": 1,
+            "description": "Auto-collapse the worktree picker after this many seconds of idle."
+          },
+          "serac.worktrees.consolidateTmp": {
+            "type": "boolean",
+            "default": false,
+            "description": "Consolidate worktree display: group scratch sessions under /private/tmp (and /tmp) into a single \"tmp\" pseudo-repository row in \"Other workspaces\", instead of one flat row per directory. Expand the row to pick a specific directory."
+          }
+        }
+      },
+      {
+        "title": "Discovery & freshness",
+        "order": 2,
+        "properties": {
+          "serac.discovery.ageGateDays": {
+            "type": "number",
+            "default": 7,
+            "minimum": 1,
+            "description": "Base staleness window: ignore foreign workspaces, worktrees, agent teams, and workflows whose latest activity is older than this many days. Each section can override this below; leave an override empty to inherit this value."
+          },
+          "serac.discovery.foreignWorkspacesAgeGateDays": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "default": null,
+            "minimum": 1,
+            "description": "Staleness window (days) for the \"Other workspaces\" section only. Leave empty to inherit serac.discovery.ageGateDays."
+          },
+          "serac.discovery.worktreesAgeGateDays": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "default": null,
+            "minimum": 1,
+            "description": "Staleness window (days) for the worktrees shown inline in the main list. Leave empty to inherit serac.discovery.ageGateDays."
+          },
+          "serac.discovery.teamsAgeGateDays": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "default": null,
+            "minimum": 1,
+            "description": "Staleness window (days) for Agent Teams. Leave empty to inherit serac.discovery.ageGateDays."
+          },
+          "serac.discovery.workflowsAgeGateDays": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "default": null,
+            "minimum": 1,
+            "description": "Staleness window (days) for Opus 4.8 Workflow runs. Leave empty to inherit serac.discovery.ageGateDays."
+          },
+          "serac.refresh.intervalSeconds": {
+            "type": "number",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 300,
+            "description": "Panel refresh interval in seconds. Lower = more responsive timestamps, higher = lower CPU."
+          }
+        }
+      },
+      {
+        "title": "Usage & quota",
+        "order": 3,
+        "properties": {
+          "serac.usage.showWeekly": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the weekly usage row."
+          },
+          "serac.usage.warnAtPercent": {
+            "type": "number",
+            "default": 85,
+            "minimum": 1,
+            "maximum": 100,
+            "description": "Tint usage as 'warn' when burn rate reaches this percentage."
+          },
+          "serac.usage.criticalAtPercent": {
+            "type": "number",
+            "default": 100,
+            "minimum": 1,
+            "description": "Tint usage as 'critical' when burn rate reaches this percentage."
+          }
+        }
+      },
+      {
+        "title": "Session confidence",
+        "order": 4,
+        "properties": {
+          "serac.sessions.highConfidenceSeconds": {
+            "type": "number",
+            "default": 5,
+            "minimum": 1,
+            "description": "A running or waiting session's status is shown at high confidence while its last activity is younger than this many seconds. After this, the card dims to medium confidence. Lower = quicker to flag a possibly-stalled session."
+          },
+          "serac.sessions.mediumConfidenceSeconds": {
+            "type": "number",
+            "default": 30,
+            "minimum": 1,
+            "description": "A running or waiting session shows medium confidence until its last activity is older than this many seconds, then drops to low confidence. Should be greater than serac.sessions.highConfidenceSeconds."
+          }
+        }
+      },
+      {
+        "title": "Hooks",
+        "order": 5,
+        "properties": {
+          "serac.hooks.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Register Serac's Claude Code hook forwarder in this workspace's .claude/settings.json. When enabled, permission-wait detection becomes hook-driven (sub-second) instead of heuristic (3-6 seconds). Each workspace opts in independently; disabling cleanly removes Serac-managed entries."
+          },
+          "serac.hooks.debug": {
+            "type": "boolean",
+            "default": false,
+            "description": "Log every inbound hook event to the 'Serac (Hooks)' output channel. Useful for debugging hook flow when serac.hooks.enabled is on. Off by default — leader-bound and liveness-warning lines log regardless."
+          }
+        }
+      },
+      {
+        "title": "Behaviour",
+        "order": 6,
+        "properties": {
+          "serac.cleanup.confirmRequired": {
+            "type": "boolean",
+            "default": true,
+            "description": "Require a second click to confirm the title-bar cleanup action (the arm-then-confirm dance)."
+          },
+          "serac.archive.defaultRange": {
+            "type": "string",
+            "enum": [
+              "1d",
+              "3d",
+              "7d",
+              "30d",
+              "all"
+            ],
+            "default": "1d",
+            "description": "Default time range for archived sessions. The bottom pills override this per-session."
+          },
+          "serac.archive.maxDoneShown": {
+            "type": "number",
+            "default": 20,
+            "minimum": 1,
+            "description": "Maximum number of completed (done) items shown in the archive when expanded."
+          }
+        }
+      },
+      {
+        "title": "Experimental",
+        "order": 7,
+        "properties": {
+          "serac.experimental.teammateMessaging": {
+            "type": "boolean",
+            "default": false,
+            "scope": "application",
+            "description": "Experimental, off by default. Enables an inline composer at the foot of a live teammate's transcript that writes a message directly into that member's inbox — Serac's only write into ~/.claude/. Direct delivery bypasses the team lead and has no delivery guarantee (the member drains its inbox on a ~5s poll). Disable to remove the composer and the write path entirely."
+          },
+          "serac.experimental.operatorName": {
+            "type": "string",
+            "default": "operator",
+            "scope": "application",
+            "description": "The sender label written as the inbox entry's \"from\" when you message a teammate (e.g. your name). Used only when serac.experimental.teammateMessaging is on. Must be 1-100 chars of letters, digits, '-' or '_'."
+          }
         }
       }
-    }
+    ]
   },
   "scripts": {
     "build": "node esbuild.config.mjs",

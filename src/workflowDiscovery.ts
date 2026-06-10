@@ -3,7 +3,7 @@ import * as path from 'path';
 import type { SessionMeta, WorkflowAgentSnapshot, WorkflowRunStatus, WorkflowSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { parseWorkflowSidecar } from './workflowSidecar.js';
-import { extractWorkflowMeta, extractAgentCalls, matchAgentCall, type WorkflowAgentCall } from './workflowScript.js';
+import { extractWorkflowMeta, extractAgentCalls, matchAgentCall, recoverInterpolatedLabel, type WorkflowAgentCall } from './workflowScript.js';
 import { readSettings, ageGateDaysFor } from './settings.js';
 import { isValidSessionId } from './validation.js';
 
@@ -24,6 +24,16 @@ export interface WorkflowLivenessProbe {
  *  when set, else the shared `serac.discovery.ageGateDays` base. */
 function ageGateMs(): number {
   return ageGateDaysFor('workflows') * 24 * 60 * 60 * 1000;
+}
+
+/** The live-tier display label for a matched `agent()` call: a plain literal
+ *  label as-is, an interpolated label recovered from the agent's prompt, or null
+ *  when there's no label / the interpolation can't be recovered (caller picks a
+ *  fallback). Guarantees the returned string never contains a raw `${…}`. */
+function resolveLiveLabel(call: WorkflowAgentCall, prompt: string): string | null {
+  if (!call.label) { return null; }
+  if (!call.label.includes('${')) { return call.label; } // plain literal label
+  return recoverInterpolatedLabel(call, prompt);          // interpolated → recover or null
 }
 
 /**
@@ -298,10 +308,22 @@ export class WorkflowDiscovery {
           const prompt = await this.readFirstRecordPrompt(path.join(runDir, `agent-${agentId}.jsonl`));
           const call = prompt ? matchAgentCall(prompt, agentCalls) : null;
           if (call) {
-            if (call.label) { label = call.label; }
             if (call.phase) {
               const idx = phaseIndexByTitle.get(call.phase);
               if (idx !== undefined) { phaseIndex = idx; phaseTitle = call.phase; }
+            }
+            // Resolve a display label, never letting a raw `${...}` template
+            // reach the webview. A plain literal label is used as-is; an
+            // interpolated label (`audit:${d.key}`) is recovered from this
+            // agent's own prompt, so fan-out agents get distinct labels
+            // (audit:privacy, audit:security, …) instead of identical source.
+            // When the value can't be recovered, fall back to a phase-scoped,
+            // agent-distinct label rather than repeat the raw template per row.
+            const resolved = resolveLiveLabel(call, prompt as string);
+            if (resolved !== null) {
+              label = resolved;
+            } else if (call.label && phaseTitle) {
+              label = `${phaseTitle} · ${agentId.slice(0, 8)}`;
             }
           }
         }
