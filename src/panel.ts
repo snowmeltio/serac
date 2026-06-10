@@ -1285,13 +1285,9 @@ const RANGE_MS: Record<string, number> = {
     // two: workflow-specific label when only workflows, "subagents" when only
     // those, and a neutral "agents" when both — the switcher carries the rest.
     // Initial source is the workflow when present (richer), else subagents.
-    // Tool-error badge — failed tool calls are the "done, but look closer"
-    // triage signal; same quiet-chip pattern as the background-shell badge.
-    const toolErrs = s.toolErrorCount ?? 0;
-    if (toolErrs > 0) {
-      metaHtml += '<span class="tool-error-badge" title="Tool calls that returned errors in this session">'
-        + toolErrs + ' tool error' + (toolErrs === 1 ? '' : 's') + '</span>';
-    }
+    // (Tool-error badge removed 2026-06-10 — Murray: non-actionable and badly
+    // correlated with real trouble (benign failed greps/probes inflate it).
+    // toolErrorCount stays in the snapshot for a future actionable surface.)
     // Same-file collision — another ACTIVE session is editing the same
     // file(s); a merge conflict in the making. Same quiet-chip pattern as
     // the tool-error badge; lists the shared paths in the tooltip.
