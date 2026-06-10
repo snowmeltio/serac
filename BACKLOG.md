@@ -21,7 +21,7 @@ Origin: a card showed `DONE · 49s` while the chat had launched `./deploy.sh` wi
 
 **Remaining (minor):**
 - **Bug — badge not clearing. FIXED 2026-06-04.** See Shipped → "Background-shell badge clears on idle done cards".
-- **Completion-replay test.** When a background shell finishes, CC re-invokes the model → the next assistant record flips the card back to `running` via the normal path and the tracker clears the count on the terminal retrieval. Covered by the tracker unit tests; not yet by an end-to-end integration replay.
+- **Completion-replay test — DONE 2026-06-10 (f047519, v1.12.0).** End-to-end replay in `sessionManager.replay.test.ts`: launch → badge on done card → re-invocation flips running → terminal retrieval clears → cold replay never resurrects.
 
 ## Other workspaces
 
@@ -35,9 +35,18 @@ Origin: a card showed `DONE · 49s` while the chat had launched `./deploy.sh` wi
 
 ## Hooks — validate the wired ingress, then drop the permission delay
 
-- **Ingress is WIRED (2026-06-09 batch; audit-confirmed 2026-06-10).** `extension.ts` runs `startHookIngress` (Unix socket + leader election, fed by `bin/serac-hook-forward.cjs`) into `hookEventRouter`, and `SessionDiscovery` injects the router into every `SessionManager` — the full PermissionRequest pipeline exists. Remaining:
-  - **Positive-path tests against realistic captured payloads.** The hook fixture predates the extended `Stop` payload (no `session_crons`/`background_tasks`, CC ≥2.1.159 adds both); capture a fresh all-hook-events fixture and assert the tracker reacts to a real `PermissionRequest` end-to-end.
-  - **Delay drop DECLINED (2026-06-10, decision record).** With hooks live a genuine prompt surfaces in ~25ms via the hook, so the timer only covers hook-silence modes — dropping it to 6s would reintroduce the slow-Bash flicker. 15s stays as the backstop by design; positive-path replay tests landed in Track B. Cross-ref `[[project_permission_false_positives]]`, HOOK-MONITORING.md.
+- **Ingress is WIRED (2026-06-09 batch; audit-confirmed 2026-06-10).** `extension.ts` runs `startHookIngress` (Unix socket + leader election, fed by `bin/serac-hook-forward.cjs`) into `hookEventRouter`, and `SessionDiscovery` injects the router into every `SessionManager` — the full PermissionRequest pipeline exists.
+  - **Positive-path tests — DONE 2026-06-10 (Track B + f1478bd, v1.12.0).** Real PermissionRequest payloads replay end-to-end through router→tracker; the fresh `all-hook-events-2026-06-10.jsonl` (CC 2.1.159) pins the extended Stop payload.
+  - **Delay drop DECLINED (2026-06-10, decision record).** With hooks live a genuine prompt surfaces in ~25ms via the hook, so the timer only covers hook-silence modes — dropping it to 6s would reintroduce the slow-Bash flicker. 15s stays as the backstop by design. Cross-ref `[[project_permission_false_positives]]`, HOOK-MONITORING.md.
+  - This section is otherwise CLOSED.
+
+## Candidates (from the v1.12 ideation pass, 2026-06-10)
+
+- **Stall surfacing (value-prop item).** A `running` card with no output for N minutes is a different triage signal from `waiting` — nothing flags it today. With hook ingress live, PostToolUse/Stop silence + a running status is detectable cheaply. Pairs with the autonomy JTBD ("trust the glance").
+- **Cost/quota pack.** Per-session spend estimate and "top burners" roll-up (token totals are already parsed per session; pricing table needed). Complements the existing usage quota footer.
+- **Plans/todos surfacing.** TodoWrite state and plan-mode artifacts appear in session JSONLs; a card could show "3/7 todos" or the active plan step — answers "how far along is it?" without opening the transcript.
+- **Inbox unread pulse.** The read-side thread shipped (v1.12.0); the sidebar-level affordance remains — a quiet pulse on the orchestrator card when any member inbox has undrained messages.
+- **Test-gap singles.** Truncation-sans-PreCompact replay; `workspaceOpener.ts` co-located tests (currently the lone exception with `toolProfiles.ts`); extension.ts wiring assertions.
 
 ---
 
