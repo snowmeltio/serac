@@ -75,12 +75,14 @@ describe('SessionManager — registry liveness gate (permission false-positive)'
   });
 
   it('does NOT downgrade a waiting session never seen live in the registry', async () => {
+    // Registry is active but never had an entry for this session (e.g. a class
+    // it does not track) → absence is "unknown", never "dead". Probe must be
+    // false BEFORE any snapshot renders: getSnapshot() itself latches seen-live
+    // now (processLive shares the death-gate latch).
+    probeValue = false;
     const mgr = makeManager();
     await toWaiting(mgr);
 
-    // Registry is active but never had an entry for this session (e.g. a class
-    // it does not track) → absence is "unknown", never "dead".
-    probeValue = false;
     expect(mgr.demoteIfStale(30_000)).toBe(false);
     expect(mgr.getStatus()).toBe('waiting');
   });
@@ -158,5 +160,57 @@ describe('SessionManager — registry liveness gate (permission false-positive)'
     probeValue = true;
     vi.advanceTimersByTime(3_001);
     expect(mgr.getStatus()).toBe('waiting');
+  });
+});
+
+describe('SessionSnapshot.processLive — orphan/live annotation tri-state', () => {
+  it('reports true while the registry sees the process live', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [userRecord('go')]);
+    probeValue = true;
+    expect(mgr.getSnapshot().processLive).toBe(true);
+  });
+
+  it('reports undefined for an absent-but-never-seen session (no false "ended")', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [userRecord('go')]);
+    probeValue = false;            // registry active, session never registered
+    expect(mgr.getSnapshot().processLive).toBeUndefined();
+  });
+
+  it('reports false only after seen-live → gone (confirmed ended)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [userRecord('go')]);
+    probeValue = true;
+    expect(mgr.getSnapshot().processLive).toBe(true);   // latches seen-live
+    probeValue = false;
+    expect(mgr.getSnapshot().processLive).toBe(false);
+  });
+
+  it('reports undefined on a degraded scan, even after seen-live', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [userRecord('go')]);
+    probeValue = true;
+    mgr.getSnapshot();             // latch
+    probeValue = null;             // degraded → unknown, never "ended"
+    expect(mgr.getSnapshot().processLive).toBeUndefined();
+  });
+
+  it('reports undefined when no probe is wired at all', async () => {
+    const mgr = new SessionManager('no-probe', '/tmp/np.jsonl', 'ws');
+    await feed(mgr, [userRecord('go')]);
+    expect(mgr.getSnapshot().processLive).toBeUndefined();
+  });
+
+  it('snapshot latch feeds the death-gate: getSnapshot alone arms later demotion', async () => {
+    // The latch must be shared — seeing the process live during a snapshot
+    // render is the same evidence demoteIfStale relies on.
+    const mgr = makeManager();
+    await toWaiting(mgr);
+    probeValue = true;
+    mgr.getSnapshot();             // latch via snapshot path, not demoteIfStale
+    probeValue = false;
+    expect(mgr.demoteIfStale(30_000)).toBe(true);
+    expect(mgr.getStatus()).toBe('done');
   });
 });

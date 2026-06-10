@@ -464,6 +464,7 @@ export class SessionManager {
       gitBranch: this.gitBranch || undefined,
       toolErrorCount: this.toolErrorCount || undefined,
       lastAssistantText: this.lastAssistantText || undefined,
+      processLive: this.registryLiveness(),
     };
   }
 
@@ -666,17 +667,25 @@ export class SessionManager {
    *  never silently muted. Also latches everSeenLiveInRegistry as a side effect
    *  whenever it observes the session live. */
   private isConfirmedDeadByRegistry(): boolean {
-    if (!this.livenessProbe) { return false; }
+    return this.registryLiveness() === false;
+  }
+
+  /** Registry tri-state shared by the death-gate and the snapshot's
+   *  processLive annotation: true = registered live now, false = seen live
+   *  before and now absent (confirmed ended), undefined = can't say.
+   *  Latches everSeenLiveInRegistry as a side effect on every live sighting. */
+  private registryLiveness(): boolean | undefined {
+    if (!this.livenessProbe) { return undefined; }
     const live = this.livenessProbe();
     if (live === true) {
       if (!this.everSeenLiveInRegistry) {
         this.everSeenLiveInRegistry = true;
         this.onRegistrySeenLive?.();           // persist the latch across reloads
       }
-      return false;
+      return true;
     }
-    if (live === null) { return false; }      // registry degraded/unknown
-    return this.everSeenLiveInRegistry;        // live === false: dead iff seen-before
+    if (live === null) { return undefined; }   // registry degraded/unknown
+    return this.everSeenLiveInRegistry ? false : undefined;
   }
 
   /** Check if the Claude Code process is still alive.

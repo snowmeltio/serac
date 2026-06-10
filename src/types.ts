@@ -168,6 +168,12 @@ export interface SessionSnapshot {
   /** Trimmed text of the most recent assistant message — the done-card
    *  preview, so a finished card says WHAT it finished with at a glance. */
   lastAssistantText?: string;
+  /** Registry tri-state: true = the CC process is registered live right now
+   *  (a done card is resumable in its terminal); false = it was seen live and
+   *  is now gone (genuinely ended); undefined = registry can't say (no probe,
+   *  scan degraded, or the session was never seen live). Display-only — the
+   *  status pill annotates terminal cards; never affects status itself. */
+  processLive?: boolean;
 }
 
 export interface SubagentSnapshot {

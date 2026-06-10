@@ -52,3 +52,12 @@ Source: multi-agent audit (7 lenses, adversarially verified, 38 confirmed findin
 ## Deferred to BACKLOG (not in this cycle)
 
 Loops/wakeup badge (groundwork captured: /loop interval = CronCreate not ScheduleWakeup; Stop payload carries session_crons + background_tasks → also future shell-tracker hardening). Cost/quota pack (per-session spend, top burners). Plans/todos surfacing. Inbox read-side thread + pulse. MCP needs-auth chip. IDE lock attribution. Detail-panel UX batch (streaming dedup, tooltip roll-up, state persistence, relative-time tick, flex layout). Test-gap items not covered above (bg-shell completion replay e2e, truncation-sans-PreCompact, workspaceOpener tests, extension.ts wiring assertions).
+
+## Batch 2 — agreed 2026-06-10 (Murray)
+
+- [ ] Fresh all-hook-events fixture (CC ≥2.1.159; want Stop with background_tasks, ideally session_crons)
+- [ ] Background-shell completion-replay e2e test
+- [ ] Orphan/live signal on cards (terminal cards annotated ended/live; never downgrade active)
+- [ ] Live-only mode for Other workspaces + age-gate presets (session-only/1d/7d/30d/forever)
+- [ ] Detail-panel UX batch: streaming re-render dedup, chip tooltip roll-up, webview state persistence, relative-time slow tick, flex layout vs 130px offsets
+- [ ] Smaller singles: MCP needs-auth chip, same-file collision badge, IDE lock window attribution, inbox read-side thread

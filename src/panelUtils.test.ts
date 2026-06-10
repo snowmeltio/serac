@@ -669,3 +669,36 @@ describe('isTmpScratchPath', () => {
     expect(isTmpScratchPath(undefined)).toBe(false);
   });
 });
+
+describe('getStatusLabel — orphan/live annotation', () => {
+  const now = Date.now();
+  function session(overrides: Partial<PanelSession>): PanelSession {
+    return { sessionId: 's', status: 'done', lastActivity: now, ...overrides };
+  }
+
+  it('annotates done · live when the process is still attached', () => {
+    expect(getStatusLabel(session({ processLive: true, lastActivity: now - 120_000 }), now))
+      .toBe('Done · <span class="status-pill-time">2m</span> · <span class="status-pill-time">live</span>');
+  });
+
+  it('annotates done · ended when confirmed gone', () => {
+    expect(getStatusLabel(session({ processLive: false, lastActivity: now - 120_000 }), now))
+      .toBe('Done · <span class="status-pill-time">2m</span> · <span class="status-pill-time">ended</span>');
+  });
+
+  it('annotates stale (Seen) cards the same way', () => {
+    expect(getStatusLabel(session({ status: 'stale', processLive: true, lastActivity: now - 3_600_000 }), now))
+      .toBe('Seen · <span class="status-pill-time">1h</span> · <span class="status-pill-time">live</span>');
+  });
+
+  it('unknown tri-state leaves the label untouched', () => {
+    expect(getStatusLabel(session({ lastActivity: now - 120_000 }), now))
+      .toBe('Done · <span class="status-pill-time">2m</span>');
+  });
+
+  it('never annotates active cards (running/waiting)', () => {
+    expect(getStatusLabel(session({ status: 'running', processLive: false }), now)).toBe('Running');
+    expect(getStatusLabel(session({ status: 'waiting', processLive: false, lastActivity: now - 60_000 }), now))
+      .toBe('Waiting · <span class="status-pill-time">1m</span>');
+  });
+});

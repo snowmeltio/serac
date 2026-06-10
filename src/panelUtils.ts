@@ -34,6 +34,9 @@ export interface PanelSession {
   gitBranch?: string;
   toolErrorCount?: number;
   lastAssistantText?: string;
+  /** Registry tri-state (see SessionSnapshot.processLive): annotates terminal
+   *  cards' status pill with live/ended; absent = no annotation. */
+  processLive?: boolean;
   workspaceKey?: string;
   confidence?: PanelStatusConfidence;
   /** CWD of the originating worktree (set for both local and sibling-worktree
@@ -171,10 +174,19 @@ export function getStatusLabel(s: PanelSession, now: number): string {
     // the triage question — 10s and 20min must not read identically.
     case 'waiting': return 'Waiting \u00b7 ' + t(now - s.lastActivity);
     case 'running': return 'Running';
-    case 'done': return 'Done \u00b7 ' + t(now - s.lastActivity);
-    case 'stale': return 'Seen \u00b7 ' + t(now - s.lastActivity);
+    // Orphan/live annotation (terminal cards only): a done card whose CC
+    // process is still attached is resumable in its terminal; one confirmed
+    // gone needs a cold start. Unknown stays unannotated — never guess.
+    case 'done': return 'Done \u00b7 ' + t(now - s.lastActivity) + liveQualifier(s);
+    case 'stale': return 'Seen \u00b7 ' + t(now - s.lastActivity) + liveQualifier(s);
     default: return s.status;
   }
+}
+
+function liveQualifier(s: PanelSession): string {
+  if (s.processLive === true) { return ' \u00b7 <span class="status-pill-time">live</span>'; }
+  if (s.processLive === false) { return ' \u00b7 <span class="status-pill-time">ended</span>'; }
+  return '';
 }
 
 // ===== Foreign session detection =====

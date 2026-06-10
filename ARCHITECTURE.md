@@ -149,6 +149,19 @@ non-status** (same charter as `ToolOutcomeTracker`) and never moves
   status path stays untouched. Ungated: the count is only non-zero when
   detection fires, and the fail-safe on a wording change is to show nothing.
 
+### Orphan/live annotation (processLive)
+
+`SessionSnapshot.processLive` is the registry tri-state surfaced for display:
+`true` = the CC process is registered live right now (a `done` card is
+resumable in its terminal), `false` = seen live before and now absent
+(confirmed ended), `undefined` = can't say (no probe, degraded scan, or never
+seen live). Computed by `SessionManager.registryLiveness()`, the same helper
+(and the same persisted seen-live latch) behind `isConfirmedDeadByRegistry()`
+— so a snapshot render latches evidence the death-gate later relies on.
+Rendered only on terminal cards as a quiet `live`/`ended` qualifier inside the
+status pill (`panelUtils.ts:getStatusLabel`); active cards are never
+annotated, and the unknown state shows nothing rather than guessing.
+
 ## Hook consumption
 
 > Status: **implemented 2026-06-01** — `TurnLifecycleTracker`,
