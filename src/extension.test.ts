@@ -39,6 +39,7 @@ vi.mock('vscode', () => {
         info: vi.fn(), warn: vi.fn(), error: vi.fn(), dispose: vi.fn(),
       })),
       registerWebviewViewProvider: vi.fn(() => ({ dispose: vi.fn() })),
+      onDidChangeWindowState: vi.fn(() => ({ dispose: vi.fn() })),
       showInformationMessage: vi.fn(),
       showWarningMessage: vi.fn(),
       showErrorMessage: vi.fn(),

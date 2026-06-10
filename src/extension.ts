@@ -627,6 +627,15 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   });
   usageProvider.start(() => sendUpdate());
 
+  // Refresh usage when the window regains focus. Cheap when nothing changed
+  // (cooldown short-circuits); picks up credential changes made while the
+  // window was in the background without waiting for the next poll.
+  context.subscriptions.push(
+    vscode.window.onDidChangeWindowState((e) => {
+      if (e.focused) { void usageProvider.refresh(); }
+    }),
+  );
+
   // Watch settings.json (in active Claude state dir) for compact setting changes
   const settingsPath = getClaudeSettingsPath();
   const settingsWatcher = vscode.workspace.createFileSystemWatcher(

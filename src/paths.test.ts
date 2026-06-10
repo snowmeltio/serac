@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { claudeStateDir, claudeConfigFile, claudeKeychainService } from './paths.js';
+import { claudeStateDir, claudeConfigFile, claudeKeychainService, claudeAccountId } from './paths.js';
 
 const ORIG_ENV = process.env.CLAUDE_CONFIG_DIR;
 
@@ -105,5 +105,68 @@ describe('claudeConfigFile', () => {
     fs.mkdirSync(stateDir);
     process.env.CLAUDE_CONFIG_DIR = stateDir;
     expect(claudeConfigFile()).toBeNull();
+  });
+});
+
+describe('claudeAccountId', () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'paths-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  it('returns the accountUuid from the resolved config file (sibling layout)', () => {
+    const stateDir = path.join(tmpRoot, '.claude');
+    fs.mkdirSync(stateDir);
+    fs.writeFileSync(`${stateDir}.json`, JSON.stringify({
+      oauthAccount: { accountUuid: 'uuid-123', emailAddress: 'a@b.c' },
+    }));
+    process.env.CLAUDE_CONFIG_DIR = stateDir;
+    expect(claudeAccountId()).toBe('uuid-123');
+  });
+
+  it('returns null when the config has no oauthAccount (migration-flags stub)', () => {
+    const stateDir = path.join(tmpRoot, '.claude');
+    fs.mkdirSync(stateDir);
+    fs.writeFileSync(`${stateDir}.json`, '{}');
+    process.env.CLAUDE_CONFIG_DIR = stateDir;
+    expect(claudeAccountId()).toBeNull();
+  });
+
+  it('returns null when no config file exists', () => {
+    const stateDir = path.join(tmpRoot, '.claude');
+    fs.mkdirSync(stateDir);
+    process.env.CLAUDE_CONFIG_DIR = stateDir;
+    expect(claudeAccountId()).toBeNull();
+  });
+
+  it('returns null when the config file is invalid JSON', () => {
+    const stateDir = path.join(tmpRoot, '.claude');
+    fs.mkdirSync(stateDir);
+    fs.writeFileSync(`${stateDir}.json`, 'not json {{{');
+    process.env.CLAUDE_CONFIG_DIR = stateDir;
+    expect(claudeAccountId()).toBeNull();
+  });
+
+  it('returns null when accountUuid is empty or non-string', () => {
+    const stateDir = path.join(tmpRoot, '.claude');
+    fs.mkdirSync(stateDir);
+    fs.writeFileSync(`${stateDir}.json`, JSON.stringify({ oauthAccount: { accountUuid: '' } }));
+    process.env.CLAUDE_CONFIG_DIR = stateDir;
+    expect(claudeAccountId()).toBeNull();
+  });
+
+  it('uses an explicit configFile argument, bypassing resolution', () => {
+    const file = path.join(tmpRoot, 'explicit.json');
+    fs.writeFileSync(file, JSON.stringify({ oauthAccount: { accountUuid: 'uuid-explicit' } }));
+    expect(claudeAccountId(file)).toBe('uuid-explicit');
+  });
+
+  it('treats an explicit null configFile as no account', () => {
+    expect(claudeAccountId(null)).toBeNull();
   });
 });

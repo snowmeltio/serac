@@ -5,7 +5,7 @@ import * as https from 'https';
 import * as cp from 'child_process';
 import type { UsageSnapshot } from './types.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
-import { claudeStateDir, claudeKeychainService } from './paths.js';
+import { claudeStateDir, claudeKeychainService, claudeAccountId } from './paths.js';
 
 /** Shape of the Anthropic OAuth usage API response */
 interface UsageApiResponse {
@@ -48,12 +48,24 @@ export class UsageProvider {
   private lastApiCallAttempt = 0;
   private apiCooldownMs = 0; // randomised each cycle
 
-  constructor(workspacePath: string, opts?: { cachePath?: string }) {
+  // Account recorded in the config file at last check. Cached data (disk
+  // cache, token, last API response) is only valid for this identity.
+  private accountId: string | null;
+  private readonly configFileOverride: string | undefined;
+
+  constructor(workspacePath: string, opts?: { cachePath?: string; configFile?: string }) {
     const stateDir = claudeStateDir();
     this.projectsDir = path.join(stateDir, 'projects');
     this.workspaceKey = sanitiseWorkspaceKey(workspacePath);
     this.cachePath = opts?.cachePath ?? path.join(stateDir, 'usage-cache.json');
+    this.configFileOverride = opts?.configFile;
+    // Identity first: loadDiskCache validates the cache's account stamp.
+    this.accountId = this.readAccountId();
     this.loadDiskCache();
+  }
+
+  private readAccountId(): string | null {
+    return claudeAccountId(this.configFileOverride);
   }
 
   /** Start polling for usage data */
@@ -93,6 +105,7 @@ export class UsageProvider {
     if (this.refreshing) { return; }
     this.refreshing = true;
     try {
+      this.checkAccountIdentity();
       const freshApiData = await this.fetchUsageApi();
 
       // Cache successful responses; reuse last good data on failure (429, network, etc.)
@@ -134,16 +147,38 @@ export class UsageProvider {
     }
   }
 
+  // ── Account identity ─────────────────────────────────────────────────
+
+  /**
+   * The config file records which account the environment is logged into.
+   * If it no longer matches what our cached token/data were fetched for,
+   * drop them and clear the throttle so the next fetch starts clean. The
+   * cache must always belong to the config's current account.
+   */
+  private checkAccountIdentity(): void {
+    const current = this.readAccountId();
+    if (current === this.accountId) { return; }
+    this.accountId = current;
+    this.oauthToken = null;
+    this.tokenExpiresAt = 0;
+    this.lastApiData = null;
+    this.lastApiCallAttempt = 0;
+    this.apiCooldownMs = 0;
+  }
+
   // ── Disk cache (survives extension reloads) ─────────────────────────
 
   private loadDiskCache(): void {
     try {
       const raw = fs.readFileSync(this.cachePath, 'utf-8');
       const cached = JSON.parse(raw);
-      // Only use cache if less than 15 minutes old
-      if (cached._ts && Date.now() - cached._ts < 15 * 60 * 1000) {
+      // Only use cache if less than 15 minutes old AND written for the
+      // account the config is currently logged into.
+      if (cached._ts && Date.now() - cached._ts < 15 * 60 * 1000
+          && (cached._account ?? null) === this.accountId) {
         const ts = cached._ts;
         delete cached._ts;
+        delete cached._account;
         this.lastApiData = cached as UsageApiResponse;
         // Seed throttle from disk — prevents cross-window duplicate calls
         this.lastApiCallAttempt = ts;
@@ -160,9 +195,13 @@ export class UsageProvider {
       const raw = fs.readFileSync(this.cachePath, 'utf-8');
       const cached = JSON.parse(raw);
       // Only adopt if the cached timestamp is newer than our last API call
-      if (cached._ts && cached._ts > this.lastApiCallAttempt) {
+      // and the cache was written for the current account; a foreign-account
+      // cache must not advance the throttle either.
+      if (cached._ts && cached._ts > this.lastApiCallAttempt
+          && (cached._account ?? null) === this.accountId) {
         const ts = cached._ts;
         delete cached._ts;
+        delete cached._account;
         this.lastApiData = cached as UsageApiResponse;
         this.lastApiCallAttempt = ts;
         this.rollCooldown();
@@ -175,7 +214,11 @@ export class UsageProvider {
   private async saveDiskCache(data: UsageApiResponse): Promise<void> {
     try {
       const tmpPath = this.cachePath + `.${process.pid}.tmp`;
-      await fs.promises.writeFile(tmpPath, JSON.stringify({ ...data, _ts: Date.now() }), 'utf-8');
+      await fs.promises.writeFile(
+        tmpPath,
+        JSON.stringify({ ...data, _ts: Date.now(), _account: this.accountId }),
+        'utf-8',
+      );
       await fs.promises.rename(tmpPath, this.cachePath);
     } catch {
       // Non-critical

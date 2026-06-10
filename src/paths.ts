@@ -27,6 +27,25 @@ export function claudeConfigFile(): string | null {
   return null;
 }
 
+/**
+ * Account identifier recorded in the active environment's config file, or
+ * null when no account is recorded (logged out, file missing, unreadable).
+ * Resolves the config file lazily on every call — it can appear, vanish, or
+ * change owner while a window stays open. Pass `configFile` explicitly to
+ * bypass resolution (test seam); explicit null means "no config file".
+ */
+export function claudeAccountId(configFile?: string | null): string | null {
+  const file = configFile !== undefined ? configFile : claudeConfigFile();
+  if (!file) { return null; }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const id = parsed?.oauthAccount?.accountUuid;
+    return typeof id === 'string' && id.length > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 /** macOS Keychain service name for the active environment's credentials. */
 export function claudeKeychainService(): string {
   const env = process.env.CLAUDE_CONFIG_DIR;

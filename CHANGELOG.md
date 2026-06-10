@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.11.1 (2026-06-10) — Usage cache correctness on credential change
+
+### Fixed
+- **Usage panel no longer shows stale quota data after the active config's credentials change.** The usage disk cache now records which account it was fetched for and is ignored on mismatch (including caches written by older builds); when the config file's recorded account identity changes, the cached OAuth token, last API response, and API-call cooldown are invalidated and fresh data is fetched on the next poll. Previously the panel could show out-of-date figures for up to ~25 minutes.
+- **Usage refreshes when the window regains focus** — cheap no-op when nothing changed (the cooldown short-circuits), immediate correction when credentials changed while the window was in the background.
+
 ## v1.11.0 (2026-06-09) — Calmer cards, one agent interface, status false-positive fixes
 
 A UX pass that collapses the per-kind agent affordances into one consistent interface, folds teams into their orchestrator card, and renders agent transcripts markdown-friendly — plus two status false-positive fixes (the lingering background-shell badge and the slow-tool "Waiting for permission" flicker).

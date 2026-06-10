@@ -19,11 +19,14 @@ const { UsageProvider } = await import('./usageProvider.js');
 
 let tmpDir: string;
 let cachePath: string;
+let configPath: string;
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: false });
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-test-'));
   cachePath = path.join(tmpDir, 'usage-cache.json');
+  configPath = path.join(tmpDir, 'claude-config.json');
+  fs.writeFileSync(configPath, JSON.stringify({ oauthAccount: { accountUuid: 'acct-1' } }));
   // Default keychain mock — returns no credentials (resolves immediately so promises settle)
   mockKeychainError(new Error('no credentials'));
 });
@@ -35,7 +38,7 @@ afterEach(() => {
 });
 
 function makeProvider(workspace = '/test/workspace'): InstanceType<typeof UsageProvider> {
-  return new UsageProvider(workspace, { cachePath });
+  return new UsageProvider(workspace, { cachePath, configFile: configPath });
 }
 
 /** Mock cp.execFile to invoke the callback with the given stdout value */
@@ -150,6 +153,7 @@ describe('loadDiskCache()', () => {
     fs.writeFileSync(cachePath, JSON.stringify({
       five_hour: { utilization: 55, resets_at: '2026-01-01T12:00:00Z' },
       _ts: freshTs,
+      _account: 'acct-1',
     }));
     const p = makeProvider();
     await p.refresh();
@@ -186,6 +190,7 @@ describe('saveDiskCache()', () => {
     const raw = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
     expect(raw._ts).toBeTypeOf('number');
     expect(raw._ts).toBeGreaterThan(0);
+    expect(raw._account).toBe('acct-1');
     expect(raw.five_hour.utilization).toBe(70);
   });
 });
@@ -196,6 +201,7 @@ describe('reloadDiskCacheIfFresh()', () => {
     fs.writeFileSync(cachePath, JSON.stringify({
       five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00Z' },
       _ts: oldTs,
+      _account: 'acct-1',
     }));
     const p = makeProvider();
 
@@ -204,6 +210,7 @@ describe('reloadDiskCacheIfFresh()', () => {
     fs.writeFileSync(cachePath, JSON.stringify({
       five_hour: { utilization: 88, resets_at: '2026-06-15T00:00:00Z' },
       _ts: freshTs,
+      _account: 'acct-1',
     }));
 
     await p.refresh();
@@ -223,6 +230,7 @@ describe('rollCooldown()', () => {
       fs.writeFileSync(cachePath, JSON.stringify({
         five_hour: { utilization: 1, resets_at: '2026-01-01T00:00:00Z' },
         _ts: Date.now() - 1000,
+        _account: 'acct-1',
       }));
       const p = makeProvider();
       values.push((p as unknown as { apiCooldownMs: number }).apiCooldownMs);
@@ -428,6 +436,160 @@ describe('saveDiskCache atomic write', () => {
     // No .tmp files should remain in the directory
     const tmpFiles = fs.readdirSync(tmpDir).filter(f => f.endsWith('.tmp'));
     expect(tmpFiles).toHaveLength(0);
+  });
+});
+
+// ── Account identity ─────────────────────────────────────────────────────
+
+describe('account identity invalidation', () => {
+  /** Mock https.get to return the given utilization on every call. */
+  function setupApi(utilization: number): void {
+    const body = JSON.stringify({
+      five_hour: { utilization, resets_at: '2026-06-01T00:00:00Z' },
+    });
+    const mockReq = { on: vi.fn().mockReturnThis(), setTimeout: vi.fn().mockReturnThis() };
+    vi.mocked(https.get).mockImplementation((_url: unknown, _opts: unknown, cb: unknown) => {
+      const mockResponse = {
+        statusCode: 200,
+        on: vi.fn((event: string, handler: (chunk?: string) => void) => {
+          if (event === 'data') { handler(body); }
+          if (event === 'end') { handler(); }
+          return mockResponse;
+        }),
+        resume: vi.fn(),
+        destroy: vi.fn(),
+      };
+      (cb as (res: unknown) => void)(mockResponse);
+      return mockReq as unknown as ReturnType<typeof https.get>;
+    });
+  }
+
+  function setupToken(): void {
+    mockKeychain(JSON.stringify({
+      claudeAiOauth: { accessToken: 'tok', expiresAt: Date.now() + 3600_000 },
+    }));
+  }
+
+  it('rejects a fresh cache stamped for a different account', async () => {
+    fs.writeFileSync(cachePath, JSON.stringify({
+      five_hour: { utilization: 55, resets_at: '2026-01-01T12:00:00Z' },
+      _ts: Date.now() - 60_000,
+      _account: 'someone-else',
+    }));
+    const p = makeProvider();
+    await p.refresh();
+    const snap = p.getSnapshot();
+    expect(snap.apiConnected).toBe(false);
+    expect(snap.quotaPct5h).toBe(0);
+  });
+
+  it('rejects a legacy cache with no account stamp', async () => {
+    fs.writeFileSync(cachePath, JSON.stringify({
+      five_hour: { utilization: 55, resets_at: '2026-01-01T12:00:00Z' },
+      _ts: Date.now() - 60_000,
+    }));
+    const p = makeProvider();
+    await p.refresh();
+    expect(p.getSnapshot().apiConnected).toBe(false);
+  });
+
+  it('does not seed the cooldown from a mismatched cache (fetches immediately)', async () => {
+    fs.writeFileSync(cachePath, JSON.stringify({
+      five_hour: { utilization: 55, resets_at: '2026-01-01T12:00:00Z' },
+      _ts: Date.now() - 60_000,
+      _account: 'someone-else',
+    }));
+    setupToken();
+    setupApi(45);
+    vi.mocked(https.get).mockClear();
+    setupApi(45);
+    const p = makeProvider();
+    await p.refresh();
+    expect(vi.mocked(https.get).mock.calls.length).toBe(1);
+    expect(p.getSnapshot().quotaPct5h).toBe(45);
+  });
+
+  it('clears token and cooldown and refetches when the account changes mid-session', async () => {
+    setupToken();
+    setupApi(45);
+    const p = makeProvider();
+    await p.refresh();
+    expect(p.getSnapshot().quotaPct5h).toBe(45);
+
+    // Identity flips; only 60s pass — well inside the 600-900s cooldown, so
+    // the refetch can only happen because the identity check reset it.
+    fs.writeFileSync(configPath, JSON.stringify({ oauthAccount: { accountUuid: 'acct-2' } }));
+    setupApi(88);
+    const keychainCallsBefore = vi.mocked(cp.execFile).mock.calls.length;
+    vi.advanceTimersByTime(60_000);
+    await p.refresh();
+
+    expect(vi.mocked(cp.execFile).mock.calls.length).toBeGreaterThan(keychainCallsBefore);
+    expect(p.getSnapshot().quotaPct5h).toBe(88);
+  });
+
+  it('does not reset the throttle when the identity is unchanged', async () => {
+    setupToken();
+    setupApi(45);
+    const p = makeProvider();
+    await p.refresh();
+    vi.mocked(https.get).mockClear();
+    setupApi(88);
+    vi.advanceTimersByTime(60_000);
+    await p.refresh();
+    expect(vi.mocked(https.get).mock.calls.length).toBe(0);
+    expect(p.getSnapshot().quotaPct5h).toBe(45);
+  });
+
+  it('drops the previous account data when the config records no account (logged out)', async () => {
+    setupToken();
+    setupApi(45);
+    const p = makeProvider();
+    await p.refresh();
+    expect(p.getSnapshot().quotaPct5h).toBe(45);
+
+    fs.rmSync(configPath);
+    mockKeychainError();
+    vi.advanceTimersByTime(60_000);
+    await p.refresh();
+    const snap = p.getSnapshot();
+    expect(snap.apiConnected).toBe(false);
+    expect(snap.quotaPct5h).toBe(0);
+  });
+
+  it('fetches after a login when starting logged out', async () => {
+    fs.rmSync(configPath);
+    const p = makeProvider();
+    await p.refresh();
+    expect(p.getSnapshot().apiConnected).toBe(false);
+
+    fs.writeFileSync(configPath, JSON.stringify({ oauthAccount: { accountUuid: 'acct-1' } }));
+    setupToken();
+    setupApi(45);
+    await p.refresh();
+    const snap = p.getSnapshot();
+    expect(snap.apiConnected).toBe(true);
+    expect(snap.quotaPct5h).toBe(45);
+  });
+
+  it('ignores a fresher cross-window cache stamped for a different account', async () => {
+    setupToken();
+    setupApi(45);
+    const p = makeProvider();
+    await p.refresh();
+    expect(p.getSnapshot().quotaPct5h).toBe(45);
+
+    // Another window (different identity) writes a fresher cache.
+    fs.writeFileSync(cachePath, JSON.stringify({
+      five_hour: { utilization: 88, resets_at: '2026-06-15T00:00:00Z' },
+      _ts: Date.now() + 1000,
+      _account: 'acct-2',
+    }));
+    vi.advanceTimersByTime(60_000);
+    await p.refresh();
+    // Foreign cache not adopted; own last-good data still shown.
+    expect(p.getSnapshot().quotaPct5h).toBe(45);
+    expect(p.getSnapshot().apiConnected).toBe(true);
   });
 });
 
