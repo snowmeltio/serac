@@ -276,6 +276,9 @@ export interface WorkspaceGroup {
   worktreeCount?: number;
   /** Tooltip listing member worktree paths (only set on aggregated rows). */
   worktreeMembersLabel?: string;
+  /** True when a live VS Code window (ide/<port>.lock, pid-verified) has this
+   *  workspace open — the row gets a quiet "IDE" tag. Display-only. */
+  ideOpen?: boolean;
   /** Every worktree of this repo as discovered from `.git/worktrees/*`, set on
    *  rows whose `repoRoot` resolved to a real repo. Drives the inline picker
    *  shown when the user clicks an aggregated row — entries with no Claude

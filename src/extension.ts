@@ -4,6 +4,7 @@ import { SessionDiscovery } from './sessionDiscovery.js';
 import { setConfidenceThresholds } from './sessionManager.js';
 import { claudeStateDir } from './paths.js';
 import { FooterSlotRegistry } from './footerSlots.js';
+import { readMcpNeedsAuth } from './claudeEnvSignals.js';
 import type { SeracExports } from './types.js';
 import { AgentPanelProvider } from './panelProvider.js';
 import { DetailPanel } from './detailPanel.js';
@@ -458,6 +459,31 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   );
   // Re-render whenever a companion registers/updates/disposes a slot.
   footerSlots.setOnChange(() => panelProvider.refresh());
+
+  // MCP needs-auth chip — an internal footer slot (same chrome as companion
+  // slots). Shows only while servers are awaiting re-auth; "/mcp" in the
+  // session fixes it, so the chip is informational (no click command).
+  {
+    let mcpSlot: ReturnType<typeof footerSlots.register> | null = null;
+    const refreshMcpSlot = () => {
+      const needing = readMcpNeedsAuth();
+      if (needing.length === 0) {
+        if (mcpSlot) { mcpSlot.dispose(); mcpSlot = null; }
+        return;
+      }
+      const spec = {
+        label: needing.length + ' MCP need' + (needing.length === 1 ? 's' : '') + ' auth',
+        icon: '⚠',
+        status: 'warn' as const,
+        tooltip: 'MCP servers awaiting authentication (run /mcp in a session):\n'
+          + needing.map(n => '• ' + n.name).join('\n'),
+      };
+      if (mcpSlot) { mcpSlot.update(spec); } else { mcpSlot = footerSlots.register('serac-mcp-needs-auth', spec); }
+    };
+    refreshMcpSlot();
+    const mcpTimer = setInterval(refreshMcpSlot, 60_000);
+    context.subscriptions.push({ dispose: () => clearInterval(mcpTimer) });
+  }
 
   panelProvider.setOpenWorkspaceHandler(async (cwd: string, sessionId?: string) => {
     if (sessionId) {

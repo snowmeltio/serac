@@ -17,6 +17,7 @@ import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { readSettings, foreignWindowGate } from './settings.js';
+import { readIdeOpenFolders } from './claudeEnvSignals.js';
 
 /** Resolved visibility gate for this section (live-only flag + time window in
  *  ms). Read at the top of each scan / housekeeping pass so the value is
@@ -28,6 +29,22 @@ const FOREIGN_SCAN_INTERVAL = 10;
 const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 /** done → stale promotion delay (mirrors SessionDiscovery) */
 const STALE_PROMOTION_MS = 10_000;
+/** IDE lock re-scan cadence (see getIdeOpenFolders). */
+const IDE_LOCKS_TTL_MS = 30_000;
+
+/** Whether a workspace is open in a live VS Code window: its cwd or repo root
+ *  matches an IDE lock folder exactly, or its cwd sits inside one. */
+function ideOpenFor(cwd: string | null, repoRoot: string | null, folders: Set<string>): boolean {
+  if (folders.size === 0) { return false; }
+  if (cwd && folders.has(cwd)) { return true; }
+  if (repoRoot && folders.has(repoRoot)) { return true; }
+  if (cwd) {
+    for (const f of folders) {
+      if (cwd.startsWith(f + '/')) { return true; }
+    }
+  }
+  return false;
+}
 
 export class ForeignWorkspaceManager {
   private sessions: Map<string, SessionManager> = new Map();
@@ -405,6 +422,7 @@ export class ForeignWorkspaceManager {
     // read time (not baked into repoRootCache) so toggling the setting takes
     // effect on the next poll without a cache flush.
     const consolidateTmp = readSettings().worktrees.consolidateTmp;
+    const ideFolders = this.getIdeOpenFolders(now);
 
     const result: WorkspaceGroup[] = [];
     for (const [key, counts] of groups) {
@@ -425,10 +443,21 @@ export class ForeignWorkspaceManager {
         worktrees: worktrees && worktrees.length > 0
           ? worktrees.map(w => ({ path: w.path, branch: w.branch, isMain: w.isMain }))
           : undefined,
+        ideOpen: ideOpenFor(this.cwdCache.get(key) ?? null, repoRoot, ideFolders) || undefined,
       });
     }
     result.sort((a, b) => a.displayName.localeCompare(b.displayName));
     return result;
+  }
+
+  /** IDE lock folders, cached briefly — the read stats every lock file and
+   *  pings every pid, which is overkill at the 5s render cadence. */
+  private ideFoldersCache: { at: number; folders: Set<string> } | null = null;
+  private getIdeOpenFolders(now: number): Set<string> {
+    if (!this.ideFoldersCache || now - this.ideFoldersCache.at > IDE_LOCKS_TTL_MS) {
+      this.ideFoldersCache = { at: now, folders: readIdeOpenFolders() };
+    }
+    return this.ideFoldersCache.folders;
   }
 
   /** Get a CWD for a workspace key — uses the cached cwd from any session in that workspace. */

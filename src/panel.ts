@@ -52,6 +52,9 @@ interface WorkspaceGroup {
   /** Set on synthetic rows consolidating non-git scratch dirs (under
    *  /private/tmp). The picker is driven by `members` and the chip relabelled. */
   pseudoRepo?: boolean;
+  /** True when a live VS Code window has this workspace open (quiet IDE tag).
+   *  Not synthesised onto aggregated rows. */
+  ideOpen?: boolean;
 }
 
 /** Compact settings shape (mirrors CompactSettings from claudeSettings.ts,
@@ -1382,6 +1385,7 @@ const RANGE_MS: Record<string, number> = {
       + rowAttrs + '>'
       + chevron
       + '<span class="ws-name">' + escapeHtml(ws.displayName) + '</span>'
+      + (ws.ideOpen ? '<span class="ws-picker-quiet" title="Open in a VS Code window now">IDE</span>' : '')
       + wtChip
       + '<div class="ws-counts">' + countsHtml + '</div>'
       + '</div>';
