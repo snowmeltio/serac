@@ -378,6 +378,12 @@ export class SessionManager {
     this.earlyToolResults.clear();
     this.backgroundShellTracker.reset();
     this.loopTracker.clearAll();
+    // Glance enrichment rebuilds from the replayed records — stale values must
+    // not survive a truncation they may no longer be true of.
+    this.gitBranch = '';
+    this.toolErrorCount = 0;
+    this.lastAssistantText = '';
+    this.trackedFiles = [];
     // Dispose all subagent resources before clearing
     this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {

@@ -283,3 +283,79 @@ describe('Loops badge e2e — ScheduleWakeup → sleeping snapshot → fired tur
     await fs.promises.rm(dir, { recursive: true, force: true });
   });
 });
+
+describe('Truncation without PreCompact — full enrichment reset (test-gap single)', () => {
+  // A JSONL can shrink with NO PreCompact hook and no compact_boundary record
+  // (manual /clear, external rewrite, crash-recovery). The tailer flags
+  // truncation; resetState must drop EVERY enrichment slice so nothing from
+  // the old timeline survives into the new one — the replayed new content is
+  // the only source of truth.
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function rec(type: string, content: object[], at: number, extra: object = {}): object {
+    return { type, timestamp: new Date(at).toISOString(), message: { content }, ...extra };
+  }
+
+  it('drops shells, wakeups, tracked files, branch, errors, and preview on truncation', async () => {
+    const t0 = Date.now() - 30_000;
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'trunc-'));
+    const file = path.join(dir, 's.jsonl');
+    const richTimeline = [
+      rec('user', [{ type: 'text', text: 'go' }], t0, { gitBranch: 'feature/x' }),
+      rec('assistant', [{ type: 'tool_use', id: 'tu-b', name: 'Bash', input: { run_in_background: true } }], t0 + 1000),
+      rec('user', [{ type: 'tool_result', tool_use_id: 'tu-b', is_error: true,
+        content: [{ type: 'text', text: 'Command running in background with ID: bash_9.' }] }], t0 + 2000),
+      rec('assistant', [{ type: 'tool_use', id: 'tu-w', name: 'ScheduleWakeup', input: { delaySeconds: 3600, reason: 'r' } }], t0 + 3000),
+      { type: 'file-history-snapshot', timestamp: new Date(t0 + 4000).toISOString(),
+        snapshot: { trackedFileBackups: { '/r/a.ts': {} } } },
+      rec('assistant', [{ type: 'text', text: 'old preview text' }], t0 + 5000),
+    ];
+    await fs.promises.writeFile(file, richTimeline.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const mgr = new SessionManager('trunc-sid', file, 'ws');
+    await mgr.update();
+    const before = mgr.getSnapshot();
+    expect(before.backgroundShellCount).toBe(1);
+    expect(before.pendingWakeupAt).toBeDefined();
+    expect(before.trackedFiles).toEqual(['/r/a.ts']);
+    expect(before.gitBranch).toBe('feature/x');
+    expect(before.toolErrorCount).toBe(1);
+
+    // Truncate: REPLACE with a shorter, fresh timeline — no PreCompact hook,
+    // no compact_boundary record.
+    await fs.promises.writeFile(file, JSON.stringify(
+      rec('user', [{ type: 'text', text: 'fresh start' }], Date.now())) + '\n');
+    await mgr.update();
+    const after = mgr.getSnapshot();
+    expect(after.backgroundShellCount).toBeUndefined();
+    expect(after.pendingWakeupAt).toBeUndefined();
+    expect(after.trackedFiles).toBeUndefined();
+    expect(after.gitBranch).toBeUndefined();
+    expect(after.toolErrorCount).toBeUndefined();
+    expect(after.lastAssistantText).toBeUndefined();
+    expect(mgr.getStatus()).toBe('running'); // fresh user turn from the new timeline
+
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+
+  it('enrichment present in the NEW content survives the reset (rebuilt, not blanked)', async () => {
+    const t0 = Date.now() - 30_000;
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'trunc2-'));
+    const file = path.join(dir, 's.jsonl');
+    await fs.promises.writeFile(file, JSON.stringify(
+      rec('user', [{ type: 'text', text: 'old' }], t0, { gitBranch: 'old-branch' })) + '\n'
+      + JSON.stringify(rec('assistant', [{ type: 'text', text: 'old reply' }], t0 + 1000)) + '\n'
+      + JSON.stringify(rec('user', [{ type: 'text', text: 'pad pad pad pad' }], t0 + 1500)) + '\n');
+    const mgr = new SessionManager('trunc2-sid', file, 'ws');
+    await mgr.update();
+
+    await fs.promises.writeFile(file, JSON.stringify(
+      rec('user', [{ type: 'text', text: 'new' }], Date.now(), { gitBranch: 'new-branch' })) + '\n');
+    await mgr.update();
+    expect(mgr.getSnapshot().gitBranch).toBe('new-branch');
+
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+});
