@@ -170,7 +170,11 @@ describe('Bubble policy: subagent permission wait → parent session', () => {
     expect(mgr.getSnapshot().subagents.find(s => s.parentToolUseId === 'agent-2')?.running).toBe(false);
 
     await feed(mgr, [sidechainToolUse('SomeTool', 'sc-1', 'agent-1')]);
+    // Agent 2's completion was a tool_result moments ago, so the permission
+    // delay is recency-DOUBLED (3s → 6s) to absorb sequential auto-approvals.
     vi.advanceTimersByTime(3_001);
+    expect(mgr.getSnapshot().subagents.find(s => s.parentToolUseId === 'agent-1')?.waitingOnPermission).toBe(false);
+    vi.advanceTimersByTime(3_000); // past the doubled delay
 
     // Agent 1 is the only running subagent AND it's blocked — bubble.
     expect(mgr.getSnapshot().subagents.find(s => s.parentToolUseId === 'agent-1')?.waitingOnPermission).toBe(true);

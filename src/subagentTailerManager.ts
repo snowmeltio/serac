@@ -177,11 +177,17 @@ export class SubagentTailerManager {
       const allFiles = await fs.promises.readdir(subagentsDir);
       const files = allFiles.filter(f => f.endsWith('.jsonl') && f.startsWith('agent-'));
 
-      // Filter out files already tailed by other subagents
+      // Filter out files already claimed by other subagents — not just those
+      // with an OPEN tailer: a sibling whose agentId came via agent_progress
+      // relay (never needed a tailer) and a sibling completed in an earlier
+      // turn (tailer disposed, file still on disk) both own their transcript,
+      // and excluding only open tailers let a silence-fired scan steal them.
       const tailedAgentIds = new Set<string>();
       const siblings = allSubagents ?? [subagent]; // fallback: only self (no dedup)
       for (const s of siblings) {
-        if (s !== subagent && s.tailer) {
+        if (s === subagent) { continue; }
+        if (s.agentId) { tailedAgentIds.add(s.agentId); }
+        if (s.tailer) {
           const match = path.basename(s.tailer.getFilePath()).match(/^agent-(.+)\.jsonl$/);
           if (match) { tailedAgentIds.add(match[1]); }
         }

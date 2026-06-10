@@ -141,3 +141,79 @@ describe('Phase 4 spike replay — subagent-hook-2026-05-25.jsonl', () => {
 // guaranteed by the unit tests in permissionTracker.test.ts (parent
 // tracker only fires on PermissionRequest, and the timer fallback
 // remains load-bearing for this deny mode).
+
+describe('PermissionRequest positive path — all-hook-events-2026-06-01.jsonl', () => {
+  // The one capture on disk with a REAL PermissionRequest payload (a Bash
+  // tool blocked on a prompt, full production shape: tool_name, tool_input,
+  // permission_suggestions). This is the ground-truth path that lets the 15s
+  // slow-tool timer stay a backstop rather than the load-bearing signal —
+  // these tests prove the wait surfaces immediately from the hook alone.
+  const PAYLOADS = loadCapture('all-hook-events-2026-06-01.jsonl');
+  const PERM = PAYLOADS.find(p => p.hook_event_name === 'PermissionRequest')!;
+  const SID = String(PERM.session_id);
+
+  it('fixture sanity: a real PermissionRequest payload exists with the production shape', () => {
+    expect(PERM).toBeTruthy();
+    expect(PERM.tool_name).toBe('Bash');
+    expect(PERM.tool_input).toBeTruthy();
+    expect(Array.isArray(PERM.permission_suggestions)).toBe(true);
+    expect(typeof PERM.agent_id === 'undefined' || PERM.agent_id === '').toBe(true); // parent-level request
+  });
+
+  it('the real payload fires the parent tracker immediately, keyed to the captured tool', () => {
+    const router = new HookEventRouter();
+    const fired: (string | undefined)[] = [];
+    const host = {
+      getActiveTools: () => new Map([['tu-1', 'Bash']]),
+      getLastToolResultAt: () => 0,
+      onWaitingFired: (toolName?: string) => { fired.push(toolName); },
+    };
+    const tracker = makePermissionTracker(host, { hookRouter: router, sessionId: SID });
+    // Replay the session's full event stream in capture order — only the
+    // PermissionRequest may fire, and it must fire exactly once, with no
+    // timer advance at all (ground truth beats the 15s heuristic).
+    for (const p of PAYLOADS.filter(p => p.session_id === SID)) {
+      router.onHookEvent(SID, String(p.hook_event_name), p);
+    }
+    expect(fired).toEqual(['Bash']);
+    tracker.dispose();
+  });
+
+  it('keeps the active-tool gate on the real payload (no fire with empty activeTools)', () => {
+    const router = new HookEventRouter();
+    let fired = 0;
+    const host = {
+      getActiveTools: () => new Map<string, string>(),
+      getLastToolResultAt: () => 0,
+      onWaitingFired: () => { fired++; },
+    };
+    const tracker = makePermissionTracker(host, { hookRouter: router, sessionId: SID });
+    router.onHookEvent(SID, 'PermissionRequest', PERM);
+    expect(fired).toBe(0); // Bash is not a userInput tool — gate holds
+    tracker.dispose();
+  });
+
+  it('parent/subagent filter discipline holds for the real payload shape', () => {
+    const router = new HookEventRouter();
+    let parentFired = 0;
+    let subFired = 0;
+    const host = (cb: () => void) => ({
+      getActiveTools: () => new Map([['tu-1', 'Bash']]),
+      getLastToolResultAt: () => 0,
+      onWaitingFired: cb,
+    });
+    const parent = makePermissionTracker(host(() => { parentFired++; }), { hookRouter: router, sessionId: SID });
+    const sub = makePermissionTracker(host(() => { subFired++; }), { hookRouter: router, sessionId: SID, agentId: 'agent-77' });
+    // The same real payload, re-addressed to a subagent: parent must ignore
+    // it; only the matching subagent tracker fires (bubble policy intact).
+    router.onHookEvent(SID, 'PermissionRequest', { ...PERM, agent_id: 'agent-77' });
+    expect(parentFired).toBe(0);
+    expect(subFired).toBe(1);
+    // And the parent-level original reaches only the parent.
+    router.onHookEvent(SID, 'PermissionRequest', PERM);
+    expect(parentFired).toBe(1);
+    expect(subFired).toBe(1);
+    parent.dispose();
+    sub.dispose();
+  });
+});

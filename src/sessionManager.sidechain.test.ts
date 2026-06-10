@@ -429,8 +429,12 @@ describe('SessionManager sidechain tests', () => {
       await feedRecords(mgr, [assistantToolUseRecord('AnotherTool', 'tool-2')]);
       expect(mgr.getStatus()).toBe('running');
 
-      // Another permission wait
+      // Another permission wait — the approval's tool_result arrived within
+      // the last 3s, so the delay is recency-doubled (3s → 6s): still running
+      // at 3s, waiting only past 6s.
       vi.advanceTimersByTime(3_001);
+      expect(mgr.getStatus()).toBe('running');
+      vi.advanceTimersByTime(3_000);
       expect(mgr.getStatus()).toBe('waiting');
 
       // Approve again

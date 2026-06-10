@@ -921,12 +921,27 @@ export class SessionDiscovery {
           const manager = new SessionManager(sessionId, filePath, workspaceKey, {
             hookRouter: this.hookRouter,
             // Registry-backed liveness, bound to this session id. Tri-state:
-            // null when the registry isn't in use OR the last scan was degraded
-            // (so absence never reads as death from a missing registry or a
-            // transient disk error), else whether a live process backs it.
-            livenessProbe: () => (this.processRegistry.isActive() && this.processRegistry.isScanClean())
+            // null when the last scan was degraded (absence must never read as
+            // death off a transient disk error), else whether a live process
+            // backs it. Deliberately NOT gated on isActive(): when the ONLY
+            // registered process dies the registry empties, and an isActive()
+            // gate would switch the probe off at the exact moment it matters.
+            // Safety against registry-less machines lives in the manager's
+            // seen-live latch — a session never observed live is never
+            // confirmed dead, so an old client degrades to the timer path.
+            livenessProbe: () => this.processRegistry.isScanClean()
               ? this.processRegistry.isSessionLive(sessionId)
               : null,
+            // The latch survives reloads via session-meta.json — without the
+            // seed, every reload disarmed the death gate until re-observed.
+            registrySeenLive: this.sessionMeta.get(sessionId)?.seenLive === true,
+            onRegistrySeenLive: () => {
+              const meta = this.getOrCreateMeta(sessionId);
+              if (!meta.seenLive) {
+                meta.seenLive = true;
+                this.metaDirty = true;
+              }
+            },
           });
           this.sessions.set(sessionId, manager);
           // Ensure meta entry exists for newly discovered sessions

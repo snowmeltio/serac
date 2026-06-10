@@ -178,8 +178,11 @@ export class SessionManager {
   private readonly livenessProbe?: () => boolean | null;
   /** Latch: have we ever observed this session live in the registry? Only then
    *  does a later "not live" reading mean it genuinely died (vs a session class
-   *  the registry never tracked). Guards against muting a real prompt. */
+   *  the registry never tracked). Guards against muting a real prompt. Seeded
+   *  from persisted session meta (survives reloads) and reported outward via
+   *  onRegistrySeenLive the first time this instance arms it. */
   private everSeenLiveInRegistry = false;
+  private readonly onRegistrySeenLive?: () => void;
   /** Tracks subagent lifecycle (spawn / progress / completion).
    *  JSONL-derived variant wraps SubagentTailerManager — hook variant
    *  (Phase 4) publishes lifecycle transitions from SubagentStart/Stop events. */
@@ -237,12 +240,21 @@ export class SessionManager {
       onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void;
       hookRouter?: HookEventRouter;
       livenessProbe?: () => boolean | null;
+      /** Seed for the seen-live-in-registry latch, persisted across window
+       *  reloads via session-meta.json — without it every reload disarmed the
+       *  registry death gate until the session was re-observed live. */
+      registrySeenLive?: boolean;
+      /** Fired once, the first time this instance observes the session live in
+       *  the registry — the caller persists the latch. */
+      onRegistrySeenLive?: () => void;
     } = {},
   ) {
     const now = new Date();
     this.onTransition = opts.onTransition;
     this.hookRouter = opts.hookRouter;
     this.livenessProbe = opts.livenessProbe;
+    this.everSeenLiveInRegistry = opts.registrySeenLive === true;
+    this.onRegistrySeenLive = opts.onRegistrySeenLive;
     this.tailer = new JsonlTailer(filePath);
     this.subagentLifecycle = makeSubagentLifecycleTracker({
       isDisposed: () => this.disposed,
@@ -649,8 +661,14 @@ export class SessionManager {
   private isConfirmedDeadByRegistry(): boolean {
     if (!this.livenessProbe) { return false; }
     const live = this.livenessProbe();
-    if (live === true) { this.everSeenLiveInRegistry = true; return false; }
-    if (live === null) { return false; }      // registry inactive/unknown
+    if (live === true) {
+      if (!this.everSeenLiveInRegistry) {
+        this.everSeenLiveInRegistry = true;
+        this.onRegistrySeenLive?.();           // persist the latch across reloads
+      }
+      return false;
+    }
+    if (live === null) { return false; }      // registry degraded/unknown
     return this.everSeenLiveInRegistry;        // live === false: dead iff seen-before
   }
 
@@ -826,8 +844,10 @@ export class SessionManager {
 
     // Process tool_result blocks — mark tools as complete
     const content = getContentBlocks(record);
+    let hadToolResult = false;
     for (const block of content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
+        hadToolResult = true;
         this.lastToolResultAt = Date.now();
         // SPIKE: detect backgrounded-Bash launch/completion from the result text
         // (display-only; never affects status). A launch banner adds an
@@ -874,7 +894,11 @@ export class SessionManager {
     // User input means the assistant turn finished — now running again
     // Reset turn-scoped flags: new turn starts, thinking phase begins
     this.seenOutputInTurn = false;
-    this.lastToolResultAt = 0;
+    // Reset tool-result recency only on a GENUINE human turn. A user record
+    // carrying tool_result blocks is tool plumbing mid-sequence — zeroing it
+    // here killed the permission timer's recency doubling on the very records
+    // that establish recency (the stamp set above never survived the method).
+    if (!hadToolResult) { this.lastToolResultAt = 0; }
     // A user record is a genuine new-turn reopener — release the Stop guard.
     this.turnEndedByStop = false;
     this.setRunning();
@@ -1086,7 +1110,11 @@ export class SessionManager {
     if (record.operation === 'enqueue') {
       this.state.firstActivity = timestamp;
       this.setStatus('done', 'enqueue');
-      this.enqueuedAt = Date.now();  // Track for stale guard (C3)
+      // Track for stale guard (C3). Anchored to the RECORD's timestamp, not
+      // wall-clock at processing — a reload replays the JSONL, and Date.now()
+      // would re-arm the done→stale display guard for every historic enqueue
+      // (same replay reasoning as the background-shell launch anchor).
+      this.enqueuedAt = timestamp.getTime();
       return true;
     }
     if (record.operation === 'dequeue') {
@@ -1297,10 +1325,14 @@ export class SessionManager {
 
   // ── Shared subagent record processing (sidechain + tailer paths) ──
 
-  /** Apply an assistant record to a subagent: add tools, update activity, reset permission timer. */
+  /** Apply an assistant record to a subagent: add tools, update activity, reset permission timer.
+   *  Deliberately does NOT touch the parent's seenOutputInTurn: that flag means
+   *  "the MAIN thread has produced output this turn" and gates the idle timer's
+   *  5s-vs-30s mode — a streaming subagent must not cancel the parent's
+   *  extended-thinking grace (main-thread agent_progress records already keep
+   *  the turn alive via processProgressRecord). */
   private applySubagentAssistantRecord(subagent: SubagentInfo, record: JsonlRecord): void {
     this.updateSubagentActivity(subagent);
-    this.seenOutputInTurn = true;
     const content = getContentBlocks(record);
     for (const block of content) {
       if (block.type === 'tool_use' && block.id && block.name) {

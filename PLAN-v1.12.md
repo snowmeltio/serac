@@ -23,7 +23,7 @@ Source: multi-agent audit (7 lenses, adversarially verified, 38 confirmed findin
 - [ ] Subagent/sidechain records set parent `seenOutputInTurn` → kills 30s extended-thinking grace, premature done (sessionManager.ts ~1303).
 - [ ] Silent-subagent scan can claim a sibling's transcript — dedup ignores relay-known/completed agentIds (subagentTailerManager.ts ~181).
 - [ ] enqueue replay stamps wall-clock enqueuedAt, not record timestamp (sessionManager.ts ~1089).
-- [ ] PermissionRequest positive-path tests with realistic payloads (fixture is pre-session_crons; refresh shape per CC ≥2.1.159). Then: slow-tool delay 15s→6s when hook ingress is live (hook = ground truth; timer = backstop).
+- [x] PermissionRequest positive-path tests with the real captured payload (all-hook-events fixture, replayed end-to-end through router→tracker). **Decision change:** the 15s→6s drop is NOT taken — with hooks live a genuine prompt surfaces in ~25ms via the hook, so the timer only covers hook-silence modes; dropping it to 6s would reintroduce the slow-Bash flicker (a 10s build with no prompt → timer fires at 6s). 15s stays as the backstop by design. Fixture refresh for session_crons/background_tasks deferred to the loops-badge work (BACKLOG).
 
 ## Track C — Freshness parity (closes the 2026-06-04 backlog item)
 
