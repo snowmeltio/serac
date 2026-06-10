@@ -113,11 +113,18 @@ export function parseAgentTeamsConfig(content: string, teamDirName: string): Tea
   // Build agent entries from non-lead members.
   // Members are dynamic: removed from config on completion, so all present members are active.
   // In-process members (tmuxPaneId === "in-process") are subagents in the lead's JSONL
-  // and already tracked by Serac's subagent detection. Only include tmux members.
+  // and already tracked by Serac's subagent detection. Only include tmux members
+  // in `agents` — but keep the in-process NAMES: roster matching (teammate badge,
+  // inbox resolution, transcript lookup) keys on them, and presence in the config
+  // is the teammate-liveness signal.
   const agents: TeamAgentEntry[] = [];
+  const inProcessMembers: string[] = [];
   for (const member of nonLeadMembers) {
-    // Skip in-process members — they're subagents in the lead's JSONL
-    if (member.backendType === 'in-process' || member.tmuxPaneId === 'in-process') { continue; }
+    // In-process members — they're subagents in the lead's JSONL
+    if (member.backendType === 'in-process' || member.tmuxPaneId === 'in-process') {
+      inProcessMembers.push(member.name as string);
+      continue;
+    }
 
     const memberCwd = isValidCwd(member.cwd) ? member.cwd : leadCwd;
     const joinedAt = typeof member.joinedAt === 'number' ? member.joinedAt : obj.createdAt as number;
@@ -153,6 +160,7 @@ export function parseAgentTeamsConfig(content: string, teamDirName: string): Tea
       cwd: leadCwd,
     },
     agents,
+    inProcessMembers,
     updatedAt,
   };
 }

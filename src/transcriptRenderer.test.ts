@@ -8,7 +8,7 @@ vi.mock('vscode', () => ({
   env: { language: 'en-AU' },
 }));
 
-const { renderTranscript } = await import('./transcriptRenderer.js');
+const { renderTranscript, parseTranscript } = await import('./transcriptRenderer.js');
 
 let tmpDir: string;
 
@@ -172,6 +172,50 @@ describe('renderTranscript', async () => {
         },
       ]);
       expect(md).not.toContain('Tool result');
+    });
+
+    it('gives a tool_result-only user record the tool role, not user', async () => {
+      // tool_result blocks ride back to the assistant inside user-role records;
+      // labelling them "prompt"/"You" misreads the conversation direction.
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'user',
+          timestamp: '2026-06-10T10:00:00Z',
+          message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_abc123456789', content: 'grep output' }] },
+        },
+      ]));
+      expect(entries).toHaveLength(1);
+      expect(entries[0].role).toBe('tool');
+      expect(entries[0].content).toContain('grep output');
+    });
+
+    it('keeps the user role when a record carries genuine prompt text alongside tool results', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'user',
+          timestamp: '2026-06-10T10:00:00Z',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_abc123456789', content: 'grep output' },
+              { type: 'text', text: 'Also, please check the README.' },
+            ],
+          },
+        },
+      ]));
+      expect(entries).toHaveLength(1);
+      expect(entries[0].role).toBe('user');
+    });
+
+    it('renders a tool-role entry in markdown without the "### You" heading', async () => {
+      const md = await render([
+        {
+          type: 'user',
+          timestamp: '',
+          message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_abc123456789', content: 'grep output' }] },
+        },
+      ]);
+      expect(md).toContain('**Tool result**');
+      expect(md).not.toContain('### You');
     });
   });
 

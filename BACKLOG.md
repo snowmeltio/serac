@@ -33,6 +33,10 @@ Origin: a card showed `DONE · 49s` while the chat had launched `./deploy.sh` wi
 - **Waiting-tint for workflow agents on the card detail chip.** A blocked subagent tints the chip peach; a workflow agent cannot — the live tier has no per-agent permission inference (only running/done from the journal). Needs the hook stream or per-agent JSONL permission timers scoped to workflow agents. Defer until a real run is observed blocking.
 - **Live-tier fixture refresh — DONE 2026-06-10 (f1478bd, v1.12.0).** `all-hook-events-2026-06-10.jsonl` pins the extended Stop payload (background_tasks populated + drained, session_crons key, last_assistant_message); the loops-badge prerequisite is met.
 
+## Compaction state detection
+
+- **Compaction only flashes at completion, not while running (noted 2026-06-10, no action yet).** Murray's observation: the compacting state appears only as a flash when compaction finishes; nothing shows during the window when it's actually in progress. Not yet investigated — first step is to characterise what signal (JSONL record, hook event, file activity) lands at compaction start vs end before designing any surfacing.
+
 ## Hooks — validate the wired ingress, then drop the permission delay
 
 - **Ingress is WIRED (2026-06-09 batch; audit-confirmed 2026-06-10).** `extension.ts` runs `startHookIngress` (Unix socket + leader election, fed by `bin/serac-hook-forward.cjs`) into `hookEventRouter`, and `SessionDiscovery` injects the router into every `SessionManager` — the full PermissionRequest pipeline exists.

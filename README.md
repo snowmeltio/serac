@@ -2,7 +2,7 @@
 
 **Manage your Claude Code agents, workflows, and teams.**
 
-Serac is a VS Code sidebar that turns your Claude Code sessions into colour-coded status cards, so across many windows you can see at a glance which agent needs you, which is done, and which is blocked, then drill into any of them. It also surfaces Opus 4.8 **Workflow** runs and **Agent Teams** as cards you can manage and explore.
+Serac is a VS Code sidebar that turns your Claude Code sessions into colour-coded status cards, so across many windows you can see at a glance which agent needs you, which is done, and which is blocked, then drill into any of them. It also surfaces Claude Code **Workflow** runs and **Agent Teams** as cards you can manage and explore.
 
 In one sidebar, you get:
 

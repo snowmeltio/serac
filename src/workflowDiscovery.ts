@@ -37,7 +37,7 @@ function resolveLiveLabel(call: WorkflowAgentCall, prompt: string): string | nul
 }
 
 /**
- * Discovers Opus 4.8 Workflow runs for the current workspace by reading the
+ * Discovers Claude Code Workflow runs for the current workspace by reading the
  * per-session completion sidecars at
  *   <projectsDir>/<workspaceKey>/<sessionId>/workflows/wf_<runId>.json   (Tier 1)
  * and minimally reconstructing in-progress runs (no sidecar yet) from

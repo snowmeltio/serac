@@ -71,9 +71,13 @@ export async function parseTranscript(filePath: string): Promise<TranscriptEntry
     const timestamp = (record.timestamp as string) || '';
 
     if (record.type === 'user') {
-      const content = extractUserContent(record);
+      const { content, hasPromptText } = extractUserContent(record);
       if (content) {
-        entries.push({ timestamp, role: 'user', content });
+        // A user record can be a genuine prompt (text blocks) OR tool plumbing:
+        // tool_result blocks ride back to the assistant inside a user-role
+        // record. Labelling those "prompt" misreads the conversation — they are
+        // responses TO the assistant, so they get their own role.
+        entries.push({ timestamp, role: hasPromptText ? 'user' : 'tool', content });
       }
     } else if (record.type === 'assistant') {
       const content = extractAssistantContent(record);
@@ -91,9 +95,10 @@ export async function parseTranscript(filePath: string): Promise<TranscriptEntry
   return entries;
 }
 
-function extractUserContent(record: JsonlRecord): string {
+function extractUserContent(record: JsonlRecord): { content: string; hasPromptText: boolean } {
   const content = getContentBlocks(record);
   const parts: string[] = [];
+  let hasPromptText = false;
 
   for (const block of content) {
     if (block.type === 'text' && block.text) {
@@ -101,6 +106,7 @@ function extractUserContent(record: JsonlRecord): string {
       // Skip system injections [A8: guard handles both complete and partial blocks]
       if (text.startsWith('<system-reminder>') || text.includes('</system-reminder>')) { continue; }
       if (text.startsWith('<ide_') || text.includes('</ide_')) { continue; }
+      hasPromptText = true;
       parts.push(text);
     } else if (block.type === 'tool_result') {
       const toolId = block.tool_use_id || '';
@@ -122,7 +128,7 @@ function extractUserContent(record: JsonlRecord): string {
     }
   }
 
-  return parts.join('\n\n');
+  return { content: parts.join('\n\n'), hasPromptText };
 }
 
 function extractAssistantContent(record: JsonlRecord): string {
@@ -196,6 +202,10 @@ function formatMarkdown(entries: TranscriptEntry[], sessionId: string): string {
     if (entry.role === 'user') {
       lines.push(`### You${timeStr}`);
       lines.push('');
+      lines.push(entry.content);
+      lines.push('');
+    } else if (entry.role === 'tool') {
+      // Tool results returned to the assistant — already `> `-quoted; no heading.
       lines.push(entry.content);
       lines.push('');
     } else if (entry.role === 'assistant') {

@@ -179,7 +179,6 @@ interface PanelSettings {
     worktrees: boolean;
     usage: boolean;
     subagents: boolean;
-    teams: boolean;
     workflows: boolean;
     fileCollisions: boolean;
   };

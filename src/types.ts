@@ -366,6 +366,12 @@ export interface TeamManifest {
     cwd: string;
   };
   agents: TeamAgentEntry[];
+  /** Names of in-process members (backendType/tmuxPaneId "in-process"). They
+   *  are deliberately NOT in `agents` — they surface as the lead's subagents —
+   *  but roster matching (teammate badge, inbox resolution, transcript lookup)
+   *  must still recognise them. Members are removed from the config when they
+   *  shut down, so presence here is the teammate-liveness signal. */
+  inProcessMembers: string[];
   updatedAt: number;       // epoch ms
 }
 
@@ -402,6 +408,10 @@ export interface TeamSnapshot {
     modelLabel: string;
   };
   agents: TeamAgentSnapshot[];
+  /** Names of in-process members (mirrored from the manifest). Not rendered in
+   *  the roster — they surface as the lead's subagents — but the detail panel
+   *  roster-matches subagents against these names for the teammate framing. */
+  inProcessMembers: string[];
   /** Aggregated status counts across all agents */
   counts: Record<string, number>;
   /** Recency timestamp (epoch ms): the orchestrator's last activity, falling
@@ -410,7 +420,7 @@ export interface TeamSnapshot {
   dismissed: boolean;
 }
 
-// ── Workflow types (Opus 4.8 Workflow runs) ──────────────────────────
+// ── Workflow types (Claude Code Workflow runs) ───────────────────────
 // A "workflow" is one invocation of the built-in Workflow tool inside a
 // session. Claude Code writes a render-ready sidecar at
 // <sessionDir>/workflows/wf_<runId>.json once the run completes; Serac
@@ -504,6 +514,11 @@ export interface DetailAgentView {
   /** This agent is a teammate of an Agent Team (in-process members surface
    *  through the subagents source), not a plain Task subagent — render distinctly. */
   teammate?: boolean;
+  /** Teammate can still receive inbox messages: its member name is in the
+   *  CURRENT team config (members are removed on shutdown) and the lead process
+   *  is not registry-confirmed dead. Gates the composer — an idle teammate is
+   *  alive (listening on its inbox) even when its subagent status reads done. */
+  alive?: boolean;
 }
 
 /** A left-pane group: a workflow phase, or a single flat group (team/subagents). */
@@ -574,7 +589,7 @@ export type WebviewMessage =
       foreignRunning?: SessionSnapshot[];
       /** Agent team snapshots (empty when no teams active) */
       teams?: TeamSnapshot[];
-      /** Opus 4.8 Workflow runs, keyed to their parent session (empty when none) */
+      /** Workflow runs, keyed to their parent session (empty when none) */
       workflows?: WorkflowSnapshot[];
       /** Claude Code auto-compact settings (from ~/.claude/settings.json env overrides) */
       compactSettings?: import('./claudeSettings.js').CompactSettings;

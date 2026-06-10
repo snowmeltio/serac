@@ -4,7 +4,6 @@ import { SessionDiscovery } from './sessionDiscovery.js';
 import { setConfidenceThresholds } from './sessionManager.js';
 import { claudeStateDir } from './paths.js';
 import { FooterSlotRegistry } from './footerSlots.js';
-import { readMcpNeedsAuth } from './claudeEnvSignals.js';
 import type { SeracExports } from './types.js';
 import { AgentPanelProvider } from './panelProvider.js';
 import { DetailPanel } from './detailPanel.js';
@@ -13,7 +12,7 @@ import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from './claudeSettings.js';
-import { sanitiseWorkspaceKey } from './panelUtils.js';
+import { sanitiseWorkspaceKey, applyWorkflowLiveStatus } from './panelUtils.js';
 import { buildWorktreeRows } from './worktreeRows.js';
 import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } from './workspaceOpener.js';
 import { HookEventRouter } from './hookEventRouter.js';
@@ -462,31 +461,6 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // Re-render whenever a companion registers/updates/disposes a slot.
   footerSlots.setOnChange(() => panelProvider.refresh());
 
-  // MCP needs-auth chip — an internal footer slot (same chrome as companion
-  // slots). Shows only while servers are awaiting re-auth; "/mcp" in the
-  // session fixes it, so the chip is informational (no click command).
-  {
-    let mcpSlot: ReturnType<typeof footerSlots.register> | null = null;
-    const refreshMcpSlot = () => {
-      const needing = readMcpNeedsAuth();
-      if (needing.length === 0) {
-        if (mcpSlot) { mcpSlot.dispose(); mcpSlot = null; }
-        return;
-      }
-      const spec = {
-        label: needing.length + ' MCP need' + (needing.length === 1 ? 's' : '') + ' auth',
-        icon: '⚠',
-        status: 'warn' as const,
-        tooltip: 'MCP servers awaiting authentication (run /mcp in a session):\n'
-          + needing.map(n => '• ' + n.name).join('\n'),
-      };
-      if (mcpSlot) { mcpSlot.update(spec); } else { mcpSlot = footerSlots.register('serac-mcp-needs-auth', spec); }
-    };
-    refreshMcpSlot();
-    const mcpTimer = setInterval(refreshMcpSlot, 60_000);
-    context.subscriptions.push({ dispose: () => clearInterval(mcpTimer) });
-  }
-
   panelProvider.setOpenWorkspaceHandler(async (cwd: string, sessionId?: string) => {
     if (sessionId) {
       const targetWorkspaceKey = sanitiseWorkspaceKey(cwd);
@@ -616,9 +590,11 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     const now = Date.now();
     if (now - lastSendTime < 200) { return; }
     lastSendTime = now;
-    const sessions = discovery.getSnapshots();
     const teams = discovery.getTeamSnapshots();
     const workflows = discovery.getWorkflowSnapshots();
+    // A done/stale card with a live background workflow is still working —
+    // upgrade it to running at the merge point (see applyWorkflowLiveStatus).
+    const sessions = applyWorkflowLiveStatus(discovery.getSnapshots(), workflows);
     // Include team agents waiting on input in the badge count
     let waitingCount = discovery.getWaitingCount();
     for (const team of teams) {

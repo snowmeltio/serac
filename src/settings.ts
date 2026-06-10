@@ -10,7 +10,6 @@ export interface SeracSettings {
     worktrees: boolean;
     usage: boolean;
     subagents: boolean;
-    teams: boolean;
     workflows: boolean;
     /** Same-file collision chip on cards. Default off (Murray 2026-06-10):
      *  worktree-parallel workflows never trip it; opt in when running
@@ -94,7 +93,6 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     worktrees: true,
     usage: true,
     subagents: true,
-    teams: true,
     workflows: true,
     fileCollisions: false,
   },
@@ -130,7 +128,6 @@ export function readSettings(): SeracSettings {
       worktrees: cfg.get<boolean>('show.worktrees', d.show.worktrees),
       usage: cfg.get<boolean>('show.usage', d.show.usage),
       subagents: cfg.get<boolean>('show.subagents', d.show.subagents),
-      teams: cfg.get<boolean>('show.teams', d.show.teams),
       workflows: cfg.get<boolean>('show.workflows', d.show.workflows),
       fileCollisions: cfg.get<boolean>('show.fileCollisions', d.show.fileCollisions),
     },

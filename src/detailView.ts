@@ -20,6 +20,8 @@ interface DetailAgentView {
   promptPreview?: string;
   resultPreview?: string | null;
   teammate?: boolean;
+  /** Teammate is still on the roster + lead process alive — gates the composer. */
+  alive?: boolean;
 }
 
 interface DetailGroupView {
@@ -254,7 +256,11 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (typeof document !== 'undefined' && document.hidden) { return; } // don't poll a hidden panel
     if (!model || selectedGroupKey === null || selectedAgentId === null) { return; }
     const agent = findAgent(selectedGroupKey, selectedAgentId);
-    if (!agent || agent.status !== 'running') { return; } // only live agents stream
+    // Live agents stream; so do ALIVE teammates — an idle teammate reads done
+    // to Task tracking but can wake on an inbox message at any moment, and its
+    // transcript must follow in real time.
+    const live = agent && (agent.status === 'running' || (agent.teammate === true && agent.alive === true));
+    if (!live) { return; }
     vscode.postMessage({
       type: 'viewAgent', source: model.source, containerId: model.containerId,
       groupKey: selectedGroupKey, agentId: selectedAgentId,
@@ -358,13 +364,19 @@ declare function acquireVsCodeApi(): VsCodeApi;
   }
 
   function renderTurn(e: TranscriptEntry): string {
-    const who = e.role === 'user' ? 'prompt' : e.role === 'assistant' ? 'assistant' : 'system';
+    // 'tool' = tool_result blocks riding back to the assistant in a user-role
+    // record — responses TO the assistant, so never labelled "prompt".
+    const who = e.role === 'user' ? 'prompt'
+      : e.role === 'assistant' ? 'assistant'
+        : e.role === 'tool' ? 'tool' : 'system';
     return renderTurnRaw(who, e.content, e.timestamp);
   }
 
+  /** `who` is the CSS class; the visible label differs only for 'tool'. */
   function renderTurnRaw(who: string, content: string, timestamp?: string): string {
+    const label = who === 'tool' ? 'tool result' : who;
     return '<div class="wf-turn ' + escapeHtml(who) + '">'
-      + '<div class="wf-who">' + escapeHtml(who) + renderTime(timestamp) + '</div>'
+      + '<div class="wf-who">' + escapeHtml(label) + renderTime(timestamp) + '</div>'
       + '<div class="wf-bubble">' + renderLines(content) + '</div></div>';
   }
 
@@ -735,13 +747,16 @@ declare function acquireVsCodeApi(): VsCodeApi;
     updateComposerCount();
   }
 
-  /** Decide composer visibility from the (display-only) flag + selection. */
+  /** Decide composer visibility from the (display-only) flag + selection.
+   *  Gated on `alive` (still on the team roster + lead process not confirmed
+   *  dead), NOT on subagent status: an idle teammate between messages reads
+   *  done to Task-tracking but is alive and listening on its inbox. */
   function updateComposer(): void {
     if (!composerEl) { return; }
     const agent = findAgent(selectedGroupKey, selectedAgentId);
     const show = experimental.teammateMessaging === true
       && !!model && model.source === 'subagents'
-      && !!agent && agent.teammate === true && agent.status === 'running';
+      && !!agent && agent.teammate === true && agent.alive === true;
     composerEl.hidden = !show;
     if (typeof document !== 'undefined' && document.body) {
       document.body.classList.toggle('composer-open', show);
@@ -769,8 +784,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (composerSend.disabled) { return; } // in-flight guard — Cmd/Ctrl+Enter must honour it too
     if (!experimental.teammateMessaging) { return; }
     const agent = findAgent(selectedGroupKey, selectedAgentId);
-    if (!agent || agent.teammate !== true || agent.status !== 'running') {
-      setComposerStatus('This teammate is no longer running.', 'error');
+    if (!agent || agent.teammate !== true || agent.alive !== true) {
+      setComposerStatus('This teammate has left the team.', 'error');
       return;
     }
     const text = composerInput.value.replace(UNSAFE_CHARS, '').trim();

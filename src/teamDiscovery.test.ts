@@ -84,8 +84,10 @@ function makeDiscovery(localWorkspaceKey: string = LOCAL_WS_KEY): InstanceType<t
   return td;
 }
 
-/** A member spec for teamConfig(): name + optional isActive (omit = "starting"). */
-interface MemberSpec { name: string; isActive?: boolean; }
+/** A member spec for teamConfig(): name + optional isActive (omit = "starting")
+ *  + optional backend ('in-process' members are filtered from the parsed agents
+ *  but their names must still roster-match). */
+interface MemberSpec { name: string; isActive?: boolean; backend?: 'tmux' | 'in-process'; }
 
 /** Build an Agent Teams config. The lead's leadSessionId is the orchestrator
  *  session; tmux members are the roster (sessionId always null on disk). */
@@ -103,7 +105,9 @@ function teamConfig(opts: {
   };
   const members = (opts.members ?? [{ name: 'worker', isActive: true }]).map(m => ({
     agentId: `${m.name}@${name}`, name: m.name, agentType: m.name, model: 'opus',
-    joinedAt: Date.now(), tmuxPaneId: '%1', cwd: leadCwd, subscriptions: [], backendType: 'tmux',
+    joinedAt: Date.now(), cwd: leadCwd, subscriptions: [],
+    tmuxPaneId: m.backend === 'in-process' ? 'in-process' : '%1',
+    backendType: m.backend ?? 'tmux',
     ...(m.isActive !== undefined ? { isActive: m.isActive } : {}),
   }));
   return {
@@ -753,6 +757,21 @@ describe('TeamDiscovery', () => {
       td.dispose();
     });
 
+    it('resolves an IN-PROCESS member (absent from agents) via the union roster', async () => {
+      // The real Agent Teams shape for in-process members: backendType
+      // 'in-process', so the parser excludes them from `agents` — the name
+      // must still resolve through inProcessMembers (the aviary regression).
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'lyrebird', isActive: true, backend: 'in-process' }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      const expected = writeLeadSubagent('lead-001', PROJECT_CWD, 'deadbeef', 'lyrebird');
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.getTeamAgentFilePath('at:my-team', 'lyrebird')).toBe(expected);
+      td.dispose();
+    });
+
     it('picks the newest transcript when a member has duplicate meta files', async () => {
       writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'defender', isActive: true }] }));
       createJsonl('lead-001', PROJECT_CWD);
@@ -843,6 +862,21 @@ describe('TeamDiscovery', () => {
       await td.scan();
 
       expect(td.resolveInboxTarget('lead-001', 'deadbeef')).toEqual({ teamDir: 'my-team', member: 'defender' });
+      td.dispose();
+    });
+
+    it('maps an IN-PROCESS member (absent from agents) via the union roster', async () => {
+      // In-process members are the composer's whole audience, yet the parser
+      // excludes them from `agents` — without the inProcessMembers union every
+      // send to an all-in-process team refused (found live on aviary, 2026-06-10).
+      writeAgentTeamsConfig('my-team', teamConfig({ members: [{ name: 'lyrebird', isActive: true, backend: 'in-process' }] }));
+      createJsonl('lead-001', PROJECT_CWD);
+      writeLeadMeta('lead-001', PROJECT_CWD, 'deadbeef', { agentType: 'lyrebird' });
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      expect(td.resolveInboxTarget('lead-001', 'deadbeef')).toEqual({ teamDir: 'my-team', member: 'lyrebird' });
       td.dispose();
     });
 

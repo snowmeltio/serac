@@ -445,6 +445,32 @@ export function debounceStatuses(
   return sessions;
 }
 
+// ===== Workflow-live status override =====
+
+/** A session is not finished while a workflow it launched is still running:
+ *  the Workflow tool runs in the background, so the lead's turn ends (idle
+ *  timer → done/stale) while its agents are mid-sweep. Upgrade such cards to
+ *  running — with high confidence; a live run is direct evidence — so the
+ *  card reads (and sorts) as the active session it is. Dismissed runs don't
+ *  pin a card. Applied host-side at the sessions↔workflows merge point.
+ *  Generic + structural so the host passes SessionSnapshot/WorkflowSnapshot
+ *  without coupling this webview-shared module to extension-side types. */
+export function applyWorkflowLiveStatus<S extends { sessionId: string; status: string; confidence?: string }>(
+  sessions: S[],
+  workflows: Array<{ sessionId: string; status: string; dismissed?: boolean }> | undefined,
+): S[] {
+  if (!workflows || workflows.length === 0) { return sessions; }
+  const liveSessions = new Set(
+    workflows.filter(w => w.status === 'running' && !w.dismissed).map(w => w.sessionId),
+  );
+  if (liveSessions.size === 0) { return sessions; }
+  return sessions.map(s =>
+    liveSessions.has(s.sessionId) && (s.status === 'done' || s.status === 'stale')
+      ? { ...s, status: 'running', confidence: 'high' } as S
+      : s,
+  );
+}
+
 // ===== Context window helpers =====
 
 /** Model's theoretical maximum context window (tokens). */

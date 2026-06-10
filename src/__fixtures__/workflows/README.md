@@ -1,6 +1,6 @@
 # Workflow sidecar fixtures
 
-Real, **non-confidential** Opus 4.8 Workflow on-disk artifacts, used by the
+Real, **non-confidential** Claude Code Workflow on-disk artifacts, used by the
 workflow-viewer parser/discovery tests.
 
 | Fixture | Provenance | Exercises |

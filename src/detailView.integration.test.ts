@@ -185,6 +185,30 @@ describe('detailView.ts — collapse + grouped switcher', () => {
       expect(qa('.wf-turn .wf-turn-time').length).toBe(0);
     });
   });
+
+  describe('transcript turn labels', () => {
+    it('labels a tool-role entry "tool result", never "prompt"', () => {
+      sendRender(twoSourceModel());
+      sendTranscript('workflow:wf_run1|wf_run1|agent001', [
+        { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the inception brief' },
+        { timestamp: '2026-06-10T10:00:05Z', role: 'tool', content: '> **Tool result** (toolu_abc...): grep output' },
+      ]);
+      const turn = q('.wf-turn.tool');
+      expect(turn).not.toBeNull();
+      expect(turn!.querySelector('.wf-who')!.textContent).toContain('tool result');
+      // The tool turn must not pick up the prompt accent class.
+      expect(turn!.classList.contains('prompt')).toBe(false);
+    });
+
+    it('does not pin a tool-role entry as the inception brief', () => {
+      sendRender(twoSourceModel());
+      sendTranscript('workflow:wf_run1|wf_run1|agent001', [
+        { timestamp: '2026-06-10T10:00:00Z', role: 'tool', content: '> **Tool result** (toolu_abc...): early result' },
+        { timestamp: '2026-06-10T10:00:05Z', role: 'user', content: 'the real brief' },
+      ]);
+      expect(q('.wf-brief-body')!.textContent).toContain('the real brief');
+    });
+  });
 });
 
 describe('detailView.ts — live transcript refresh', () => {
@@ -215,6 +239,34 @@ describe('detailView.ts — live transcript refresh', () => {
     postedMessages.length = 0;
     vi.advanceTimersByTime(5200);  // two ticks
     expect((postedMessages as any[]).filter(m => m.type === 'viewAgent').length).toBe(0);
+  });
+
+  it('DOES refresh an alive idle teammate (it can wake on an inbox message any moment)', () => {
+    sendRender({
+      source: 'subagents', containerId: 'lead-001', sessionId: 'sess1',
+      title: 'Teammates', chips: ['team'], metrics: '', team: 'my-team',
+      groups: [{ key: '', title: null, status: null, agents: [
+        { agentId: 'deadbeef', label: 'lyrebird', status: 'done',
+          tokens: 0, toolCalls: 0, durationMs: null, model: '', teammate: true, alive: true },
+      ] }],
+    });
+    postedMessages.length = 0;
+    vi.advanceTimersByTime(2600);
+    expect(viewAgentMsgs('deadbeef').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does NOT refresh a teammate that has left the team (alive false)', () => {
+    sendRender({
+      source: 'subagents', containerId: 'lead-001', sessionId: 'sess1',
+      title: 'Teammates', chips: ['team'], metrics: '', team: 'my-team',
+      groups: [{ key: '', title: null, status: null, agents: [
+        { agentId: 'deadbeef', label: 'lyrebird', status: 'done',
+          tokens: 0, toolCalls: 0, durationMs: null, model: '', teammate: true, alive: false },
+      ] }],
+    });
+    postedMessages.length = 0;
+    vi.advanceTimersByTime(5200);
+    expect(viewAgentMsgs('deadbeef').length).toBe(0);
   });
 
   it('pauses refreshing while the panel is hidden', () => {
@@ -251,14 +303,15 @@ describe('detailView.ts — teammate composer (experimental)', () => {
   const cSend = () => document.getElementById('wf-composer-send') as HTMLButtonElement;
   const cStatus = () => document.getElementById('wf-composer-status') as HTMLElement;
 
-  /** A subagents drill-in with one running in-process teammate. */
-  function teammateModel(over: Partial<{ status: string; teammate: boolean }> = {}) {
+  /** A subagents drill-in with one live in-process teammate. */
+  function teammateModel(over: Partial<{ status: string; teammate: boolean; alive: boolean }> = {}) {
     return {
       source: 'subagents', containerId: 'lead-001', sessionId: 'sess1',
       title: 'Teammates', chips: ['team'], metrics: '1 teammate', team: 'my-team',
       groups: [{ key: '', title: null, status: null, agents: [
         { agentId: 'deadbeef', label: 'defender', status: over.status ?? 'running',
-          tokens: 0, toolCalls: 0, durationMs: null, model: '', teammate: over.teammate ?? true },
+          tokens: 0, toolCalls: 0, durationMs: null, model: '',
+          teammate: over.teammate ?? true, alive: over.alive ?? true },
       ] }],
       views: [{ id: 'subagents', kind: 'subagents', label: 'Teammates', status: 'running', active: true }],
     };
@@ -278,16 +331,32 @@ describe('detailView.ts — teammate composer (experimental)', () => {
     expect(composer().hidden).toBe(true);
   });
 
-  it('shows for a running teammate once the flag is on, and marks body.composer-open', () => {
+  it('shows for a live teammate once the flag is on, and marks body.composer-open', () => {
     sendSettings({ teammateMessaging: true, operatorName: 'murray' });
     sendRender(teammateModel());
     expect(composer().hidden).toBe(false);
     expect(document.body.classList.contains('composer-open')).toBe(true);
   });
 
-  it('stays hidden for a non-running teammate even with the flag on', () => {
+  it('shows for an IDLE teammate (status done) that is still alive — liveness, not status, gates', () => {
+    // An in-process teammate idling between messages reads done to Task
+    // tracking but is alive and listening on its inbox (the aviary case).
     sendSettings({ teammateMessaging: true, operatorName: 'murray' });
     sendRender(teammateModel({ status: 'done' }));
+    expect(composer().hidden).toBe(false);
+  });
+
+  it('stays hidden for a teammate that has left the team (alive false) even with the flag on', () => {
+    sendSettings({ teammateMessaging: true, operatorName: 'murray' });
+    sendRender(teammateModel({ alive: false }));
+    expect(composer().hidden).toBe(true);
+  });
+
+  it('stays hidden when the host omits alive (fail closed)', () => {
+    sendSettings({ teammateMessaging: true, operatorName: 'murray' });
+    const m = teammateModel();
+    delete (m.groups[0].agents[0] as Record<string, unknown>).alive;
+    sendRender(m);
     expect(composer().hidden).toBe(true);
   });
 
@@ -322,7 +391,7 @@ describe('detailView.ts — teammate composer (experimental)', () => {
     const m = teammateModel();
     (m.groups[0].agents as any[]).push({
       agentId: 'cafef00d', label: 'skeptic', status: 'running',
-      tokens: 0, toolCalls: 0, durationMs: null, model: '', teammate: true,
+      tokens: 0, toolCalls: 0, durationMs: null, model: '', teammate: true, alive: true,
     });
     sendRender(m, { groupKey: '', agentId: 'deadbeef' });
     cInput().value = 'meant for defender only';
@@ -335,7 +404,7 @@ describe('detailView.ts — teammate composer (experimental)', () => {
     const m = teammateModel();
     (m.groups[0].agents as any[]).push({
       agentId: 'cafef00d', label: 'skeptic', status: 'running',
-      tokens: 0, toolCalls: 0, durationMs: null, model: '', teammate: true,
+      tokens: 0, toolCalls: 0, durationMs: null, model: '', teammate: true, alive: true,
     });
     sendRender(m, { groupKey: '', agentId: 'deadbeef' });
     cInput().value = 'for defender';

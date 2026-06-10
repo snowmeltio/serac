@@ -77,8 +77,10 @@ function makeTeam(overrides: Partial<TeamSnapshot> = {}): TeamSnapshot {
       { sessionId: null, name: 'defender', cwd: '/x', parentSessionId: 'orch-1', depth: 1, spawnedAt: 1000, status: 'done', activity: '', confidence: 'high', subagents: [], contextTokens: 1000, exitStatus: 'success' },
       { sessionId: 'sk-1', name: 'skeptic', cwd: '/x', parentSessionId: 'orch-1', depth: 1, spawnedAt: 1000, status: 'running', activity: '', confidence: 'high', subagents: [], contextTokens: 2000, exitStatus: null },
     ],
+    inProcessMembers: [],
     counts: { done: 1, running: 1 },
     dismissed: false,
+    ...overrides,
   };
 }
 
@@ -233,6 +235,30 @@ describe('DetailPanel', () => {
       expect(m.metrics).toContain('1/2 done');
     });
 
+    it('renders in-process members as roster rows (an all-in-process team is not "0 members")', () => {
+      const h = setup({
+        getTeams: vi.fn(() => [makeTeam({ teamId: 'at:aviary', agents: [], counts: {}, inProcessMembers: ['lyrebird', 'boobook'] })]),
+        getSession: vi.fn(() => makeSession({ subagents: [] })),
+      });
+      h.panel.show('team', 'at:aviary', 'orch-1');
+      const m = h.lastModel();
+      expect(m.groups[0].agents.map((a: any) => a.agentId)).toEqual(['lyrebird', 'boobook']);
+      expect(m.groups[0].agents.every((a: any) => a.teammate === true && a.alive === true)).toBe(true);
+      expect(m.metrics).toContain('2 members');
+    });
+
+    it('borrows live tracking for an in-process roster row status', () => {
+      const h = setup({
+        getTeams: vi.fn(() => [makeTeam({ teamId: 'at:aviary', agents: [], counts: {}, inProcessMembers: ['lyrebird', 'boobook'] })]),
+        // sa2 is running in makeSession; map it to lyrebird via the disk meta.
+        listSubagents: vi.fn(() => [{ agentId: 'sa2', agentType: 'lyrebird', description: null }]),
+      });
+      h.panel.show('team', 'at:aviary', 'orch-1');
+      const rows = h.lastModel().groups[0].agents;
+      expect(rows.find((a: any) => a.agentId === 'lyrebird').status).toBe('running');
+      expect(rows.find((a: any) => a.agentId === 'boobook').status).toBe('done');
+    });
+
     it('marks a live workflow with a "live" chip', () => {
       const h = setup({ getWorkflows: vi.fn(() => [makeWorkflow({ source: 'live', status: 'running' })]) });
       h.panel.show('workflow', 'sess-1', 'sess-1');
@@ -304,6 +330,34 @@ describe('DetailPanel', () => {
       const msg = h.posted().find(m => m.type === 'agentTranscriptError');
       expect(msg).toBeTruthy();
       expect(String(msg.message)).toContain('boom');
+    });
+
+    it('appends queued inbox messages to a team-roster member transcript', async () => {
+      vi.mocked(parseTranscript).mockResolvedValue([{ timestamp: 't', role: 'user', content: 'brief' }]);
+      const h = setup({
+        getTeams: vi.fn(() => [makeTeam({ teamId: 'at:my-team', agents: [], counts: {}, inProcessMembers: ['lyrebird'] })]),
+        getMessagingSettings: vi.fn(() => ({ enabled: true, operatorName: 'murray' })),
+        peekTeammateInbox: vi.fn(() => [{ from: 'murray', text: 'hello bird', timestamp: 'ts1' }]),
+      });
+      h.panel.show('team', 'at:my-team', 'orch-1');
+      await h.webview._fireMessage({ type: 'viewAgent', source: 'team', containerId: 'at:my-team', groupKey: '', agentId: 'lyrebird' });
+      await new Promise(r => setTimeout(r, 0));
+      const msg = h.posted().find(m => m.type === 'agentTranscript');
+      expect(msg.entries.some((e: any) => e.role === 'system' && e.content.includes('hello bird'))).toBe(true);
+    });
+
+    it('does not peek an inbox for an off-roster team row', async () => {
+      vi.mocked(parseTranscript).mockResolvedValue([]);
+      const peek = vi.fn(() => []);
+      const h = setup({
+        getTeams: vi.fn(() => [makeTeam({ teamId: 'at:my-team', agents: [], counts: {}, inProcessMembers: ['lyrebird'] })]),
+        getMessagingSettings: vi.fn(() => ({ enabled: true, operatorName: 'murray' })),
+        peekTeammateInbox: peek,
+      });
+      h.panel.show('team', 'at:my-team', 'orch-1');
+      await h.webview._fireMessage({ type: 'viewAgent', source: 'team', containerId: 'at:my-team', groupKey: '', agentId: 'not-a-member' });
+      await new Promise(r => setTimeout(r, 0));
+      expect(peek).not.toHaveBeenCalled();
     });
 
     it('ignores a malformed viewAgent message', async () => {
@@ -508,6 +562,121 @@ describe('DetailPanel', () => {
     });
   });
 
+  describe('teammate framing + liveness (composer gate inputs)', () => {
+    /** An orchestrator whose only member is IN-PROCESS (the aviary shape):
+     *  parsed roster `agents` is empty; the name lives in inProcessMembers. */
+    const inProcessTeam = () => makeTeam({ agents: [], inProcessMembers: ['lyrebird'], counts: {} });
+    /** One disk-only subagent whose meta agentType is the member name. */
+    const lyrebirdOnDisk = () => vi.fn(() => [{ agentId: 'd1', agentType: 'lyrebird', description: 'lyrebird' }]);
+
+    it('roster-matches an in-process member and marks it alive even when its status reads done', () => {
+      // The aviary regression: an idle teammate is disk-only (status 'done',
+      // no live tracking) yet alive — on the roster, listening on its inbox.
+      const h = setup({
+        getTeams: vi.fn(() => [inProcessTeam()]),
+        getSession: vi.fn(() => makeSession({ subagents: [] })),
+        listSubagents: lyrebirdOnDisk(),
+      });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const a = h.lastModel().groups[0].agents[0];
+      expect(a).toMatchObject({ agentId: 'd1', status: 'done', teammate: true, alive: true });
+    });
+
+    it('does not badge (or enliven) a plain Task subagent of a team lead', () => {
+      const h = setup({
+        getTeams: vi.fn(() => [inProcessTeam()]),
+        getSession: vi.fn(() => makeSession({ subagents: [] })),
+        listSubagents: vi.fn(() => [{ agentId: 'd2', agentType: 'Explore', description: 'scout' }]),
+      });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const a = h.lastModel().groups[0].agents[0];
+      expect(a.teammate).toBeUndefined(); // plain row — composer gate (=== true) stays closed
+      expect(a.alive).toBeUndefined();
+    });
+
+    it('dedupes re-spawn duplicates to one row per member, labelled by member name', () => {
+      const h = setup({
+        getTeams: vi.fn(() => [inProcessTeam()]),
+        getSession: vi.fn(() => makeSession({ subagents: [] })),
+        // Three spawn rounds of the same bird, listed in spawn order.
+        listSubagents: vi.fn(() => [
+          { agentId: 'd1', agentType: 'lyrebird', description: 'round 1' },
+          { agentId: 'd2', agentType: 'lyrebird', description: 'round 2' },
+          { agentId: 'd3', agentType: 'lyrebird', description: 'round 3' },
+        ]),
+      });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const rows = h.lastModel().groups[0].agents;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ agentId: 'd3', label: 'lyrebird', teammate: true });
+      expect(h.lastModel().metrics).toContain('1 teammate');
+    });
+
+    it('a running duplicate beats a newer finished one', () => {
+      const h = setup({
+        getTeams: vi.fn(() => [inProcessTeam()]),
+        // sa2 is the live-tracked running row (makeSession default); d9 is a
+        // newer-on-disk finished duplicate of the same member.
+        listSubagents: vi.fn(() => [
+          { agentId: 'sa2', agentType: 'lyrebird', description: null },
+          { agentId: 'd9', agentType: 'lyrebird', description: null },
+        ]),
+      });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const rows = h.lastModel().groups[0].agents.filter((a: any) => a.teammate);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ agentId: 'sa2', status: 'running' });
+    });
+
+    it('splits teammates and other subagents into titled groups when both exist', () => {
+      const h = setup({
+        getTeams: vi.fn(() => [inProcessTeam()]),
+        getSession: vi.fn(() => makeSession({ subagents: [] })),
+        listSubagents: vi.fn(() => [
+          { agentId: 'd1', agentType: 'lyrebird', description: null },
+          { agentId: 'd2', agentType: 'card-engine', description: 'old flashcard agent' },
+        ]),
+      });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const m = h.lastModel();
+      expect(m.groups.map((g: any) => g.title)).toEqual(['Teammates', 'Other subagents']);
+      // Both groups keep the '' key so card deep-links still resolve.
+      expect(m.groups.every((g: any) => g.key === '')).toBe(true);
+      expect(m.groups[0].agents[0].label).toBe('lyrebird');
+      expect(m.groups[1].agents[0].teammate).toBeUndefined();
+      expect(m.metrics).toContain('1 teammate');
+      expect(m.metrics).toContain('1 other subagent');
+    });
+
+    it('marks a teammate not alive once the lead process is registry-confirmed dead', () => {
+      const h = setup({
+        getTeams: vi.fn(() => [inProcessTeam()]),
+        getSession: vi.fn(() => makeSession({ subagents: [], processLive: false })),
+        listSubagents: lyrebirdOnDisk(),
+      });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const a = h.lastModel().groups[0].agents[0];
+      expect(a).toMatchObject({ teammate: true, alive: false });
+    });
+
+    it('still roster-matches tmux members via the agents list', () => {
+      const h = setup({
+        getSession: vi.fn(() => makeSession({ subagents: [] })),
+        listSubagents: vi.fn(() => [{ agentId: 'd3', agentType: 'defender', description: 'defender' }]),
+      });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      expect(h.lastModel().groups[0].agents[0]).toMatchObject({ teammate: true, alive: true });
+    });
+
+    it('adds no teammate/alive fields when the session orchestrates no team', () => {
+      const h = setup({ getTeams: vi.fn(() => []) });
+      h.panel.show('subagents', 'sess-1', 'sess-1');
+      const a = h.lastModel().groups[0].agents[0];
+      expect(a.teammate).toBeUndefined();
+      expect(a.alive).toBeUndefined();
+    });
+  });
+
   describe('view switcher', () => {
     // No plain subagents → the switcher reflects workflow runs alone.
     const noSubs = () => ({
@@ -570,6 +739,42 @@ describe('DetailPanel', () => {
       expect(m.source).toBe('subagents');
       expect(m.groups[0].agents.map((a: any) => a.agentId)).toEqual(['sa1', 'sa2']);
       expect(m.views.find((v: any) => v.id === 'subagents').active).toBe(true);
+    });
+
+    it('offers a Roster view for an orchestrator with tmux members', () => {
+      const h = setup(); // makeTeam: orchestrator orch-1, two roster members
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const roster = h.lastModel().views.find((v: any) => v.kind === 'team');
+      expect(roster).toMatchObject({ id: 'orch-1', label: 'Roster · scope-demo', active: false });
+    });
+
+    it('suppresses the Roster view for a memberless team (no tmux, no in-process)', () => {
+      const h = setup({ getTeams: vi.fn(() => [makeTeam({ agents: [], counts: {} })]) });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const m = h.lastModel();
+      expect(m.views.some((v: any) => v.kind === 'team')).toBe(false);
+      // The teammate framing survives — only the dead-end chip goes.
+      expect(m.title).toBe('Teammates');
+    });
+
+    it('suppresses the Roster view for an all-in-process team (Teammates is a superset with the composer)', () => {
+      const h = setup({ getTeams: vi.fn(() => [makeTeam({ agents: [], counts: {}, inProcessMembers: ['lyrebird'] })]) });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      expect(h.lastModel().views.some((v: any) => v.kind === 'team')).toBe(false);
+    });
+
+    it('counts in-process members in a mixed team\'s roster chip summary', () => {
+      const h = setup({ getTeams: vi.fn(() => [makeTeam({ inProcessMembers: ['lyrebird'] })]) });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const roster = h.lastModel().views.find((v: any) => v.kind === 'team');
+      expect(roster.summary).toContain('3 members');
+    });
+
+    it('keeps the Roster view while it is the active source, even with an empty roster', () => {
+      const h = setup({ getTeams: vi.fn(() => [makeTeam({ agents: [], counts: {} })]) });
+      h.panel.show('team', 'orch-1', 'orch-1');
+      const roster = h.lastModel().views.find((v: any) => v.kind === 'team');
+      expect(roster).toMatchObject({ kind: 'team', active: true });
     });
   });
 

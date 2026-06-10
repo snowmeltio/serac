@@ -140,11 +140,9 @@ vi.mock('./claudeSettings.js', () => ({
   getClaudeSettingsPath: vi.fn().mockReturnValue('/mock/.claude/settings.json'),
 }));
 
-// Deterministic env signals: the real module reads ~/.claude on THIS machine,
-// which may genuinely contain needs-auth entries — tests must control them.
-const mockMcpEntries: Array<{ name: string; timestamp: number }> = [];
+// Deterministic env signals: the real module reads ~/.claude on THIS machine —
+// tests must control it.
 vi.mock('./claudeEnvSignals.js', () => ({
-  readMcpNeedsAuth: vi.fn(() => mockMcpEntries),
   readIdeOpenFolders: vi.fn(() => new Set<string>()),
 }));
 
@@ -625,7 +623,6 @@ describe('extension — activation wiring assertions (test-gap single)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockMcpEntries.length = 0;
     context = { subscriptions: [], extensionUri: { scheme: 'file', fsPath: '/ext' } };
   });
   afterEach(() => {
@@ -652,23 +649,6 @@ describe('extension — activation wiring assertions (test-gap single)', () => {
       [() => Array<{ slotId: string; label: string }>];
     exports.registerUsageFooterSlot('companion-x', { label: 'Companion · ok', status: 'ok' });
     expect(getPayloads().map(p => p.slotId)).toContain('companion-x');
-  });
-
-  it('registers the MCP needs-auth slot at activation when servers need auth', () => {
-    mockMcpEntries.push({ name: 'claude.ai Webflow', timestamp: Date.now() }, { name: 'X', timestamp: Date.now() });
-    activate(context as never);
-    const [getPayloads] = mockPanelProvider.setFooterSlotBridge.mock.calls[0] as
-      [() => Array<{ slotId: string; label: string; tooltip?: string }>];
-    const slot = getPayloads().find(p => p.slotId === 'serac-mcp-needs-auth');
-    expect(slot?.label).toBe('2 MCP need auth');
-    expect(slot?.tooltip).toContain('claude.ai Webflow');
-  });
-
-  it('registers NO MCP slot when nothing needs auth', () => {
-    activate(context as never);
-    const [getPayloads] = mockPanelProvider.setFooterSlotBridge.mock.calls[0] as
-      [() => Array<{ slotId: string }>];
-    expect(getPayloads().find(p => p.slotId === 'serac-mcp-needs-auth')).toBeUndefined();
   });
 
   it('wires every panel handler the webview can invoke (no dead postMessage paths)', () => {

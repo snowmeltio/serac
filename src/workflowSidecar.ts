@@ -6,7 +6,7 @@ import type {
   WorkflowSnapshot,
 } from './types.js';
 
-// Defensive parser for the Opus 4.8 Workflow completion sidecar
+// Defensive parser for the Claude Code Workflow completion sidecar
 // (<sessionDir>/workflows/wf_<runId>.json). Mirrors the never-throw,
 // object-guard, forward-compatible-skip idioms of teamManifest.ts:
 // anything malformed returns null; one bad agent entry never hides the rest.

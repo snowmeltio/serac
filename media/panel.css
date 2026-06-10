@@ -121,11 +121,11 @@ body {
 .ws-main-chip {
   font-size: 9px;
   font-weight: 400;
-  padding: 0 5px;
+  padding: 0 3px;
   border-radius: 3px;
   white-space: nowrap;
   flex-shrink: 0;
-  line-height: 1.2;
+  line-height: 1.1;
   color: var(--vscode-descriptionForeground, #888888);
   background: transparent;
   border: 1px solid currentColor;
@@ -220,11 +220,11 @@ body {
 .ws-picker-quiet {
   font-size: 9px;
   font-weight: 400;
-  padding: 0 5px;
+  padding: 0 3px;
   border-radius: 3px;
   white-space: nowrap;
   flex-shrink: 0;
-  line-height: 1.2;
+  line-height: 1.1;
   color: var(--vscode-descriptionForeground, #888888);
   background: transparent;
   border: 1px dashed currentColor;
@@ -587,6 +587,7 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 .tool-error-badge {
   font-size: 9px;
   font-weight: 600;
+  line-height: 1.2;
   color: var(--sm-salmon-red);
   border: 1px solid color-mix(in srgb, var(--sm-salmon-red) 45%, transparent);
   border-radius: 7px;

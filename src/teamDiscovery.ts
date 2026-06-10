@@ -21,7 +21,7 @@ import type {
   SessionMeta, StatusConfidence, DisplayStatus,
 } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { readSettings, ageGateDaysFor } from './settings.js';
+import { ageGateDaysFor } from './settings.js';
 
 /** A strict identifier used as a single on-disk path component for the inbox
  *  write path — no traversal, no separators, no leading dot. Stricter than
@@ -106,7 +106,6 @@ export class TeamDiscovery {
 
   /** Scan ~/.claude/teams/ for manifests (flat .json files and subdirectory config.json). */
   async scan(): Promise<void> {
-    if (!readSettings().show.teams) { return; }
     const now = Date.now();
     let entries: string[];
     try {
@@ -269,7 +268,6 @@ export class TeamDiscovery {
 
   /** Poll active team agents. Returns true if any changed. */
   async poll(): Promise<boolean> {
-    if (!readSettings().show.teams) { return false; }
     let changed = false;
 
     // Partition into active vs dormant
@@ -409,6 +407,7 @@ export class TeamDiscovery {
           modelLabel: orchSnapshot?.modelLabel ?? '',
         },
         agents: agentSnapshots,
+        inProcessMembers: manifest.inProcessMembers,
         counts,
         updatedAt: orchSnapshot?.lastActivity ?? manifest.updatedAt,
         dismissed,
@@ -481,11 +480,14 @@ export class TeamDiscovery {
     const manifest = this.manifests.get(teamId);
     if (!manifest) { return null; }
 
+    // The member must be on the CURRENT roster: a tmux entry in `agents`, or an
+    // in-process name (those are excluded from `agents` by design — they surface
+    // as the lead's subagents — but their transcripts resolve via case 2 below).
     const member = manifest.agents.find(a => a.name === agentName);
-    if (!member) { return null; }
+    if (!member && !manifest.inProcessMembers.includes(agentName)) { return null; }
 
     // Case 1: the member has its own session — resolve directly.
-    if (member.sessionId) {
+    if (member?.sessionId) {
       return this.getSessionFilePath(member.sessionId);
     }
 
@@ -497,7 +499,7 @@ export class TeamDiscovery {
     const subagentsDir = path.join(
       this.projectsDir, leadWorkspaceKey, manifest.orchestrator.sessionId, 'subagents',
     );
-    const rosterNames = new Set(manifest.agents.map(a => a.name));
+    const rosterNames = new Set([...manifest.agents.map(a => a.name), ...manifest.inProcessMembers]);
 
     let files: string[];
     try {
@@ -570,7 +572,10 @@ export class TeamDiscovery {
       return null;
     }
 
-    const rosterNames = new Set(manifest.agents.map(a => a.name));
+    // Roster = tmux members + in-process member names. In-process members are
+    // the composer's whole audience (they're the lead's subagents) yet they are
+    // excluded from `agents` by design — without the union every send refuses.
+    const rosterNames = new Set([...manifest.agents.map(a => a.name), ...manifest.inProcessMembers]);
     if (typeof agentType !== 'string' || !rosterNames.has(agentType) || !SAFE_PATH_COMPONENT.test(agentType)) {
       return null;
     }

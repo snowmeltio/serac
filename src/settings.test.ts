@@ -30,7 +30,6 @@ describe('readSettings', () => {
       'serac.show.worktrees': false,
       'serac.show.usage': false,
       'serac.show.subagents': false,
-      'serac.show.teams': false,
       'serac.archive.defaultRange': '30d',
       'serac.archive.maxDoneShown': 50,
       'serac.refresh.intervalSeconds': 2,
@@ -53,7 +52,6 @@ describe('readSettings', () => {
     expect(s.show.worktrees).toBe(false);
     expect(s.show.usage).toBe(false);
     expect(s.show.subagents).toBe(false);
-    expect(s.show.teams).toBe(false);
     expect(s.archive.defaultRange).toBe('30d');
     expect(s.archive.maxDoneShown).toBe(50);
     expect(s.refresh.intervalSeconds).toBe(2);

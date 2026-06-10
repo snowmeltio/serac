@@ -25,6 +25,7 @@ import {
   isTmpScratchPath,
   computeFileCollisions, RUNNING_QUIET_MS,
 } from './panelUtils.js';
+import { applyWorkflowLiveStatus } from './panelUtils.js';
 
 // Helper to create a minimal session
 function session(overrides: Partial<PanelSession> = {}): PanelSession {
@@ -759,5 +760,36 @@ describe('getStatusLabel — stall surfacing (quiet running cards)', () => {
 
   it('exactly at the threshold stays plain (strictly past)', () => {
     expect(getStatusLabel(s(now - RUNNING_QUIET_MS), now)).toBe('Running');
+  });
+});
+
+describe('applyWorkflowLiveStatus — done card with a live background workflow', () => {
+  const sess = (status: string) => ({ sessionId: 's1', status, confidence: 'medium' });
+  const wf = (status: string, dismissed = false) => ({ sessionId: 's1', status, dismissed });
+
+  it('upgrades a done session to running (high confidence) while its workflow runs', () => {
+    const out = applyWorkflowLiveStatus([sess('done')], [wf('running')]);
+    expect(out[0]).toMatchObject({ status: 'running', confidence: 'high' });
+  });
+
+  it('upgrades a stale session too', () => {
+    expect(applyWorkflowLiveStatus([sess('stale')], [wf('running')])[0].status).toBe('running');
+  });
+
+  it('leaves waiting sessions alone (waiting outranks running)', () => {
+    expect(applyWorkflowLiveStatus([sess('waiting')], [wf('running')])[0].status).toBe('waiting');
+  });
+
+  it('ignores completed, failed, incomplete, and dismissed runs', () => {
+    for (const w of [wf('completed'), wf('failed'), wf('incomplete'), wf('running', true)]) {
+      expect(applyWorkflowLiveStatus([sess('done')], [w])[0].status).toBe('done');
+    }
+  });
+
+  it('does not touch other sessions and is a no-op without workflows', () => {
+    const other = { sessionId: 's2', status: 'done', confidence: 'high' };
+    expect(applyWorkflowLiveStatus([other], [wf('running')])[0]).toBe(other);
+    const input = [sess('done')];
+    expect(applyWorkflowLiveStatus(input, undefined)).toBe(input);
   });
 });

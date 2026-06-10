@@ -245,7 +245,7 @@ export class DetailPanel {
       chips: selected ? [selected.source === 'live' ? 'live' : 'workflow', selected.status] : ['workflow'],
       metrics: metricsBits.join(' · '),
       groups,
-      views: this.buildViewChoices(runs, selected?.runId ?? null, 'workflow', this.collectSubagents(sessionId), team),
+      views: this.buildViewChoices(runs, selected?.runId ?? null, 'workflow', this.subsForViewChoices(sessionId, team), team),
       team: team?.name,
     };
   }
@@ -293,14 +293,23 @@ export class DetailPanel {
     // Team roster view — restores the drill-in that became unreachable when
     // v1.11 folded the team section into the orchestrator's card. Rides the
     // same switcher as every other view (implicit interactivity, no new chrome).
-    if (team) {
+    // Offered only when the team has tmux members — for an all-in-process team
+    // the (deduped) Teammates view is a superset WITH the composer, so a roster
+    // chip is pure redundancy (Murray, 2026-06-10). Kept while active so the
+    // switcher always reflects the visible view; the view itself still renders
+    // in-process members for mixed teams and the keep-while-active case.
+    if (team && (team.agents.length > 0 || activeSource === 'team')) {
+      const rosterStatuses = [
+        ...team.agents.map(a => a.status),
+        ...this.inProcessRosterRows(team).map(r => r.status),
+      ];
       views.push({
         id: team.teamId,
         kind: 'team',
         label: 'Roster · ' + team.name,
-        status: team.agents.some(a => a.status === 'running') ? 'running' : 'completed',
+        status: rosterStatuses.some(s => s === 'running') ? 'running' : 'completed',
         active: activeSource === 'team',
-        summary: rollupSummary(team.agents.map(a => a.status), 'member'),
+        summary: rollupSummary(rosterStatuses, 'member'),
       });
     }
     return views.length > 0 ? views : undefined;
@@ -361,25 +370,74 @@ export class DetailPanel {
     return { agents, running: tracked.filter(s => s.running).length };
   }
 
-  private buildSubagentsModel(sessionId: string, invokingSessionId: string): DetailModel {
+  /** A team lead's subagent rows framed for display. Only roster-matched rows
+   *  are teammates (a lead can also spawn ordinary Task subagents — Explore,
+   *  general-purpose, … — whose inbox sends could never resolve; those must not
+   *  get a composer or a team badge). Membership is keyed the same way
+   *  resolveInboxTarget resolves it: the on-disk meta's agentType equals the
+   *  member name, with tmux entries unioned with the in-process names.
+   *
+   *  Teammates are deduped to ONE row per CURRENT member: re-spawn rounds leave
+   *  stale duplicates, and the inbox keys by name, so extras only mislead. Rows
+   *  arrive tracked-then-disk, each in spawn order, so on a name collision the
+   *  LAST row is the newest; a running row always beats a finished one. The kept
+   *  row is labelled with the member name and ordered by the roster.
+   *
+   *  Teammate liveness ≠ subagent status: an idle teammate is alive (listening
+   *  on its inbox) while its Task-tracking reads done. Alive = still on the
+   *  CURRENT roster (members are removed from the config on shutdown) and the
+   *  lead process not registry-confirmed dead (in-process teammates live in it). */
+  private teamSubagentRows(sessionId: string, team: TeamSnapshot | undefined): { teammates: DetailAgentView[]; plain: DetailAgentView[]; running: number } {
     const subs = this.collectSubagents(sessionId);
-    const { running } = subs;
+    if (!team) { return { teammates: [], plain: subs.agents, running: subs.running }; }
+    const roster = new Set([...team.agents.map(a => a.name), ...team.inProcessMembers]);
+    const typeById = new Map(this.deps.listSubagents(sessionId).map(d => [d.agentId, d.agentType]));
+    const leadGone = this.deps.getSession(sessionId)?.processLive === false;
+    const byName = new Map<string, DetailAgentView>();
+    const plain: DetailAgentView[] = [];
+    for (const a of subs.agents) {
+      const name = typeById.get(a.agentId) ?? '';
+      if (!roster.has(name)) { plain.push(a); continue; }
+      const row = { ...a, label: name, teammate: true, alive: !leadGone };
+      const prev = byName.get(name);
+      if (!prev || row.status === 'running' || prev.status !== 'running') { byName.set(name, row); }
+    }
+    // Roster order (tmux then in-process) so the list mirrors the team config.
+    const order = [...team.agents.map(a => a.name), ...team.inProcessMembers];
+    const teammates = order.filter(n => byName.has(n)).map(n => byName.get(n) as DetailAgentView);
+    const running = [...teammates, ...plain].filter(a => a.status === 'running').length;
+    return { teammates, plain, running };
+  }
+
+  /** Flat row set for the view switcher's roll-up counts — deduped the same way
+   *  the subagents view renders, so the chip tooltip matches what opening it shows. */
+  private subsForViewChoices(sessionId: string, team: TeamSnapshot | undefined): { agents: DetailAgentView[]; running: number } {
+    const { teammates, plain, running } = this.teamSubagentRows(sessionId, team);
+    return { agents: [...teammates, ...plain], running };
+  }
+
+  private buildSubagentsModel(sessionId: string, invokingSessionId: string): DetailModel {
     // When this session orchestrates a team, its (in-process) subagents ARE the
     // teammates — frame them as such: a teammate badge per agent, a "Teammates"
     // label, and the team name on the model for the header.
     const team = this.teamFor(sessionId);
-    // Only roster-matched subagents are teammates: a team lead can also spawn
-    // ordinary Task subagents (Explore, general-purpose, …) whose inbox sends
-    // could never resolve — those must not get a composer or a team badge.
-    // Membership is keyed the same way resolveInboxTarget resolves it: the
-    // on-disk meta's agentType equals the member name.
-    const roster = new Set((team?.agents ?? []).map(a => a.name));
-    const typeById = new Map(this.deps.listSubagents(sessionId).map(d => [d.agentId, d.agentType]));
-    const agents = team
-      ? subs.agents.map(a => ({ ...a, teammate: roster.has(typeById.get(a.agentId) ?? '') }))
-      : subs.agents;
-    const noun = team ? 'teammate' : 'subagent';
-    const metricsBits = [agents.length + ' ' + noun + (agents.length === 1 ? '' : 's')];
+    const { teammates, plain, running } = this.teamSubagentRows(sessionId, team);
+    // Two groups only when both kinds exist — a pure team (or a plain session)
+    // stays a flat list with no headers. Both groups share the '' key (findAgent
+    // searches all matching groups), so card deep-links keep resolving.
+    const groups: DetailGroupView[] = team && teammates.length > 0 && plain.length > 0
+      ? [
+        { key: '', title: 'Teammates', status: null, agents: teammates },
+        { key: '', title: 'Other subagents', status: null, agents: plain },
+      ]
+      : [{ key: '', title: null, status: null, agents: [...teammates, ...plain] }];
+    const metricsBits: string[] = [];
+    if (team) {
+      metricsBits.push(teammates.length + ' teammate' + (teammates.length === 1 ? '' : 's'));
+      if (plain.length > 0) { metricsBits.push(plain.length + ' other subagent' + (plain.length === 1 ? '' : 's')); }
+    } else {
+      metricsBits.push(plain.length + ' subagent' + (plain.length === 1 ? '' : 's'));
+    }
     if (running > 0) { metricsBits.push(running + ' running'); }
     // Most-recent-first so the switcher matches the workflow view's ordering.
     const runs = this.deps.getWorkflows()
@@ -392,8 +450,8 @@ export class DetailPanel {
       title: team ? 'Teammates' : 'Subagents',
       chips: team ? ['team'] : ['subagents'],
       metrics: metricsBits.join(' · '),
-      groups: [{ key: '', title: null, status: null, agents }],
-      views: this.buildViewChoices(runs, null, 'subagents', { agents, running }, team),
+      groups,
+      views: this.buildViewChoices(runs, null, 'subagents', { agents: [...teammates, ...plain], running }, team),
       team: team?.name,
     };
   }
@@ -401,17 +459,21 @@ export class DetailPanel {
   private buildTeamModel(teamId: string, invokingSessionId: string): DetailModel {
     const team = this.deps.getTeams().find(t => t.teamId === teamId);
     const agents = team?.agents ?? [];
-    const done = agents.filter(a => a.status === 'done').length;
-    const metricsBits = [agents.length + ' member' + (agents.length === 1 ? '' : 's')];
-    if (agents.length > 0) { metricsBits.push(done + '/' + agents.length + ' done'); }
     // The switcher must offer the way back: the orchestrator's workflow runs
     // and teammates views, built against the orchestrator session.
     const orchestratorId = team?.orchestrator.sessionId;
+    // In-process members get roster rows too (the orchestrator card's `agent
+    // team` chip lands here — an all-in-process team must not read "0 members").
+    const inProcessRows = team ? this.inProcessRosterRows(team) : [];
+    const memberCount = agents.length + inProcessRows.length;
+    const done = agents.filter(a => a.status === 'done').length;
+    const metricsBits = [memberCount + ' member' + (memberCount === 1 ? '' : 's')];
+    if (agents.length > 0) { metricsBits.push(done + '/' + agents.length + ' done'); }
     const runs = orchestratorId
       ? this.deps.getWorkflows().filter(w => w.sessionId === orchestratorId).sort((a, b) => b.startTime - a.startTime)
       : [];
     const views = orchestratorId
-      ? this.buildViewChoices(runs, null, 'team', this.collectSubagents(orchestratorId), team)
+      ? this.buildViewChoices(runs, null, 'team', this.subsForViewChoices(orchestratorId, team), team)
       : undefined;
     return {
       source: 'team',
@@ -426,15 +488,18 @@ export class DetailPanel {
         status: null,
         // Resolution key is the member name (matched against agent-*.meta.json
         // agentType for in-process members, or its sessionId when present).
-        agents: agents.map(a => ({
-          agentId: a.name,
-          label: a.name,
-          status: a.status,
-          tokens: a.contextTokens,
-          toolCalls: 0,
-          durationMs: null,
-          model: '',
-        } satisfies DetailAgentView)),
+        agents: [
+          ...agents.map(a => ({
+            agentId: a.name,
+            label: a.name,
+            status: a.status,
+            tokens: a.contextTokens,
+            toolCalls: 0,
+            durationMs: null,
+            model: '',
+          } satisfies DetailAgentView)),
+          ...inProcessRows,
+        ],
       }],
       views,
       team: team?.name,
@@ -540,6 +605,45 @@ export class DetailPanel {
     }
   }
 
+  /** Roster rows for a team's IN-PROCESS members. They are excluded from
+   *  `TeamSnapshot.agents` (they surface as the lead's subagents) but the
+   *  roster view renders them so an all-in-process team is never a "0 members"
+   *  dead end. Resolution key is the member name; transcripts resolve via the
+   *  lead's agent-*.meta.json scan. Status borrows the lead's live subagent
+   *  tracking when a matching agent is tracked, else the idle default 'done' —
+   *  `alive` (presence in the config + lead process alive) carries liveness. */
+  private inProcessRosterRows(team: TeamSnapshot): DetailAgentView[] {
+    if (team.inProcessMembers.length === 0) { return []; }
+    const orchestratorId = team.orchestrator.sessionId;
+    const orchSession = this.deps.getSession(orchestratorId);
+    const typeById = new Map(this.deps.listSubagents(orchestratorId).map(d => [d.agentId, d.agentType]));
+    const tracked = orchSession?.subagents ?? [];
+    const leadAlive = orchSession?.processLive !== false;
+    return team.inProcessMembers.map(name => ({
+      agentId: name,
+      label: name,
+      status: tracked.some(s => s.agentId && s.running && typeById.get(s.agentId) === name) ? 'running' : 'done',
+      tokens: 0,
+      toolCalls: 0,
+      durationMs: null,
+      model: '',
+      teammate: true,
+      alive: leadAlive,
+    } satisfies DetailAgentView));
+  }
+
+  /** Inbox target for a TEAM-ROSTER row, where the agentId IS the member name.
+   *  Read-side only (the composer/write path stays pinned to the subagents
+   *  source). The name must be on the CURRENT roster — tmux or in-process —
+   *  of a team this panel knows; anything else refuses. */
+  private inboxTargetForRosterMember(teamId: string, memberName: string): { teamDir: string; member: string } | null {
+    if (!teamId.startsWith('at:')) { return null; }
+    const team = this.deps.getTeams().find(t => t.teamId === teamId);
+    if (!team) { return null; }
+    const onRoster = team.agents.some(a => a.name === memberName) || team.inProcessMembers.includes(memberName);
+    return onRoster ? { teamDir: teamId.slice(3), member: memberName } : null;
+  }
+
   private async sendAgentTranscript(source: DetailSource, containerId: string, groupKey: string, agentId: string): Promise<void> {
     // Capture the panel up front and re-check identity after the await: the
     // transcript parse is async, and the panel can be disposed (or reused for a
@@ -562,10 +666,14 @@ export class DetailPanel {
       // drained appear as queued turns at the tail — so "did my message land?"
       // is answerable from the thread itself. Gated on the same server-side
       // settings as the composer; fail-silent (display affordance only).
-      if (source === 'subagents' && this.deps.peekTeammateInbox && this.deps.resolveInboxTarget
+      // Covers both teammate surfaces: the subagents view (agentId = subagent
+      // hash, roster-resolved) and the team roster view (agentId = member name).
+      if ((source === 'subagents' || source === 'team') && this.deps.peekTeammateInbox
           && this.deps.getMessagingSettings?.().enabled) {
         try {
-          const target = this.deps.resolveInboxTarget(containerId, agentId);
+          const target = source === 'subagents'
+            ? (this.deps.resolveInboxTarget ? this.deps.resolveInboxTarget(containerId, agentId) : null)
+            : this.inboxTargetForRosterMember(containerId, agentId);
           if (target) {
             for (const m of this.deps.peekTeammateInbox(target.teamDir, target.member)) {
               entries.push({

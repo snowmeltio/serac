@@ -32,7 +32,7 @@ function sendUpdate(data: Record<string, unknown>): void {
  *  unspecified sections fall back to the defaults. */
 function sendSettings(overrides: any = {}): void {
   const defaults = {
-    show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, teams: true, workflows: true },
+    show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, workflows: true },
     archive: { defaultRange: '1d', maxDoneShown: 20 },
     refresh: { intervalSeconds: 5 },
     discovery: { ageGateDays: 7 },

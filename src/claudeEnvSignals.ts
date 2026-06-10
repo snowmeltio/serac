@@ -2,33 +2,25 @@
  * Small, fail-silent reads of Claude Code environment signals under the
  * resolved state dir (claudeStateDir()):
  *
- *  - `mcp-needs-auth-cache.json` — MCP servers awaiting re-authentication.
- *    Surfaced as a footer chip so "/mcp auth" friction is visible at a glance
- *    instead of being discovered mid-session.
  *  - `ide/<port>.lock` — one lock per VS Code window with the Claude Code
  *    extension attached. Maps workspace folders → an IDE window, so foreign
  *    workspace rows can show "open in IDE". Locks carry an authToken —
  *    NEVER return, log, or display anything beyond pid/folders/ideName.
  *
- * Both reads are display-only enrichment: size-capped, schema-lenient, and a
+ * The read is display-only enrichment: size-capped, schema-lenient, and a
  * missing/malformed file simply yields the empty result.
+ *
+ * (The `mcp-needs-auth-cache.json` reader used to live here too; the
+ * needs-auth signal now surfaces via the companion's account-row dot, so
+ * the reader moved to serac-snowmelt-companion.)
  */
 import * as fs from 'fs';
 import * as path from 'path';
 import { claudeStateDir } from './paths.js';
 
 const MAX_READ_BYTES = 256 * 1024;
-/** Ignore needs-auth entries older than this — the cache can linger after the
- *  server is re-authed or removed, and week-old noise helps nobody. */
-const NEEDS_AUTH_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 /** Cap the lock scan defensively; a real machine has a handful of windows. */
 const MAX_LOCK_FILES = 64;
-
-export interface McpNeedsAuth {
-  name: string;
-  /** Epoch ms the entry was recorded. */
-  timestamp: number;
-}
 
 function readJsonCapped(file: string): unknown {
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
@@ -40,26 +32,6 @@ function readJsonCapped(file: string): unknown {
     return JSON.parse(buf.toString('utf8'));
   } finally {
     fs.closeSync(fd);
-  }
-}
-
-/** MCP servers currently flagged as needing authentication, newest first.
- *  Empty on any read/parse problem and when every entry is stale. */
-export function readMcpNeedsAuth(stateDir: string = claudeStateDir(), now: number = Date.now()): McpNeedsAuth[] {
-  try {
-    const parsed = readJsonCapped(path.join(stateDir, 'mcp-needs-auth-cache.json'));
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { return []; }
-    const out: McpNeedsAuth[] = [];
-    for (const [name, v] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!name || name.length > 200 || !v || typeof v !== 'object') { continue; }
-      const ts = (v as { timestamp?: unknown }).timestamp;
-      if (typeof ts !== 'number' || !Number.isFinite(ts)) { continue; }
-      if (now - ts > NEEDS_AUTH_MAX_AGE_MS || ts > now + 60_000) { continue; }
-      out.push({ name, timestamp: ts });
-    }
-    return out.sort((a, b) => b.timestamp - a.timestamp);
-  } catch {
-    return [];
   }
 }
 

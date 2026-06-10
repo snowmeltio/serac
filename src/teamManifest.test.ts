@@ -65,7 +65,7 @@ describe('parseAgentTeamsConfig', () => {
     expect(result!.agents[0].isActive).toBe(true);
   });
 
-  it('filters out in-process members', () => {
+  it('filters in-process members out of agents but keeps their names for roster matching', () => {
     const config = validAgentTeamsConfig();
     // Make the tmux member in-process instead
     (config.members[1] as Record<string, unknown>).backendType = 'in-process';
@@ -73,6 +73,16 @@ describe('parseAgentTeamsConfig', () => {
     const result = parseAgentTeamsConfig(JSON.stringify(config), 'serac-audit');
     expect(result).not.toBeNull();
     expect(result!.agents).toHaveLength(0);
+    // The name must survive: teammate badging, inbox resolution, and transcript
+    // lookup all roster-match against it (an all-in-process team would otherwise
+    // have an empty roster and the composer could never appear).
+    expect(result!.inProcessMembers).toEqual(['type-auditor']);
+  });
+
+  it('reports no in-process members for an all-tmux team', () => {
+    const result = parseAgentTeamsConfig(JSON.stringify(validAgentTeamsConfig()), 'serac-audit');
+    expect(result).not.toBeNull();
+    expect(result!.inProcessMembers).toEqual([]);
   });
 
   it('treats all present members as active (no completedAt)', () => {
