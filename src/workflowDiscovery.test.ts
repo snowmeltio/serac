@@ -310,10 +310,52 @@ describe('WorkflowDiscovery', () => {
     expect(rev.phaseIndex).toBe(1);
     expect(rev.phaseTitle).toBe('Review');
     expect(rev.label).toBe('review:auth');
-    // Loop-var prompt → unmatchable → flat fallback (no phase), journal-key label.
+    // Loop-var prompt over an array the script never declares → unmatchable →
+    // flat fallback (no phase) with an agent-distinct label. The journal key
+    // (`v2:b`) must NEVER surface as a label, and the prompt rides as preview.
     expect(ver.phaseIndex).toBeNull();
     expect(ver.phaseTitle).toBeNull();
-    expect(ver.label).toBe('v2:b');
+    expect(ver.label).toBe('Agent · verbbb2');
+    expect(ver.promptPreview).toContain('a wholly dynamic per-item payload');
+    d.dispose();
+  });
+
+  it('expands the canonical pipeline(ARR, d => agent(d.prompt)) shape into per-element phase + label', async () => {
+    const runId = 'wf_expand-01';
+    const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'journal.jsonl'), [
+      JSON.stringify({ type: 'started', key: 'v2:x', agentId: 'aaaaaa1' }),
+      JSON.stringify({ type: 'started', key: 'v2:y', agentId: 'bbbbbb2' }),
+    ].join('\n'), 'utf-8');
+    fs.writeFileSync(path.join(runDir, 'agent-aaaaaa1.jsonl'),
+      JSON.stringify({ type: 'user', message: { content: 'SHARED HEAD. Audit the security posture of the entire system end to end.' } }) + '\n', 'utf-8');
+    fs.writeFileSync(path.join(runDir, 'agent-bbbbbb2.jsonl'),
+      JSON.stringify({ type: 'user', message: { content: 'SHARED HEAD. Audit the performance characteristics under sustained load.' } }) + '\n', 'utf-8');
+    const scriptsDir = path.join(sessionDir(), 'workflows', 'scripts');
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    const script = [
+      "export const meta = { name: 'exp', description: 'd', phases: [{ title: 'Audit' }] }",
+      'const COMMON = `SHARED HEAD.`',
+      'const DIMENSIONS = [',
+      "  { key: 'security', prompt: `${COMMON} Audit the security posture of the entire system end to end.` },",
+      "  { key: 'perf', prompt: `${COMMON} Audit the performance characteristics under sustained load.` },",
+      ']',
+      'await pipeline(DIMENSIONS, (d) => agent(d.prompt, { label: `audit:${d.key}`, phase: \'Audit\' }))',
+    ].join('\n');
+    fs.writeFileSync(path.join(scriptsDir, `exp-${runId}.js`), script, 'utf-8');
+
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+    const sec = snap.agents.find(a => a.agentId === 'aaaaaa1')!;
+    const perf = snap.agents.find(a => a.agentId === 'bbbbbb2')!;
+    // Each fan-out agent resolves to ITS element: right phase, exact label
+    // (statically resolved from the element's `key` — no runtime alignment).
+    expect(sec.phaseTitle).toBe('Audit');
+    expect(sec.label).toBe('audit:security');
+    expect(perf.phaseTitle).toBe('Audit');
+    expect(perf.label).toBe('audit:perf');
     d.dispose();
   });
 

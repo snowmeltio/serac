@@ -28,6 +28,11 @@ Origin: a card showed `DONE · 49s` while the chat had launched `./deploy.sh` wi
 - **Freshness audit — are foreign workspaces and worktrees as up-to-date as the primary view? (Murray, 2026-06-04).** Verify that foreign-workspace and worktree cards reflect the *current* state, drawing on every signal the primary workspace already uses: hook-based status inference, in-flight workflows, active teams, background shells, and the process-liveness reader. Concern: these out-of-window sections may be inferred from staler/cheaper data (e.g. mtime + age gate only) and lag the live state. Confirm whether they're refreshed on the same cadence and through the same inference path, and close any gap so a foreign workspace/worktree shows the same currency as a local card.
 - **Visibility window — partly shipped 2026-06-03 (option b).** The age gate is now **decoupled per section**: `serac.discovery.ageGateDays` (default 7, min 1) is the inherited base, and each of `foreignWorkspacesAgeGateDays` / `worktreesAgeGateDays` / `teamsAgeGateDays` / `workflowsAgeGateDays` (null = inherit) can override it. Resolve via `settings.ageGateDaysFor(section)`. Still candidate: (a) **presets** instead of a raw day count — session-only / 1d / 7d / 30d / forever; (c) a **"live only" mode** keyed off the process-liveness reader — show only workspaces with a live Claude process and ignore the time gate.
 
+## Workflow viewer — residuals (from Track D, 2026-06-10)
+
+- **Waiting-tint for workflow agents on the card detail chip.** A blocked subagent tints the chip peach; a workflow agent cannot — the live tier has no per-agent permission inference (only running/done from the journal). Needs the hook stream or per-agent JSONL permission timers scoped to workflow agents. Defer until a real run is observed blocking.
+- **Live-tier fixture refresh** (session_crons / background_tasks in Stop payloads, CC >=2.1.159) — shared prerequisite with the loops badge.
+
 ## Hooks — validate the wired ingress, then drop the permission delay
 
 - **Ingress is WIRED (2026-06-09 batch; audit-confirmed 2026-06-10).** `extension.ts` runs `startHookIngress` (Unix socket + leader election, fed by `bin/serac-hook-forward.cjs`) into `hookEventRouter`, and `SessionDiscovery` injects the router into every `SessionManager` — the full PermissionRequest pipeline exists. Remaining:

@@ -65,6 +65,9 @@ export class DetailPanel {
    *  on every show() so a fresh drill-in defaults to the most recent run; the
    *  header view switcher updates it. Ignored by the team/subagents sources. */
   private selectedRunId: string | null = null;
+  /** Container to restore when switching away from a roster view entered via
+   *  the switcher (team containerId differs from the orchestrator session). */
+  private preTeamContainerId: string | null = null;
   /** JSON of the last render payload pushed; lets the periodic refresh() tick
    *  skip re-posting when nothing changed (a full re-render resets reader scroll
    *  + focus, jarring on an idle panel). */
@@ -198,6 +201,11 @@ export class DetailPanel {
     const selected = runs.find(r => r.runId === this.selectedRunId) ?? runs[0];
     const groups: DetailGroupView[] = [];
     if (selected) {
+      // Failed-first within each phase: when triaging a failed run, the
+      // broken agent is what the user came to find — it must not hide among
+      // a dozen done siblings in source order.
+      const failedFirst = (agents: typeof selected.agents) =>
+        [...agents].sort((a, b) => (a.status === 'failed' ? 0 : 1) - (b.status === 'failed' ? 0 : 1));
       const seen = new Set<string>();
       for (const ph of selected.phases) {
         const inPhase = selected.agents.filter(a => a.phaseIndex === ph.index);
@@ -206,18 +214,24 @@ export class DetailPanel {
           key: selected.runId,
           title: 'Phase ' + ph.index + ' · ' + ph.title,
           status: selected.status,
-          agents: inPhase.map(a => this.workflowAgentView(a)),
+          agents: failedFirst(inPhase).map(a => this.workflowAgentView(a)),
         });
       }
       const ungrouped = selected.agents.filter(a => !seen.has(a.agentId));
       if (ungrouped.length > 0) {
         const title = selected.phases.length > 0 ? 'Other' : null;
-        groups.push({ key: selected.runId, title, status: selected.status, agents: ungrouped.map(a => this.workflowAgentView(a)) });
+        groups.push({ key: selected.runId, title, status: selected.status, agents: failedFirst(ungrouped).map(a => this.workflowAgentView(a)) });
       }
     }
     const metricsBits = selected
       ? [selected.agentCount + ' agents', fmtTokens(selected.totalTokens) + ' tokens', selected.totalToolCalls + ' tools']
       : [];
+    // Failure roll-up: surface WHICH portion of the run failed in the header,
+    // so a 'failed' chip is immediately quantified without scanning the nav.
+    if (selected) {
+      const failed = selected.agents.filter(a => a.status === 'failed').length;
+      if (failed > 0) { metricsBits.push(failed + ' failed'); }
+    }
     if (selected?.durationMs) { const d = fmtDuration(selected.durationMs); if (d) { metricsBits.push(d); } }
     const team = this.teamFor(sessionId);
     return {
@@ -228,7 +242,7 @@ export class DetailPanel {
       chips: selected ? [selected.source === 'live' ? 'live' : 'workflow', selected.status] : ['workflow'],
       metrics: metricsBits.join(' · '),
       groups,
-      views: this.buildViewChoices(runs, selected?.runId ?? null, 'workflow', this.collectSubagents(sessionId), team?.name),
+      views: this.buildViewChoices(runs, selected?.runId ?? null, 'workflow', this.collectSubagents(sessionId), team),
       team: team?.name,
     };
   }
@@ -247,7 +261,7 @@ export class DetailPanel {
     activeRunId: string | null,
     activeSource: DetailSource,
     subs: { agents: DetailAgentView[]; running: number },
-    teamName?: string,
+    team?: TeamSnapshot,
   ): DetailViewChoice[] | undefined {
     const views: DetailViewChoice[] = [];
     const nameTotals = new Map<string, number>();
@@ -263,9 +277,21 @@ export class DetailPanel {
       views.push({
         id: 'subagents',
         kind: 'subagents',
-        label: teamName ? 'Teammates' : 'Subagents',
+        label: team ? 'Teammates' : 'Subagents',
         status: subs.running > 0 ? 'running' : 'completed',
         active: activeSource === 'subagents',
+      });
+    }
+    // Team roster view — restores the drill-in that became unreachable when
+    // v1.11 folded the team section into the orchestrator's card. Rides the
+    // same switcher as every other view (implicit interactivity, no new chrome).
+    if (team) {
+      views.push({
+        id: team.teamId,
+        kind: 'team',
+        label: 'Roster · ' + team.name,
+        status: team.agents.some(a => a.status === 'running') ? 'running' : 'completed',
+        active: activeSource === 'team',
       });
     }
     return views.length > 0 ? views : undefined;
@@ -358,7 +384,7 @@ export class DetailPanel {
       chips: team ? ['team'] : ['subagents'],
       metrics: metricsBits.join(' · '),
       groups: [{ key: '', title: null, status: null, agents }],
-      views: this.buildViewChoices(runs, null, 'subagents', { agents, running }, team?.name),
+      views: this.buildViewChoices(runs, null, 'subagents', { agents, running }, team),
       team: team?.name,
     };
   }
@@ -369,6 +395,15 @@ export class DetailPanel {
     const done = agents.filter(a => a.status === 'done').length;
     const metricsBits = [agents.length + ' member' + (agents.length === 1 ? '' : 's')];
     if (agents.length > 0) { metricsBits.push(done + '/' + agents.length + ' done'); }
+    // The switcher must offer the way back: the orchestrator's workflow runs
+    // and teammates views, built against the orchestrator session.
+    const orchestratorId = team?.orchestrator.sessionId;
+    const runs = orchestratorId
+      ? this.deps.getWorkflows().filter(w => w.sessionId === orchestratorId).sort((a, b) => b.startTime - a.startTime)
+      : [];
+    const views = orchestratorId
+      ? this.buildViewChoices(runs, null, 'team', this.collectSubagents(orchestratorId), team)
+      : undefined;
     return {
       source: 'team',
       containerId: teamId,
@@ -392,6 +427,8 @@ export class DetailPanel {
           model: '',
         } satisfies DetailAgentView)),
       }],
+      views,
+      team: team?.name,
     };
   }
 
@@ -407,10 +444,22 @@ export class DetailPanel {
         && typeof msg.agentId === 'string') {
       await this.sendAgentTranscript(msg.source, msg.containerId, msg.groupKey, msg.agentId);
     } else if (msg.type === 'selectDetailView'
-        && (msg.kind === 'workflow' || msg.kind === 'subagents')
+        && (msg.kind === 'workflow' || msg.kind === 'subagents' || msg.kind === 'team')
         && typeof msg.id === 'string') {
       // Header view switcher: flip the active source (and, for a workflow view,
       // the run). Force, since the view change always alters the visible groups.
+      if (msg.kind === 'team') {
+        // The webview is untrusted: only switch to a team that exists AND is
+        // orchestrated by the session this drill-in is anchored to.
+        const team = this.deps.getTeams().find(t => t.teamId === msg.id);
+        if (!team || team.orchestrator.sessionId !== this.containerId && team.teamId !== this.containerId) { return; }
+        if (this.containerId !== team.teamId) { this.preTeamContainerId = this.containerId; }
+        this.containerId = team.teamId;
+      } else if (this.source === 'team' && this.preTeamContainerId) {
+        // Switching away from the roster: restore the orchestrator container.
+        this.containerId = this.preTeamContainerId;
+        this.preTeamContainerId = null;
+      }
       this.source = msg.kind;
       this.selectedRunId = msg.kind === 'workflow' ? msg.id : null;
       this.postRender(true);

@@ -3,7 +3,7 @@ import * as path from 'path';
 import type { SessionMeta, WorkflowAgentSnapshot, WorkflowRunStatus, WorkflowSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { parseWorkflowSidecar } from './workflowSidecar.js';
-import { extractWorkflowMeta, extractAgentCalls, matchAgentCall, recoverInterpolatedLabel, type WorkflowAgentCall } from './workflowScript.js';
+import { extractWorkflowMeta, extractAgentCalls, expandIndirectCalls, matchAgentCall, recoverInterpolatedLabel, type WorkflowAgentCall } from './workflowScript.js';
 import { readSettings, ageGateDaysFor } from './settings.js';
 import { isValidSessionId } from './validation.js';
 
@@ -266,7 +266,11 @@ export class WorkflowDiscovery {
           phases = meta.phases.map((p, i) => ({ index: i + 1, title: p.title, detail: p.detail ?? '' }));
           for (const p of phases) { phaseIndexByTitle.set(p.title, p.index); }
         }
-        agentCalls = extractAgentCalls(src);
+        // Expand indirect prompts (the canonical `pipeline(ARR, d =>
+        // agent(d.prompt, …))` shape) into matchable virtual calls — without
+        // this, the most idiomatic Workflow scripts rendered every agent
+        // ungrouped under a raw journal key.
+        agentCalls = expandIndirectCalls(src, extractAgentCalls(src));
       }
     } catch {
       // no script yet — fall back to runId + no phases + no correlation
@@ -301,11 +305,16 @@ export class WorkflowDiscovery {
         // so the live tier can group it under the right phase. Interpolated
         // (${...}) prompt parts differ per agent, so we match on the longest
         // static segment. Unmatched (e.g. agent(c.prompt)) → flat fallback.
-        let label = key;
+        // The journal key (`v2:<sha>`) is an implementation detail and must
+        // never reach the webview as a label — agent-distinct fallback instead.
+        let label = `Agent · ${agentId.slice(0, 8)}`;
         let phaseIndex: number | null = null;
         let phaseTitle: string | null = null;
-        if (agentCalls.length > 0 && isValidSessionId(agentId)) {
+        let promptPreview = '';
+        void key;
+        if (isValidSessionId(agentId)) {
           const prompt = await this.readFirstRecordPrompt(path.join(runDir, `agent-${agentId}.jsonl`));
+          if (prompt) { promptPreview = prompt.slice(0, 140); }
           const call = prompt ? matchAgentCall(prompt, agentCalls) : null;
           if (call) {
             if (call.phase) {
@@ -322,11 +331,12 @@ export class WorkflowDiscovery {
             const resolved = resolveLiveLabel(call, prompt as string);
             if (resolved !== null) {
               label = resolved;
-            } else if (call.label && phaseTitle) {
+            } else if (phaseTitle) {
               label = `${phaseTitle} · ${agentId.slice(0, 8)}`;
             }
           }
         }
+        const stats = await this.liveAgentStats(runDir, agentId, status);
 
         agents.push({
           agentId,
@@ -338,10 +348,10 @@ export class WorkflowDiscovery {
           status,
           startedAt: 0,
           durationMs: null,
-          tokens: 0,
-          toolCalls: 0,
+          tokens: stats.tokens,
+          toolCalls: stats.toolCalls,
           attempt: 1,
-          promptPreview: '',
+          promptPreview,
           resultPreview: null,
           lastToolName: null,
           lastToolSummary: null,
@@ -384,6 +394,53 @@ export class WorkflowDiscovery {
       logs: [],
       dismissed: false,
     };
+  }
+
+  /** Per-agent live token/tool-call stats cache. Previously the live tier
+   *  hardcoded zeros ("0 tokens · 0 tools" on a run mid-flight). Cost-bounded:
+   *  a full re-read happens only when the file grew AND the last scan is older
+   *  than the throttle, capped at 8 MB — beyond that the last stats stick. */
+  private agentStatsCache = new Map<string, { size: number; scannedAt: number; tokens: number; toolCalls: number }>();
+  private static readonly STATS_RESCAN_MS = 5_000;
+  private static readonly STATS_MAX_BYTES = 8 * 1024 * 1024;
+
+  private async liveAgentStats(runDir: string, agentId: string, status: string): Promise<{ tokens: number; toolCalls: number }> {
+    const filePath = path.join(runDir, `agent-${agentId}.jsonl`);
+    const cached = this.agentStatsCache.get(filePath);
+    try {
+      const stat = await fs.promises.stat(filePath);
+      if (cached && (cached.size === stat.size
+        || (status === 'running' && Date.now() - cached.scannedAt < WorkflowDiscovery.STATS_RESCAN_MS))) {
+        return cached;
+      }
+      if (stat.size > WorkflowDiscovery.STATS_MAX_BYTES) { return cached ?? { tokens: 0, toolCalls: 0 }; }
+      const raw = await fs.promises.readFile(filePath, 'utf-8');
+      let tokens = 0;
+      let toolCalls = 0;
+      for (const line of raw.split('\n')) {
+        if (!line) { continue; }
+        // Cheap pre-filters before JSON.parse — most lines carry neither.
+        const hasUsage = line.includes('"output_tokens"');
+        const hasTool = line.includes('"tool_use"');
+        if (!hasUsage && !hasTool) { continue; }
+        try {
+          const rec = JSON.parse(line) as { message?: { usage?: { output_tokens?: number }; content?: unknown } };
+          const u = rec.message?.usage?.output_tokens;
+          if (typeof u === 'number') { tokens += u; }
+          const content = rec.message?.content;
+          if (Array.isArray(content)) {
+            for (const b of content) {
+              if (b && typeof b === 'object' && (b as { type?: string }).type === 'tool_use') { toolCalls++; }
+            }
+          }
+        } catch { /* malformed line — skip */ }
+      }
+      const entry = { size: stat.size, scannedAt: Date.now(), tokens, toolCalls };
+      this.agentStatsCache.set(filePath, entry);
+      return entry;
+    } catch {
+      return cached ?? { tokens: 0, toolCalls: 0 };
+    }
   }
 
   /** Read the prompt text from record-0 of an agent transcript, bounded so a

@@ -43,6 +43,14 @@ export interface WorkflowAgentCall {
   /** The label arg as ordered template parts, present only when the label is an
    *  interpolated template (contains `${…}`); null for a plain literal/no label. */
   labelTemplate: TemplateParts | null;
+  /** Source text of the prompt argument when it is NOT a string literal (e.g.
+   *  `d.prompt`, `dimVerifyPrompt(f, lens)`). Lets expandIndirectCalls resolve
+   *  the underlying template(s) statically. Null for literal prompts. */
+  promptExpr: string | null;
+  /** Character offset of this `agent(` call in the script source — used to
+   *  associate an indirect call with the enclosing `pipeline(ARR, …)` /
+   *  `ARR.map(…)` extent that binds its loop variable. */
+  sourceIndex: number;
 }
 
 /** A static prompt segment shorter than this is too generic to identify a call
@@ -282,6 +290,7 @@ export function extractAgentCalls(source: string): WorkflowAgentCall[] {
     while (i < inner.length && /\s/.test(inner[i])) { i++; }
     let staticSegments: string[] = [];
     let promptTemplate: TemplateParts | null = null;
+    let promptExpr: string | null = null;
     let afterPrompt = i;
     const c0 = inner[i];
     if (c0 === '`' || c0 === "'" || c0 === '"') {
@@ -291,6 +300,19 @@ export function extractAgentCalls(source: string): WorkflowAgentCall[] {
         staticSegments = distinctiveSegments(promptTemplate.statics);
         afterPrompt = i + lit.length;
       }
+    } else {
+      // Bare-expression prompt (identifier/member/call). Capture its text up
+      // to the top-level argument comma so the indirect resolver can chase it.
+      let depth = 0;
+      let j = i;
+      for (; j < inner.length; j++) {
+        const c = inner[j];
+        if (c === '(' || c === '[' || c === '{') { depth++; }
+        else if (c === ')' || c === ']' || c === '}') { depth--; }
+        else if (c === ',' && depth === 0) { break; }
+      }
+      promptExpr = inner.slice(i, j).trim() || null;
+      afterPrompt = j;
     }
 
     // Second argument = the opts object literal; pull label/phase from it only
@@ -313,9 +335,234 @@ export function extractAgentCalls(source: string): WorkflowAgentCall[] {
       }
     }
 
-    calls.push({ label, phase, staticSegments, promptTemplate, labelTemplate });
+    calls.push({ label, phase, staticSegments, promptTemplate, labelTemplate, promptExpr, sourceIndex: m.index });
   }
   return calls;
+}
+
+// ── Indirect-prompt resolution (the canonical pipeline(ARR, d => agent(d.prompt)) shape) ──
+
+/** A top-level `const NAME = [ {…}, … ]` array whose elements carry a
+ *  template-literal `prompt:` field. */
+interface PromptArray {
+  name: string;
+  /** One entry per element, in source order. */
+  elements: { promptTemplate: TemplateParts; props: Map<string, string> }[];
+}
+
+/** Extract every top-level `const NAME = [ … ]` whose elements are object
+ *  literals with a string/template `prompt:` field. Property values that are
+ *  plain string literals are also captured (e.g. `key: 'security'`) so an
+ *  interpolated label like `audit:${d.key}` can be resolved statically. */
+function extractPromptArrays(source: string): PromptArray[] {
+  const out: PromptArray[] = [];
+  const inString = buildStringMask(source);
+  const re = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*\[/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source)) !== null) {
+    if (inString[m.index]) { continue; }
+    const openIdx = m.index + m[0].length - 1;
+    const arrText = extractBalanced(source, openIdx, '[', ']');
+    if (!arrText) { continue; }
+    const elements: PromptArray['elements'] = [];
+    // Walk the array text for top-level object literals.
+    let depth = 0;
+    let inStr: string | null = null;
+    for (let i = 1; i < arrText.length - 1; i++) {
+      const c = arrText[i];
+      if (inStr) {
+        if (c === '\\') { i++; continue; }
+        if (c === inStr) { inStr = null; }
+        continue;
+      }
+      if (c === "'" || c === '"' || c === '`') { inStr = c; continue; }
+      if (c === '{') {
+        if (depth === 0) {
+          const objText = extractBalanced(arrText, i, '{', '}');
+          if (objText) {
+            // matchStringField is single-line by design (meta fields); prompt
+            // templates are routinely multiline, so scan the literal directly.
+            const promptLit = extractFieldLiteralBody(objText, 'prompt');
+            if (promptLit !== null) {
+              const props = new Map<string, string>();
+              // Capture sibling plain-string fields for label resolution.
+              for (const fieldMatch of objText.matchAll(/([A-Za-z_$][\w$]*)\s*:/g)) {
+                const v = matchStringField(objText.slice(fieldMatch.index ?? 0), fieldMatch[1]);
+                if (v !== null && !v.includes('${')) { props.set(fieldMatch[1], v); }
+              }
+              elements.push({ promptTemplate: templatePartsFromDecoded(promptLit), props });
+            }
+            i += objText.length - 1;
+            continue;
+          }
+        }
+        depth++;
+      } else if (c === '}') { depth--; }
+    }
+    if (elements.length > 0) { out.push({ name: m[1], elements }); }
+  }
+  return out;
+}
+
+/** Split an already-decoded template body on `${…}` interpolations. */
+function templatePartsFromDecoded(body: string): TemplateParts {
+  const { rawStatics, exprs } = splitTemplate(body);
+  return { statics: rawStatics, exprs };
+}
+
+/** Find `field: <string/template literal>` inside an object-literal text and
+ *  return the literal's decoded body — multiline-safe (unlike matchStringField,
+ *  which is deliberately single-line for meta fields). Null when the field is
+ *  absent or its value is not a literal. */
+function extractFieldLiteralBody(objText: string, field: string): string | null {
+  const inString = buildStringMask(objText);
+  const re = new RegExp('\\b' + field + '\\s*:\\s*', 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(objText)) !== null) {
+    if (inString[m.index]) { continue; }
+    const at = m.index + m[0].length;
+    const q = objText[at];
+    if (q !== '`' && q !== "'" && q !== '"') { return null; }
+    const lit = extractStringLiteral(objText, at);
+    return lit ? lit.slice(1, -1) : null;
+  }
+  return null;
+}
+
+/** Find the balanced extent (start, end) of every `pipeline(NAME` /
+ *  `NAME.map(` / `of NAME)`-style binding of an array name, so a call site
+ *  inside the extent can be associated with that array. */
+function arrayBindingExtents(source: string, name: string): Array<{ start: number; end: number }> {
+  const extents: Array<{ start: number; end: number }> = [];
+  const inString = buildStringMask(source);
+  const patterns = [
+    new RegExp('\\bpipeline\\s*\\(\\s*' + name + '\\b', 'g'),
+    new RegExp('\\b' + name + '\\s*\\.\\s*(?:map|flatMap|forEach)\\s*\\(', 'g'),
+    new RegExp('\\bfor\\s*\\(\\s*(?:const|let|var)\\s+[\\w$]+\\s+of\\s+' + name + '\\b', 'g'),
+  ];
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(source)) !== null) {
+      if (inString[m.index]) { continue; }
+      // Extent: from the match to the end of the enclosing call/loop — found
+      // by balancing from the first `(` at or after the match.
+      const parenIdx = source.indexOf('(', m.index);
+      if (parenIdx < 0) { continue; }
+      const text = extractBalanced(source, parenIdx, '(', ')');
+      if (!text) { continue; }
+      let end = parenIdx + text.length;
+      // A `for (…of NAME)` heads a block — extend over the following {…}.
+      const braceIdx = source.indexOf('{', end);
+      if (re === patterns[2] && braceIdx >= 0) {
+        const block = extractBalanced(source, braceIdx, '{', '}');
+        if (block) { end = braceIdx + block.length; }
+      }
+      extents.push({ start: m.index, end });
+    }
+  }
+  return extents;
+}
+
+/** Template literals (≥ MIN length) inside a named function's body — used to
+ *  resolve `agent(fn(args), …)` prompts to the templates the fn returns. */
+function functionBodyTemplates(source: string, fnName: string): TemplateParts[] {
+  const inString = buildStringMask(source);
+  const re = new RegExp('\\bfunction\\s+' + fnName + '\\s*\\(|\\bconst\\s+' + fnName + '\\s*=\\s*(?:\\([^)]*\\)|[\\w$]+)\\s*=>', 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source)) !== null) {
+    if (inString[m.index]) { continue; }
+    const braceIdx = source.indexOf('{', m.index + m[0].length);
+    if (braceIdx < 0) { continue; }
+    const body = extractBalanced(source, braceIdx, '{', '}');
+    if (!body) { continue; }
+    const templates: TemplateParts[] = [];
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] === '`') {
+        const lit = extractStringLiteral(body, i);
+        if (lit) {
+          const pt = templatePartsOf(lit);
+          if (distinctiveSegments(pt.statics).length > 0) { templates.push(pt); }
+          i += lit.length - 1;
+        }
+      } else if (body[i] === "'" || body[i] === '"') {
+        const lit = extractStringLiteral(body, i);
+        if (lit) { i += lit.length - 1; }
+      }
+    }
+    return templates;
+  }
+  return [];
+}
+
+/**
+ * Expand indirect-prompt call sites into matchable virtual calls. The
+ * canonical Workflow pattern — `pipeline(DIMENSIONS, d => agent(d.prompt,
+ * {label: `x:${d.key}`, phase: 'P'}))` — passes the prompt as an identifier,
+ * which extractAgentCalls cannot match (no static segments), so every agent
+ * of such a script landed ungrouped with no label. This resolver:
+ *
+ *  - `IDENT.prompt` → finds the top-level `const ARR = [{prompt: `…`}, …]`
+ *    whose binding extent (pipeline(ARR…) / ARR.map(…) / for…of ARR) encloses
+ *    the call site, and emits one virtual call per element, carrying that
+ *    element's prompt segments. An interpolated label whose exprs are all
+ *    `IDENT.prop` with a plain-string prop on the element resolves to a
+ *    concrete label statically (`audit:security`).
+ *  - `fn(args)` → finds `function fn` / `const fn = (…) =>` and emits one
+ *    virtual call per distinctive template literal in its body.
+ *
+ * Literal-prompt calls pass through unchanged. Still no eval — everything is
+ * bounded brace/string matching.
+ */
+export function expandIndirectCalls(source: string, calls: WorkflowAgentCall[]): WorkflowAgentCall[] {
+  let arrays: PromptArray[] | null = null; // lazy — most scripts have none
+  const out: WorkflowAgentCall[] = [];
+  for (const call of calls) {
+    if (!call.promptExpr || call.staticSegments.length > 0) { out.push(call); continue; }
+
+    const memberMatch = call.promptExpr.match(/^([A-Za-z_$][\w$]*)\.prompt$/);
+    const fnMatch = call.promptExpr.match(/^([A-Za-z_$][\w$]*)\s*\(/);
+
+    if (memberMatch) {
+      arrays ??= extractPromptArrays(source);
+      const bound = arrays.find(a =>
+        arrayBindingExtents(source, a.name).some(e => call.sourceIndex >= e.start && call.sourceIndex < e.end));
+      if (bound) {
+        for (const el of bound.elements) {
+          let label = call.label;
+          let labelTemplate = call.labelTemplate;
+          if (labelTemplate) {
+            // Try to resolve `${IDENT.prop}` exprs from the element's own
+            // plain-string props; only emit a resolved label when EVERY expr
+            // resolves (a partial label would be misleading).
+            const values = labelTemplate.exprs.map(expr => {
+              const mm = expr.trim().match(/^[A-Za-z_$][\w$]*\.([\w$]+)$/);
+              return mm ? el.props.get(mm[1]) ?? null : null;
+            });
+            if (values.every(v => v !== null)) {
+              label = labelTemplate.statics.map((s, k) => s + (values[k] ?? '')).join('');
+              labelTemplate = null;
+            }
+          }
+          out.push({
+            ...call, label, labelTemplate,
+            promptTemplate: el.promptTemplate,
+            staticSegments: distinctiveSegments(el.promptTemplate.statics),
+          });
+        }
+        continue;
+      }
+    } else if (fnMatch) {
+      const templates = functionBodyTemplates(source, fnMatch[1]);
+      if (templates.length > 0) {
+        for (const pt of templates) {
+          out.push({ ...call, promptTemplate: pt, staticSegments: distinctiveSegments(pt.statics) });
+        }
+        continue;
+      }
+    }
+    out.push(call); // unresolvable — keep as-is (flat fallback downstream)
+  }
+  return out;
 }
 
 /**
@@ -371,6 +618,15 @@ function alignPromptValues(pt: TemplateParts, prompt: string): Map<string, strin
       if (idx < 0) { return null; }
       valueEnd = idx;
       advance = idx + next.length;
+      // First-occurrence anchoring is ambiguous when the anchor text appears
+      // AGAIN later — the runtime value may itself contain the anchor, in
+      // which case the first match silently truncates the value. Rather than
+      // risk recording a wrong label token, leave this slot unrecovered (the
+      // caller falls back to the honest phase-scoped label).
+      if (prompt.indexOf(next, advance) >= 0) {
+        cursor = advance;
+        continue;
+      }
     } else {
       // A trailing/empty static can't be anchored; the value runs to the end.
       valueEnd = prompt.length;
