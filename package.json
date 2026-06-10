@@ -198,6 +198,27 @@
             "minimum": 1,
             "description": "Base staleness window: ignore foreign workspaces, worktrees, agent teams, and workflows whose latest activity is older than this many days. Each section can override this below; leave an override empty to inherit this value."
           },
+          "serac.discovery.foreignWorkspacesWindow": {
+            "type": "string",
+            "enum": [
+              "inherit",
+              "live-only",
+              "1d",
+              "7d",
+              "30d",
+              "forever"
+            ],
+            "enumDescriptions": [
+              "Use the day-count settings below (default).",
+              "Only sessions whose Claude Code process is live right now (session-only). Falls back to the day-count window if the process registry can't answer.",
+              "Sessions active in the last day.",
+              "Sessions active in the last 7 days.",
+              "Sessions active in the last 30 days.",
+              "No staleness window — show everything."
+            ],
+            "default": "inherit",
+            "description": "Visibility preset for the \"Other workspaces\" section. Overrides the day-count settings unless set to \"inherit\"."
+          },
           "serac.discovery.foreignWorkspacesAgeGateDays": {
             "type": [
               "number",

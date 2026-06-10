@@ -5,7 +5,7 @@ vi.mock('vscode', async () => {
   return { ...mock, default: mock };
 });
 
-import { readSettings, onSettingsChanged, ageGateDaysFor, DEFAULT_SETTINGS } from './settings.js';
+import { readSettings, onSettingsChanged, ageGateDaysFor, foreignWindowGate, DEFAULT_SETTINGS } from './settings.js';
 import { _setConfigValues, _resetConfig, _fireConfigChange } from './__mocks__/vscode.js';
 
 describe('readSettings', () => {
@@ -185,5 +185,43 @@ describe('onSettingsChanged', () => {
     _fireConfigChange('serac');
 
     expect(cb).not.toHaveBeenCalled();
+  });
+});
+
+describe('foreignWindowGate', () => {
+  beforeEach(() => { _resetConfig(); });
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it('inherit (default) resolves to the existing day-count chain', () => {
+    _setConfigValues({ 'serac.discovery.ageGateDays': 14 });
+    expect(foreignWindowGate()).toEqual({ liveOnly: false, ageGateMs: 14 * DAY });
+  });
+
+  it('presets map to fixed windows regardless of the day-count settings', () => {
+    _setConfigValues({
+      'serac.discovery.ageGateDays': 14,
+      'serac.discovery.foreignWorkspacesAgeGateDays': 3,
+    });
+    _setConfigValues({ 'serac.discovery.foreignWorkspacesWindow': '1d', 'serac.discovery.ageGateDays': 14, 'serac.discovery.foreignWorkspacesAgeGateDays': 3 });
+    expect(foreignWindowGate().ageGateMs).toBe(DAY);
+    _setConfigValues({ 'serac.discovery.foreignWorkspacesWindow': '7d' });
+    expect(foreignWindowGate().ageGateMs).toBe(7 * DAY);
+    _setConfigValues({ 'serac.discovery.foreignWorkspacesWindow': '30d' });
+    expect(foreignWindowGate().ageGateMs).toBe(30 * DAY);
+    _setConfigValues({ 'serac.discovery.foreignWorkspacesWindow': 'forever' });
+    expect(foreignWindowGate().ageGateMs).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('live-only sets the flag and keeps the inherited window as registry fallback', () => {
+    _setConfigValues({
+      'serac.discovery.foreignWorkspacesWindow': 'live-only',
+      'serac.discovery.foreignWorkspacesAgeGateDays': 2,
+    });
+    expect(foreignWindowGate()).toEqual({ liveOnly: true, ageGateMs: 2 * DAY });
+  });
+
+  it('an unrecognised value degrades to inherit, not a crash or a blank gate', () => {
+    _setConfigValues({ 'serac.discovery.foreignWorkspacesWindow': 'yesterday' });
+    expect(foreignWindowGate()).toEqual({ liveOnly: false, ageGateMs: 7 * DAY });
   });
 });

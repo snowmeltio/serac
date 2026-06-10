@@ -259,3 +259,94 @@ describe('ForeignWorkspaceManager: dismissed sessions stay out of the strips', (
     expect(running.map(s => s.sessionId)).toEqual(['22222222-2222-4222-8222-222222222222']);
   });
 });
+
+describe('ForeignWorkspaceManager: live-only visibility window', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-live-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+    _setConfigValues({ 'serac.discovery.foreignWorkspacesWindow': 'live-only' });
+  });
+  afterEach(() => {
+    _resetConfig();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const SID_LIVE = '33333333-3333-4333-8333-333333333333';
+  const SID_DEAD = '44444444-4444-4444-8444-444444444444';
+
+  /** A foreign session whose JSONL activity (and file mtime) is `ageMs` old. */
+  function createAgedSession(workspaceKey: string, sessionId: string, cwd: string, ageMs: number): void {
+    const dir = path.join(projectsDir, workspaceKey);
+    fs.mkdirSync(dir, { recursive: true });
+    const at = new Date(Date.now() - ageMs);
+    const record = JSON.stringify({
+      type: 'user', cwd, timestamp: at.toISOString(),
+      message: { content: [{ type: 'text', text: 'Hello' }] },
+    });
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    fs.writeFileSync(file, record + '\n');
+    fs.utimesSync(file, at, at);
+  }
+
+  function probeMap(map: Record<string, boolean | null>): (sessionId: string) => () => boolean | null {
+    return (sessionId: string) => () => map[sessionId] ?? null;
+  }
+
+  it('includes a live session even when it is far older than the time gate', async () => {
+    const cwd = path.join(tmpDir, 'old-ws');
+    const key = sanitiseKey(cwd);
+    createAgedSession(key, SID_LIVE, cwd, 30 * 24 * 60 * 60 * 1000); // 30d old, 7d gate
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLivenessProbeFactory(probeMap({ [SID_LIVE]: true }));
+    await manager.scan();
+    expect(manager.getWorkspaces().length).toBe(1);
+  });
+
+  it('excludes a registry-confirmed-absent session even when it is young', async () => {
+    const cwd = path.join(tmpDir, 'dead-ws');
+    const key = sanitiseKey(cwd);
+    createAgedSession(key, SID_DEAD, cwd, 60_000); // 1 minute old
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLivenessProbeFactory(probeMap({ [SID_DEAD]: false }));
+    await manager.scan();
+    expect(manager.getWorkspaces().length).toBe(0);
+  });
+
+  it('falls back to the time gate when the registry cannot answer (probe null / unwired)', async () => {
+    const cwdYoung = path.join(tmpDir, 'young-ws');
+    const cwdOld = path.join(tmpDir, 'stale-ws');
+    createAgedSession(sanitiseKey(cwdYoung), SID_LIVE, cwdYoung, 60_000);
+    createAgedSession(sanitiseKey(cwdOld), SID_DEAD, cwdOld, 30 * 24 * 60 * 60 * 1000);
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    // No probe factory wired at all → both resolve via the 7d fallback window.
+    await manager.scan();
+    const keys = manager.getWorkspaces().map(g => g.workspaceKey);
+    expect(keys).toEqual([sanitiseKey(cwdYoung)]);
+  });
+
+  it('poll() evicts a dormant session once its process goes away', async () => {
+    const cwd = path.join(tmpDir, 'evict-ws');
+    const key = sanitiseKey(cwd);
+    createAgedSession(key, SID_LIVE, cwd, 60_000);
+    const liveness: Record<string, boolean | null> = { [SID_LIVE]: true };
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLivenessProbeFactory(probeMap(liveness));
+    await manager.scan();
+    expect(manager.getWorkspaces().length).toBe(1);
+
+    // Active sessions are never window-evicted directly: the sequence is
+    // latch seen-live → registry death-gate demotes running→done → the
+    // dormant branch evicts on the following cycle.
+    // Eviction sequencing: an active session is first resolved by the
+    // registry death-gate, then the dormant branch window-evicts it — at
+    // most two cycles after the process disappears, with `changed` flagged
+    // on the cycle that evicts (so the UI repaints).
+    await manager.poll();       // probe true: latches seen-live
+    liveness[SID_LIVE] = false; // process exits
+    const c1 = await manager.poll();
+    const c2 = await manager.poll();
+    expect(c1 || c2).toBe(true);
+    expect(manager.getWorkspaces().length).toBe(0);
+  });
+});

@@ -37,6 +37,12 @@ export interface SeracSettings {
      *  "Other workspaces" tight while letting teams linger. Resolve via
      *  {@link ageGateDaysFor}, never read directly. */
     foreignWorkspacesAgeGateDays: number | null;
+    /** Visibility preset for "Other workspaces". Overrides the day-count
+     *  settings unless 'inherit'. 'live-only' keys off the process registry
+     *  (only sessions with a live CC process), falling back to the day-count
+     *  window when the registry can't answer. Resolve via
+     *  {@link foreignWindowGate}, never read directly. */
+    foreignWorkspacesWindow: ForeignWindow;
     worktreesAgeGateDays: number | null;
     teamsAgeGateDays: number | null;
     workflowsAgeGateDays: number | null;
@@ -93,6 +99,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
   discovery: {
     ageGateDays: 7,
     foreignWorkspacesAgeGateDays: null,
+    foreignWorkspacesWindow: 'inherit',
     worktreesAgeGateDays: null,
     teamsAgeGateDays: null,
     workflowsAgeGateDays: null,
@@ -135,6 +142,7 @@ export function readSettings(): SeracSettings {
     discovery: {
       ageGateDays: cfg.get<number>('discovery.ageGateDays', d.discovery.ageGateDays),
       foreignWorkspacesAgeGateDays: cfg.get<number | null>('discovery.foreignWorkspacesAgeGateDays', d.discovery.foreignWorkspacesAgeGateDays),
+      foreignWorkspacesWindow: validForeignWindow(cfg.get<string>('discovery.foreignWorkspacesWindow', d.discovery.foreignWorkspacesWindow)),
       worktreesAgeGateDays: cfg.get<number | null>('discovery.worktreesAgeGateDays', d.discovery.worktreesAgeGateDays),
       teamsAgeGateDays: cfg.get<number | null>('discovery.teamsAgeGateDays', d.discovery.teamsAgeGateDays),
       workflowsAgeGateDays: cfg.get<number | null>('discovery.workflowsAgeGateDays', d.discovery.workflowsAgeGateDays),
@@ -165,6 +173,11 @@ export function readSettings(): SeracSettings {
   };
 }
 
+/** Visibility presets for the "Other workspaces" section. */
+export type ForeignWindow = 'inherit' | 'live-only' | '1d' | '7d' | '30d' | 'forever';
+
+const FOREIGN_WINDOWS: readonly ForeignWindow[] = ['inherit', 'live-only', '1d', '7d', '30d', 'forever'];
+
 /** A discovery section with its own age-gate window. */
 export type DiscoverySection = 'foreignWorkspaces' | 'worktrees' | 'teams' | 'workflows';
 
@@ -184,6 +197,28 @@ export function ageGateDaysFor(section: DiscoverySection, settings: SeracSetting
     : section === 'teams' ? d.teamsAgeGateDays
     : d.workflowsAgeGateDays;
   return typeof override === 'number' && Number.isFinite(override) && override > 0 ? override : d.ageGateDays;
+}
+
+function validForeignWindow(v: string): ForeignWindow {
+  return (FOREIGN_WINDOWS as readonly string[]).includes(v) ? v as ForeignWindow : 'inherit';
+}
+
+/** The resolved visibility gate for "Other workspaces": whether live-only
+ *  filtering applies, and the time window in ms (Infinity = forever). When
+ *  liveOnly is true the time window is the FALLBACK, used only for sessions
+ *  the process registry can't answer for (degraded scan, no probe wired) —
+ *  fail open to the time gate rather than blanking the section. */
+export function foreignWindowGate(settings: SeracSettings = readSettings()): { liveOnly: boolean; ageGateMs: number } {
+  const day = 24 * 60 * 60 * 1000;
+  const inherited = ageGateDaysFor('foreignWorkspaces', settings) * day;
+  switch (settings.discovery.foreignWorkspacesWindow) {
+    case 'live-only': return { liveOnly: true, ageGateMs: inherited };
+    case '1d': return { liveOnly: false, ageGateMs: day };
+    case '7d': return { liveOnly: false, ageGateMs: 7 * day };
+    case '30d': return { liveOnly: false, ageGateMs: 30 * day };
+    case 'forever': return { liveOnly: false, ageGateMs: Number.POSITIVE_INFINITY };
+    default: return { liveOnly: false, ageGateMs: inherited };
+  }
 }
 
 /** Subscribe to `serac.*` setting changes. Callback receives a fresh snapshot

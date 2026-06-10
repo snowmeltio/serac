@@ -16,16 +16,12 @@ import { resolveRepoRoot, discoverWorktrees, type WorktreeInfo } from './gitWork
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { readSettings, ageGateDaysFor } from './settings.js';
+import { readSettings, foreignWindowGate } from './settings.js';
 
-/** Read the active foreign-workspace age gate. Resolves
- *  `serac.discovery.foreignWorkspacesAgeGateDays` when set, else the shared
- *  `serac.discovery.ageGateDays` base. Called at the top of each scan /
- *  housekeeping pass so the value is always current; reactive to settings
- *  changes without restart. */
-function ageGateMs(): number {
-  return ageGateDaysFor('foreignWorkspaces') * 24 * 60 * 60 * 1000;
-}
+/** Resolved visibility gate for this section (live-only flag + time window in
+ *  ms). Read at the top of each scan / housekeeping pass so the value is
+ *  always current; reactive to settings changes without restart. */
+type WindowGate = ReturnType<typeof foreignWindowGate>;
 /** Full rescan every Nth poll cycle */
 const FOREIGN_SCAN_INTERVAL = 10;
 /** Confidence ranking for max-confidence aggregation */
@@ -63,6 +59,19 @@ export class ForeignWorkspaceManager {
     this.probeFactory = factory;
   }
 
+  /** Whether a session falls inside the visibility window. In live-only mode
+   *  the registry answer wins outright (live = in, gone = out, regardless of
+   *  age); a degraded/unwired registry falls back to the time gate so a
+   *  transient scan problem can't blank the whole section. */
+  private withinWindow(sessionId: string, lastActivityMs: number, now: number, gate: WindowGate): boolean {
+    if (gate.liveOnly) {
+      const live = this.probeFactory ? this.probeFactory(sessionId)() : null;
+      if (live === true) { return true; }
+      if (live === false) { return false; }
+    }
+    return now - lastActivityMs <= gate.ageGateMs;
+  }
+
   /** Wire in the sibling-key provider. Called by SessionDiscovery once the
    *  SiblingWorktreeManager has been constructed. */
   setSiblingKeysProvider(provider: () => Set<string>): void {
@@ -83,7 +92,7 @@ export class ForeignWorkspaceManager {
   async scan(): Promise<void> {
     if (!readSettings().show.foreignWorkspaces) { return; }
     const now = Date.now();
-    const ageGate = ageGateMs();
+    const gate = foreignWindowGate();
     const siblingKeys = this.getSiblingKeys();
     try {
       const dirs = await fs.promises.readdir(this.projectsDir);
@@ -111,7 +120,7 @@ export class ForeignWorkspaceManager {
             const filePath = path.join(wsPath, file);
             try {
               const fstat = await fs.promises.stat(filePath);
-              if (now - fstat.mtimeMs > ageGate) { continue; }
+              if (!this.withinWindow(sessionId, fstat.mtimeMs, now, gate)) { continue; }
             } catch { continue; }
 
             const manager = new SessionManager(sessionId, filePath, dir, { livenessProbe: this.probeFactory?.(sessionId) });
@@ -125,7 +134,7 @@ export class ForeignWorkspaceManager {
             // records to old sessions, bumping mtime without indicating real
             // activity — without this check, scan() keeps re-adding what poll()
             // evicts, causing the workspace to flicker.
-            if (now - manager.getLastActivity().getTime() > ageGate) {
+            if (!this.withinWindow(sessionId, manager.getLastActivity().getTime(), now, gate)) {
               manager.dispose();
               continue;
             }
@@ -273,7 +282,7 @@ export class ForeignWorkspaceManager {
     if (!readSettings().show.foreignWorkspaces) { return false; }
     let changed = false;
     const now = Date.now();
-    const ageGate = ageGateMs();
+    const gate = foreignWindowGate();
     const siblingKeys = this.getSiblingKeys();
 
     // Evict any sessions that have migrated into the sibling set since the
@@ -297,8 +306,12 @@ export class ForeignWorkspaceManager {
 
     for (const [compositeId, session] of this.sessions) {
       const status = session.getStatus();
+      // Active sessions are never window-evicted (mirrors the never-downgrade
+      // rule): demoteIfStale resolves a genuinely dead one first, then the
+      // dormant branch evicts it on a later cycle.
       if (status !== 'running' && status !== 'waiting') {
-        if (now - session.getLastActivity().getTime() > ageGate) {
+        const sessionId = compositeId.slice(compositeId.indexOf('/') + 1);
+        if (!this.withinWindow(sessionId, session.getLastActivity().getTime(), now, gate)) {
           session.dispose();
           this.sessions.delete(compositeId);
           changed = true;
