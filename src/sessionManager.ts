@@ -799,7 +799,10 @@ export class SessionManager {
     }
     this.cwdTracker.onCwd(record.cwd);
     const branch = (record as { gitBranch?: unknown }).gitBranch;
-    if (typeof branch === 'string' && branch) { this.gitBranch = branch; }
+    // CC stamps the literal "HEAD" in non-git workspaces (and detached HEAD)
+    // — everything is in HEAD by definition there, so the pill differentiates
+    // nothing. Suppress it; a real branch name overwrites as usual.
+    if (typeof branch === 'string' && branch && branch !== 'HEAD') { this.gitBranch = branch; }
     if (record.sessionId && record.sessionId !== this.state.sessionId) {
       return false;
     }

@@ -359,3 +359,33 @@ describe('Truncation without PreCompact — full enrichment reset (test-gap sing
     await fs.promises.rm(dir, { recursive: true, force: true });
   });
 });
+
+describe('gitBranch capture — the literal HEAD is suppressed (non-git workspaces)', () => {
+  it('a non-git session ("gitBranch":"HEAD" on every record) gets NO branch pill', async () => {
+    // Real shape: CC stamps "HEAD" in non-git cwds (e.g. Google Drive project
+    // folders) — 493 such records in the BHP session that surfaced this.
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'head-'));
+    const file = path.join(dir, 's.jsonl');
+    await fs.promises.writeFile(file, JSON.stringify({
+      type: 'user', timestamp: new Date().toISOString(), gitBranch: 'HEAD',
+      message: { content: [{ type: 'text', text: 'go' }] },
+    }) + '\n');
+    const mgr = new SessionManager('head-sid', file, 'ws');
+    await mgr.update();
+    expect(mgr.getSnapshot().gitBranch).toBeUndefined();
+
+    // A genuine branch still captures (and survives later HEAD stamps).
+    await fs.promises.appendFile(file, JSON.stringify({
+      type: 'assistant', timestamp: new Date().toISOString(), gitBranch: 'feature/x',
+      message: { content: [{ type: 'text', text: 'ok' }] },
+    }) + '\n' + JSON.stringify({
+      type: 'user', timestamp: new Date().toISOString(), gitBranch: 'HEAD',
+      message: { content: [{ type: 'text', text: 'more' }] },
+    }) + '\n');
+    await mgr.update();
+    expect(mgr.getSnapshot().gitBranch).toBe('feature/x');
+
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+});
