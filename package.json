@@ -153,6 +153,11 @@
             "default": true,
             "description": "Show the Agent Teams section."
           },
+          "serac.show.fileCollisions": {
+            "type": "boolean",
+            "default": false,
+            "description": "Show a 'N shared files' chip when two ACTIVE sessions have edited the same file (a lost-work hazard when running multiple agents in one checkout). Off by default — rarely fires when parallelising via worktrees."
+          },
           "serac.show.workflows": {
             "type": "boolean",
             "default": true,

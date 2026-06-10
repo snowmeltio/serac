@@ -47,7 +47,7 @@ Origin: a card showed `DONE · 49s` while the chat had launched `./deploy.sh` wi
 - **Plans/todos surfacing.** TodoWrite state and plan-mode artifacts appear in session JSONLs; a card could show "3/7 todos" or the active plan step — answers "how far along is it?" without opening the transcript.
 - **Inbox unread pulse.** The read-side thread shipped (v1.12.0); the sidebar-level affordance remains — a quiet pulse on the orchestrator card when any member inbox has undrained messages.
 - **Test-gap singles — DONE 2026-06-10 (7d4ee75).** Truncation replay (caught + fixed a real resetState gap: glance fields survived truncation); workspaceOpener tests; extension activation wiring assertions.
-- **Tool-error badge — REMOVED 2026-06-10 (e236eb0, decision record).** Murray: non-actionable, and benign failed greps/probes inflate the count. `toolErrorCount` stays in the snapshot for a future actionable surface (e.g. jump-to-failing-turn in the detail panel). The shared-files collision chip stays: silent unless two ACTIVE sessions genuinely overlap on a path (zero baseline noise, real lost-work hazard when it fires).
+- **Tool-error badge — REMOVED 2026-06-10 (e236eb0, decision record).** Murray: non-actionable, and benign failed greps/probes inflate the count. `toolErrorCount` stays in the snapshot for a future actionable surface (e.g. jump-to-failing-turn in the detail panel). The shared-files collision chip is gated behind `serac.show.fileCollisions` (default OFF, Murray 2026-06-10): worktree-parallel workflows never trip it; opt in when running multiple agents against one checkout.
 
 ---
 

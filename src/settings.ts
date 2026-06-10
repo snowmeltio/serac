@@ -12,6 +12,10 @@ export interface SeracSettings {
     subagents: boolean;
     teams: boolean;
     workflows: boolean;
+    /** Same-file collision chip on cards. Default off (Murray 2026-06-10):
+     *  worktree-parallel workflows never trip it; opt in when running
+     *  multiple agents against one checkout. */
+    fileCollisions: boolean;
   };
   archive: {
     defaultRange: '1d' | '3d' | '7d' | '30d' | 'all';
@@ -92,6 +96,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     subagents: true,
     teams: true,
     workflows: true,
+    fileCollisions: false,
   },
   archive: { defaultRange: '1d', maxDoneShown: 20 },
   sessions: { highConfidenceSeconds: 5, mediumConfidenceSeconds: 30 },
@@ -127,6 +132,7 @@ export function readSettings(): SeracSettings {
       subagents: cfg.get<boolean>('show.subagents', d.show.subagents),
       teams: cfg.get<boolean>('show.teams', d.show.teams),
       workflows: cfg.get<boolean>('show.workflows', d.show.workflows),
+      fileCollisions: cfg.get<boolean>('show.fileCollisions', d.show.fileCollisions),
     },
     archive: {
       defaultRange: cfg.get<SeracSettings['archive']['defaultRange']>('archive.defaultRange', d.archive.defaultRange),

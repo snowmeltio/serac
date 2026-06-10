@@ -181,6 +181,7 @@ interface PanelSettings {
     subagents: boolean;
     teams: boolean;
     workflows: boolean;
+    fileCollisions: boolean;
   };
   archive: { defaultRange: string; maxDoneShown: number };
   refresh: { intervalSeconds: number };
@@ -203,7 +204,7 @@ type WebviewIncomingMessage = UpdateMessage | FocusMessage | SettingsMessage;
  *  initial value before the first SettingsMessage arrives — kept in sync
  *  with the package.json `default` declarations. */
 const DEFAULT_PANEL_SETTINGS: PanelSettings = {
-  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, teams: true, workflows: true },
+  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, teams: true, workflows: true, fileCollisions: false },
   archive: { defaultRange: '1d', maxDoneShown: 20 },
   refresh: { intervalSeconds: 5 },
   discovery: { ageGateDays: 7 },
@@ -1291,7 +1292,7 @@ const RANGE_MS: Record<string, number> = {
     // Same-file collision — another ACTIVE session is editing the same
     // file(s); a merge conflict in the making. Same quiet-chip pattern as
     // the tool-error badge; lists the shared paths in the tooltip.
-    const collisions = fileCollisions.get(s.sessionId);
+    const collisions = currentSettings.show.fileCollisions ? fileCollisions.get(s.sessionId) : undefined;
     if (collisions && collisions.length > 0) {
       const shown = collisions.slice(0, 6).map(f => f.split('/').pop() || f);
       const extra = collisions.length > 6 ? ' (+' + (collisions.length - 6) + ' more)' : '';
