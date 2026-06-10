@@ -16,7 +16,7 @@ vi.mock('./transcriptRenderer.js', () => ({
   parseTranscript: vi.fn(),
 }));
 
-import { DetailPanel, type DetailPanelDeps } from './detailPanel.js';
+import { DetailPanel, rollupSummary, type DetailPanelDeps } from './detailPanel.js';
 import { parseTranscript } from './transcriptRenderer.js';
 import {
   Uri,
@@ -585,5 +585,29 @@ describe('DetailPanel', () => {
       h.panel.show('team', 'orch-1', 'orch-1');
       expect(window.createWebviewPanel).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe('rollupSummary — chip tooltip roll-up', () => {
+  it('returns undefined for an empty roster', () => {
+    expect(rollupSummary([], 'agent')).toBeUndefined();
+  });
+
+  it('counts buckets in triage order, failed first', () => {
+    expect(rollupSummary(['done', 'failed', 'running', 'done', 'running', 'done'], 'agent'))
+      .toBe('6 agents · 1 failed · 2 running · 3 done');
+  });
+
+  it('collapses an all-done roster to just the total (the dot already says done)', () => {
+    expect(rollupSummary(['done', 'done', 'done'], 'agent')).toBe('3 agents');
+    expect(rollupSummary(['completed'], 'member')).toBe('1 member');
+  });
+
+  it('still itemises a uniform non-terminal roster', () => {
+    expect(rollupSummary(['running', 'running'], 'subagent')).toBe('2 subagents · 2 running');
+  });
+
+  it('keeps unknown statuses visible under their own name', () => {
+    expect(rollupSummary(['done', 'mystery'], 'agent')).toBe('2 agents · 1 done · 1 mystery');
   });
 });

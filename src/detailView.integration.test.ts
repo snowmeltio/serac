@@ -10,7 +10,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 let postedMessages: unknown[] = [];
-const mockVscodeApi = { postMessage: (msg: unknown) => { postedMessages.push(msg); } };
+/** Webview state store backing getState/setState — survives vi.resetModules()
+ *  within a test, mirroring how VS Code persists state across webview rebuilds. */
+let webviewState: unknown = undefined;
+const mockVscodeApi = {
+  postMessage: (msg: unknown) => { postedMessages.push(msg); },
+  getState: () => webviewState,
+  setState: (s: unknown) => { webviewState = s; },
+};
 (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
 
 interface Agent { agentId: string; label: string; status: string; tokens?: number; toolCalls?: number; durationMs?: number | null; model?: string; phaseTitle?: string | null; }
@@ -61,6 +68,7 @@ function twoSourceModel() {
 describe('detailView.ts — collapse + grouped switcher', () => {
   beforeEach(async () => {
     postedMessages = [];
+    webviewState = undefined;
     document.body.innerHTML = '<div id="wf-root"></div>';
     vi.resetModules();
     (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
@@ -182,6 +190,7 @@ describe('detailView.ts — collapse + grouped switcher', () => {
 describe('detailView.ts — live transcript refresh', () => {
   beforeEach(async () => {
     postedMessages = [];
+    webviewState = undefined;
     vi.useFakeTimers();              // fake before the IIFE import so its setInterval is faked
     document.body.innerHTML = '<div id="wf-root"></div>';
     vi.resetModules();
@@ -257,6 +266,7 @@ describe('detailView.ts — teammate composer (experimental)', () => {
 
   beforeEach(async () => {
     postedMessages = [];
+    webviewState = undefined;
     document.body.innerHTML = '<div id="wf-root"></div>' + COMPOSER_HTML;
     vi.resetModules();
     (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
@@ -359,5 +369,101 @@ describe('detailView.ts — teammate composer (experimental)', () => {
     expect(cStatus().textContent).toContain('inbox file is a symlink');
     expect(cStatus().classList.contains('error')).toBe(true);
     expect(cSend().disabled).toBe(false);
+  });
+});
+
+describe('detailView.ts — UX batch (dedup, persistence, time tick, chip summary)', () => {
+  beforeEach(async () => {
+    postedMessages = [];
+    webviewState = undefined;
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
+    await import('./detailView.js');
+  });
+
+  const KEY = 'workflow:wf_run1|wf_run1|agent001';
+  const T1 = [
+    { timestamp: '2026-06-10T01:00:00Z', role: 'user', content: 'brief' },
+    { timestamp: '2026-06-10T01:00:05Z', role: 'assistant', content: 'first reply' },
+  ];
+
+  it('an identical steady-tick transcript does NOT re-render (text selection survives)', () => {
+    sendRender(twoSourceModel());
+    sendTranscript(KEY, T1);
+    const readerBefore = q('.wf-reader');
+    expect(readerBefore).not.toBeNull();
+    sendTranscript(KEY, [...T1.map(e => ({ ...e }))]); // same content, fresh objects
+    expect(q('.wf-reader')).toBe(readerBefore); // same node — no innerHTML swap
+  });
+
+  it('a grown transcript still re-renders with the new turn', () => {
+    sendRender(twoSourceModel());
+    sendTranscript(KEY, T1);
+    const readerBefore = q('.wf-reader');
+    sendTranscript(KEY, [...T1, { timestamp: '2026-06-10T01:00:10Z', role: 'assistant', content: 'second reply' }]);
+    expect(q('.wf-reader')).not.toBe(readerBefore);
+    expect(root().textContent).toContain('second reply');
+  });
+
+  it('an in-place grown last turn (streaming) also re-renders', () => {
+    sendRender(twoSourceModel());
+    sendTranscript(KEY, T1);
+    sendTranscript(KEY, [T1[0], { ...T1[1], content: 'first reply — now longer' }]);
+    expect(root().textContent).toContain('now longer');
+  });
+
+  it('persists selection and restores it across a webview rebuild (same drill-in)', async () => {
+    sendRender(twoSourceModel());
+    qa('.wf-nav-row').find(r => r.dataset.agent === 'agent002')!.click();
+    expect((webviewState as { agentId?: string }).agentId).toBe('agent002');
+
+    // Rebuild: fresh module + DOM, but the SAME persisted state (VS Code keeps it).
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    await import('./detailView.js');
+    sendRender(twoSourceModel());
+    expect(q('.wf-nav-row.active')!.dataset.agent).toBe('agent002');
+  });
+
+  it('does NOT restore selection into a different drill-in (falls back to first agent)', async () => {
+    sendRender(twoSourceModel());
+    qa('.wf-nav-row').find(r => r.dataset.agent === 'agent002')!.click();
+
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    await import('./detailView.js');
+    const other = { ...twoSourceModel(), containerId: 'wf_run2' };
+    other.groups = [{ ...other.groups[0], key: 'wf_run2' }];
+    sendRender(other);
+    expect(q('.wf-nav-row.active')!.dataset.agent).toBe('agent001');
+  });
+
+  it('persists and restores navCollapsed across a rebuild', async () => {
+    sendRender(twoSourceModel());
+    q('.wf-nav-toggle')!.click();
+    expect(root().classList.contains('nav-collapsed')).toBe(true);
+
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    await import('./detailView.js');
+    sendRender(twoSourceModel());
+    expect(root().classList.contains('nav-collapsed')).toBe(true);
+  });
+
+  it('time spans carry data-t so the slow tick can refresh them in place', () => {
+    sendRender(twoSourceModel());
+    sendTranscript(KEY, T1);
+    const span = q('.wf-turn-time[data-t]');
+    expect(span).not.toBeNull();
+    expect(Number(span!.getAttribute('data-t'))).toBe(Date.parse(T1[0].timestamp));
+  });
+
+  it('chip tooltip includes the host-computed roll-up summary', () => {
+    const model = twoSourceModel();
+    (model.views[0] as Record<string, unknown>).summary = '2 agents · 1 running · 1 done';
+    sendRender(model);
+    const chip = qa('.wf-switch-chip').find(c => c.dataset.viewId === 'wf_run1')!;
+    expect(chip.getAttribute('title')).toContain('2 agents · 1 running · 1 done');
   });
 });

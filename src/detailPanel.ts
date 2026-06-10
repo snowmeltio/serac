@@ -271,7 +271,11 @@ export class DetailPanel {
       const n = (nameSeen.get(r.name) ?? 0) + 1;
       nameSeen.set(r.name, n);
       const label = (nameTotals.get(r.name) ?? 0) > 1 ? r.name + ' #' + n : r.name;
-      views.push({ id: r.runId, kind: 'workflow', label, status: r.status, active: activeSource === 'workflow' && r.runId === activeRunId });
+      views.push({
+        id: r.runId, kind: 'workflow', label, status: r.status,
+        active: activeSource === 'workflow' && r.runId === activeRunId,
+        summary: rollupSummary(r.agents.map(a => a.status), 'agent'),
+      });
     }
     if (subs.agents.length > 0) {
       views.push({
@@ -280,6 +284,7 @@ export class DetailPanel {
         label: team ? 'Teammates' : 'Subagents',
         status: subs.running > 0 ? 'running' : 'completed',
         active: activeSource === 'subagents',
+        summary: rollupSummary(subs.agents.map(a => a.status), team ? 'teammate' : 'subagent'),
       });
     }
     // Team roster view — restores the drill-in that became unreachable when
@@ -292,6 +297,7 @@ export class DetailPanel {
         label: 'Roster · ' + team.name,
         status: team.agents.some(a => a.status === 'running') ? 'running' : 'completed',
         active: activeSource === 'team',
+        summary: rollupSummary(team.agents.map(a => a.status), 'member'),
       });
     }
     return views.length > 0 ? views : undefined;
@@ -595,6 +601,23 @@ export class DetailPanel {
 </body>
 </html>`;
   }
+}
+
+/** Chip-tooltip roll-up: "12 agents · 9 done · 2 running · 1 failed". Status
+ *  buckets in triage order (failed first); zero-count buckets are omitted; any
+ *  status outside the known set is counted under its own name (fail-visible). */
+export function rollupSummary(statuses: string[], noun: string): string | undefined {
+  if (statuses.length === 0) { return undefined; }
+  const counts = new Map<string, number>();
+  for (const st of statuses) { counts.set(st, (counts.get(st) ?? 0) + 1); }
+  const order = ['failed', 'error', 'running', 'waiting', 'done', 'completed', 'incomplete'];
+  const keys = [...order.filter(k => counts.has(k)), ...[...counts.keys()].filter(k => !order.includes(k))];
+  const bits = [statuses.length + ' ' + noun + (statuses.length === 1 ? '' : 's')];
+  // A single uniform bucket adds nothing over the chip's own status dot.
+  if (counts.size > 1 || (keys[0] !== 'done' && keys[0] !== 'completed')) {
+    for (const k of keys) { bits.push(counts.get(k) + ' ' + k); }
+  }
+  return bits.join(' \u00b7 ');
 }
 
 function fmtTokens(n: number): string {

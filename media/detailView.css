@@ -13,12 +13,27 @@
 
 * { box-sizing: border-box; }
 
+/* Column flex chain (body → #wf-root → .wf-2pane) so the panes derive their
+ * height from layout instead of hardcoded viewport offsets. The composer is a
+ * plain flow sibling of #wf-root: showing it shrinks the panes automatically —
+ * no magic 130px/108px subtraction to keep in sync with header/composer size. */
+html, body { height: 100%; }
+
 body {
   margin: 0;
+  display: flex;
+  flex-direction: column;
   font-family: var(--vscode-font-family);
   font-size: 13px;
   color: var(--vscode-foreground);
   background: var(--vscode-editor-background);
+}
+
+#wf-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .wf-empty, .wf-reader-empty {
@@ -115,14 +130,13 @@ body {
 .wf-openconv:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
 
 /* ── Two-pane ── */
-.wf-2pane { display: flex; align-items: stretch; min-height: 0; }
+.wf-2pane { display: flex; align-items: stretch; flex: 1; min-height: 0; }
 .wf-nav {
   width: 250px;
   flex-shrink: 0;
   border-right: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   overflow-x: hidden;
   overflow-y: auto;
-  max-height: calc(100vh - 130px);
   /* Animate collapse/expand. The element persists across the toggle (the
    * handler flips #wf-root.nav-collapsed, never re-renders), so width + the row
    * fade transition smoothly; the reader (flex:1) widens in lockstep. */
@@ -194,7 +208,6 @@ body {
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  max-height: calc(100vh - 130px);
 }
 
 /* Respect reduced-motion: collapse still works, just without the slide/fade. */
@@ -430,25 +443,21 @@ body {
 
 /* ── Teammate composer (experimental) ──
  * A quiet docked bar at the foot of the panel, shown only when the selected
- * agent is a running teammate and the experimental flag is on. Fixed at the
- * bottom so it survives #wf-root re-renders; the panes trim their max-height
- * (via body.composer-open) so the last turns aren't hidden behind it.
+ * agent is a running teammate and the experimental flag is on. A flow sibling
+ * of #wf-root in the body's column flex, so it survives #wf-root re-renders
+ * and the panes shrink automatically when it appears.
  * NOTE: the explicit [hidden] rule is required — `#wf-composer` (an id) would
  * otherwise out-specify the default `[hidden]{display:none}` and stay visible. */
 #wf-composer {
-  position: fixed;
-  left: 0; right: 0; bottom: 0;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 5px;
   padding: 8px 14px 10px;
   background: var(--vscode-editor-background);
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
-  z-index: 5;
 }
 #wf-composer[hidden] { display: none; }
-body.composer-open .wf-nav,
-body.composer-open .wf-reader { max-height: calc(100vh - 130px - 108px); }
 
 .wf-composer-disclosure {
   font-size: 10.5px;

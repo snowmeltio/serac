@@ -512,6 +512,9 @@ export interface DetailViewChoice {
   label: string;
   status: string;
   active: boolean;
+  /** Agent roll-up for the chip tooltip (e.g. "12 agents · 9 done · 1 failed").
+   *  Host-computed; display-only. */
+  summary?: string;
 }
 
 /** Normalised detail-panel payload (host → webview). */

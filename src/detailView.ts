@@ -35,6 +35,8 @@ interface DetailViewChoice {
   label: string;
   status: string;
   active: boolean;
+  /** Host-computed agent roll-up for the tooltip (e.g. "12 agents · 1 failed"). */
+  summary?: string;
 }
 
 interface DetailModel {
@@ -56,7 +58,11 @@ type TranscriptState =
   | { state: 'error'; message: string }
   | { state: 'ready'; entries: TranscriptEntry[] };
 
-interface VsCodeApi { postMessage(msg: unknown): void }
+interface VsCodeApi {
+  postMessage(msg: unknown): void;
+  getState(): unknown;
+  setState(state: unknown): void;
+}
 declare function acquireVsCodeApi(): VsCodeApi;
 
 (function () {
@@ -74,6 +80,38 @@ declare function acquireVsCodeApi(): VsCodeApi;
   let navCollapsed = false;
   /** Inception-brief block collapsed in the reader. Default expanded (shown). */
   let briefCollapsed = false;
+
+  // ── Webview state persistence ──────────────────────────────────────
+  // The panel webview is rebuilt whenever its tab is re-opened; vscode.setState
+  // survives that (same pattern as the sidebar). Selection is restored only if
+  // the next model is the SAME drill-in (owner matches) and the agent still
+  // exists — otherwise the normal first-agent default applies.
+  interface PersistedState {
+    owner?: string;
+    groupKey?: string;
+    agentId?: string;
+    navCollapsed?: boolean;
+    briefCollapsed?: boolean;
+  }
+  const persisted = (vscode.getState() ?? {}) as PersistedState;
+  navCollapsed = persisted.navCollapsed === true;
+  briefCollapsed = persisted.briefCollapsed === true;
+  /** One-shot selection restore, consumed by the first matching render. */
+  let pendingRestore: { owner: string; groupKey: string; agentId: string } | null =
+    (typeof persisted.owner === 'string' && typeof persisted.groupKey === 'string'
+      && typeof persisted.agentId === 'string')
+      ? { owner: persisted.owner, groupKey: persisted.groupKey, agentId: persisted.agentId }
+      : null;
+
+  function saveState(): void {
+    vscode.setState({
+      owner: cacheOwner ?? undefined,
+      groupKey: selectedGroupKey ?? undefined,
+      agentId: selectedAgentId ?? undefined,
+      navCollapsed,
+      briefCollapsed,
+    } satisfies PersistedState);
+  }
   /** Identity of the drill-in the cache below belongs to. The cache key is only
    *  groupKey|agentId, which collides across containers (subagents/team groups
    *  use an empty groupKey, so '|defender' means different things in two teams).
@@ -138,7 +176,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (isNaN(t)) { return ''; }
     const rel = formatRelativeTime(t, Date.now());
     const abs = new Date(t).toLocaleString();
-    return '<span class="wf-turn-time" title="' + escapeHtml(abs) + '">' + escapeHtml(rel) + '</span>';
+    return '<span class="wf-turn-time" data-t="' + t + '" title="' + escapeHtml(abs) + '">' + escapeHtml(rel) + '</span>';
   }
 
   function findAgent(groupKey: string | null, agentId: string | null): DetailAgentView | undefined {
@@ -155,6 +193,16 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return undefined;
   }
 
+  /** Append-only transcript identity: same length and identical last entry.
+   *  (A streamed turn that grows in place changes the last entry's content.) */
+  function sameTranscript(a: TranscriptEntry[], b: TranscriptEntry[]): boolean {
+    if (a.length !== b.length) { return false; }
+    if (a.length === 0) { return true; }
+    const la = a[a.length - 1];
+    const lb = b[b.length - 1];
+    return la.role === lb.role && la.timestamp === lb.timestamp && la.content === lb.content;
+  }
+
   function firstAgent(): { groupKey: string; agentId: string } | null {
     if (!model) { return null; }
     for (const g of model.groups) {
@@ -166,6 +214,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function selectAgent(groupKey: string, agentId: string): void {
     selectedGroupKey = groupKey;
     selectedAgentId = agentId;
+    saveState();
     const k = tkey(groupKey, agentId);
     if (!transcripts.has(k) && model) {
       transcripts.set(k, { state: 'loading' });
@@ -510,7 +559,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return '<span class="wf-switch-chip' + (v.active ? ' active' : '') + (dot ? ' status-' + dot : '') + '"'
       + ' data-view-id="' + escapeHtml(v.id) + '" data-view-kind="' + escapeHtml(v.kind) + '"'
       + ' role="button" tabindex="0"'
-      + ' title="' + escapeHtml(v.label) + ' · ' + escapeHtml(v.status) + '">'
+      + ' title="' + escapeHtml(v.label) + ' · ' + escapeHtml(v.status)
+      + (v.summary ? '\n' + escapeHtml(v.summary) : '') + '">'
       + '<span class="wf-dot ' + dot + '"></span>'
       + '<span class="wf-switch-chip-label">' + escapeHtml(v.label) + '</span></span>';
   }
@@ -760,10 +810,12 @@ declare function acquireVsCodeApi(): VsCodeApi;
       // element and the animation would never fire.
       navCollapsed = !navCollapsed;
       root.classList.toggle('nav-collapsed', navCollapsed);
+      saveState();
       return;
     }
     if (target.closest('.wf-brief-head')) {
       briefCollapsed = !briefCollapsed;
+      saveState();
       render();
       return;
     }
@@ -818,8 +870,19 @@ declare function acquireVsCodeApi(): VsCodeApi;
       // Deep-link from an inline card agent row: select that agent if it exists.
       const sel = msg.select as { groupKey: string; agentId: string } | undefined;
       if (sel && findAgent(sel.groupKey, sel.agentId)) {
+        pendingRestore = null;
         selectAgent(sel.groupKey, sel.agentId);
         return;
+      }
+      // Restore the persisted selection across a webview rebuild — one shot,
+      // same drill-in only, and only if the agent still exists in the model.
+      if (pendingRestore) {
+        const r = pendingRestore;
+        pendingRestore = null;
+        if (r.owner === owner && findAgent(r.groupKey, r.agentId)) {
+          selectAgent(r.groupKey, r.agentId);
+          return;
+        }
       }
       // Keep selection if still valid; else default to the first agent.
       if (!findAgent(selectedGroupKey, selectedAgentId)) {
@@ -833,6 +896,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
       const key = String(msg.key);
       const incoming = (msg.entries as TranscriptEntry[]) || [];
       const existing = transcripts.get(key);
+      // Steady-tick dedup: an unchanged transcript must NOT re-render — the
+      // innerHTML swap would destroy any text selection the user is holding
+      // mid-copy. Transcripts are append-only, so length + last-entry equality
+      // is a sufficient (and cheap) identity check.
+      if (existing && existing.state === 'ready' && sameTranscript(existing.entries, incoming)) {
+        return;
+      }
       // An agent transcript only grows; a response that lost the race against a
       // newer one would step the reader backwards — drop it (the steady tick
       // re-converges, and an owner change clears the cache outright).
@@ -875,4 +945,17 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   // Stream the selected running agent's transcript (no-op for terminal agents).
   startRefreshLoop(STEADY_REFRESH_MS);
+
+  // Relative-time slow tick: terminal agents never re-render, so "5m ago"
+  // would otherwise freeze. Updates the time spans in place (textContent
+  // only — no innerHTML swap, so scroll and text selection are untouched).
+  const TIME_TICK_MS = 60_000;
+  setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) { return; }
+    const now = Date.now();
+    root.querySelectorAll('.wf-turn-time[data-t]').forEach(el => {
+      const t = Number(el.getAttribute('data-t'));
+      if (t > 0) { el.textContent = formatRelativeTime(t, now); }
+    });
+  }, TIME_TICK_MS);
 })();
