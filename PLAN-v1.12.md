@@ -32,7 +32,7 @@ Source: multi-agent audit (7 lenses, adversarially verified, 38 confirmed findin
 - [x] Sibling-worktree waiting sessions must bump the needs-input badge.
 - [x] Dismissed foreign sessions leak into waiting/running strips + badge (filter metaCache in get*Snapshots).
 - [x] Adaptive fast-poll keyed to local+teams+workflows only — include active foreign/sibling.
-- [x] (opt) Foreign/sibling scan cadence: active bypass for the 10-cycle counter; align confidence capping.
+- [ ] (opt, NOT taken this cycle) Foreign/sibling scan cadence active bypass + confidence-cap alignment — low value once the fast-poll fix landed; revisit on demand.
 
 ## Track D — Workflow viewer v2 — DONE (1fe2300); waiting-tint + fixture refresh deferred to BACKLOG
 
@@ -41,7 +41,7 @@ Source: multi-agent audit (7 lenses, adversarially verified, 38 confirmed findin
 - [x] Live tokens/toolCalls from agent JSONLs (currently hardcoded 0).
 - [x] recoverInterpolatedLabel first-occurrence anchor bug.
 - [x] Failure roll-up in detail header + failed-first nav ordering.
-- [x] Waiting workflow agent tints the card detail chip (parity with subagents).
+- [ ] (deferred to BACKLOG) Waiting workflow agent tints the card detail chip — needs per-agent permission inference the live tier does not have; see BACKLOG residuals.
 - [x] Team roster drill-in unreachable since v1.11 card folding — restore via detail chip with source 'team'.
 
 ## Features — DONE (this commit)
