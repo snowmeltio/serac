@@ -159,6 +159,15 @@ export interface SessionSnapshot {
    *  whose turn ended while a detached build/deploy keeps running. Undefined
    *  when none outstanding. See BACKLOG.md for the UI/policy follow-up. */
   backgroundShellCount?: number;
+  /** Git branch from the most recent JSONL record carrying one. Display-only
+   *  (meta-row pill) — distinguishes same-repo sessions on different branches. */
+  gitBranch?: string;
+  /** Count of tool_result blocks flagged `is_error: true` across the session.
+   *  Display-only triage signal ("done, but with errors"). */
+  toolErrorCount?: number;
+  /** Trimmed text of the most recent assistant message — the done-card
+   *  preview, so a finished card says WHAT it finished with at a glance. */
+  lastAssistantText?: string;
 }
 
 export interface SubagentSnapshot {

@@ -196,8 +196,8 @@ describe('formatAgeCoarse', () => {
 // ===== getStatusLabel =====
 describe('getStatusLabel', () => {
   const now = 1710000000000;
-  it('returns Waiting for waiting', () => {
-    expect(getStatusLabel(session({ status: 'waiting', lastActivity: now }), now)).toBe('Waiting');
+  it('returns Waiting with the blocked-for age (oldest-blocked triage)', () => {
+    expect(getStatusLabel(session({ status: 'waiting', lastActivity: now - 5 * 60_000 }), now)).toBe('Waiting · <span class="status-pill-time">5m</span>');
   });
   it('returns Running for running', () => {
     expect(getStatusLabel(session({ status: 'running', lastActivity: now }), now)).toBe('Running');

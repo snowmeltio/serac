@@ -30,6 +30,10 @@ export interface PanelSession {
    *  that are still running after its turn ended. Non-status: surfaced as a
    *  quiet badge so a `done` card can flag "a build is still going". */
   backgroundShellCount?: number;
+  /** Branch pill / error badge / done-preview — glance-pack enrichment. */
+  gitBranch?: string;
+  toolErrorCount?: number;
+  lastAssistantText?: string;
   workspaceKey?: string;
   confidence?: PanelStatusConfidence;
   /** CWD of the originating worktree (set for both local and sibling-worktree
@@ -163,7 +167,9 @@ export function getStatusLabel(s: PanelSession, now: number): string {
     return t(now - s.lastActivity) + '\u2026';
   }
   switch (s.status) {
-    case 'waiting': return 'Waiting';
+    // Waiting-age: with several blocked cards, WHICH has waited longest is
+    // the triage question — 10s and 20min must not read identically.
+    case 'waiting': return 'Waiting \u00b7 ' + t(now - s.lastActivity);
     case 'running': return 'Running';
     case 'done': return 'Done \u00b7 ' + t(now - s.lastActivity);
     case 'stale': return 'Seen \u00b7 ' + t(now - s.lastActivity);

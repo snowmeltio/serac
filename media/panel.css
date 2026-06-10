@@ -568,8 +568,31 @@ body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach
   color: var(--vscode-descriptionForeground, #666666);
   flex-shrink: 0;
 }
-.model-pill.sonnet { color: var(--sm-frozen-peach); }
-.model-pill.haiku  { color: var(--sm-salmon-red); }
+/* Hue comes from a per-model hash (--model-hue, set inline); sat/light fixed
+ * per theme so model pills form their own colour register, distinct from the
+ * status palette. Fallback hue 0 with low sat ~ the old neutral grey. */
+.model-pill { color: hsl(var(--model-hue, 0) 45% 70%); }
+body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
+
+.branch-pill {
+  font-size: 9px;
+  color: var(--vscode-descriptionForeground, #666666);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+}
+
+.tool-error-badge {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--sm-salmon-red);
+  border: 1px solid color-mix(in srgb, var(--sm-salmon-red) 45%, transparent);
+  border-radius: 7px;
+  padding: 0 5px;
+  flex-shrink: 0;
+}
 
 /* Background-shell badge — quiet outlined chip in the meta row, tinted with the
  * running accent so a `done` card still reads "a build is still going". The
@@ -957,8 +980,7 @@ body.vscode-light .ws-counts .status-count.done-count    { background: var(--sm-
 body.vscode-light .ws-counts .status-count.stale-count   { background: #d0d0d0; color: #555555; }
 
 /* -- Model pills -- */
-body.vscode-light .model-pill.sonnet { color: #c47a3a; }
-body.vscode-light .model-pill.haiku { color: #d44444; }
+
 
 /* -- Action buttons -- */
 body.vscode-light .action-btn:hover { background: rgba(0,0,0,0.06); }

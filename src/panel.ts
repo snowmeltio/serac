@@ -1195,6 +1195,14 @@ const RANGE_MS: Record<string, number> = {
       'workflow', run.sessionId, run.sessionId, run.runId);
   }
 
+  /** Stable hue for a model label: djb2 hash spread by the golden angle so
+   *  near-identical names land far apart. Same input → same hue, every build. */
+  function modelHue(label: string): number {
+    let h = 5381;
+    for (let i = 0; i < label.length; i++) { h = ((h << 5) + h + label.charCodeAt(i)) >>> 0; }
+    return Math.round((h * 137.508) % 360);
+  }
+
   function renderCardInner(s: PanelSession, now: number, isFocused: boolean): string {
     const statusLabel = getStatusLabel(s, now);
     const displayName = stripMarkdown(getDisplayName(s));
@@ -1227,8 +1235,14 @@ const RANGE_MS: Record<string, number> = {
     let metaHtml = '<div class="card-meta">';
     metaHtml += '<span class="session-id-pill clickable" data-copy-id="' + escapeHtml(s.sessionId) + '" title="Copy session ID">' + escapeHtml(s.sessionId.slice(0, 8)) + '</span>';
     if (s.modelLabel) {
-      const modelCls = 'model-pill' + (s.modelLabel === 'Sonnet' ? ' sonnet' : s.modelLabel === 'Haiku' ? ' haiku' : '');
-      metaHtml += '<span class="' + modelCls + '">' + escapeHtml(s.modelLabel) + '</span>';
+      // Hash-derived hue: unique and consistent per model with no hardcoded
+      // per-model class list (which silently skipped new models). A separate
+      // colour register from status colours — hue varies, sat/light are fixed
+      // per theme in CSS, so the pills read as family, not as status.
+      metaHtml += '<span class="model-pill" style="--model-hue:' + modelHue(s.modelLabel) + '">' + escapeHtml(s.modelLabel) + '</span>';
+    }
+    if (s.gitBranch) {
+      metaHtml += '<span class="branch-pill" title="Git branch: ' + escapeHtml(s.gitBranch) + '">' + escapeHtml('\u2387 ' + s.gitBranch) + '</span>';
     }
     // Background-shell badge — a detached `run_in_background` shell is still
     // going after the turn ended. Non-status (the card keeps its real status);
@@ -1244,6 +1258,13 @@ const RANGE_MS: Record<string, number> = {
     // two: workflow-specific label when only workflows, "subagents" when only
     // those, and a neutral "agents" when both — the switcher carries the rest.
     // Initial source is the workflow when present (richer), else subagents.
+    // Tool-error badge — failed tool calls are the "done, but look closer"
+    // triage signal; same quiet-chip pattern as the background-shell badge.
+    const toolErrs = s.toolErrorCount ?? 0;
+    if (toolErrs > 0) {
+      metaHtml += '<span class="tool-error-badge" title="Tool calls that returned errors in this session">'
+        + toolErrs + ' tool error' + (toolErrs === 1 ? '' : 's') + '</span>';
+    }
     const hasWf = !!wfs && wfs.length > 0;
     const showSubChip = hasSubagents && currentSettings.show.subagents;
     const chipState = detailChipState(wfs, s.subagents);
@@ -1276,7 +1297,11 @@ const RANGE_MS: Record<string, number> = {
         + '</div>';
     }
 
-    const activityText = stripMarkdown(s.activity || 'No recent activity');
+    // A finished card's most useful line is WHAT it finished with — prefer the
+    // last assistant reply over the final tool-name activity on done/stale.
+    const isTerminal = s.status === 'done' || s.status === 'stale';
+    const activityText = stripMarkdown(
+      (isTerminal && s.lastAssistantText ? s.lastAssistantText : s.activity) || 'No recent activity');
     const detailHtml = '<div class="card-detail">' + escapeHtml(activityText) + '</div>';
 
     return '<div class="card-top">'

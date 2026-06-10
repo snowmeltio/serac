@@ -227,6 +227,10 @@ export class SessionManager {
    *  set, the late tool_use leaks into activeTools and never clears, causing
    *  demoteIfStale to falsely flag the session as 'waiting' after 30s. */
   private earlyToolResults: Set<string> = new Set();
+  /** Glance-pack capture (display-only): branch, tool-error count, last reply. */
+  private gitBranch = '';
+  private toolErrorCount = 0;
+  private lastAssistantText = '';
   /** Origin worktree metadata, set by SiblingWorktreeManager so emitted
    *  snapshots can be tagged for cross-worktree display. */
   private worktreeRoot?: string;
@@ -457,6 +461,9 @@ export class SessionManager {
       endReason: this.state.endReason,
       compacting: this.state.compacting,
       backgroundShellCount: this.backgroundShellTracker.count() || undefined,
+      gitBranch: this.gitBranch || undefined,
+      toolErrorCount: this.toolErrorCount || undefined,
+      lastAssistantText: this.lastAssistantText || undefined,
     };
   }
 
@@ -735,6 +742,8 @@ export class SessionManager {
       this.state.slug = record.slug;
     }
     this.cwdTracker.onCwd(record.cwd);
+    const branch = (record as { gitBranch?: unknown }).gitBranch;
+    if (typeof branch === 'string' && branch) { this.gitBranch = branch; }
     if (record.sessionId && record.sessionId !== this.state.sessionId) {
       return false;
     }
@@ -848,6 +857,7 @@ export class SessionManager {
     for (const block of content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         hadToolResult = true;
+        if (block.is_error === true) { this.toolErrorCount++; }
         this.lastToolResultAt = Date.now();
         // SPIKE: detect backgrounded-Bash launch/completion from the result text
         // (display-only; never affects status). A launch banner adds an
@@ -939,6 +949,12 @@ export class SessionManager {
           this.state.firstAssistantResponse = block.text.trim().slice(0, 500);
           break;
         }
+      }
+    }
+    // And the most recent assistant text — the done-card preview.
+    for (const block of content) {
+      if (block.type === 'text' && block.text && block.text.trim()) {
+        this.lastAssistantText = block.text.trim().slice(0, 200);
       }
     }
 
