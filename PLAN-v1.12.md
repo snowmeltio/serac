@@ -53,11 +53,11 @@ Source: multi-agent audit (7 lenses, adversarially verified, 38 confirmed findin
 
 Loops/wakeup badge (groundwork captured: /loop interval = CronCreate not ScheduleWakeup; Stop payload carries session_crons + background_tasks → also future shell-tracker hardening). Cost/quota pack (per-session spend, top burners). Plans/todos surfacing. Inbox read-side thread + pulse. MCP needs-auth chip. IDE lock attribution. Detail-panel UX batch (streaming dedup, tooltip roll-up, state persistence, relative-time tick, flex layout). Test-gap items not covered above (bg-shell completion replay e2e, truncation-sans-PreCompact, workspaceOpener tests, extension.ts wiring assertions).
 
-## Batch 2 — agreed 2026-06-10 (Murray)
+## Batch 2 — agreed 2026-06-10 (Murray) — DONE
 
-- [ ] Fresh all-hook-events fixture (CC ≥2.1.159; want Stop with background_tasks, ideally session_crons)
-- [ ] Background-shell completion-replay e2e test
-- [ ] Orphan/live signal on cards (terminal cards annotated ended/live; never downgrade active)
-- [ ] Live-only mode for Other workspaces + age-gate presets (session-only/1d/7d/30d/forever)
-- [ ] Detail-panel UX batch: streaming re-render dedup, chip tooltip roll-up, webview state persistence, relative-time slow tick, flex layout vs 130px offsets
-- [ ] Smaller singles: MCP needs-auth chip, same-file collision badge, IDE lock window attribution, inbox read-side thread
+- [x] Fresh all-hook-events fixture (f1478bd) — `all-hook-events-2026-06-10.jsonl`: two Stops, one with a populated background_tasks shell entry, both with session_crons + last_assistant_message keys; 5 shape-pinning tests. session_crons captured empty by design (no cloud crons created).
+- [x] Background-shell completion-replay e2e test (f047519) — launch banner → badge on done card → re-invocation → terminal retrieval clears → cold replay never resurrects.
+- [x] Orphan/live signal on cards (df65fdd) — `processLive` tri-state; Done/Seen pills gain quiet live/ended qualifier; unknown shows nothing; snapshot render now arms the death-gate latch.
+- [x] Live-only mode + presets (2b2d7c6) — `serac.discovery.foreignWorkspacesWindow` (inherit/live-only/1d/7d/30d/forever); live-only keys off the registry with time-gate fallback on degraded scans.
+- [x] Detail-panel UX batch (0651b9c) — steady-tick dedup (text selection survives), chip tooltip roll-ups, vscode.setState persistence, 60s in-place time tick, flex chain replaces 130px/108px offsets.
+- [x] Smaller singles (a5c84b0, f6e0b8e) — MCP needs-auth footer chip (24h freshness, internal slot); IDE tag on foreign rows (pid-verified locks, authToken never read); same-file collision badge (file-history-snapshot ∩ active sessions); inbox read-side queued-message thread (read-only peek, kill-switch semantics preserved).
