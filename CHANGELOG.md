@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.13.0 (2026-06-10) — Teammate messaging actually works, workflow-live cards, transcript truth
+
+Driven by a live aviary test team (three idle birds built to receive messages) that exposed the teammate-messaging feature as dead on arrival for its only real audience, plus a BHP overnight workflow run that exposed the done-card lie.
+
+### Fixed
+- **Teammate messaging works for in-process teams (was unreachable).** The Agent Teams parser dropped in-process member names entirely, so an all-in-process team had an empty roster: the composer never appeared, and the server-side inbox resolution refused every send. Names now survive in `TeamManifest.inProcessMembers` and all roster matching (teammate badge, inbox resolution, transcript lookup) unions them with tmux members.
+- **The composer gates on liveness, not subagent status.** An idle teammate reads `done` to Task tracking while alive and listening on its inbox. The gate is now `teammate && alive` (member still in the team config — members are removed on shutdown — and the lead process not registry-confirmed dead), so idle teammates are messageable; departed ones are not.
+- **Idle teammates' transcripts stream in real time.** The reader's refresh loop only polled `running` agents, so an idle bird's thread froze until reselected. It now also streams alive teammates — they can wake on an inbox message at any moment.
+- **A done card with a live background workflow now reads running.** The Workflow tool runs in the background, so the lead's turn ends (idle timer → done) while its agents are mid-sweep. A `done`/`stale` session owning a running, non-dismissed run is upgraded to `running` (high confidence) at the host merge point; the override evaporates on completion.
+- **Tool results are no longer labelled "prompt".** A user-role JSONL record carrying only `tool_result` blocks is plumbing riding back to the assistant; it now gets its own `tool` role, a recessed "tool result" turn, and can never be pinned as the inception brief.
+
+### Changed
+- **Teammates view deduped.** One row per current member (re-spawn rounds leave stale duplicates; the inbox keys by name), labelled by member name, roster-ordered; a running row beats a newer finished one. Non-roster leftovers split into an "Other subagents" group. Switcher roll-ups use the same deduped rows.
+- **Roster view earns its keep or disappears.** It now renders in-process members (status borrowed from live tracking) and shows each member's queued-inbox tail — but the roster chip is suppressed for all-in-process teams, where the Teammates view is the same list *with* the composer.
+- **Team accent is violet, selection is neutral.** Team badges no longer borrow teal (= done); the new `--sm-team-violet` sits outside the status palette. The reader's selected-row highlight uses the theme's list-selection colour instead of blue (= running).
+- **Reader widens to the full pane when the nav rail is collapsed** (the 80ch reading measure lifts — collapsing is an explicit ask for width).
+- **`serac.show.teams` removed.** Team discovery always runs; teams surface on the orchestrator's card, so a dedicated toggle gated nothing meaningful. (`serac.discovery.teamsAgeGateDays` is unchanged.) Anyone who had it set to `false` will see team affordances again on upgrade.
+- **Workflow labelling de-Opus'd** — Workflows are generally available across models; settings/docs no longer name Opus 4.8.
+
 ## v1.12.1 (2026-06-10) — Active teams visible again, loops badge, stall surfacing
 
 ### Fixed

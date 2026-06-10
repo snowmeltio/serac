@@ -2,7 +2,7 @@
   "name": "serac-claude-code",
   "displayName": "Serac Agent Manager",
   "description": "Manage your Claude Code agents, workflows, and teams from the VS Code sidebar: status cards, drill-in detail panel, usage quotas, and transcripts.",
-  "version": "1.12.1",
+  "version": "1.13.0",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",
@@ -148,11 +148,6 @@
             "default": true,
             "description": "Show subagent rows inside session cards."
           },
-          "serac.show.teams": {
-            "type": "boolean",
-            "default": true,
-            "description": "Show the Agent Teams section."
-          },
           "serac.show.fileCollisions": {
             "type": "boolean",
             "default": false,
@@ -161,7 +156,7 @@
           "serac.show.workflows": {
             "type": "boolean",
             "default": true,
-            "description": "Surface Opus 4.8 Workflow runs on their session cards (tag, roll-up, and detail panel)."
+            "description": "Surface Claude Code Workflow runs on their session cards (tag, roll-up, and detail panel)."
           },
           "serac.animations.enabled": {
             "type": "boolean",
@@ -258,7 +253,7 @@
             ],
             "default": null,
             "minimum": 1,
-            "description": "Staleness window (days) for Opus 4.8 Workflow runs. Leave empty to inherit serac.discovery.ageGateDays."
+            "description": "Staleness window (days) for Workflow runs. Leave empty to inherit serac.discovery.ageGateDays."
           },
           "serac.refresh.intervalSeconds": {
             "type": "number",
