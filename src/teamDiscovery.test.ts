@@ -633,7 +633,11 @@ describe('TeamDiscovery', () => {
   });
 
   describe('getClaimedSessionIds()', () => {
-    it('returns the lead session id from non-dismissed teams', async () => {
+    it('does NOT claim the lead session — the orchestrator card IS the team surface', async () => {
+      // v1.11 regression fix: the fold renders the team on the orchestrator's
+      // normal session card, so claiming (suppressing) it left active teams
+      // with no card anywhere. tmux members carry no session id, so nothing
+      // else is claimable from this config.
       writeAgentTeamsConfig('my-team', validAgentTeamsConfig());
 
       const td = makeDiscovery();
@@ -641,9 +645,8 @@ describe('TeamDiscovery', () => {
 
       const claimed = td.getClaimedSessionIds(emptyMeta());
 
-      // Only the lead session is claimable; tmux members carry no session id.
-      expect(claimed.has('lead-001')).toBe(true);
-      expect(claimed.size).toBe(1);
+      expect(claimed.has('lead-001')).toBe(false);
+      expect(claimed.size).toBe(0);
 
       td.dispose();
     });
@@ -677,9 +680,10 @@ describe('TeamDiscovery', () => {
       expect(snapshots).toHaveLength(1);
       expect(snapshots[0].teamId).toBe('at:local-team');
 
-      // The foreign team must not claim sessions in this workspace either.
+      // No leads are claimed (the orchestrator card is the team surface) —
+      // local or foreign.
       const claimed = td.getClaimedSessionIds(emptyMeta());
-      expect(claimed.has('lead-001')).toBe(true);
+      expect(claimed.has('lead-001')).toBe(false);
       expect(claimed.has('lead-002')).toBe(false);
 
       td.dispose();

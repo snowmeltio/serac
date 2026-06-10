@@ -436,7 +436,17 @@ export class TeamDiscovery {
     return team.agents.some(a => a.status === 'running' || a.status === 'waiting');
   }
 
-  /** Get all session IDs claimed by active (non-dismissed) teams. */
+  /** Get MEMBER session IDs claimed by active (non-dismissed) teams.
+   *
+   *  The orchestrator is deliberately NOT claimed. Pre-v1.11 it was, because
+   *  the team section rendered its own orchestrator representation and the
+   *  plain session card would have duplicated it. v1.11 removed the team
+   *  section — "the team folds into the orchestrator's NORMAL card" — which
+   *  makes that card the team's ONLY surface. Claiming it left active teams
+   *  with no card at all (found live 2026-06-10: the serac-showcase lead was
+   *  invisible in its own workspace's panel). Member sessions stay claimable:
+   *  if a future config exposes their ids, they're represented by the roster
+   *  and must not double-render as standalone cards. */
   getClaimedSessionIds(sessionMeta: Map<string, SessionMeta>): Set<string> {
     const claimed = new Set<string>();
     for (const [teamId, manifest] of this.manifests) {
@@ -445,7 +455,6 @@ export class TeamDiscovery {
       if (!this.isLocalTeam(manifest)) { continue; }
       const metaKey = `team:${teamId}`;
       if (sessionMeta.get(metaKey)?.dismissed) { continue; }
-      claimed.add(manifest.orchestrator.sessionId);
       for (const agent of manifest.agents) {
         if (agent.sessionId) { claimed.add(agent.sessionId); }
       }
