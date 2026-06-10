@@ -30,6 +30,7 @@ vi.mock('fs', async (importOriginal) => {
 
 import {
   appendInboxMessage, validateMessageText, InboxError, MAX_TEXT, _resetQueues,
+  peekInboxMessages,
 } from './teammateInbox.js';
 
 let teamsDir: string;
@@ -296,5 +297,63 @@ describe('appendInboxMessage — concurrency + bounds', () => {
     expect(entries).toHaveLength(200);
     expect(entries[entries.length - 1].text).toBe('newest');
     expect(entries[0].text).not.toBe('old-0'); // oldest trimmed
+  });
+});
+
+describe('peekInboxMessages — read-side (queued-thread affordance)', () => {
+  it('returns pending messages, sanitised and capped, after a real append', async () => {
+    makeTeam();
+    await send({ text: 'first' });
+    await send({ text: 'second' });
+    const msgs = peekInboxMessages({ teamsDir, teamDir: TEAM, member: MEMBER });
+    expect(msgs.map(m => m.text)).toEqual(['first', 'second']);
+    expect(msgs[0].from).toBe('murray');
+    expect(typeof msgs[0].timestamp).toBe('string');
+  });
+
+  it('is fail-silent: missing inbox, malformed JSON, and symlinks all yield []', () => {
+    expect(peekInboxMessages({ teamsDir, teamDir: TEAM, member: MEMBER })).toEqual([]);
+    makeTeam();
+    fs.writeFileSync(inboxFile(), 'not json');
+    expect(peekInboxMessages({ teamsDir, teamDir: TEAM, member: MEMBER })).toEqual([]);
+    fs.rmSync(inboxFile());
+    fs.symlinkSync('/etc/hosts', inboxFile());
+    expect(peekInboxMessages({ teamsDir, teamDir: TEAM, member: MEMBER })).toEqual([]);
+  });
+
+  it('refuses traversal in team/member just like the write path', () => {
+    makeTeam();
+    expect(peekInboxMessages({ teamsDir, teamDir: '../' + TEAM, member: MEMBER })).toEqual([]);
+    expect(peekInboxMessages({ teamsDir, teamDir: TEAM, member: '../evil' })).toEqual([]);
+  });
+
+  it('strips bidi/control chars from foreign-written entries for display', () => {
+    makeTeam();
+    fs.writeFileSync(inboxFile(), JSON.stringify([
+      { from: 'lead‮evil', text: 'do this‮ now', timestamp: '2026-06-10T00:00:00Z', color: 'blue', type: 'message', read: false },
+    ]));
+    const msgs = peekInboxMessages({ teamsDir, teamDir: TEAM, member: MEMBER });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].from).toBe('leadevil');
+    expect(msgs[0].text).toBe('do this now');
+  });
+
+  it('a shapeless entry trips the schema kill-switch — whole read refused', () => {
+    makeTeam();
+    fs.writeFileSync(inboxFile(), JSON.stringify([
+      { from: 'lead', text: 'ok', timestamp: '', color: 'b', type: 'message', read: false },
+      42,
+    ]));
+    expect(peekInboxMessages({ teamsDir, teamDir: TEAM, member: MEMBER })).toEqual([]);
+  });
+
+  it('caps a well-formed flood at 50 entries', () => {
+    makeTeam();
+    const entries = Array.from({ length: 60 }, (_, i) =>
+      ({ from: 'lead', text: 'm' + i, timestamp: '', color: 'b', type: 'message', read: false }));
+    fs.writeFileSync(inboxFile(), JSON.stringify(entries));
+    const msgs = peekInboxMessages({ teamsDir, teamDir: TEAM, member: MEMBER });
+    expect(msgs).toHaveLength(50);
+    expect(msgs[0].text).toBe('m0');
   });
 });

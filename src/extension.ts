@@ -20,7 +20,7 @@ import { HookEventRouter } from './hookEventRouter.js';
 import { startHookIngress, type IngressHandle } from './hookIngress/index.js';
 import { applyForwarderPatch, removeForwarderPatch } from './hookSettings/patcher.js';
 import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
-import { appendInboxMessage } from './teammateInbox.js';
+import { appendInboxMessage, peekInboxMessages } from './teammateInbox.js';
 
 export function activate(context: vscode.ExtensionContext): SeracExports {
   // Footer slot registry must be created up-front: companions resolve
@@ -246,6 +246,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       discovery.resolveInboxTarget(orchestratorSessionId, agentId),
     appendTeammateMessage: (teamDir: string, member: string, from: string, text: string) =>
       appendInboxMessage({ teamsDir: discovery.getTeamsDir(), teamDir, member, from, text }),
+    peekTeammateInbox: (teamDir: string, member: string) =>
+      peekInboxMessages({ teamsDir: discovery.getTeamsDir(), teamDir, member }),
     logMessaging: (line: string) => log.info(line),
   });
   context.subscriptions.push({ dispose: () => detailPanel.dispose() });

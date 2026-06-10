@@ -23,6 +23,7 @@ import {
   PanelSession,
   PSEUDO_TMP_REPO_ROOT,
   isTmpScratchPath,
+  computeFileCollisions,
 } from './panelUtils.js';
 
 // Helper to create a minimal session
@@ -700,5 +701,43 @@ describe('getStatusLabel — orphan/live annotation', () => {
     expect(getStatusLabel(session({ status: 'running', processLive: false }), now)).toBe('Running');
     expect(getStatusLabel(session({ status: 'waiting', processLive: false, lastActivity: now - 60_000 }), now))
       .toBe('Waiting · <span class="status-pill-time">1m</span>');
+  });
+});
+
+describe('computeFileCollisions', () => {
+  function s(id: string, status: string, files?: string[]): PanelSession {
+    return { sessionId: id, status: status as PanelSession['status'], lastActivity: 0, trackedFiles: files };
+  }
+
+  it('flags both active sessions sharing a file, with the shared paths', () => {
+    const map = computeFileCollisions([
+      s('a', 'running', ['/r/x.ts', '/r/y.ts']),
+      s('b', 'waiting', ['/r/y.ts', '/r/z.ts']),
+    ]);
+    expect(map.get('a')).toEqual(['/r/y.ts']);
+    expect(map.get('b')).toEqual(['/r/y.ts']);
+  });
+
+  it('ignores terminal sessions — a finished session is not a live conflict', () => {
+    const map = computeFileCollisions([
+      s('a', 'running', ['/r/y.ts']),
+      s('b', 'done', ['/r/y.ts']),
+    ]);
+    expect(map.size).toBe(0);
+  });
+
+  it('no collision when files are disjoint or only one session is active', () => {
+    expect(computeFileCollisions([
+      s('a', 'running', ['/r/x.ts']),
+      s('b', 'running', ['/r/y.ts']),
+    ]).size).toBe(0);
+    expect(computeFileCollisions([s('a', 'running', ['/r/x.ts'])]).size).toBe(0);
+  });
+
+  it('duplicate paths within ONE session do not self-collide', () => {
+    expect(computeFileCollisions([
+      s('a', 'running', ['/r/x.ts', '/r/x.ts']),
+      s('b', 'running', ['/r/other.ts']),
+    ]).size).toBe(0);
   });
 });

@@ -101,6 +101,9 @@ export type { ToolProfile } from './toolProfiles.js';
 
 /** Idle threshold: if no new data for 5s after a turn, mark as idle/done */
 const IDLE_DELAY_MS = 5000;
+
+/** Cap on tracked-file paths kept from a file-history-snapshot record. */
+const MAX_TRACKED_FILES = 200;
 /** Safety bound on the PreCompact grace window. Compaction normally closes via
  *  the `compact_boundary` signal; if that never arrives (e.g. crash mid-compact),
  *  release the window after this long so the session isn't pinned `running`. */
@@ -229,6 +232,10 @@ export class SessionManager {
   private earlyToolResults: Set<string> = new Set();
   /** Glance-pack capture (display-only): branch, tool-error count, last reply. */
   private gitBranch = '';
+  /** File paths tracked by the LATEST file-history-snapshot record — the
+   *  files this session has edited. Display-only: feeds the cross-session
+   *  same-file collision badge. Capped; empty when none. */
+  private trackedFiles: string[] = [];
   private toolErrorCount = 0;
   private lastAssistantText = '';
   /** Origin worktree metadata, set by SiblingWorktreeManager so emitted
@@ -420,6 +427,19 @@ export class SessionManager {
   }
 
   /** Get a serialisable snapshot for the webview */
+  /** Latest-wins capture of the snapshot's tracked file set. The record is
+   *  written by Claude Code as it backs up files it edits; keys are paths. */
+  private processFileHistorySnapshot(record: JsonlRecord): boolean {
+    const snap = (record as { snapshot?: { trackedFileBackups?: unknown } }).snapshot;
+    const backups = snap?.trackedFileBackups;
+    if (!backups || typeof backups !== 'object' || Array.isArray(backups)) { return false; }
+    const files = Object.keys(backups).filter(k => k.length > 0).slice(0, MAX_TRACKED_FILES);
+    const changed = files.length !== this.trackedFiles.length
+      || files.some((f, i) => f !== this.trackedFiles[i]);
+    this.trackedFiles = files;
+    return changed;
+  }
+
   getSnapshot(): SessionSnapshot {
     return {
       sessionId: this.state.sessionId,
@@ -465,6 +485,7 @@ export class SessionManager {
       toolErrorCount: this.toolErrorCount || undefined,
       lastAssistantText: this.lastAssistantText || undefined,
       processLive: this.registryLiveness(),
+      trackedFiles: this.trackedFiles.length > 0 ? this.trackedFiles : undefined,
     };
   }
 
@@ -785,6 +806,8 @@ export class SessionManager {
           return true;
         }
         return false;
+      case 'file-history-snapshot':
+        return this.processFileHistorySnapshot(record);
       default:
         return false;
     }

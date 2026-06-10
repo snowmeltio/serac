@@ -12,6 +12,7 @@ import {
   formatAge,
   formatAgeCoarse,
   getStatusLabel,
+  computeFileCollisions,
   debounceStatuses,
   getElapsedPct,
   quotaClass,
@@ -250,6 +251,8 @@ const RANGE_MS: Record<string, number> = {
   let workspaceKey = '';
   let homeDir = ''; // host home dir for ~-abbreviation (webview has no process.env)
   let focusedSessionId: string | null = null;
+  /** sessionId → file paths shared with another ACTIVE session this tick. */
+  let fileCollisions = new Map<string, string[]>();
   let lastSessions: PanelSession[] | null = null;
   let lastNeedsInputCount = 0;
   let lastUsage: UsageData | null = null;
@@ -674,6 +677,11 @@ const RANGE_MS: Record<string, number> = {
         lastWorktrees = message.worktrees ?? [];
         homeDir = message.home ?? '';
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
+        // Same-file collisions across every active session we can see —
+        // local plus foreign/worktree strips (they all carry trackedFiles).
+        fileCollisions = computeFileCollisions([
+          ...sessions, ...lastForeignWaiting, ...lastForeignRunning,
+        ]);
         render(sessions, message.waitingCount, message.workspacePath);
       } else if (message.type === 'focusSession') {
         focusedSessionId = message.sessionId;
@@ -1267,6 +1275,17 @@ const RANGE_MS: Record<string, number> = {
     if (toolErrs > 0) {
       metaHtml += '<span class="tool-error-badge" title="Tool calls that returned errors in this session">'
         + toolErrs + ' tool error' + (toolErrs === 1 ? '' : 's') + '</span>';
+    }
+    // Same-file collision — another ACTIVE session is editing the same
+    // file(s); a merge conflict in the making. Same quiet-chip pattern as
+    // the tool-error badge; lists the shared paths in the tooltip.
+    const collisions = fileCollisions.get(s.sessionId);
+    if (collisions && collisions.length > 0) {
+      const shown = collisions.slice(0, 6).map(f => f.split('/').pop() || f);
+      const extra = collisions.length > 6 ? ' (+' + (collisions.length - 6) + ' more)' : '';
+      metaHtml += '<span class="tool-error-badge" title="'
+        + escapeHtml('Files also being edited by another active session:\n' + shown.join('\n') + extra)
+        + '">' + collisions.length + ' shared file' + (collisions.length === 1 ? '' : 's') + '</span>';
     }
     const hasWf = !!wfs && wfs.length > 0;
     const showSubChip = hasSubagents && currentSettings.show.subagents;

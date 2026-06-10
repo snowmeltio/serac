@@ -174,6 +174,10 @@ export interface SessionSnapshot {
    *  scan degraded, or the session was never seen live). Display-only — the
    *  status pill annotates terminal cards; never affects status itself. */
   processLive?: boolean;
+  /** Paths from the latest file-history-snapshot record — the files this
+   *  session has edited. Feeds the same-file collision badge (two active
+   *  sessions touching one file). Capped at 200; absent when none. */
+  trackedFiles?: string[];
 }
 
 export interface SubagentSnapshot {

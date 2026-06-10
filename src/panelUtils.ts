@@ -37,6 +37,9 @@ export interface PanelSession {
   /** Registry tri-state (see SessionSnapshot.processLive): annotates terminal
    *  cards' status pill with live/ended; absent = no annotation. */
   processLive?: boolean;
+  /** Files this session has edited (latest file-history-snapshot). Feeds the
+   *  same-file collision badge. */
+  trackedFiles?: string[];
   workspaceKey?: string;
   confidence?: PanelStatusConfidence;
   /** CWD of the originating worktree (set for both local and sibling-worktree
@@ -187,6 +190,36 @@ function liveQualifier(s: PanelSession): string {
   if (s.processLive === true) { return ' \u00b7 <span class="status-pill-time">live</span>'; }
   if (s.processLive === false) { return ' \u00b7 <span class="status-pill-time">ended</span>'; }
   return '';
+}
+
+// ===== Same-file collision detection =====
+
+/** Cross-session same-file collisions among ACTIVE (running/waiting) sessions:
+ *  two agents editing one file is a merge conflict in the making. Returns a
+ *  map of sessionId → colliding file paths (sorted, deduped). Terminal
+ *  sessions are ignored — a finished session's edits aren't a live conflict. */
+export function computeFileCollisions(sessions: PanelSession[]): Map<string, string[]> {
+  const active = sessions.filter(s =>
+    (s.status === 'running' || s.status === 'waiting')
+    && Array.isArray(s.trackedFiles) && s.trackedFiles.length > 0);
+  const out = new Map<string, string[]>();
+  if (active.length < 2) { return out; }
+  const byFile = new Map<string, string[]>(); // file → sessionIds
+  for (const s of active) {
+    for (const f of new Set(s.trackedFiles)) {
+      const owners = byFile.get(f);
+      if (owners) { owners.push(s.sessionId); } else { byFile.set(f, [s.sessionId]); }
+    }
+  }
+  for (const [file, owners] of byFile) {
+    if (owners.length < 2) { continue; }
+    for (const sid of owners) {
+      const list = out.get(sid);
+      if (list) { list.push(file); } else { out.set(sid, [file]); }
+    }
+  }
+  for (const list of out.values()) { list.sort(); }
+  return out;
 }
 
 // ===== Foreign session detection =====

@@ -203,3 +203,41 @@ describe('Background-shell completion replay (e2e, BACKLOG item)', () => {
     await fs.promises.rm(dir, { recursive: true, force: true });
   });
 });
+
+describe('file-history-snapshot → SessionSnapshot.trackedFiles', () => {
+  async function withRecords(records: object[]): Promise<{ mgr: SessionManager; dir: string }> {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'fhs-'));
+    const file = path.join(dir, 's.jsonl');
+    await fs.promises.writeFile(file, records.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const mgr = new SessionManager('fhs-sid', file, 'ws');
+    await mgr.update();
+    return { mgr, dir };
+  }
+  const ts = () => new Date().toISOString();
+  const snap = (files: string[]) => ({
+    type: 'file-history-snapshot', timestamp: ts(),
+    snapshot: { messageId: 'm1', trackedFileBackups: Object.fromEntries(files.map(f => [f, { backupId: 'b' }])), timestamp: ts() },
+  });
+
+  it('exposes the tracked paths, latest snapshot wins', async () => {
+    const { mgr, dir } = await withRecords([
+      { type: 'user', timestamp: ts(), message: { content: [{ type: 'text', text: 'go' }] } },
+      snap(['/r/a.ts', '/r/b.ts']),
+      snap(['/r/b.ts']),
+    ]);
+    expect(mgr.getSnapshot().trackedFiles).toEqual(['/r/b.ts']);
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+
+  it('absent/empty/malformed snapshots leave trackedFiles undefined', async () => {
+    const { mgr, dir } = await withRecords([
+      { type: 'user', timestamp: ts(), message: { content: [{ type: 'text', text: 'go' }] } },
+      { type: 'file-history-snapshot', timestamp: ts(), snapshot: { trackedFileBackups: [] } },
+      { type: 'file-history-snapshot', timestamp: ts() },
+    ]);
+    expect(mgr.getSnapshot().trackedFiles).toBeUndefined();
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+});

@@ -262,6 +262,45 @@ export function appendInboxMessage(opts: {
 }
 
 /** Test-only: reset the per-inbox queue state between cases. */
+/** A pending inbox message, sanitised for display. */
+export interface PendingInboxMessage {
+  from: string;
+  text: string;
+  timestamp: string;
+}
+
+/** Read-side peek at a member's pending (undrained) inbox messages — feeds the
+ *  detail panel's "queued for delivery" thread. Same confinement and read caps
+ *  as the write path, but strictly read-only and fail-silent: any refusal
+ *  (symlink, oversized, malformed) yields [] — a display affordance must never
+ *  surface a write-path error or block the transcript. Fields are re-validated
+ *  and length-capped here because a foreign writer may have shaped the file. */
+export function peekInboxMessages(opts: { teamsDir: string; teamDir: string; member: string }): PendingInboxMessage[] {
+  let inboxFile: string;
+  try {
+    inboxFile = confineInboxPath(opts.teamsDir, opts.teamDir, opts.member);
+  } catch { return []; }
+  let entries: unknown[];
+  try { entries = readExistingEntries(inboxFile); }
+  catch { return []; }
+  const out: PendingInboxMessage[] = [];
+  // Global variant of UNSAFE_CHARS — replace() with the non-global regex
+  // would strip only the first occurrence.
+  const unsafeAll = new RegExp(UNSAFE_CHARS.source, 'g');
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') { continue; }
+    const { from, text, timestamp } = e as Record<string, unknown>;
+    if (typeof text !== 'string' || text.length === 0) { continue; }
+    out.push({
+      from: typeof from === 'string' ? from.slice(0, 100).replace(unsafeAll, '') : 'unknown',
+      text: text.slice(0, MAX_TEXT).replace(unsafeAll, ''),
+      timestamp: typeof timestamp === 'string' ? timestamp.slice(0, 40) : '',
+    });
+    if (out.length >= 50) { break; }
+  }
+  return out;
+}
+
 export function _resetQueues(): void {
   queueTails.clear();
   queueDepths.clear();

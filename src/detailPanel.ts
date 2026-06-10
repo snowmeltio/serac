@@ -54,6 +54,9 @@ export interface DetailPanelDeps {
   /** Structured log sink for write-path metadata. NEVER receives message content
    *  (the OutputChannel persists to disk; a message could carry a pasted secret). */
   logMessaging?: (line: string) => void;
+  /** Read-only peek at a teammate's pending inbox (sanitised, fail-silent []).
+   *  Feeds the queued-message thread under a teammate's transcript. */
+  peekTeammateInbox?: (teamDir: string, member: string) => Array<{ from: string; text: string; timestamp: string }>;
 }
 
 export class DetailPanel {
@@ -555,6 +558,25 @@ export class DetailPanel {
     try {
       const entries = await parseTranscript(file);
       if (this.panel !== panel) { return; } // disposed or replaced mid-parse
+      // Inbox read-side: messages sent to this teammate that it has not yet
+      // drained appear as queued turns at the tail — so "did my message land?"
+      // is answerable from the thread itself. Gated on the same server-side
+      // settings as the composer; fail-silent (display affordance only).
+      if (source === 'subagents' && this.deps.peekTeammateInbox && this.deps.resolveInboxTarget
+          && this.deps.getMessagingSettings?.().enabled) {
+        try {
+          const target = this.deps.resolveInboxTarget(containerId, agentId);
+          if (target) {
+            for (const m of this.deps.peekTeammateInbox(target.teamDir, target.member)) {
+              entries.push({
+                timestamp: m.timestamp,
+                role: 'system',
+                content: 'Queued for delivery (from ' + m.from + '): ' + m.text,
+              });
+            }
+          }
+        } catch { /* never block the transcript on inbox state */ }
+      }
       void panel.webview.postMessage({ type: 'agentTranscript', key, entries });
     } catch (err) {
       if (this.panel !== panel) { return; }
