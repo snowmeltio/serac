@@ -217,3 +217,68 @@ describe('PermissionRequest positive path — all-hook-events-2026-06-01.jsonl',
     sub.dispose();
   });
 });
+
+describe('Extended Stop payload — all-hook-events-2026-06-10.jsonl (CC 2.1.159)', () => {
+  // Captured 2026-06-10 specifically for the extended Stop fields that the
+  // 2026-06-01 fixture predates: background_tasks + session_crons. The run
+  // launched `sleep 45 && echo finished` in the background and ended its
+  // turn; CC re-invoked the model on completion, so the file carries TWO
+  // Stop events — one with the shell outstanding, one after it drained.
+  // session_crons is deliberately empty (no cloud crons were created); the
+  // assertion is on the KEY existing, which is what the future loops-badge
+  // consumer needs to rely on.
+  const PAYLOADS = loadCapture('all-hook-events-2026-06-10.jsonl');
+  const STOPS = PAYLOADS.filter(p => p.hook_event_name === 'Stop');
+
+  it('contains the expected event mix, including two Stops', () => {
+    const types = PAYLOADS.map(p => p.hook_event_name);
+    for (const t of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'SessionEnd']) {
+      expect(types).toContain(t);
+    }
+    expect(STOPS).toHaveLength(2);
+  });
+
+  it('envelope timestamps are monotonic (replay ordering is trustworthy)', () => {
+    const file = path.resolve(__dirname, '__fixtures__', 'all-hook-events-2026-06-10.jsonl');
+    const ns = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)
+      .map(line => (JSON.parse(line) as CapturedEnvelope).received_at_ns ?? 0);
+    for (let i = 1; i < ns.length; i++) {
+      expect(ns[i]).toBeGreaterThanOrEqual(ns[i - 1]);
+    }
+  });
+
+  it('mid-run Stop carries the outstanding shell in background_tasks', () => {
+    const tasks = STOPS[0].background_tasks as Array<Record<string, unknown>>;
+    expect(Array.isArray(tasks)).toBe(true);
+    expect(tasks).toHaveLength(1);
+    const shell = tasks[0];
+    expect(typeof shell.id).toBe('string');
+    expect(shell.type).toBe('shell');
+    expect(shell.status).toBe('running');
+    expect(typeof shell.description).toBe('string');
+    expect(typeof shell.command).toBe('string');
+  });
+
+  it('both Stops expose session_crons and last_assistant_message; final Stop has drained tasks', () => {
+    for (const stop of STOPS) {
+      expect(Array.isArray(stop.session_crons)).toBe(true);
+      expect(typeof stop.last_assistant_message).toBe('string');
+      expect((stop.last_assistant_message as string).length).toBeGreaterThan(0);
+    }
+    expect(STOPS[1].background_tasks).toEqual([]);
+  });
+
+  it('the full capture replays through the router without throwing or spurious permission fires', () => {
+    const SID = String(PAYLOADS[0].session_id);
+    const router = new HookEventRouter();
+    let fired = 0;
+    makePermissionTracker('Bash', {
+      hookRouter: router, sessionId: SID,
+      onWaiting: () => { fired += 1; }, onCleared: () => {},
+    });
+    for (const p of PAYLOADS) {
+      router.onHookEvent(SID, String(p.hook_event_name), p);
+    }
+    expect(fired).toBe(0); // run was fully allowlisted — no PermissionRequest in capture
+  });
+});
