@@ -122,6 +122,15 @@ export class SessionDiscovery {
     // as a liveness probe (abandoned-run → 'incomplete').
     this.processRegistry = new ProcessRegistry(path.join(path.dirname(this.projectsDir), 'sessions'), this.log);
     this.workflowDiscovery = new WorkflowDiscovery(this.projectsDir, this.workspaceKey, this.log, this.processRegistry);
+    // Freshness parity: out-of-window sessions (foreign / sibling / team
+    // orchestrators) get the same registry-backed death gate as primary cards.
+    // Same tri-state contract as the primary probe (degraded scan → null);
+    // the seen-live latch stays in-memory for these (no cross-reload seed).
+    const probeFactory = (sessionId: string) => () =>
+      this.processRegistry.isScanClean() ? this.processRegistry.isSessionLive(sessionId) : null;
+    this.foreignManager.setLivenessProbeFactory(probeFactory);
+    this.siblingManager.setLivenessProbeFactory(probeFactory);
+    this.teamDiscovery.setLivenessProbeFactory(probeFactory);
   }
 
   // ── Meta persistence ──────────────────────────────────────────────
@@ -365,6 +374,10 @@ export class SessionDiscovery {
     }
     if (this.teamDiscovery.hasActiveAgents()) { return true; }
     if (this.workflowDiscovery.hasActiveRuns()) { return true; }
+    // Freshness parity: an active foreign/sibling card holds the fast cadence
+    // too — previously they refreshed at the idle 2s while visibly running.
+    if (this.foreignManager.hasActiveSessions()) { return true; }
+    if (this.siblingManager.hasActiveSessions()) { return true; }
     return false;
   }
 
@@ -878,6 +891,11 @@ export class SessionDiscovery {
   /** True when a live process is backing this session id. */
   isSessionLive(sessionId: string): boolean {
     return this.processRegistry.isSessionLive(sessionId);
+  }
+
+  /** Sibling-worktree sessions waiting on input (badge parity with local). */
+  getSiblingWaitingCount(): number {
+    return this.siblingManager.getWaitingCount();
   }
 
   // ── Discovery and polling ─────────────────────────────────────────

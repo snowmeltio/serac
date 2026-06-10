@@ -229,3 +229,33 @@ describe('ForeignWorkspaceManager: /private/tmp pseudo-repo overlay', () => {
     expect(manager.getWorkspaces()[0].repoRoot).toBe(repo);
   });
 });
+
+describe('ForeignWorkspaceManager: dismissed sessions stay out of the strips', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-dis-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+  });
+  afterEach(() => {
+    _resetConfig();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('getRunningSnapshots excludes a dismissed session (badge/strip parity with rows)', async () => {
+    const cwd = path.join(tmpDir, 'other-ws');
+    const key = sanitiseKey(cwd);
+    createForeignSession(key, '11111111-1111-4111-8111-111111111111', cwd);
+    createForeignSession(key, '22222222-2222-4222-8222-222222222222', cwd);
+    // Dismiss session 1 in the foreign workspace's own session-meta.json —
+    // rows already honour this; the strips and badge must too.
+    fs.writeFileSync(path.join(projectsDir, key, 'session-meta.json'), JSON.stringify({
+      sessions: { '11111111-1111-4111-8111-111111111111': {
+        title: null, dismissed: true, acknowledged: false, acknowledgedAt: null, firstSeen: Date.now(),
+      } },
+    }));
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+    const running = manager.getRunningSnapshots();
+    expect(running.map(s => s.sessionId)).toEqual(['22222222-2222-4222-8222-222222222222']);
+  });
+});

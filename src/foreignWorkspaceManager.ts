@@ -55,6 +55,14 @@ export class ForeignWorkspaceManager {
     private readonly log: Logger,
   ) {}
 
+  /** Per-session registry liveness probe factory, injected by SessionDiscovery
+   *  (freshness parity: foreign cards get the same death gate as primary). */
+  private probeFactory?: (sessionId: string) => () => boolean | null;
+
+  setLivenessProbeFactory(factory: (sessionId: string) => () => boolean | null): void {
+    this.probeFactory = factory;
+  }
+
   /** Wire in the sibling-key provider. Called by SessionDiscovery once the
    *  SiblingWorktreeManager has been constructed. */
   setSiblingKeysProvider(provider: () => Set<string>): void {
@@ -106,7 +114,7 @@ export class ForeignWorkspaceManager {
               if (now - fstat.mtimeMs > ageGate) { continue; }
             } catch { continue; }
 
-            const manager = new SessionManager(sessionId, filePath, dir);
+            const manager = new SessionManager(sessionId, filePath, dir, { livenessProbe: this.probeFactory?.(sessionId) });
             try {
               await manager.update();
             } catch (err) {
@@ -303,6 +311,10 @@ export class ForeignWorkspaceManager {
             if (hadData) { changed = true; }
           }
         } catch { /* skip */ }
+        // Freshness parity: dormant foreign sessions get the same
+        // background-shell sweep (15-min ceiling + registry death-clear) as
+        // dormant local sessions, so a stuck shell badge clears here too.
+        if (session.sweepBackgroundShells(now)) { changed = true; }
         continue;
       }
       try {
@@ -314,6 +326,16 @@ export class ForeignWorkspaceManager {
       } catch { /* skip */ }
     }
     return changed;
+  }
+
+  /** Any foreign session currently running/waiting — feeds the adaptive
+   *  fast-poll so an active foreign card refreshes at the 500ms cadence. */
+  hasActiveSessions(): boolean {
+    for (const session of this.sessions.values()) {
+      const status = session.getStatus();
+      if (status === 'running' || status === 'waiting') { return true; }
+    }
+    return false;
   }
 
   /** Get foreign workspace summaries for the panel.
@@ -408,6 +430,9 @@ export class ForeignWorkspaceManager {
     for (const session of this.sessions.values()) {
       if (session.getStatus() !== 'waiting') { continue; }
       const snapshot = session.getSnapshot();
+      // Dismissed sessions are excluded from row counts (getWorkspaces) —
+      // they must not surface in the waiting strip or bump the badge either.
+      if (this.metaCache.get(snapshot.workspaceKey)?.get(snapshot.sessionId)?.dismissed) { continue; }
       if (!snapshot.cwd) {
         const cached = this.cwdCache.get(snapshot.workspaceKey);
         if (cached) { snapshot.cwd = cached; }
@@ -426,6 +451,7 @@ export class ForeignWorkspaceManager {
     for (const session of this.sessions.values()) {
       if (session.getStatus() !== 'running') { continue; }
       const snapshot = session.getSnapshot();
+      if (this.metaCache.get(snapshot.workspaceKey)?.get(snapshot.sessionId)?.dismissed) { continue; }
       if (!snapshot.cwd) {
         const cached = this.cwdCache.get(snapshot.workspaceKey);
         if (cached) { snapshot.cwd = cached; }

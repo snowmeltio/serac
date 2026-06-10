@@ -606,6 +606,9 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     const foreignRunning = discovery.getForeignRunningSnapshots();
     // Foreign waiting cards demand attention too, so they bump the badge.
     waitingCount += foreignWaiting.length;
+    // Sibling-worktree sessions render as cards in the main feed — a waiting
+    // one demands attention exactly like a local waiting card.
+    waitingCount += discovery.getSiblingWaitingCount();
     const olderSessionCount = discovery.getOlderSessionCount();
     const worktrees = buildWorktreeRows(discovery.getDiscoveredWorktrees(), sessions, wsPath);
     panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount, foreignRunning, worktrees, workflows);

@@ -43,6 +43,14 @@ export class SiblingWorktreeManager {
     private readonly log: Logger,
   ) {}
 
+  /** Per-session registry liveness probe factory, injected by SessionDiscovery
+   *  (freshness parity: sibling cards get the same death gate as primary). */
+  private probeFactory?: (sessionId: string) => () => boolean | null;
+
+  setLivenessProbeFactory(factory: (sessionId: string) => () => boolean | null): void {
+    this.probeFactory = factory;
+  }
+
   /** Resolve and cache the local CWD's repoRoot. Until this resolves to a
    *  non-null value the manager stays inert. Re-callable if the workspace
    *  root changes (rare). */
@@ -156,7 +164,7 @@ export class SiblingWorktreeManager {
           if (now - fstat.mtimeMs > ageGate) { continue; }
         } catch { continue; }
 
-        const manager = new SessionManager(sessionId, filePath, dir);
+        const manager = new SessionManager(sessionId, filePath, dir, { livenessProbe: this.probeFactory?.(sessionId) });
         manager.setWorktreeOrigin(wtRoot, wtLabel);
         try {
           await manager.update();
@@ -264,6 +272,8 @@ export class SiblingWorktreeManager {
             if (hadData) { changed = true; }
           }
         } catch { /* skip */ }
+        // Freshness parity: same dormant background-shell sweep as primary.
+        if (session.sweepBackgroundShells(now)) { changed = true; }
         continue;
       }
       try {
@@ -279,6 +289,26 @@ export class SiblingWorktreeManager {
 
   /** Snapshots of all sibling-worktree sessions, ready to merge into the
    *  local card feed. */
+  /** Sibling sessions currently waiting on input — they render as cards in
+   *  the main feed, so they must bump the needs-input badge like local ones. */
+  getWaitingCount(): number {
+    let n = 0;
+    for (const session of this.sessions.values()) {
+      if (session.getStatus() === 'waiting') { n++; }
+    }
+    return n;
+  }
+
+  /** Any sibling session currently running/waiting — feeds the adaptive
+   *  fast-poll so an active sibling card refreshes at the 500ms cadence. */
+  hasActiveSessions(): boolean {
+    for (const session of this.sessions.values()) {
+      const status = session.getStatus();
+      if (status === 'running' || status === 'waiting') { return true; }
+    }
+    return false;
+  }
+
   getSnapshots(): SessionSnapshot[] {
     const out: SessionSnapshot[] = [];
     for (const session of this.sessions.values()) {

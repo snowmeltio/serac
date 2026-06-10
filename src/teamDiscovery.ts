@@ -56,6 +56,14 @@ export class TeamDiscovery {
   private manifestMtimes: Map<string, number> = new Map();
   private scanCounter = 0;
 
+  /** Per-session registry liveness probe factory, injected by SessionDiscovery
+   *  (freshness parity: team orchestrator sessions get the same death gate). */
+  private probeFactory?: (sessionId: string) => () => boolean | null;
+
+  setLivenessProbeFactory(factory: (sessionId: string) => () => boolean | null): void {
+    this.probeFactory = factory;
+  }
+
   constructor(
     projectsDir: string,
     localWorkspaceKey: string,
@@ -216,7 +224,7 @@ export class TeamDiscovery {
       return;
     }
 
-    const manager = new SessionManager(sessionId, jsonlPath, workspaceKey);
+    const manager = new SessionManager(sessionId, jsonlPath, workspaceKey, { livenessProbe: this.probeFactory?.(sessionId) });
     this.agents.set(sessionId, manager);
     try {
       await manager.update();
