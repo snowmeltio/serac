@@ -4,7 +4,7 @@ Candidate work, not yet scheduled.
 
 ## Orchestration views ("GUI for terminal-native features")
 
-- **Loops (`/loop`).** No dedicated state file, but `ScheduleWakeup`/`CronCreate` records + the `loop` skill's records appear in the parent session transcript (Serac already tails these). Surface a "looping" badge + interval/next-fire on the session card. The natural next orchestration view after workflows.
+- **Loops (`/loop`) — SHIPPED 2026-06-10 (79f4f4d).** `trackers/sessionLoopTracker.ts` (non-status charter): ScheduleWakeup → 'sleeping · Xm' chip (self-expires at fire time, cleared by the fired prompt's user turn); CronCreate/CronDelete → 'loop' chip (lenient job-id pairing, 7-day expiry ceiling); Stop-hook session_crons applied as ground truth; death clears all.
 - **Schedules / routines (`/schedule`).** No local disk state — remote/cloud-managed (`CronCreate`/`CronList`). Not file-tailable; needs a CLI/API integration, a different class from everything else Serac does. Separate spike.
 - **Process-liveness applications.** The reader (`processRegistry.ts`) is shipped (reads `~/.claude/sessions/<pid>.json`, confirms each pid with `kill(pid, 0)`, exposed on `SessionDiscovery` as `getLiveProcesses()`/`isSessionLive()`). Two consumers now gate on it via `SessionManager.isConfirmedDeadByRegistry()` (conservative tri-state — dead only when seen-live-before-and-now-gone): the **permission false-positive gate** (`demoteIfStale` resolves a dead `running`/`waiting` session to `done`) and the **background-shell sweep** (clears outstanding shells on confirmed death). Remaining candidate consumers:
   - **Orphan/live signal on cards — SHIPPED 2026-06-10 (df65fdd, v1.12.0).** `SessionSnapshot.processLive` tri-state; Done/Seen pills carry a quiet live/ended qualifier; unknown shows nothing; active cards never annotated. The snapshot render shares (and arms) the death-gate latch.
@@ -42,11 +42,12 @@ Origin: a card showed `DONE · 49s` while the chat had launched `./deploy.sh` wi
 
 ## Candidates (from the v1.12 ideation pass, 2026-06-10)
 
-- **Stall surfacing (value-prop item).** A `running` card with no output for N minutes is a different triage signal from `waiting` — nothing flags it today. With hook ingress live, PostToolUse/Stop silence + a running status is detectable cheaply. Pairs with the autonomy JTBD ("trust the glance").
+- **Stall surfacing — SHIPPED 2026-06-10 (474b188).** 'Running · quiet 12m' once silent past RUNNING_QUIET_MS (5 min); neutral wording (a silent build is legitimate, but the silence is the signal).
 - **Cost/quota pack.** Per-session spend estimate and "top burners" roll-up (token totals are already parsed per session; pricing table needed). Complements the existing usage quota footer.
 - **Plans/todos surfacing.** TodoWrite state and plan-mode artifacts appear in session JSONLs; a card could show "3/7 todos" or the active plan step — answers "how far along is it?" without opening the transcript.
 - **Inbox unread pulse.** The read-side thread shipped (v1.12.0); the sidebar-level affordance remains — a quiet pulse on the orchestrator card when any member inbox has undrained messages.
-- **Test-gap singles.** Truncation-sans-PreCompact replay; `workspaceOpener.ts` co-located tests (currently the lone exception with `toolProfiles.ts`); extension.ts wiring assertions.
+- **Test-gap singles — DONE 2026-06-10 (7d4ee75).** Truncation replay (caught + fixed a real resetState gap: glance fields survived truncation); workspaceOpener tests; extension activation wiring assertions.
+- **Tool-error badge — REMOVED 2026-06-10 (e236eb0, decision record).** Murray: non-actionable, and benign failed greps/probes inflate the count. `toolErrorCount` stays in the snapshot for a future actionable surface (e.g. jump-to-failing-turn in the detail panel). The shared-files collision chip stays: silent unless two ACTIVE sessions genuinely overlap on a path (zero baseline noise, real lost-work hazard when it fires).
 
 ---
 
