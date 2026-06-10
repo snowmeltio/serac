@@ -168,6 +168,12 @@ export function formatAgeCoarse(ms: number): string {
 
 // ===== Status label =====
 
+/** A running card silent for this long gets the "quiet" qualifier — long past
+ *  the 30s extended-thinking grace, so silence is now a real signal: a hung
+ *  tool, a stuck MCP server, or output the JSONL isn't seeing. Distinct from
+ *  `waiting` (blocked on the user) — this is "blocked on nothing visible". */
+export const RUNNING_QUIET_MS = 5 * 60 * 1000;
+
 export function getStatusLabel(s: PanelSession, now: number): string {
   // Wrap the elapsed-time chunk so the pill's text-transform: uppercase
   // doesn't capitalise the unit letters (h/m/s/d) \u2014 those should remain
@@ -181,7 +187,14 @@ export function getStatusLabel(s: PanelSession, now: number): string {
     // Waiting-age: with several blocked cards, WHICH has waited longest is
     // the triage question — 10s and 20min must not read identically.
     case 'waiting': return 'Waiting \u00b7 ' + t(now - s.lastActivity);
-    case 'running': return 'Running';
+    // Stall surfacing: a running card with no records for RUNNING_QUIET_MS is
+    // neither healthy-running nor waiting — flag the silence, neutrally
+    // ("quiet", not "stalled": a long silent build is legitimate, but you
+    // want to KNOW it's been 12 minutes either way).
+    case 'running':
+      return now - s.lastActivity > RUNNING_QUIET_MS
+        ? 'Running \u00b7 quiet ' + t(now - s.lastActivity)
+        : 'Running';
     // Orphan/live annotation (terminal cards only): a done card whose CC
     // process is still attached is resumable in its terminal; one confirmed
     // gone needs a cold start. Unknown stays unannotated — never guess.

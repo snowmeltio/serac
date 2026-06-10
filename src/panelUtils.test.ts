@@ -23,7 +23,7 @@ import {
   PanelSession,
   PSEUDO_TMP_REPO_ROOT,
   isTmpScratchPath,
-  computeFileCollisions,
+  computeFileCollisions, RUNNING_QUIET_MS,
 } from './panelUtils.js';
 
 // Helper to create a minimal session
@@ -739,5 +739,25 @@ describe('computeFileCollisions', () => {
       s('a', 'running', ['/r/x.ts', '/r/x.ts']),
       s('b', 'running', ['/r/other.ts']),
     ]).size).toBe(0);
+  });
+});
+
+describe('getStatusLabel — stall surfacing (quiet running cards)', () => {
+  const now = Date.now();
+  function s(lastActivity: number): PanelSession {
+    return { sessionId: 'q', status: 'running', lastActivity, confidence: 'high' } as PanelSession;
+  }
+
+  it('a recently active running card is plain Running', () => {
+    expect(getStatusLabel(s(now - 60_000), now)).toBe('Running');
+  });
+
+  it('flags quiet once silence passes the threshold', () => {
+    expect(getStatusLabel(s(now - RUNNING_QUIET_MS - 7 * 60_000), now))
+      .toBe('Running · quiet <span class="status-pill-time">12m</span>');
+  });
+
+  it('exactly at the threshold stays plain (strictly past)', () => {
+    expect(getStatusLabel(s(now - RUNNING_QUIET_MS), now)).toBe('Running');
   });
 });
