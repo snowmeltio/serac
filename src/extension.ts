@@ -48,8 +48,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   const hooksDebugLog = vscode.window.createOutputChannel('Serac (Hooks)', { log: true });
   context.subscriptions.push(hooksDebugLog);
 
-  const hooksDebugEnabled = () =>
-    vscode.workspace.getConfiguration('serac.hooks').get<boolean>('debug') ?? false;
+  const hooksDebugEnabled = () => readSettings().hooks.debug;
 
   /** Liveness watchdog: when this window becomes leader, set a 10 s timer.
    *  If it elapses without any event arriving, log a one-shot warning. The
@@ -94,8 +93,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   let ingressHandle: IngressHandle | undefined;
   const forwarderPath = vscode.Uri.joinPath(context.extensionUri, 'bin', 'serac-hook-forward.cjs').fsPath;
 
-  const hooksEnabled = () =>
-    vscode.workspace.getConfiguration('serac.hooks').get<boolean>('enabled') ?? false;
+  const hooksEnabled = () => readSettings().hooks.enabled;
 
   // Mirror the setting into a `when`-clause context var so the header
   // button can swap icon/title in-place. Refreshed on every config change

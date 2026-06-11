@@ -24,6 +24,13 @@ describe('readSettings', () => {
     expect(s.archive.defaultRange).toBe(DEFAULT_SETTINGS.archive.defaultRange);
   });
 
+  it('reads hooks.* through the typed layer (audit refactor-wiring-3)', () => {
+    _setConfigValues({ 'serac.hooks.enabled': true, 'serac.hooks.debug': true });
+    const s = readSettings();
+    expect(s.hooks.enabled).toBe(true);
+    expect(s.hooks.debug).toBe(true);
+  });
+
   it('reads every section through with user-provided values', () => {
     _setConfigValues({
       'serac.show.foreignWorkspaces': false,

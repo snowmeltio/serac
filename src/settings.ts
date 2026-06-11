@@ -82,6 +82,15 @@ export interface SeracSettings {
      *  server-side (never accepted from the webview) and validated. */
     operatorName: string;
   };
+  hooks: {
+    /** Hook-ingress mode: patch Claude Code's settings.json so hook events
+     *  stream to Serac's per-workspace socket. The snapshot here is READ-only;
+     *  the enable/disable commands still write via the raw workspace-scoped
+     *  `getConfiguration().update()` (this layer never writes). */
+    enabled: boolean;
+    /** Verbose per-event logging to the "Serac (Hooks)" output channel. */
+    debug: boolean;
+  };
 }
 
 /** Defaults that match today's hardcoded values. Single source of truth for
@@ -113,6 +122,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
   animations: { enabled: true },
   cleanup: { confirmRequired: true },
   experimental: { teammateMessaging: false, operatorName: 'operator' },
+  hooks: { enabled: false, debug: false },
 };
 
 /** Read the current `serac.*` configuration into a typed snapshot.
@@ -172,6 +182,10 @@ export function readSettings(): SeracSettings {
     experimental: {
       teammateMessaging: cfg.get<boolean>('experimental.teammateMessaging', d.experimental.teammateMessaging),
       operatorName: cfg.get<string>('experimental.operatorName', d.experimental.operatorName),
+    },
+    hooks: {
+      enabled: cfg.get<boolean>('hooks.enabled', d.hooks.enabled),
+      debug: cfg.get<boolean>('hooks.debug', d.hooks.debug),
     },
   };
 }
