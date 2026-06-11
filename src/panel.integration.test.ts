@@ -608,20 +608,63 @@ describe('panel.ts integration', () => {
       };
     }
 
-    it('appends one "agents" view chip to the card meta row when the session owns a run', () => {
+    it('appends one robot view chip to the card meta row when the session owns a run', () => {
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess' })],
         workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
       });
       const chip = document.querySelector('.card-meta .wf-view-chip') as HTMLElement;
       expect(chip).toBeTruthy();
-      // One umbrella name for everything under a card — "agents".
-      expect(chip.textContent).toContain('agents');
+      // One umbrella glyph for everything under a card — 🤖. All agents done
+      // here, so no live count; the word lives in the tooltip/aria only.
+      expect(chip.textContent).toContain('\u{1F916}');
+      expect(chip.querySelector('.agent-live-count')).toBeFalsy();
       expect(chip.querySelector('.wf-arrow')).toBeTruthy();
       expect(chip.classList.contains('detail-chip')).toBe(true);
       expect(chip.dataset.detailSource).toBe('workflow');
       expect(chip.dataset.detailContainer).toBe('wf-sess');
       expect(chip.getAttribute('aria-label')).toBe('agents');
+    });
+
+    it('the robot chip counts live agents (workflow agents + subagents) and labels the tooltip', () => {
+      sendUpdate({
+        sessions: [makeSession({
+          sessionId: 'wf-sess', status: 'running',
+          subagents: [{ agentId: 'bg1', description: 'background builder', running: true }],
+        })],
+        workflows: [makeWorkflow({
+          runId: 'wf_live2', sessionId: 'wf-sess', status: 'running', counts: { done: 1, running: 1, waiting: 1 },
+          agents: [
+            { phaseIndex: 1, status: 'done', agentId: 'd1' },
+            { phaseIndex: 1, status: 'running', agentId: 'r1' },
+            { phaseIndex: 2, status: 'waiting', agentId: 'w1' },
+          ],
+        })],
+      });
+      const chip = document.querySelector('.card-meta .wf-view-chip') as HTMLElement;
+      // 2 live workflow agents (running + waiting) + 1 live subagent.
+      expect(chip.querySelector('.agent-live-count')!.textContent).toBe('3');
+      expect(chip.getAttribute('aria-label')).toBe('agents — 3 running');
+    });
+
+    it('a done card with a live background agent keeps a running-tinted chip, count, and roster row', () => {
+      sendUpdate({
+        sessions: [makeSession({
+          sessionId: 'bg-sess', status: 'done',
+          subagents: [
+            { agentId: 'bg1', description: 'vp matrix build', running: true, background: true },
+            { agentId: 'done1', description: 'recon', running: false },
+          ],
+        })],
+      });
+      const card = document.querySelector('.card')!;
+      const chip = card.querySelector('.wf-view-chip') as HTMLElement;
+      // The chip tints by the agents' own state, not the done card's.
+      expect(chip.classList.contains('wf-chip-running')).toBe(true);
+      expect(chip.querySelector('.agent-live-count')!.textContent).toBe('1');
+      // The live robot earns its inline roster row despite the done status.
+      const rows = card.querySelectorAll('.card-agent-row');
+      expect(Array.from(rows).map(r => r.querySelector('.card-agent-name')!.textContent)).toEqual(['vp matrix build']);
     });
 
     it('a completed run shows the chip but NO bar, count tick, or inline rows', () => {
@@ -738,7 +781,8 @@ describe('panel.ts integration', () => {
       const chips = document.querySelectorAll('.card-meta .detail-chip');
       expect(chips).toHaveLength(1);
       const chip = chips[0] as HTMLElement;
-      expect(chip.textContent).toContain('agents');
+      expect(chip.textContent).toContain('\u{1F916}');
+      expect(chip.getAttribute('aria-label')).toContain('agents');
       // Initial source is the workflow (richer); the in-pane switcher carries the
       // subagents view, so there is no separate subagents chip on the card.
       expect(chip.dataset.detailSource).toBe('workflow');
@@ -908,8 +952,9 @@ describe('panel.ts integration', () => {
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: subs })] });
       const chip = document.querySelector('.card-meta .detail-chip[data-detail-source="subagents"]') as HTMLElement;
       expect(chip).toBeTruthy();
-      // One umbrella name; the source attribute still routes the drill-in.
-      expect(chip.textContent).toContain('agents');
+      // One umbrella glyph; the source attribute still routes the drill-in.
+      expect(chip.textContent).toContain('\u{1F916}');
+      expect(chip.getAttribute('aria-label')).toContain('agents');
       expect(chip.dataset.detailContainer).toBe('sa-sess');
       expect(chip.dataset.detailSession).toBe('sa-sess');
     });
@@ -980,9 +1025,9 @@ describe('panel.ts integration', () => {
       const card = document.querySelector('.card[data-session-id="orch-1"]')!;
       const chip = card.querySelector('.detail-chip[data-detail-source="subagents"]') as HTMLElement;
       expect(chip).toBeTruthy();
-      // One name for all agents; the teammate framing lives in the detail panel,
+      // One glyph for all agents; the teammate framing lives in the detail panel,
       // not the card. No special "team" label, no summary line on the card.
-      expect(chip.textContent).toContain('agents');
+      expect(chip.textContent).toContain('\u{1F916}');
       expect(card.querySelector('.subagent-summary')).toBeFalsy();
     });
 
@@ -998,7 +1043,7 @@ describe('panel.ts integration', () => {
     it('uses the same "agents" chip on a session that is not a team', () => {
       sendUpdate({ sessions: [makeSession({ sessionId: 'plain', subagents: teammates })] });
       const chip = document.querySelector('.card[data-session-id="plain"] .detail-chip[data-detail-source="subagents"]') as HTMLElement;
-      expect(chip.textContent).toContain('agents');
+      expect(chip.textContent).toContain('\u{1F916}');
       expect(document.querySelector('.card[data-session-id="plain"] .subagent-summary')).toBeFalsy();
     });
   });

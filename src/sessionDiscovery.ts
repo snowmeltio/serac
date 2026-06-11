@@ -1058,6 +1058,15 @@ export class SessionDiscovery {
           if (mtimeChanged) { wokenSessions.push(session); }
         }
       }
+      // A done card with live background agents still has work to observe: its
+      // main JSONL is quiet (no mtime wake) but the agents' own JSONLs are
+      // growing. Keep pumping update() so the subagent tailers feed the roster,
+      // tool counts, and permission detection while the detached agents run.
+      for (const session of dormantSessions) {
+        if (session.hasLiveBackgroundAgents() && !wokenSessions.includes(session)) {
+          wokenSessions.push(session);
+        }
+      }
 
       // Full update for active + woken sessions, in batches
       const sessionsToUpdate = [...activeSessions, ...wokenSessions];
@@ -1098,7 +1107,7 @@ export class SessionDiscovery {
       // `done`). Cheap: each call returns early unless the session has shells.
       const shellSweepNow = Date.now();
       for (const session of dormantSessions) {
-        if (session.sweepBackgroundShells(shellSweepNow)) { changed = true; }
+        if (session.sweepBackgroundWork(shellSweepNow)) { changed = true; }
       }
 
       // Reconcile meta: clear acknowledged state for sessions that resumed [H2]

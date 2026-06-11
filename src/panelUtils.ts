@@ -62,6 +62,8 @@ export interface PanelSubagent {
   description: string;
   running: boolean;
   waitingOnPermission?: boolean;
+  /** Detached run_in_background agent — can be running under a done card. */
+  background?: boolean;
 }
 
 export interface UsageData {

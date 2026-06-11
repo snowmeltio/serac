@@ -58,7 +58,14 @@
  *   Background subagent: parentToolUseId NOT in parent's activeTools (parent moved on).
  *     → Does NOT suppress demotion. Parent can demote to "done" normally.
  *   Confidence: ANY running subagent (blocking or background) keeps confidence "high".
- *   Future work: visual distinction for background subagents on done cards (#108 follow-up).
+ *
+ * Detached (run_in_background) agents:
+ *   The Agent tool_result of a background spawn is just the launch banner — it
+ *   does NOT complete the subagent. Such agents are flagged `background: true`,
+ *   stay running through markSessionDone (a done TURN doesn't end a detached
+ *   agent), and complete via the harness's <task-notification> user record.
+ *   Backstops: registry-confirmed death and a quiet-agent-file ceiling, both in
+ *   sweepBackgroundWork(). The card's agents chip counts them as live (#108).
  *
  * activeTools mutation (A2 audit):
  *   All mutations go through 3 centralised methods: addTool(), removeTool(), clearTools().
@@ -115,6 +122,19 @@ const COMPACT_GRACE_TIMEOUT_MS = 60_000;
  *  CONTINUE_PATTERN — matches "Continuing: /path/to/project" from /continue prompts */
 const HANDOFF_PATTERN = /^HANDOFF-PROMPT[:\s]*(.+)/m;
 const CONTINUE_PATTERN = /^Continuing:\s*\/.*$/;
+/** Background-agent surface strings (Claude Code wording, not an API — same
+ *  brittleness charter as the background-shell tracker; fail-safe on a wording
+ *  change is the old behaviour: banner treated as completion).
+ *  LAUNCH — the instant tool_result of a run_in_background Agent spawn. Group 1
+ *  captures the agentId so the tailer/sweep can find the agent's own JSONL.
+ *  NOTIFICATION — the harness-injected user record delivered when a detached
+ *  agent finishes; the real completion signal for background agents. */
+const BACKGROUND_AGENT_LAUNCH_PATTERN = /^Async agent launched(?:.*?\bagentId:\s*([\w-]+))?/s;
+const TASK_NOTIFICATION_PATTERN = /<task-notification>([\s\S]*?)(?:<\/task-notification>|$)/;
+/** How long a background agent's own JSONL may sit unmodified before the
+ *  dormant sweep force-completes it (missed/never-written task-notification,
+ *  e.g. killed CC). A working agent writes far more often than this. */
+const BACKGROUND_AGENT_CEILING_MS = 15 * 60 * 1000;
 /** Transient "blocked" activity strings set while a session waits on user input
  *  or permission. They become stale the instant the session resumes, so they're
  *  cleared on the waiting→running transition (and on a done card) rather than
@@ -473,6 +493,7 @@ export class SessionManager {
           resultPreview: s.resultPreview,
           toolsCompleted: s.toolsCompleted,
           blocking: s.running && this.state.activeTools.has(s.parentToolUseId),
+          background: s.background || undefined,
         } satisfies SubagentSnapshot)),
       lastActivity: this.state.lastActivity.getTime(),
       firstActivity: this.state.firstActivity.getTime(),
@@ -631,11 +652,12 @@ export class SessionManager {
     return true;
   }
 
-  /** Per-poll background-shell maintenance for a DORMANT (done/stale/idle)
-   *  session, decoupled from mtime/new-data.
+  /** Per-poll background-WORK maintenance for a DORMANT (done/stale/idle)
+   *  session, decoupled from mtime/new-data. Covers both detached kinds:
+   *  backgrounded shells and run_in_background agents.
    *
-   *  `demoteIfStale()` is the only caller of the tracker's `prune()`, and the
-   *  poll loop only runs it for active or freshly-woken sessions. So an idle
+   *  `demoteIfStale()` is the only caller of the shell tracker's `prune()`, and
+   *  the poll loop only runs it for active or freshly-woken sessions. So an idle
    *  `done` card with an outstanding background shell — the exact case the badge
    *  targets — would otherwise never prune (the 15-min ceiling never fires) nor
    *  clear on process death. This runs both, every poll:
@@ -643,25 +665,75 @@ export class SessionManager {
    *    (b) when the backing process is confirmed dead via the registry, clear
    *        every outstanding shell at once — a dead parent has no detached
    *        children worth flagging — rather than waiting out the ceiling.
+   *  Background agents get the same treatment via sweepBackgroundAgents():
+   *  registry-confirmed death completes them at once; a quiet agent file past
+   *  its ceiling force-completes as the missed-notification backstop.
    *
-   *  Returns true iff the outstanding count actually dropped, so the caller can
-   *  push the cleared count to the UI. The demote path can't: on a `done` card
-   *  `computeDemotion` short-circuits to null and `demoteIfStale` returns false,
-   *  so a prune-driven drop would never set `changed`. Cheap — returns early
-   *  unless the session actually has outstanding shells. */
-  sweepBackgroundShells(now: number): boolean {
-    if (!this.backgroundShellTracker.hasOutstanding()) { return false; }
-    const before = this.backgroundShellTracker.count();
-    this.backgroundShellTracker.prune(now, BACKGROUND_SHELL_CEILING_MS);
-    // Confirmed process death is decisive. Conservative tri-state (see
-    // isConfirmedDeadByRegistry): fires only when this session was previously
-    // seen live in the registry and is now gone — never for a session class the
-    // registry doesn't track, which falls back to the ceiling prune above.
-    if (this.isConfirmedDeadByRegistry()) {
-      this.backgroundShellTracker.reset();
-      this.loopTracker.clearAll(); // a dead session has no scheduler
+   *  Returns true iff something actually dropped, so the caller can push the
+   *  change to the UI. The demote path can't: on a `done` card `computeDemotion`
+   *  short-circuits to null and `demoteIfStale` returns false, so a sweep-driven
+   *  drop would never set `changed`. Cheap — returns early unless the session
+   *  actually has outstanding shells or live background agents. */
+  sweepBackgroundWork(now: number): boolean {
+    let changed = false;
+    if (this.backgroundShellTracker.hasOutstanding()) {
+      const before = this.backgroundShellTracker.count();
+      this.backgroundShellTracker.prune(now, BACKGROUND_SHELL_CEILING_MS);
+      // Confirmed process death is decisive. Conservative tri-state (see
+      // isConfirmedDeadByRegistry): fires only when this session was previously
+      // seen live in the registry and is now gone — never for a session class the
+      // registry doesn't track, which falls back to the ceiling prune above.
+      if (this.isConfirmedDeadByRegistry()) {
+        this.backgroundShellTracker.reset();
+        this.loopTracker.clearAll(); // a dead session has no scheduler
+      }
+      changed = this.backgroundShellTracker.count() < before;
     }
-    return this.backgroundShellTracker.count() < before;
+    if (this.hasLiveBackgroundAgents() && this.sweepBackgroundAgents(now)) {
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Backstop for background agents whose <task-notification> never arrives
+   *  (CC killed, harness crash). Registry-confirmed death completes them all at
+   *  once — a dead parent has no detached children. Otherwise an agent whose
+   *  own JSONL has sat unmodified past the ceiling is force-completed. The
+   *  agent FILE's mtime is the liveness source: it stays accurate even when a
+   *  dormant parent's tailers aren't being pumped, and survives replay (unlike
+   *  subagent.lastActivity, which is re-stamped to ~now on every reload). */
+  private sweepBackgroundAgents(now: number): boolean {
+    const dead = this.isConfirmedDeadByRegistry();
+    let changed = false;
+    for (const subagent of this.state.subagents) {
+      if (!subagent.background || !subagent.running) { continue; }
+      if (dead) {
+        this.completeSubagent(subagent, subagent.resultPreview);
+        changed = true;
+        continue;
+      }
+      const lastWriteMs = this.backgroundAgentFileMtime(subagent)
+        ?? subagent.lastActivity.getTime();
+      if (now - lastWriteMs > BACKGROUND_AGENT_CEILING_MS) {
+        this.completeSubagent(subagent, subagent.resultPreview);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** mtime of a background agent's own JSONL, or null when unknown/absent.
+   *  Sync stat is fine here: the sweep only reaches this for sessions that
+   *  actually have live background agents (rare, few per session). */
+  private backgroundAgentFileMtime(subagent: SubagentInfo): number | null {
+    if (!subagent.agentId) { return null; }
+    const sessionDir = this.state.filePath.replace(/\.jsonl$/, '');
+    const file = path.join(sessionDir, 'subagents', `agent-${subagent.agentId}.jsonl`);
+    try {
+      return fs.statSync(file).mtimeMs;
+    } catch {
+      return null;
+    }
   }
 
   /** Mark session as done and clean up all running state */
@@ -675,6 +747,11 @@ export class SessionManager {
     this.clearTools(this.state.activeTools);
     // Mark all subagents as completed and clean up their trackers
     for (const subagent of this.state.subagents) {
+      // A live background agent outlives the turn by design — `done` here means
+      // the TURN ended, not the detached agent. Keep it running (tailer,
+      // permission tracker and all) so the card's agents chip and roster stay
+      // truthful; it completes via task-notification or the dormant sweep.
+      if (subagent.background && subagent.running) { continue; }
       subagent.running = false;
       subagent.waitingOnPermission = false;
       this.clearTools(subagent.activeTools);
@@ -847,6 +924,11 @@ export class SessionManager {
       return this.processSidechainUser(record);
     }
 
+    // Harness-injected background-agent completion. Processed before the
+    // generic turn handling so the agent's running flag is already correct by
+    // the time setRunning() and the [F2] all-subagents-done check run below.
+    this.processTaskNotification(record);
+
     // Count main-thread user turns
     this.state.userTurnCount++;
 
@@ -949,14 +1031,25 @@ export class SessionManager {
             s => s.parentToolUseId === block.tool_use_id
           );
           if (subagent) {
-            subagent.running = false;
-            subagent.waitingOnPermission = false;
-            this.clearTools(subagent.activeTools);
-            // Extract result preview from tool_result content
-            subagent.resultPreview = SessionManager.extractResultPreview(block);
-            // Clean up permission tracker + tailer resources on completion
-            subagent.permissionTracker.dispose();
-            this.subagentLifecycle.onComplete(subagent);
+            // A run_in_background spawn returns its tool_result instantly — and
+            // it's only the launch banner, not the agent's result. Mark the
+            // subagent as a live background agent instead of completing it
+            // (mistaking the banner for completion made cards read DONE while
+            // detached agents kept working). Real completion arrives later as a
+            // <task-notification> user record; see processTaskNotification().
+            const launchMatch = resultText?.match(BACKGROUND_AGENT_LAUNCH_PATTERN);
+            if (launchMatch) {
+              subagent.background = true;
+              // The banner carries the agentId — adopt it so the Phase 2 tailer
+              // can open the agent's JSONL at its exact path (no directory scan)
+              // and the dormant sweep can stat the file for liveness.
+              if (!subagent.agentId && launchMatch[1]) {
+                subagent.agentId = launchMatch[1];
+              }
+              this.updateSubagentActivity(subagent);
+            } else {
+              this.completeSubagent(subagent, SessionManager.extractResultPreview(block));
+            }
           }
         }
 
@@ -1282,8 +1375,55 @@ export class SessionManager {
       startedAt: new Date(),
       resultPreview: null,
       toolsCompleted: 0,
+      background: false,
     };
     return subagent;
+  }
+
+  /** Mark a subagent finished and release its trackers + tailer. Shared by the
+   *  inline Agent/Task tool_result path, the background-agent task-notification
+   *  path, and the dormant sweep's force-complete backstop. */
+  private completeSubagent(subagent: SubagentInfo, resultPreview: string | null): void {
+    subagent.running = false;
+    subagent.waitingOnPermission = false;
+    this.clearTools(subagent.activeTools);
+    subagent.resultPreview = resultPreview;
+    subagent.permissionTracker.dispose();
+    this.subagentLifecycle.onComplete(subagent);
+  }
+
+  /** Detect a harness-injected <task-notification> user record — the genuine
+   *  completion signal for a run_in_background agent. Carries <task-id> (the
+   *  agentId), <tool-use-id> (the spawning tool_use), a terminal <status>, and
+   *  a <result> body. Returns true when a tracked subagent was completed. */
+  private processTaskNotification(record: JsonlRecord): boolean {
+    let completed = false;
+    for (const block of getContentBlocks(record)) {
+      if (block.type !== 'text' || !block.text) { continue; }
+      const match = block.text.match(TASK_NOTIFICATION_PATTERN);
+      if (!match) { continue; }
+      const body = match[1];
+      const taskId = body.match(/<task-id>([^<]+)<\/task-id>/)?.[1]?.trim();
+      const toolUseId = body.match(/<tool-use-id>([^<]+)<\/tool-use-id>/)?.[1]?.trim();
+      const status = body.match(/<status>([^<]+)<\/status>/)?.[1]?.trim();
+      const result = body.match(/<result>([\s\S]*?)<\/result>/)?.[1]?.trim();
+      const subagent = this.state.subagents.find(s =>
+        (taskId && s.agentId === taskId)
+        || (toolUseId && s.parentToolUseId === toolUseId));
+      if (!subagent || !subagent.running) { continue; }
+      const preview = (status && status !== 'completed' ? `[${status}] ` : '')
+        + (result ?? '').replace(/\s+/g, ' ');
+      this.completeSubagent(subagent, preview.trim().slice(0, 200) || null);
+      completed = true;
+    }
+    return completed;
+  }
+
+  /** Whether any detached run_in_background agent is still working. Used by
+   *  the discovery poll loop to keep pumping a dormant (done) parent's
+   *  subagent tailers, and by the dormant sweep. */
+  hasLiveBackgroundAgents(): boolean {
+    return this.state.subagents.some(s => s.background && s.running);
   }
 
   /** Subagent's PermissionTracker fired. Mark this subagent as blocked, and

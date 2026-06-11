@@ -112,6 +112,45 @@ Subagents are further classified for demotion:
 - **Blocking subagent** — `parentToolUseId` is still in the parent's `activeTools` (parent waiting for the Task/Agent result). Suppresses parent demotion.
 - **Background subagent** — parent has moved on (`parentToolUseId` no longer in `activeTools`). Does NOT suppress demotion; parent can demote to `done` while the background subagent finishes.
 
+### Detached (run_in_background) agents
+
+An `Agent` call with `run_in_background: true` returns its `tool_result`
+**instantly**, and that result is only the launch banner ("Async agent launched
+successfully…") — not the agent's output. Treating it as completion made cards
+read `DONE` while detached agents kept working for many minutes (found live
+2026-06-11). The corrected model (`sessionManager.ts`,
+`sessionManager.backgroundAgent.test.ts`):
+
+- **Launch** — the banner on an Agent/Task `tool_result` (string-matched, same
+  brittleness charter as the shell tracker; fail-safe is the old
+  banner-as-completion behaviour) flags the subagent `background: true`, keeps
+  it `running`, and adopts the `agentId:` from the banner so the Phase 2 tailer
+  opens `subagents/agent-<id>.jsonl` at its exact path.
+- **Turn end** — `done` stays turn-scoped: the idle/Stop path still closes the
+  turn (a background agent is non-blocking), but `markSessionDone()` exempts
+  live background agents from its completion sweep — their tailers and
+  permission trackers stay alive under the done card.
+- **Completion** — the harness-injected `<task-notification>` user record in
+  the **main** JSONL (carries `<task-id>` = agentId, `<tool-use-id>`,
+  `<status>`, `<result>`). It completes the matched subagent (the `<result>`
+  becomes `resultPreview`, non-`completed` statuses are prefixed `[status]`)
+  and, being a user record, reopens the turn — matching the harness, which
+  re-invokes the lead.
+- **Backstops** — `sweepBackgroundWork()` (the per-poll dormant sweep, shared
+  with background shells): registry-confirmed death completes all background
+  agents at once; otherwise an agent whose own JSONL has sat unmodified past
+  `BACKGROUND_AGENT_CEILING_MS` (15 min) is force-completed (missed/never-written
+  notification). File mtime, not `subagent.lastActivity`, is the liveness
+  source — it survives replay and works without tailer pumping.
+- **Dormant pumping** — the discovery poll loop treats a dormant session with
+  live background agents as woken, so `update()` keeps pumping its subagent
+  tailers (roster rows, tool counts, permission detection) while the main JSONL
+  is quiet.
+- **Display** — the card's agents chip (`🤖 N →`) counts live agents (workflow
+  agents + subagents, background included) and tints by their aggregate state
+  via `detailChipState`, so a `done` card with live robots reads as active down
+  in the meta row; live agents also keep their inline roster rows on done cards.
+
 ### Background-shell signal (SPIKE — non-status enrichment)
 
 A `Bash` launched with `run_in_background: true` returns its `tool_result`
@@ -131,7 +170,7 @@ non-status** (same charter as `ToolOutcomeTracker`) and never moves
   normal update path; (2) a shell never observed completing is pruned after
   `BACKGROUND_SHELL_CEILING_MS` (15 min), mirroring the status ceilings so the
   signal can't stick forever; (3) confirmed process death clears all outstanding
-  shells at once. Paths 2–3 run in `SessionManager.sweepBackgroundShells(now)`,
+  shells at once. Paths 2–3 run in `SessionManager.sweepBackgroundWork(now)`,
   which the poll loop calls over **dormant** (done/stale/idle) sessions every
   cycle — decoupled from mtime/new-data, because an idle `done` card never
   re-enters `demoteIfStale` and would otherwise never prune or clear. The sweep

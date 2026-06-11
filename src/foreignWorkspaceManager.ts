@@ -344,7 +344,7 @@ export class ForeignWorkspaceManager {
         // Freshness parity: dormant foreign sessions get the same
         // background-shell sweep (15-min ceiling + registry death-clear) as
         // dormant local sessions, so a stuck shell badge clears here too.
-        if (session.sweepBackgroundShells(now)) { changed = true; }
+        if (session.sweepBackgroundWork(now)) { changed = true; }
         continue;
       }
       try {

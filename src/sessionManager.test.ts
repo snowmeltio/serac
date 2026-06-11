@@ -527,7 +527,7 @@ describe('SessionManager state machine', () => {
   });
 });
 
-describe('SessionManager.sweepBackgroundShells (idle done-card maintenance)', () => {
+describe('SessionManager.sweepBackgroundWork (idle done-card maintenance)', () => {
   beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
   afterEach(() => { vi.useRealTimers(); });
 
@@ -544,7 +544,7 @@ describe('SessionManager.sweepBackgroundShells (idle done-card maintenance)', ()
 
   it('is a no-op (returns false) when there are no outstanding shells', () => {
     const mgr = makeManager();
-    expect(mgr.sweepBackgroundShells(Date.now())).toBe(false);
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(false);
   });
 
   it('keeps a shell within the ceiling when death is not confirmed', async () => {
@@ -552,7 +552,7 @@ describe('SessionManager.sweepBackgroundShells (idle done-card maintenance)', ()
     const mgr = makeManager();
     await feedRecords(mgr, [launchRecord('shell_a')]);
     expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
-    expect(mgr.sweepBackgroundShells(Date.now())).toBe(false);
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(false);
     expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
   });
 
@@ -560,7 +560,7 @@ describe('SessionManager.sweepBackgroundShells (idle done-card maintenance)', ()
     const mgr = makeManager();
     await feedRecords(mgr, [launchRecord('shell_a')]);
     const past = Date.now() + BACKGROUND_SHELL_CEILING_MS + 1000;
-    expect(mgr.sweepBackgroundShells(past)).toBe(true);
+    expect(mgr.sweepBackgroundWork(past)).toBe(true);
     expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
   });
 
@@ -570,12 +570,12 @@ describe('SessionManager.sweepBackgroundShells (idle done-card maintenance)', ()
     await feedRecords(mgr, [launchRecord('shell_a'), launchRecord('shell_b', 't2')]);
     expect(mgr.getSnapshot().backgroundShellCount).toBe(2);
     // First sweep sees the session live → latches "ever seen live", no drop.
-    expect(mgr.sweepBackgroundShells(Date.now())).toBe(false);
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(false);
     expect(mgr.getSnapshot().backgroundShellCount).toBe(2);
     // Process exits: registry now reports dead → clear both immediately, well
     // within the 15-min ceiling.
     live = false;
-    expect(mgr.sweepBackgroundShells(Date.now())).toBe(true);
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(true);
     expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
   });
 
@@ -589,7 +589,7 @@ describe('SessionManager.sweepBackgroundShells (idle done-card maintenance)', ()
     expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
     // Sweeping at "now" (NOT now+ceiling) already drops it: its real age exceeds
     // the ceiling because the start is anchored to the old record timestamp.
-    expect(mgr.sweepBackgroundShells(Date.now())).toBe(true);
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(true);
     expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
   });
 
@@ -598,7 +598,7 @@ describe('SessionManager.sweepBackgroundShells (idle done-card maintenance)', ()
     // dead", so only the ceiling can drop it (and we are within it).
     const mgr = new SessionManager('unk-sess', '/tmp/unk.jsonl', 'ws', { livenessProbe: () => false });
     await feedRecords(mgr, [launchRecord('shell_a')]);
-    expect(mgr.sweepBackgroundShells(Date.now())).toBe(false);
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(false);
     expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
   });
 });

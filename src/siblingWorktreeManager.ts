@@ -273,7 +273,7 @@ export class SiblingWorktreeManager {
           }
         } catch { /* skip */ }
         // Freshness parity: same dormant background-shell sweep as primary.
-        if (session.sweepBackgroundShells(now)) { changed = true; }
+        if (session.sweepBackgroundWork(now)) { changed = true; }
         continue;
       }
       try {

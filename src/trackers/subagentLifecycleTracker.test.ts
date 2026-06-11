@@ -23,6 +23,7 @@ function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     startedAt: new Date(),
     resultPreview: null,
     toolsCompleted: 0,
+    background: false,
     ...overrides,
   };
 }

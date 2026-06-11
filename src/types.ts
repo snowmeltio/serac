@@ -45,6 +45,10 @@ export interface SubagentInfo {
   resultPreview: string | null;
   /** Number of tools the subagent has completed */
   toolsCompleted: number;
+  /** Detached agent launched with run_in_background: its Agent tool_result is
+   *  just the launch banner, so it outlives the parent's turn. Completion comes
+   *  from the harness's <task-notification> user record, not the tool_result. */
+  background: boolean;
 }
 
 /** Full state of a single Claude Code session */
@@ -206,6 +210,9 @@ export interface SubagentSnapshot {
   /** Whether this subagent is blocking the parent (tool_use still pending).
    *  False = background subagent (parent has moved on). */
   blocking: boolean;
+  /** Detached run_in_background agent — may still be running after the parent
+   *  turn ended (its card can read `done` while this agent works). */
+  background?: boolean;
 }
 
 /** Persistent per-session metadata stored in session-meta.json */

@@ -1185,13 +1185,31 @@ const RANGE_MS: Record<string, number> = {
    *  `state` (running | waiting | failed | done) tints the chip to reflect the
    *  agents' OWN aggregate state, not the parent card's turn state — a stale
    *  (seen) parent dims it via CSS. */
-  function renderDetailChip(label: string, source: DetailSource, containerId: string, sessionId: string, state: string): string {
+  function renderDetailChip(label: string, source: DetailSource, containerId: string, sessionId: string, state: string, visibleHtml?: string): string {
     return '<span class="wf-tag wf-view-chip detail-chip wf-chip-' + escapeHtml(state) + '"'
       + ' data-detail-source="' + escapeHtml(source) + '"'
       + ' data-detail-container="' + escapeHtml(containerId) + '"'
       + ' data-detail-session="' + escapeHtml(sessionId) + '"'
       + ' role="button" tabindex="0" title="' + escapeHtml(label) + '" aria-label="' + escapeHtml(label)
-      + '">' + escapeHtml(label) + '<span class="wf-arrow">→</span></span>';
+      + '">' + (visibleHtml ?? escapeHtml(label)) + '<span class="wf-arrow">→</span></span>';
+  }
+
+  /** Visible content of the agents chip: robot glyph + live-agent count.
+   *  The glyph replaces the word "agents" (meta-row space); the count is how
+   *  many agents are working RIGHT NOW — workflow agents plus subagents,
+   *  detached background agents included, so a `done` card with live robots
+   *  still reads as active down here. Zero live → glyph only; the chip's
+   *  wf-chip-* tint (count + arrow inherit it) says how the crew is going. */
+  function agentsChipHtml(liveCount: number): string {
+    return '\u{1F916}' + (liveCount > 0 ? ' <span class="agent-live-count">' + liveCount + '</span>' : '');
+  }
+
+  /** Live (running or awaiting permission) agents beneath a card. */
+  function countLiveAgents(wfs: PanelWorkflow[] | undefined, subs: PanelSession['subagents'] | undefined): number {
+    const wfLive = (wfs ?? []).reduce((n, w) =>
+      n + w.agents.filter(a => a.status === 'running' || a.status === 'waiting').length, 0);
+    const subLive = (subs ?? []).filter(a => a.running || a.waitingOnPermission).length;
+    return wfLive + subLive;
   }
 
   /** Aggregate state for a session card's detail chip — reflects what the chip
@@ -1264,7 +1282,10 @@ const RANGE_MS: Record<string, number> = {
     const hasSubagents = s.subagents && s.subagents.length > 0;
     const showSubagents = hasSubagents
       && currentSettings.show.subagents
-      && (s.status === 'running' || s.status === 'waiting' || isFocused);
+      // Live agents always earn their roster rows — a `done` card can still
+      // have detached background agents working under it.
+      && (s.status === 'running' || s.status === 'waiting' || isFocused
+        || s.subagents!.some(a => a.running || a.waitingOnPermission));
     if (showSubagents && s.subagents) {
       // Only the still-working agents are listed inline (running / awaiting
       // permission); click one to drill straight to it. When all are done there's
@@ -1344,13 +1365,15 @@ const RANGE_MS: Record<string, number> = {
     const hasWf = !!wfs && wfs.length > 0;
     const showSubChip = hasSubagents && currentSettings.show.subagents;
     const chipState = detailChipState(wfs, s.subagents);
-    // One name for everything beneath a card — agents (be they workflow agents,
-    // subagents, or teammates). The source still routes the drill-in: prefer the
-    // workflow view when a run is present (richer), else the subagents view.
-    if (hasWf) {
-      metaHtml += renderDetailChip('agents', 'workflow', s.sessionId, s.sessionId, chipState);
-    } else if (showSubChip) {
-      metaHtml += renderDetailChip('agents', 'subagents', s.sessionId, s.sessionId, chipState);
+    // One chip for everything beneath a card — agents (be they workflow agents,
+    // subagents, or teammates), rendered as 🤖 + live count + arrow. The source
+    // still routes the drill-in: prefer the workflow view when a run is present
+    // (richer), else the subagents view.
+    if (hasWf || showSubChip) {
+      const live = countLiveAgents(wfs, s.subagents);
+      const label = live > 0 ? 'agents — ' + live + ' running' : 'agents';
+      metaHtml += renderDetailChip(label, hasWf ? 'workflow' : 'subagents',
+        s.sessionId, s.sessionId, chipState, agentsChipHtml(live));
     }
     metaHtml += actionsHtml;
     metaHtml += '</div>';
