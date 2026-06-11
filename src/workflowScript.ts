@@ -513,8 +513,22 @@ function functionBodyTemplates(source: string, fnName: string): TemplateParts[] 
  * Literal-prompt calls pass through unchanged. Still no eval — everything is
  * bounded brace/string matching.
  */
+/** Expansion ceiling, mirroring workflowSidecar's MAX_AGENTS: a crafted script
+ *  must not be able to fan one call out into unbounded virtual calls. */
+const MAX_VIRTUAL_CALLS = 1000;
+
 export function expandIndirectCalls(source: string, calls: WorkflowAgentCall[]): WorkflowAgentCall[] {
   let arrays: PromptArray[] | null = null; // lazy — most scripts have none
+  // arrayBindingExtents runs three whole-source regexes plus balanced-brace
+  // walks; memoised per array name so a script with many calls and arrays is
+  // O(arrays × n), not O(calls × arrays × n) — this runs inside the 500ms
+  // live poll loop on untrusted input.
+  const extentsByName = new Map<string, Array<{ start: number; end: number }>>();
+  const extentsOf = (name: string): Array<{ start: number; end: number }> => {
+    let e = extentsByName.get(name);
+    if (!e) { e = arrayBindingExtents(source, name); extentsByName.set(name, e); }
+    return e;
+  };
   const out: WorkflowAgentCall[] = [];
   for (const call of calls) {
     if (!call.promptExpr || call.staticSegments.length > 0) { out.push(call); continue; }
@@ -522,12 +536,12 @@ export function expandIndirectCalls(source: string, calls: WorkflowAgentCall[]):
     const memberMatch = call.promptExpr.match(/^([A-Za-z_$][\w$]*)\.prompt$/);
     const fnMatch = call.promptExpr.match(/^([A-Za-z_$][\w$]*)\s*\(/);
 
-    if (memberMatch) {
+    if (memberMatch && out.length < MAX_VIRTUAL_CALLS) {
       arrays ??= extractPromptArrays(source);
       const bound = arrays.find(a =>
-        arrayBindingExtents(source, a.name).some(e => call.sourceIndex >= e.start && call.sourceIndex < e.end));
+        extentsOf(a.name).some(e => call.sourceIndex >= e.start && call.sourceIndex < e.end));
       if (bound) {
-        for (const el of bound.elements) {
+        for (const el of bound.elements.slice(0, MAX_VIRTUAL_CALLS - out.length)) {
           let label = call.label;
           let labelTemplate = call.labelTemplate;
           if (labelTemplate) {
@@ -551,10 +565,10 @@ export function expandIndirectCalls(source: string, calls: WorkflowAgentCall[]):
         }
         continue;
       }
-    } else if (fnMatch) {
+    } else if (fnMatch && out.length < MAX_VIRTUAL_CALLS) {
       const templates = functionBodyTemplates(source, fnMatch[1]);
       if (templates.length > 0) {
-        for (const pt of templates) {
+        for (const pt of templates.slice(0, Math.max(1, MAX_VIRTUAL_CALLS - out.length))) {
           out.push({ ...call, promptTemplate: pt, staticSegments: distinctiveSegments(pt.statics) });
         }
         continue;

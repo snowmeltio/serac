@@ -53,6 +53,9 @@ export class WorkflowDiscovery {
   private snapshots: Map<string, WorkflowSnapshot> = new Map();
   /** runId -> last-seen sidecar mtime (ms), to skip re-parsing unchanged files. */
   private mtimes: Map<string, number> = new Map();
+  /** Per-run script parse, keyed on mtime — the script is immutable per run,
+   *  so the 500ms live poll must not re-read and re-parse it every cycle. */
+  private readonly scriptMeta = new Map<string, { mtimeMs: number; name: string; phases: WorkflowSnapshot['phases']; agentCalls: WorkflowAgentCall[] }>();
   /** Set by scan() when the snapshot set changes; read + cleared by poll(). */
   private changedSincePoll = false;
   private scanCounter = 0;
@@ -138,6 +141,7 @@ export class WorkflowDiscovery {
       if (!seen.has(runId)) {
         this.snapshots.delete(runId);
         this.mtimes.delete(runId);
+        this.scriptMeta.delete(runId);
         this.changedSincePoll = true;
       }
     }
@@ -169,6 +173,11 @@ export class WorkflowDiscovery {
 
       runIds.add(runId);
       seen.add(runId);
+
+      if (stat.size > WorkflowDiscovery.SIDECAR_MAX_BYTES) {
+        this.log.warn(`[workflows] Sidecar exceeds size cap, skipping: ${file}`);
+        continue;
+      }
 
       // Skip re-parse when the sidecar is unchanged.
       if (this.mtimes.get(runId) === stat.mtimeMs && this.snapshots.has(runId)) { continue; }
@@ -259,18 +268,30 @@ export class WorkflowDiscovery {
       const scriptFiles = await fs.promises.readdir(scriptsDir);
       const scriptFile = scriptFiles.find(f => f.endsWith(`-${runId}.js`));
       if (scriptFile) {
-        const src = await fs.promises.readFile(path.join(scriptsDir, scriptFile), 'utf-8');
-        const meta = extractWorkflowMeta(src);
-        if (meta) {
-          name = meta.name;
-          phases = meta.phases.map((p, i) => ({ index: i + 1, title: p.title, detail: p.detail ?? '' }));
-          for (const p of phases) { phaseIndexByTitle.set(p.title, p.index); }
+        const scriptPath = path.join(scriptsDir, scriptFile);
+        const sstat = await fs.promises.stat(scriptPath);
+        const cached = this.scriptMeta.get(runId);
+        if (cached && cached.mtimeMs === sstat.mtimeMs) {
+          ({ name, phases, agentCalls } = cached);
+        } else if (sstat.size > WorkflowDiscovery.SCRIPT_MAX_BYTES) {
+          this.log.warn(`[workflows] Script exceeds size cap, skipping parse: ${scriptFile}`);
+        } else {
+          const src = await fs.promises.readFile(scriptPath, 'utf-8');
+          const meta = extractWorkflowMeta(src);
+          if (meta) {
+            name = meta.name;
+            phases = meta.phases.map((p, i) => ({ index: i + 1, title: p.title, detail: p.detail ?? '' }));
+          }
+          // Expand indirect prompts (the canonical `pipeline(ARR, d =>
+          // agent(d.prompt, …))` shape) into matchable virtual calls — without
+          // this, the most idiomatic Workflow scripts rendered every agent
+          // ungrouped under a raw journal key.
+          agentCalls = expandIndirectCalls(src, extractAgentCalls(src));
+          // The script is immutable per run — cache on mtime so the live poll
+          // stops re-reading and re-parsing it at 2Hz.
+          this.scriptMeta.set(runId, { mtimeMs: sstat.mtimeMs, name, phases, agentCalls });
         }
-        // Expand indirect prompts (the canonical `pipeline(ARR, d =>
-        // agent(d.prompt, …))` shape) into matchable virtual calls — without
-        // this, the most idiomatic Workflow scripts rendered every agent
-        // ungrouped under a raw journal key.
-        agentCalls = expandIndirectCalls(src, extractAgentCalls(src));
+        for (const p of phases) { phaseIndexByTitle.set(p.title, p.index); }
       }
     } catch {
       // no script yet — fall back to runId + no phases + no correlation
@@ -281,7 +302,7 @@ export class WorkflowDiscovery {
     const counts: Record<string, number> = {};
     const resolved = new Set<string>();
     try {
-      const journal = await fs.promises.readFile(path.join(runDir, 'journal.jsonl'), 'utf-8');
+      const journal = await this.readCapped(path.join(runDir, 'journal.jsonl'), WorkflowDiscovery.JOURNAL_MAX_BYTES);
       const started = new Map<string, string>(); // agentId -> first-seen label/key
       for (const line of journal.split('\n')) {
         if (!line.trim()) { continue; }
@@ -402,7 +423,29 @@ export class WorkflowDiscovery {
    *  than the throttle, capped at 8 MB — beyond that the last stats stick. */
   private agentStatsCache = new Map<string, { size: number; scannedAt: number; tokens: number; toolCalls: number }>();
   private static readonly STATS_RESCAN_MS = 5_000;
+  /** Read at most maxBytes from the head of a file. A truncated tail line is
+   *  dropped naturally by per-line JSON parsing. Untrusted-input guard. */
+  private async readCapped(filePath: string, maxBytes: number): Promise<string> {
+    const fh = await fs.promises.open(filePath, 'r');
+    try {
+      const size = (await fh.stat()).size;
+      const buf = Buffer.alloc(Math.min(maxBytes, size));
+      if (buf.length === 0) { return ''; }
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      return buf.subarray(0, bytesRead).toString('utf-8');
+    } finally {
+      await fh.close();
+    }
+  }
+
   private static readonly STATS_MAX_BYTES = 8 * 1024 * 1024;
+  /** Untrusted-input caps for the other per-run reads (the codebase invariant
+   *  is that every on-disk read path is size-capped — see teamDiscovery). The
+   *  harness caps scripts at 512KB; sidecar and journal are JSON(L) we parse
+   *  whole or per-line. */
+  private static readonly SIDECAR_MAX_BYTES = 1024 * 1024;
+  private static readonly SCRIPT_MAX_BYTES = 1024 * 1024;
+  private static readonly JOURNAL_MAX_BYTES = 4 * 1024 * 1024;
 
   private async liveAgentStats(runDir: string, agentId: string, status: string): Promise<{ tokens: number; toolCalls: number }> {
     const filePath = path.join(runDir, `agent-${agentId}.jsonl`);
