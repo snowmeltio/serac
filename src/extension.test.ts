@@ -141,6 +141,13 @@ vi.mock('./claudeSettings.js', () => ({
 
 // Deterministic env signals: the real module reads ~/.claude on THIS machine —
 // tests must control it.
+vi.mock('./workspaceOpener.js', () => ({
+  openWorkspaceFolder: vi.fn().mockResolvedValue(undefined),
+  writeFocusHint: vi.fn().mockResolvedValue(undefined),
+  consumeFocusHint: vi.fn().mockResolvedValue(null),
+  focusHintPath: vi.fn().mockReturnValue('/test/hints/focus-hint.json'),
+}));
+
 vi.mock('./claudeEnvSignals.js', () => ({
   readIdeOpenFolders: vi.fn(() => new Set<string>()),
 }));
@@ -375,6 +382,50 @@ describe('extension', () => {
       expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
         'claude-vscode.editor.open', 'test-session', undefined, 1,
       );
+    });
+  });
+
+  describe('openWorkspace confinement (audit security-webview-1)', () => {
+    async function getHandler(): Promise<(cwd: string, sessionId?: string) => Promise<void>> {
+      activate(context as any);
+      return vi.mocked(mockPanelProvider.setOpenWorkspaceHandler).mock.calls[0][0];
+    }
+
+    it('opens a discovered foreign workspace cwd', async () => {
+      const handler = await getHandler();
+      mockDiscovery.getForeignWorkspaces.mockReturnValue([
+        { workspaceKey: 'k', displayName: 'repo', cwd: '/foreign/repo', counts: {}, confidence: 'low', repoRoot: null },
+      ]);
+      await handler('/foreign/repo');
+      const opener = await import('./workspaceOpener.js');
+      expect(vi.mocked(opener.openWorkspaceFolder)).toHaveBeenCalledWith('/foreign/repo');
+    });
+
+    it('opens a discovered worktree path from the picker', async () => {
+      const handler = await getHandler();
+      mockDiscovery.getForeignWorkspaces.mockReturnValue([
+        { workspaceKey: 'k', displayName: 'repo', cwd: '/foreign/repo', counts: {}, confidence: 'low', repoRoot: '/foreign/repo', worktrees: [{ path: '/foreign/repo-wt', branch: 'fix', isMain: false }] },
+      ]);
+      await handler('/foreign/repo-wt');
+      const opener = await import('./workspaceOpener.js');
+      expect(vi.mocked(opener.openWorkspaceFolder)).toHaveBeenCalledWith('/foreign/repo-wt');
+    });
+
+    it('rejects a path outside the discovered workspace set', async () => {
+      const handler = await getHandler();
+      await handler('/etc');
+      const opener = await import('./workspaceOpener.js');
+      expect(vi.mocked(opener.openWorkspaceFolder)).not.toHaveBeenCalled();
+    });
+
+    it('rejects traversal into an undiscovered parent of a discovered cwd', async () => {
+      const handler = await getHandler();
+      mockDiscovery.getForeignWorkspaces.mockReturnValue([
+        { workspaceKey: 'k', displayName: 'repo', cwd: '/foreign/repo', counts: {}, confidence: 'low', repoRoot: null },
+      ]);
+      await handler('/foreign/repo/../../private/launchd');
+      const opener = await import('./workspaceOpener.js');
+      expect(vi.mocked(opener.openWorkspaceFolder)).not.toHaveBeenCalled();
     });
   });
 

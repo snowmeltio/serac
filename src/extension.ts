@@ -12,7 +12,7 @@ import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from './claudeSettings.js';
-import { sanitiseWorkspaceKey, applyWorkflowLiveStatus } from './panelUtils.js';
+import { sanitiseWorkspaceKey, applyWorkflowLiveStatus, normPath } from './panelUtils.js';
 import { buildWorktreeRows } from './worktreeRows.js';
 import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } from './workspaceOpener.js';
 import { HookEventRouter } from './hookEventRouter.js';
@@ -460,7 +460,30 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // Re-render whenever a companion registers/updates/disposes a slot.
   footerSlots.setOnChange(() => panelProvider.refresh());
 
+  // Confinement for openWorkspace (audit security-webview-1): every legitimate
+  // producer (foreign row, worktree pane row, picker child) posts a cwd the
+  // host itself supplied, so the handler accepts only currently discovered
+  // paths — a compromised webview gets no arbitrary-folder-open capability.
+  // Rebuilt per call; discovery sets change as polls land.
+  function discoveredWorkspaceCwds(): Set<string> {
+    const allowed = new Set<string>([normPath(wsPath)]);
+    for (const g of discovery.getForeignWorkspaces()) {
+      if (g.cwd) { allowed.add(normPath(g.cwd)); }
+      if (g.repoRoot) { allowed.add(normPath(g.repoRoot)); }
+      for (const w of g.worktrees ?? []) { allowed.add(normPath(w.path)); }
+    }
+    for (const wt of discovery.getDiscoveredWorktrees()) { allowed.add(normPath(wt.path)); }
+    for (const s of [...discovery.getForeignWaitingSnapshots(), ...discovery.getForeignRunningSnapshots()]) {
+      if (s.cwd) { allowed.add(normPath(s.cwd)); }
+    }
+    return allowed;
+  }
+
   panelProvider.setOpenWorkspaceHandler(async (cwd: string, sessionId?: string) => {
+    if (!discoveredWorkspaceCwds().has(normPath(path.resolve(cwd)))) {
+      log.warn('openWorkspace rejected: not a discovered workspace:', cwd);
+      return;
+    }
     if (sessionId) {
       const targetWorkspaceKey = sanitiseWorkspaceKey(cwd);
       try {
