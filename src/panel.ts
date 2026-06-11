@@ -457,6 +457,20 @@ const RANGE_MS: Record<string, number> = {
       return;
     }
 
+    // Archive-row detail glyph — opens the detail panel for the archived
+    // team/workflow. Checked before the row branches, whose click is undismiss.
+    const archiveDetailGlyph = target.closest<HTMLElement>('.compact-transcript[data-detail-source]');
+    if (archiveDetailGlyph) {
+      e.stopPropagation();
+      const source = archiveDetailGlyph.dataset.detailSource;
+      const containerId = archiveDetailGlyph.dataset.detailContainer;
+      const sessionId = archiveDetailGlyph.dataset.detailSession;
+      if (source && containerId && sessionId) {
+        vscode.postMessage({ type: 'openDetail', source, containerId, sessionId });
+      }
+      return;
+    }
+
     // Team archive compact row click (undismiss)
     const teamArchiveRow = target.closest<HTMLElement>('.team-compact-row[data-team-id]');
     if (teamArchiveRow) {
@@ -559,6 +573,14 @@ const RANGE_MS: Record<string, number> = {
     if (card) {
       e.preventDefault();
       card.click();
+      return;
+    }
+    // Transcript/detail glyphs inside archive rows — matched before the row
+    // branches so Enter fires the glyph instead of undismissing the row.
+    const archiveGlyph = target.closest<HTMLElement>('.compact-transcript');
+    if (archiveGlyph) {
+      e.preventDefault();
+      archiveGlyph.click();
       return;
     }
     const archiveRow = target.closest<HTMLElement>('.compact-row[data-session-id]');
@@ -1153,7 +1175,10 @@ const RANGE_MS: Record<string, number> = {
   function detailChipState(wfs: PanelWorkflow[] | undefined, subs: PanelSession['subagents'] | undefined): string {
     if ((subs ?? []).some(a => a.waitingOnPermission)) { return 'waiting'; }
     if ((wfs ?? []).some(w => w.status === 'running') || (subs ?? []).some(a => a.running)) { return 'running'; }
-    if ((wfs ?? []).some(w => w.status === 'failed' || w.status === 'incomplete')) { return 'failed'; }
+    if ((wfs ?? []).some(w => w.status === 'failed')) { return 'failed'; }
+    // Killed/abandoned runs are "didn't finish", not "errored" — warning
+    // orange on both surfaces (the detail panel already renders it so).
+    if ((wfs ?? []).some(w => w.status === 'incomplete')) { return 'incomplete'; }
     return 'done';
   }
 
@@ -1715,7 +1740,7 @@ const RANGE_MS: Record<string, number> = {
     const displayName = getDisplayName(s);
     return '<div class="compact-row" role="listitem" tabindex="0" data-session-id="' + escapeHtml(s.sessionId) + '">'
       + '<span class="compact-name">' + escapeHtml(displayName) + '</span>'
-      + '<span class="compact-transcript" data-transcript-id="' + escapeHtml(s.sessionId) + '" title="View transcript">&#x1f4dc;</span>'
+      + '<span class="compact-transcript" data-transcript-id="' + escapeHtml(s.sessionId) + '" role="button" tabindex="0" title="View transcript" aria-label="View transcript">&#x1f4dc;</span>'
       + '<span class="compact-age">' + age + '</span>'
       + '</div>';
   }
@@ -1727,6 +1752,7 @@ const RANGE_MS: Record<string, number> = {
     return '<div class="team-compact-row" role="listitem" tabindex="0" data-team-id="' + escapeHtml(team.teamId) + '">'
       + '<span class="team-badge">team</span>'
       + '<span class="compact-name">' + escapeHtml(team.name) + '</span>'
+      + '<span class="compact-transcript" data-detail-source="team" data-detail-container="' + escapeHtml(team.teamId) + '" data-detail-session="' + escapeHtml(team.orchestrator.sessionId) + '" role="button" tabindex="0" title="View team agents" aria-label="View team agents">&#x1f4dc;</span>'
       + '<span class="compact-age">' + countLabel + '</span>'
       + '</div>';
   }
@@ -1738,6 +1764,7 @@ const RANGE_MS: Record<string, number> = {
     return '<div class="workflow-compact-row" role="listitem" tabindex="0" data-run-id="' + escapeHtml(wf.runId) + '">'
       + '<span class="wf-badge">wf</span>'
       + '<span class="compact-name">' + escapeHtml(wf.name) + '</span>'
+      + '<span class="compact-transcript" data-detail-source="workflow" data-detail-container="' + escapeHtml(wf.sessionId) + '" data-detail-session="' + escapeHtml(wf.sessionId) + '" role="button" tabindex="0" title="View run agents" aria-label="View run agents">&#x1f4dc;</span>'
       + '<span class="compact-age">' + age + '</span>'
       + '</div>';
   }

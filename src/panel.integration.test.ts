@@ -761,6 +761,11 @@ describe('panel.ts integration', () => {
 
       sendUpdate({ sessions: [makeSession({ sessionId: 'wf-sess' })], workflows: [makeWorkflow({ sessionId: 'wf-sess', status: 'failed' })] });
       expect((document.querySelector('.wf-view-chip') as HTMLElement).classList.contains('wf-chip-failed')).toBe(true);
+
+      // Killed/abandoned ≠ errored: incomplete gets its own warning-orange
+      // state, matching the detail panel (audit ui-consistency-2).
+      sendUpdate({ sessions: [makeSession({ sessionId: 'wf-sess' })], workflows: [makeWorkflow({ sessionId: 'wf-sess', status: 'incomplete' })] });
+      expect((document.querySelector('.wf-view-chip') as HTMLElement).classList.contains('wf-chip-incomplete')).toBe(true);
     });
 
     it('tints the chip running for a live run even when the parent card is done/idle', () => {

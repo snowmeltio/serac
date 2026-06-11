@@ -12,7 +12,10 @@
   /* Team accent — deliberately OUTSIDE the status palette (matches
    * detailView.css) so team affordances never read as a status. */
   --sm-team-violet: #b48ef0;
+  /* Warning orange — incomplete (killed/abandoned) runs, matching detailView. */
+  --sm-orange: #d9a23a;
   /* RGB components for alpha variants */
+  --sm-orange-rgb: 217, 162, 58;
   --sm-blizzard-blue-rgb: 97, 133, 247;
   --sm-frozen-peach-rgb: 245, 176, 135;
   --sm-salmon-red-rgb: 247, 99, 97;
@@ -863,6 +866,7 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
 .wf-view-chip.wf-chip-waiting { color: var(--sm-frozen-peach); }
 .wf-view-chip.wf-chip-done    { color: var(--sm-arctic-teal); }
 .wf-view-chip.wf-chip-failed  { color: var(--sm-salmon-red); }
+.wf-view-chip.wf-chip-incomplete { color: var(--sm-orange); }
 /* "Seen": a stale (acknowledged) parent card dims its chip rather than dropping
  * it to the inert muted .wf-tag colour — the state tint stays, just quieter. */
 .card.stale .wf-view-chip { opacity: 0.6; }
@@ -871,6 +875,7 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
 .wf-view-chip.wf-chip-waiting:hover { background: rgba(var(--sm-frozen-peach-rgb), 0.14); }
 .wf-view-chip.wf-chip-done:hover    { background: rgba(var(--sm-arctic-teal-rgb), 0.14); }
 .wf-view-chip.wf-chip-failed:hover  { background: rgba(var(--sm-salmon-red-rgb), 0.14); }
+.wf-view-chip.wf-chip-incomplete:hover { background: rgba(var(--sm-orange-rgb), 0.14); }
 .wf-view-chip:focus-visible {
   outline: 1px solid currentColor;
   outline-offset: 1px;
@@ -881,3 +886,13 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
 .agent-live-count { font-weight: 600; font-variant-numeric: tabular-nums; }
 
 body.vscode-light .wf-tag { color: #777777; }
+/* Light-theme pass for the v1.13/v1.14 additions — same substitutions as the
+ * established affordances: #4a6cd4 for blues, #c47a3a for peach, #3a9a9d for
+ * teal, dark-on-light hover. */
+body.vscode-light .wf-view-chip.wf-chip-running { color: #4a6cd4; }
+body.vscode-light .wf-view-chip.wf-chip-waiting { color: #c47a3a; }
+body.vscode-light .wf-view-chip.wf-chip-done    { color: #3a9a9d; }
+body.vscode-light .wf-view-chip.wf-chip-incomplete { color: #a87718; }
+body.vscode-light .bg-shell-badge { color: #4a6cd4; }
+body.vscode-light .card-agent-row { color: #666666; }
+body.vscode-light .card-agent-row:hover { background: rgba(0, 0, 0, 0.05); color: var(--vscode-foreground, #333333); }

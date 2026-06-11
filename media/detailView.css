@@ -5,8 +5,11 @@
   --sm-blizzard-blue-rgb: 97, 133, 247;
   --sm-teal-bright: #7acdd0;
   --sm-teal-bright-rgb: 122, 205, 208;
+  /* Waiting — frozen peach, the sidebar's established waiting identity. */
+  --sm-frozen-peach: #f5b087;
+  --sm-frozen-peach-rgb: 245, 176, 135;
   /* Team accent — deliberately OUTSIDE the status palette (teal = done,
-   * blue = running, orange = waiting, red = failed) so team affordances
+   * blue = running, peach = waiting, red = failed) so team affordances
    * never read as a status. */
   --sm-team-violet: #b48ef0;
   --sm-team-violet-rgb: 180, 142, 240;
@@ -98,7 +101,7 @@ body {
 /* Selected tint keyed to status — same palette as the status dots. */
 .wf-switch-chip.active.status-done { border-color: var(--sm-teal-bright); background: rgba(var(--sm-teal-bright-rgb), 0.16); }
 .wf-switch-chip.active.status-running { border-color: var(--sm-blizzard-blue); background: rgba(var(--sm-blizzard-blue-rgb), 0.16); }
-.wf-switch-chip.active.status-waiting { border-color: var(--vscode-charts-orange, #d9a23a); background: rgba(var(--sm-orange-rgb), 0.16); }
+.wf-switch-chip.active.status-waiting { border-color: var(--sm-frozen-peach); background: rgba(var(--sm-frozen-peach-rgb), 0.16); }
 .wf-switch-chip.active.status-failed { border-color: var(--sm-salmon-red); background: rgba(var(--sm-salmon-red-rgb), 0.16); }
 .wf-switch-chip.active.status-incomplete { border-color: var(--vscode-charts-orange, #d9a23a); background: rgba(var(--sm-orange-rgb), 0.16); }
 .wf-switch-chip.active:not([class*="status-"]) { border-color: var(--sm-blizzard-blue); background: rgba(var(--sm-blizzard-blue-rgb), 0.14); }
@@ -271,7 +274,7 @@ body {
 .wf-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: #888; }
 .wf-dot.done { background: var(--sm-teal-bright); }
 .wf-dot.running { background: var(--sm-blizzard-blue); box-shadow: 0 0 3px rgba(var(--sm-blizzard-blue-rgb), 0.6); }
-.wf-dot.waiting { background: var(--vscode-charts-orange, #d9a23a); }
+.wf-dot.waiting { background: var(--sm-frozen-peach); }
 .wf-dot.failed { background: var(--sm-salmon-red); }
 .wf-dot.incomplete { background: var(--vscode-charts-orange, #d9a23a); }
 
