@@ -32,7 +32,6 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private onNewChat: (() => void) | undefined;
   private onCleanup: (() => void) | undefined;
   private onArchiveRange: ((rangeMs: number) => void) | undefined;
-  private onDismissTeam: ((teamId: string) => void) | undefined;
   private onUndismissTeam: ((teamId: string) => void) | undefined;
   private onDismissWorkflow: ((runId: string) => void) | undefined;
   private onUndismissWorkflow: ((runId: string) => void) | undefined;
@@ -80,10 +79,6 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
   setArchiveRangeHandler(handler: (rangeMs: number) => void): void {
     this.onArchiveRange = handler;
-  }
-
-  setDismissTeamHandler(handler: (teamId: string) => void): void {
-    this.onDismissTeam = handler;
   }
 
   setUndismissTeamHandler(handler: (teamId: string) => void): void {
@@ -163,8 +158,6 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         vscode.env.clipboard.writeText(message.text);
       } else if (message.type === 'archiveRange' && this.onArchiveRange) {
         this.onArchiveRange(message.rangeMs);
-      } else if (message.type === 'dismissTeam' && this.onDismissTeam) {
-        this.onDismissTeam(message.teamId);
       } else if (message.type === 'undismissTeam' && this.onUndismissTeam) {
         this.onUndismissTeam(message.teamId);
       } else if (message.type === 'dismissWorkflow' && this.onDismissWorkflow) {

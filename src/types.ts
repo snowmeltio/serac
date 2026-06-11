@@ -634,7 +634,6 @@ export type WebviewCommand =
   | { type: 'requestUpdate' }
   | { type: 'cleanup' }
   | { type: 'archiveRange'; rangeMs: number }
-  | { type: 'dismissTeam'; teamId: string }
   | { type: 'undismissTeam'; teamId: string }
   | { type: 'openWorkspace'; cwd: string; sessionId?: string }
   | { type: 'footerSlotClick'; slotId: string }

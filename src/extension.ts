@@ -346,6 +346,15 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       acknowledgePrevious();
     }
     discovery.dismissSession(sessionId);
+    // A team folds into its orchestrator's session card (no separate team
+    // section), so the card's dismiss is the team's only dismiss affordance:
+    // archiving the lead archives the team. Undismiss stays per-artefact via
+    // the archive compact rows.
+    for (const team of discovery.getTeamSnapshots()) {
+      if (!team.dismissed && team.orchestrator.sessionId === sessionId) {
+        discovery.dismissTeam(team.teamId);
+      }
+    }
     sendUpdate();
   });
 
@@ -394,12 +403,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     );
   });
 
-  // Handle team dismiss/undismiss
-  panelProvider.setDismissTeamHandler((teamId: string) => {
-    discovery.dismissTeam(teamId);
-    sendUpdate();
-  });
-
+  // Handle team undismiss (dismiss rides the orchestrator card's session
+  // dismiss — see setDismissHandler above)
   panelProvider.setUndismissTeamHandler((teamId: string) => {
     discovery.undismissTeam(teamId);
     // Reopen the orchestrator conversation, mirroring session undismiss. Note

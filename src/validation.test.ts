@@ -150,17 +150,16 @@ describe('parseWebviewCommand', () => {
     expect(parseWebviewCommand({ type: 'footerSlotClick', slotId: '1starts-with-digit' })).toBeNull();
   });
 
-  it('parses dismissTeam / undismissTeam with a valid teamId', () => {
-    expect(parseWebviewCommand({ type: 'dismissTeam', teamId: 'at:my-team' }))
-      .toEqual({ type: 'dismissTeam', teamId: 'at:my-team' });
+  it('parses undismissTeam with a valid teamId', () => {
     expect(parseWebviewCommand({ type: 'undismissTeam', teamId: 'at:my-team' }))
       .toEqual({ type: 'undismissTeam', teamId: 'at:my-team' });
   });
 
-  it('rejects team commands with a traversal-bearing teamId', () => {
-    expect(parseWebviewCommand({ type: 'dismissTeam', teamId: '../etc' })).toBeNull();
+  it('rejects dismissTeam (team dismiss rides the orchestrator card) and bad teamIds', () => {
+    expect(parseWebviewCommand({ type: 'dismissTeam', teamId: 'at:my-team' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'undismissTeam', teamId: '../etc' })).toBeNull();
     expect(parseWebviewCommand({ type: 'undismissTeam', teamId: 123 })).toBeNull();
-    expect(parseWebviewCommand({ type: 'dismissTeam' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'undismissTeam' })).toBeNull();
   });
 
   it('parses dismissWorkflow / undismissWorkflow with a valid runId', () => {

@@ -280,10 +280,6 @@ const RANGE_MS: Record<string, number> = {
   // Status debounce: tracks when each session entered waiting
   const needsInputSince: Record<string, number> = {};
 
-  // Team roster expansion state (persisted via vscode setState)
-  const expandedTeams = new Set<string>(
-    (savedState && Array.isArray(savedState.expandedTeams)) ? savedState.expandedTeams as string[] : []
-  );
   // Worktree picker expansion state (persisted). Keyed on the synthetic
   // workspace key emitted by groupForeignWorkspaces (`repo:<repoRoot>`).
   const expandedWorkspaces = new Set<string>(
@@ -297,7 +293,6 @@ const RANGE_MS: Record<string, number> = {
   function saveState(): void {
     vscode.setState({
       archiveRange,
-      expandedTeams: Array.from(expandedTeams),
       expandedWorkspaces: Array.from(expandedWorkspaces),
     });
   }
@@ -455,41 +450,6 @@ const RANGE_MS: Record<string, number> = {
       return;
     }
 
-    // Team dismiss button
-    const teamDismissBtn = target.closest<HTMLElement>('[data-dismiss-team]');
-    if (teamDismissBtn) {
-      e.stopPropagation();
-      vscode.postMessage({ type: 'dismissTeam', teamId: teamDismissBtn.dataset.dismissTeam });
-      return;
-    }
-
-    // Team expand/collapse toggle
-    const teamToggleBtn = target.closest<HTMLElement>('[data-toggle-team]');
-    if (teamToggleBtn) {
-      e.stopPropagation();
-      const tid = teamToggleBtn.dataset.toggleTeam!;
-      if (expandedTeams.has(tid)) { expandedTeams.delete(tid); } else { expandedTeams.add(tid); }
-      saveState();
-      if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
-      return;
-    }
-
-    // Team agent row click (focus session)
-    const teamAgentRow = target.closest<HTMLElement>('.team-agent[data-session-id]');
-    if (teamAgentRow) {
-      e.stopPropagation();
-      vscode.postMessage({ type: 'focusSession', sessionId: teamAgentRow.dataset.sessionId });
-      return;
-    }
-
-    // Team orchestrator click (focus session)
-    const teamOrch = target.closest<HTMLElement>('.team-orchestrator[data-session-id]');
-    if (teamOrch) {
-      e.stopPropagation();
-      vscode.postMessage({ type: 'focusSession', sessionId: teamOrch.dataset.sessionId });
-      return;
-    }
-
     // Team archive compact row click (undismiss)
     const teamArchiveRow = target.closest<HTMLElement>('.team-compact-row[data-team-id]');
     if (teamArchiveRow) {
@@ -508,24 +468,6 @@ const RANGE_MS: Record<string, number> = {
     const archiveRow = target.closest<HTMLElement>('.compact-row[data-session-id]');
     if (archiveRow) {
       vscode.postMessage({ type: 'undismissSession', sessionId: archiveRow.dataset.sessionId });
-      return;
-    }
-
-    // Foreign-waiting card click → open the other VS Code window (with focus hint)
-    const foreignWaitingCard = target.closest<HTMLElement>('.card.foreign-waiting');
-    if (foreignWaitingCard) {
-      const cwd = foreignWaitingCard.dataset.cwd;
-      const sid = foreignWaitingCard.dataset.sessionId;
-      if (cwd) { vscode.postMessage({ type: 'openWorkspace', cwd, sessionId: sid }); }
-      return;
-    }
-
-    // Foreign-running compact row click → open the other VS Code window
-    const foreignRunningRow = target.closest<HTMLElement>('.foreign-running-row');
-    if (foreignRunningRow) {
-      const cwd = foreignRunningRow.dataset.cwd;
-      const sid = foreignRunningRow.dataset.sessionId;
-      if (cwd) { vscode.postMessage({ type: 'openWorkspace', cwd, sessionId: sid }); }
       return;
     }
 
@@ -598,14 +540,6 @@ const RANGE_MS: Record<string, number> = {
       footerSlot.click();
       return;
     }
-    // Team expand toggle — a role=button div nested in the team group, so it
-    // must be matched before the generic .card branch swallows it.
-    const toggleTeam = target.closest<HTMLElement>('[data-toggle-team]');
-    if (toggleTeam) {
-      e.preventDefault();
-      toggleTeam.click();
-      return;
-    }
     // Inline agent row — a role=button div, matched before the generic .card
     // branch so Enter/Space drills to the agent instead of focusing the card.
     const agentRow = target.closest<HTMLElement>('.card-agent-row');
@@ -637,12 +571,6 @@ const RANGE_MS: Record<string, number> = {
     if (wfArchiveRow) {
       e.preventDefault();
       wfArchiveRow.click();
-      return;
-    }
-    const foreignRunningRow = target.closest<HTMLElement>('.foreign-running-row');
-    if (foreignRunningRow) {
-      e.preventDefault();
-      foreignRunningRow.click();
       return;
     }
     const pickerChild = target.closest<HTMLElement>('.ws-picker-child[data-cwd]');
@@ -811,17 +739,10 @@ const RANGE_MS: Record<string, number> = {
     // cross-section move apart from a genuine removal.
     const renderedIds = new Set(cards.map(c => c.sessionId));
 
-    // === Foreign waiting band (other workspaces — needs you) ===
-    if (currentSettings.show.foreignWorkspaces) {
-      renderForeignWaitingSection(scrollWrap, now);
-    } else {
-      scrollWrap.querySelector('.foreign-waiting-section')?.remove();
-    }
-
     // === Teams === No separate section: a team folds into its orchestrator's
-    // normal card (see teamByOrchestrator). We're always going through the lead,
-    // so the team rides on its session rather than duplicating it above.
-    scrollWrap.querySelector('.team-section')?.remove();
+    // normal card (sessionDiscovery suppresses the orchestrator claim so the
+    // lead renders as a plain session card; the team rides on it rather than
+    // duplicating it above). Dismissing that card archives the team too.
 
     // === Card section (running/waiting/stale) ===
     let cardSection = scrollWrap.querySelector('.card-section:not(.done-section)') as HTMLElement | null;
@@ -836,8 +757,8 @@ const RANGE_MS: Record<string, number> = {
     const activeTeams = lastTeams.filter(t => !t.dismissed);
     const archivedTeams = lastTeams.filter(t => t.dismissed);
 
-    // Split local cards: active half (running/waiting) goes above the
-    // foreign-running strip, completed half (done/stale) goes below it.
+    // Split local cards: active half (running/waiting) above, completed
+    // half (done/stale) below.
     const runningCards = cards.filter(c => c.status === 'running' || c.status === 'waiting');
     const doneCards = cards.filter(c => c.status === 'done' || c.status === 'stale');
 
@@ -855,13 +776,6 @@ const RANGE_MS: Record<string, number> = {
       reconcileCards(cardSection, runningCards, now, prevRects, renderedIds);
     }
 
-    // === Foreign-running strip (between local active and local done) ===
-    if (currentSettings.show.foreignWorkspaces) {
-      renderForeignRunningSection(scrollWrap, cardSection, now);
-    } else {
-      scrollWrap.querySelector('.foreign-running-section')?.remove();
-    }
-
     // === Done card section ===
     let doneSection = scrollWrap.querySelector('.card-section.done-section') as HTMLElement | null;
     if (!doneSection) {
@@ -870,9 +784,8 @@ const RANGE_MS: Record<string, number> = {
       doneSection.setAttribute('role', 'list');
       doneSection.setAttribute('aria-label', 'Completed sessions');
     }
-    const doneAnchor = (scrollWrap.querySelector('.foreign-running-section') as HTMLElement | null) ?? cardSection;
-    if (doneSection.previousElementSibling !== doneAnchor) {
-      doneAnchor.after(doneSection);
+    if (doneSection.previousElementSibling !== cardSection) {
+      cardSection.after(doneSection);
     }
     if (cards.length > 0 || archived.length > 0 || activeTeams.length > 0) {
       reconcileCards(doneSection, doneCards, now, prevRects, renderedIds);
@@ -1831,222 +1744,7 @@ const RANGE_MS: Record<string, number> = {
       + '</div>';
   }
 
-  // ===== FOREIGN WAITING SECTION =====
-  /** Disabled: the foreign workspace row already flags waiting sessions with
-   *  the W count. The full-card promotion to the top of the panel was too
-   *  attention-grabbing for sessions the user can't action from this window.
-   *  Kept as a no-op (with teardown) so the call site doesn't have to change. */
-  function renderForeignWaitingSection(scrollWrap: HTMLElement, _now: number): void {
-    const section = scrollWrap.querySelector('.foreign-waiting-section');
-    if (section) section.remove();
-  }
-
-  // ===== FOREIGN RUNNING SECTION =====
-  /** Disabled: the foreign workspace row already shows running counts, so the
-   *  separate strip just duplicates the cue. Kept as a no-op (and tears down
-   *  any leftover DOM from older builds) so the call site doesn't have to know. */
-  function renderForeignRunningSection(scrollWrap: HTMLElement, _anchor: HTMLElement, _now: number): void {
-    const section = scrollWrap.querySelector('.foreign-running-section');
-    if (section) section.remove();
-  }
-
-  // ===== USAGE SECTION RENDERER =====
   // ===== TEAM RENDERING =====
-  function renderTeamSection(scrollWrap: HTMLElement, now: number): void {
-    let teamSection = scrollWrap.querySelector('.team-section') as HTMLElement | null;
-    const activeTeams = lastTeams.filter(t => !t.dismissed);
-
-    if (activeTeams.length === 0) {
-      if (teamSection) teamSection.remove();
-      return;
-    }
-
-    if (!teamSection) {
-      teamSection = document.createElement('div');
-      teamSection.className = 'team-section';
-      // Insert before card-section
-      const cardSection = scrollWrap.querySelector('.card-section');
-      if (cardSection) {
-        scrollWrap.insertBefore(teamSection, cardSection);
-      } else {
-        scrollWrap.appendChild(teamSection);
-      }
-    }
-
-    let html = '<div class="team-section-header">Agent teams</div>';
-    for (const team of activeTeams) {
-      html += renderTeamGroup(team, now);
-    }
-    teamSection.innerHTML = html;
-  }
-
-  function renderTeamGroup(team: PanelTeam, now: number): string {
-    const orchStatus = team.orchestrator.status;
-    const hasWaiting = (team.counts['waiting'] || 0) > 0 || orchStatus === 'waiting';
-    const hasRunning = (team.counts['running'] || 0) > 0 || orchStatus === 'running';
-    const allDone = !hasWaiting && !hasRunning;
-
-    let groupClass = 'team-group';
-    if (hasWaiting) groupClass += ' team-waiting';
-    else if (allDone) groupClass += ' team-done';
-
-    const isExpanded = expandedTeams.has(team.teamId);
-
-    // Sort agents: waiting > running > done, then by spawnedAt
-    const sortedAgents = [...team.agents].sort((a, b) => {
-      const order: Record<string, number> = { waiting: 0, running: 1, done: 2, stale: 3 };
-      const aOrd = order[a.status] ?? 2;
-      const bOrd = order[b.status] ?? 2;
-      if (aOrd !== bOrd) return aOrd - bOrd;
-      return a.spawnedAt - b.spawnedAt;
-    });
-
-    const activeAgents = sortedAgents.filter(a => a.status === 'running' || a.status === 'waiting');
-    const doneAgents = sortedAgents.filter(a => a.status !== 'running' && a.status !== 'waiting');
-    const COMPACT_THRESHOLD = 5;
-    const shouldCompact = team.agents.length > COMPACT_THRESHOLD;
-
-    let html = '<div class="' + groupClass + '">';
-
-    // Orchestrator header
-    html += renderTeamOrchestrator(team, now);
-
-    // Agent summary (expandable)
-    if (team.agents.length > 0) {
-      const summaryParts: string[] = [];
-      const waiting = team.counts['waiting'] || 0;
-      const running = team.counts['running'] || 0;
-      const done = team.counts['done'] || 0;
-      if (waiting > 0) summaryParts.push('<span class="waiting-count">' + waiting + ' waiting</span>');
-      if (running > 0) summaryParts.push('<span class="running-count">' + running + ' running</span>');
-      if (done > 0) summaryParts.push('<span>' + done + ' done</span>');
-
-      html += '<div class="team-agent-summary" role="button" tabindex="0"'
-        + ' aria-expanded="' + (isExpanded ? 'true' : 'false') + '"'
-        + ' data-toggle-team="' + escapeHtml(team.teamId) + '">'
-        + '<span class="team-chevron' + (isExpanded ? ' expanded' : '') + '">&#x25B8;</span>'
-        + team.agents.length + ' agent' + (team.agents.length > 1 ? 's' : '') + ': '
-        + summaryParts.join(', ')
-        + '</div>';
-
-      // Agent list (always show active; show done when expanded or below threshold)
-      if (isExpanded || activeAgents.length > 0) {
-        html += '<div class="team-agent-list">';
-        for (const agent of activeAgents) {
-          html += renderTeamAgent(agent, now);
-        }
-        if (isExpanded || !shouldCompact) {
-          for (const agent of doneAgents) {
-            html += renderTeamAgent(agent, now);
-          }
-        }
-        html += '</div>';
-      }
-    }
-
-    html += '</div>';
-    return html;
-  }
-
-  function renderTeamOrchestrator(team: PanelTeam, now: number): string {
-    const o = team.orchestrator;
-    const statusLabel = o.status === 'running' ? 'Running'
-      : o.status === 'waiting' ? 'Waiting'
-      : o.status === 'done' ? 'Done'
-      : o.status;
-
-    const activityText = stripMarkdown(o.activity || 'No recent activity');
-
-    let metaHtml = '<div class="card-meta">';
-    metaHtml += '<span class="session-id-pill clickable" data-copy-id="' + escapeHtml(o.sessionId) + '" title="Copy session ID">' + escapeHtml(o.sessionId.slice(0, 8)) + '</span>';
-    if (o.modelLabel) {
-      const modelCls = 'model-pill' + (o.modelLabel === 'Sonnet' ? ' sonnet' : o.modelLabel === 'Haiku' ? ' haiku' : '');
-      metaHtml += '<span class="' + modelCls + '">' + escapeHtml(o.modelLabel) + '</span>';
-    }
-    metaHtml += '<span class="team-badge">orchestrator</span>';
-    if (team.agents.length > 0) {
-      const teamChipState = team.agents.some(a => a.status === 'waiting') || o.status === 'waiting' ? 'waiting'
-        : team.agents.some(a => a.status === 'running') || o.status === 'running' ? 'running'
-        : 'done';
-      metaHtml += renderDetailChip('agent team', 'team', team.teamId, o.sessionId, teamChipState);
-    }
-
-    const teamLive = team.agents.some(a => a.status === 'running' || a.status === 'waiting')
-      || o.status === 'running' || o.status === 'waiting';
-    const teamDismissTitle = teamLive
-      ? 'Archive team (use if status is stuck or hook hasn’t fired)'
-      : 'Dismiss team';
-    metaHtml += '<div class="card-actions"><button class="team-dismiss-btn' + (teamLive ? ' dismiss-btn-force' : '') + '" data-dismiss-team="' + escapeHtml(team.teamId) + '" title="' + escapeHtml(teamDismissTitle) + '" aria-label="Archive team">&times;</button></div>';
-    metaHtml += '</div>';
-
-    let contextBarHtml = '';
-    if (o.contextTokens && o.contextTokens > 0) {
-      const cw = compactSettings?.autoCompactWindow ?? 200000;
-      const cp = compactSettings?.autoCompactPct ?? 95;
-      const threshold = getCompactThreshold(cw, cp);
-      const pct = Math.min(100, Math.round(o.contextTokens / threshold * 100));
-      const fillClass = 'context-fill' + (pct >= 60 ? ' hot' : '');
-      contextBarHtml = '<div class="context-bar"><div class="' + fillClass + '" style="width:' + pct + '%"></div></div>';
-    }
-
-    return '<div class="team-orchestrator" data-session-id="' + escapeHtml(o.sessionId) + '">'
-      + '<div class="card-top"><span class="card-name">' + escapeHtml(team.name) + '</span>'
-      + '<span class="status-pill">' + statusLabel + '</span></div>'
-      + metaHtml
-      + '<div class="card-detail">' + escapeHtml(activityText) + '</div>'
-      + contextBarHtml
-      + '</div>';
-  }
-
-  function renderTeamAgent(agent: PanelTeamAgent, now: number): string {
-    const depthClass = agent.depth <= 3 ? 'depth-' + agent.depth : 'depth-3';
-    const dotClass = agent.status === 'waiting' ? 'waiting'
-      : agent.status === 'running' ? 'running'
-      : agent.exitStatus === 'failed' ? 'failed'
-      : agent.status === 'done' ? 'done'
-      : 'stale';
-
-    let statusHtml: string;
-    if (agent.status === 'waiting') {
-      statusHtml = '<span class="team-agent-status waiting-status">waiting</span>';
-    } else if (agent.status === 'running') {
-      statusHtml = '<span class="team-agent-status running-status"><span class="mini-spinner"></span></span>';
-    } else if (agent.exitStatus === 'failed') {
-      statusHtml = '<span class="team-agent-status failed-status">failed</span>';
-    } else {
-      const elapsed = agent.spawnedAt ? formatAge(now - agent.spawnedAt) : '';
-      statusHtml = '<span class="team-agent-status">' + (elapsed ? elapsed + ' · ' : '') + 'done</span>';
-    }
-
-    // Session subagent dots
-    let subagentDotsHtml = '';
-    if (currentSettings.show.subagents && agent.subagents && agent.subagents.length > 0) {
-      subagentDotsHtml = '<span class="team-agent-subagents">';
-      for (const sa of agent.subagents) {
-        const saDotClass = sa.waitingOnPermission ? 'waiting' : sa.running ? 'running' : 'done';
-        subagentDotsHtml += '<span class="team-agent-subagent-dot ' + saDotClass + '"></span>';
-      }
-      subagentDotsHtml += '</span>';
-    }
-
-    // Depth badge for deeper nesting
-    const depthBadge = agent.depth > 3 ? '<span class="team-depth-badge">d' + agent.depth + '</span>' : '';
-
-    const activityHtml = agent.activity
-      ? '<span class="team-agent-activity">' + escapeHtml(stripMarkdown(agent.activity)) + '</span>'
-      : '';
-
-    return '<div class="team-agent ' + depthClass + '"' + (agent.sessionId ? ' data-session-id="' + escapeHtml(agent.sessionId) + '"' : '') + '>'
-      + '<div class="team-agent-dot ' + dotClass + '"></div>'
-      + '<div class="team-agent-content">'
-      + '<span class="team-agent-name">' + depthBadge + escapeHtml(agent.name) + '</span>'
-      + activityHtml
-      + subagentDotsHtml
-      + statusHtml
-      + '</div>'
-      + '</div>';
-  }
-
   function renderTeamCompactRow(team: PanelTeam, _now: number): string {
     const agentCount = team.agents.length;
     const countLabel = agentCount + ' agent' + (agentCount !== 1 ? 's' : '');

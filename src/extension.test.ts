@@ -103,7 +103,6 @@ const mockPanelProvider = {
   setNewChatHandler: vi.fn(),
   setCleanupHandler: vi.fn(),
   setArchiveRangeHandler: vi.fn(),
-  setDismissTeamHandler: vi.fn(),
   setUndismissTeamHandler: vi.fn(),
   setOpenDetailHandler: vi.fn(),
   setDismissWorkflowHandler: vi.fn(),
@@ -380,11 +379,25 @@ describe('extension', () => {
   });
 
   describe('team archive handlers', () => {
-    it('dismissTeam archives the team via discovery', () => {
+    it('dismissing the orchestrator session card archives the team too', () => {
       activate(context as any);
-      const handler = vi.mocked(mockPanelProvider.setDismissTeamHandler).mock.calls[0][0];
-      handler('at:my-team');
+      mockDiscovery.getTeamSnapshots.mockReturnValue([
+        { teamId: 'at:my-team', dismissed: false, orchestrator: { sessionId: 'lead-1' }, agents: [] },
+      ]);
+      const handler = vi.mocked(mockPanelProvider.setDismissHandler).mock.calls[0][0];
+      handler('lead-1');
+      expect(mockDiscovery.dismissSession).toHaveBeenCalledWith('lead-1');
       expect(mockDiscovery.dismissTeam).toHaveBeenCalledWith('at:my-team');
+    });
+
+    it('dismissing a non-orchestrator session leaves teams alone', () => {
+      activate(context as any);
+      mockDiscovery.getTeamSnapshots.mockReturnValue([
+        { teamId: 'at:my-team', dismissed: false, orchestrator: { sessionId: 'lead-1' }, agents: [] },
+      ]);
+      const handler = vi.mocked(mockPanelProvider.setDismissHandler).mock.calls[0][0];
+      handler('other-session');
+      expect(mockDiscovery.dismissTeam).not.toHaveBeenCalled();
     });
 
     it('undismissTeam reopens the orchestrator session resolved from the snapshot', () => {
@@ -703,7 +716,7 @@ describe('extension — activation wiring assertions (test-gap single)', () => {
     for (const setter of [
       'setFocusHandler', 'setDismissHandler', 'setUndismissHandler', 'setTranscriptHandler',
       'setNewChatHandler', 'setCleanupHandler', 'setArchiveRangeHandler',
-      'setDismissTeamHandler', 'setUndismissTeamHandler', 'setOpenDetailHandler',
+      'setUndismissTeamHandler', 'setOpenDetailHandler',
       'setDismissWorkflowHandler', 'setUndismissWorkflowHandler', 'setOpenWorkspaceHandler',
     ] as const) {
       expect(mockPanelProvider[setter], setter + ' must be wired during activate()')

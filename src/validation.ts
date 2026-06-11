@@ -11,7 +11,7 @@ export function isValidSessionId(id: unknown): id is string {
 const VALID_COMMAND_TYPES = new Set([
   'focusSession', 'dismissSession', 'undismissSession', 'viewTranscript',
   'newChat', 'copyToClipboard', 'requestUpdate', 'cleanup', 'archiveRange',
-  'dismissTeam', 'undismissTeam', 'openWorkspace', 'footerSlotClick',
+  'undismissTeam', 'openWorkspace', 'footerSlotClick',
   'openDetail', 'dismissWorkflow', 'undismissWorkflow',
 ]);
 
@@ -104,7 +104,7 @@ export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
   }
 
   // Team commands with teamId
-  if (msg.type === 'dismissTeam' || msg.type === 'undismissTeam') {
+  if (msg.type === 'undismissTeam') {
     if (!isValidSessionId(msg.teamId)) { return null; }
     return { type: msg.type, teamId: msg.teamId } as WebviewCommand;
   }
