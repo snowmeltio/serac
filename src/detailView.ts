@@ -220,8 +220,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
       if (g.title !== null) {
         const count = g.agents.length;
         const done = g.agents.filter(a => a.status === 'done').length;
+        const failed = g.agents.filter(a => a.status === 'failed').length;
+        // Failures surface in the header itself: at 50-agent scale the phase
+        // headers are the triage layer, and "4/5" alone reads as still-running.
+        const failedHtml = failed > 0
+          ? ' · <span class="wf-nav-count-failed">' + failed + ' failed</span>'
+          : '';
         html += '<div class="wf-nav-phase"><span>' + escapeHtml(g.title) + '</span>'
-          + '<span class="wf-nav-count">' + done + '/' + count + '</span></div>';
+          + '<span class="wf-nav-count">' + done + '/' + count + failedHtml + '</span></div>';
       }
       for (const a of g.agents) { html += renderNavRow(g.key, a); }
     }
@@ -231,8 +237,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function renderNavRow(groupKey: string, a: DetailAgentView): string {
     const active = groupKey === selectedGroupKey && a.agentId === selectedAgentId;
     const badge = a.teammate ? '<span class="wf-teammate-badge" title="Agent Team member">team</span>' : '';
+    // Status rides in the title/aria-label so it survives ellipsis truncation
+    // and is announced — the dot alone is colour-only signalling (WCAG 1.4.1).
+    const nameWithStatus = a.label + ' · ' + a.status;
     return '<div class="wf-nav-row' + (active ? ' active' : '') + (a.teammate ? ' teammate' : '') + '" data-group="' + escapeHtml(groupKey)
-      + '" data-agent="' + escapeHtml(a.agentId) + '" role="button" tabindex="0">'
+      + '" data-agent="' + escapeHtml(a.agentId) + '" role="button" tabindex="0"'
+      + ' title="' + escapeHtml(nameWithStatus) + '" aria-label="' + escapeHtml(nameWithStatus) + '"'
+      + (active ? ' aria-current="true"' : '') + '>'
       + statusDot(a.status)
       + '<span class="wf-nav-label">' + escapeHtml(a.label) + '</span>'
       + badge
@@ -249,7 +260,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (agent.phaseTitle) { metaBits.push(escapeHtml(agent.phaseTitle)); }
     if (agent.model) { metaBits.push(escapeHtml(agent.model)); }
     if (agent.tokens > 0) { metaBits.push(fmtTokens(agent.tokens) + ' tokens'); }
-    metaBits.push(agent.toolCalls + ' tools');
+    // Gated like tokens: team rows and disk-only subagents carry toolCalls: 0
+    // because the data is genuinely untracked — "0 tools" would read as "did
+    // nothing" rather than "not measured".
+    if (agent.toolCalls > 0) { metaBits.push(agent.toolCalls + ' tools'); }
     const dur = fmtDuration(agent.durationMs);
     if (dur) { metaBits.push(dur); }
     if (agent.attempt && agent.attempt > 1) { metaBits.push('attempt ' + agent.attempt); }

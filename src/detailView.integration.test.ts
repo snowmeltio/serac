@@ -74,6 +74,36 @@ describe('detailView.ts — collapse + grouped switcher', () => {
     await import('./detailView.js');
   });
 
+  it('nav rows carry status in title/aria-label, aria-current on the active row (UX-2)', () => {
+    sendRender(twoSourceModel());
+    const active = q('.wf-nav-row.active')!;
+    expect(active.getAttribute('title')).toBe('audit:privacy · done');
+    expect(active.getAttribute('aria-label')).toBe('audit:privacy · done');
+    expect(active.getAttribute('aria-current')).toBe('true');
+    const other = qa('.wf-nav-row').find(r => r.dataset.agent === 'agent002')!;
+    expect(other.getAttribute('title')).toBe('audit:security · running');
+    expect(other.hasAttribute('aria-current')).toBe(false);
+  });
+
+  it('phase header surfaces a failed count (UX-4)', () => {
+    const model = twoSourceModel() as any;
+    model.groups[0].agents.push(agent({ agentId: 'agent003', label: 'audit:perf', status: 'failed', phaseTitle: 'Audit' }));
+    sendRender(model);
+    const count = q('.wf-nav-count')!;
+    expect(count.textContent).toContain('1/3');
+    expect(q('.wf-nav-count-failed')!.textContent).toBe('1 failed');
+  });
+
+  it('reader meta omits "0 tools" for untracked agents, keeps a real count (UX-5)', () => {
+    const model = twoSourceModel() as any;
+    model.groups[0].agents[1] = agent({ agentId: 'agent002', label: 'audit:security', status: 'running', phaseTitle: 'Audit', toolCalls: 7 });
+    sendRender(model);
+    // agent001 (toolCalls 0) auto-selected: no fabricated zero.
+    expect(q('.wf-reader-meta')!.textContent).not.toContain('tools');
+    qa('.wf-nav-row').find(r => r.dataset.agent === 'agent002')!.click();
+    expect(q('.wf-reader-meta')!.textContent).toContain('7 tools');
+  });
+
   it('does NOT collapse the agent list when selecting an agent (click-through stays open)', () => {
     sendRender(twoSourceModel());
     // First agent auto-selected; list is expanded.

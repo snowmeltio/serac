@@ -234,6 +234,9 @@ body {
   justify-content: space-between;
 }
 .wf-nav-count { opacity: 0.7; }
+/* Failure count inside the phase header — the triage layer at 50-agent scale.
+ * Full opacity against the dimmed count so it reads at a glance. */
+.wf-nav-count-failed { color: var(--sm-salmon-red); opacity: 1; }
 
 /* Row metrics match the main pane's archived list (.compact-row: 4px 8px, 11px,
  * gap 7px) so the two agent lists read as the same density. */
@@ -252,7 +255,11 @@ body {
 .wf-nav-row.active {
   background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.18));
   border-left-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.6));
+  /* Match the selection foreground to its background — strong-selection themes
+   * otherwise leave the default text low-contrast on the highlight. */
+  color: var(--vscode-list-activeSelectionForeground, inherit);
 }
+.wf-nav-row.active .wf-nav-tokens { color: inherit; }
 .wf-nav-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wf-nav-tokens { font-size: 9px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
 /* Teammate marker — sets Agent Team members apart from plain Task subagents in
