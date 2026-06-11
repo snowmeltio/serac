@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { SessionManager } from './sessionManager.js';
+import { jsonlSessionId } from './sessionPolling.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
@@ -578,8 +579,8 @@ export class SessionDiscovery {
     try {
       const files = await fs.promises.readdir(wsDir);
       for (const file of files) {
-        if (!file.endsWith('.jsonl')) { continue; }
-        const sessionId = file.replace('.jsonl', '');
+        const sessionId = jsonlSessionId(file);
+        if (!sessionId) { continue; }
         // Skip sessions already in the active map
         if (this.sessions.has(sessionId)) { continue; }
         // Skip sessions already in extended archive
@@ -920,9 +921,9 @@ export class SessionDiscovery {
     try {
       const files = await fs.promises.readdir(workspacePath);
       for (const file of files) {
-        if (!file.endsWith('.jsonl')) { continue; }
+        const sessionId = jsonlSessionId(file);
+        if (!sessionId) { continue; }
 
-        const sessionId = file.replace('.jsonl', '');
         const filePath = path.join(workspacePath, file);
 
         if (!this.sessions.has(sessionId)) {

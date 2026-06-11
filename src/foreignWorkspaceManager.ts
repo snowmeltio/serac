@@ -16,6 +16,7 @@ import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeIn
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions } from './sessionPolling.js';
 import { readSettings, foreignWindowGate } from './settings.js';
 import { readIdeOpenFolders } from './claudeEnvSignals.js';
 
@@ -128,35 +129,14 @@ export class ForeignWorkspaceManager {
         } catch { continue; }
         try {
           const files = await fs.promises.readdir(wsPath);
-          for (const file of files) {
-            if (!file.endsWith('.jsonl')) { continue; }
-            const sessionId = file.replace('.jsonl', '');
-            const compositeId = `${dir}/${sessionId}`;
-            if (this.sessions.has(compositeId)) { continue; }
-
-            const filePath = path.join(wsPath, file);
-            try {
-              const fstat = await fs.promises.stat(filePath);
-              if (!this.withinWindow(sessionId, fstat.mtimeMs, now, gate)) { continue; }
-            } catch { continue; }
-
-            const manager = new SessionManager(sessionId, filePath, dir, { livenessProbe: this.probeFactory?.(sessionId) });
-            try {
-              await manager.update();
-            } catch (err) {
-              this.log.warn(`Foreign session update failed (${compositeId}):`, err);
-            }
-            // Drop sessions whose meaningful activity (user/assistant turns) is past
-            // the gate even though mtime is recent. Claude Code backfills `ai-title`
-            // records to old sessions, bumping mtime without indicating real
-            // activity — without this check, scan() keeps re-adding what poll()
-            // evicts, causing the workspace to flicker.
-            if (!this.withinWindow(sessionId, manager.getLastActivity().getTime(), now, gate)) {
-              manager.dispose();
-              continue;
-            }
-            this.sessions.set(compositeId, manager);
-          }
+          await trackJsonlSessions({
+            wsPath, workspaceKey: dir, files,
+            sessions: this.sessions, now,
+            withinWindow: (sessionId, lastActivityMs) => this.withinWindow(sessionId, lastActivityMs, now, gate),
+            makeManager: (sessionId, filePath) =>
+              new SessionManager(sessionId, filePath, dir, { livenessProbe: this.probeFactory?.(sessionId) }),
+            warn: (compositeId, err) => this.log.warn(`Foreign session update failed (${compositeId}):`, err),
+          });
         } catch { /* unreadable directory */ }
       }
       // Cache cwd per workspace key (stable display names). Prefer
@@ -321,39 +301,9 @@ export class ForeignWorkspaceManager {
       if (siblingsEvicted) { this.pruneWorktreesByRepoRoot(); }
     }
 
-    for (const [compositeId, session] of this.sessions) {
-      const status = session.getStatus();
-      // Active sessions are never window-evicted (mirrors the never-downgrade
-      // rule): demoteIfStale resolves a genuinely dead one first, then the
-      // dormant branch evicts it on a later cycle.
-      if (status !== 'running' && status !== 'waiting') {
-        const sessionId = compositeId.slice(compositeId.indexOf('/') + 1);
-        if (!this.withinWindow(sessionId, session.getLastActivity().getTime(), now, gate)) {
-          session.dispose();
-          this.sessions.delete(compositeId);
-          changed = true;
-          continue;
-        }
-        try {
-          const mtimeChanged = await session.checkMtime();
-          if (mtimeChanged) {
-            const hadData = await session.update();
-            if (hadData) { changed = true; }
-          }
-        } catch { /* skip */ }
-        // Freshness parity: dormant foreign sessions get the same
-        // background-shell sweep (15-min ceiling + registry death-clear) as
-        // dormant local sessions, so a stuck shell badge clears here too.
-        if (session.sweepBackgroundWork(now)) { changed = true; }
-        continue;
-      }
-      try {
-        const hadData = await session.update();
-        if (hadData) { changed = true; }
-        if (!hadData && session.demoteIfStale(30_000)) {
-          changed = true;
-        }
-      } catch { /* skip */ }
+    if (await pollTrackedSessions(this.sessions, now,
+      (sessionId, lastActivityMs) => this.withinWindow(sessionId, lastActivityMs, now, gate))) {
+      changed = true;
     }
     return changed;
   }
@@ -361,11 +311,7 @@ export class ForeignWorkspaceManager {
   /** Any foreign session currently running/waiting — feeds the adaptive
    *  fast-poll so an active foreign card refreshes at the 500ms cadence. */
   hasActiveSessions(): boolean {
-    for (const session of this.sessions.values()) {
-      const status = session.getStatus();
-      if (status === 'running' || status === 'waiting') { return true; }
-    }
-    return false;
+    return hasActiveTrackedSessions(this.sessions);
   }
 
   /** Get foreign workspace summaries for the panel.

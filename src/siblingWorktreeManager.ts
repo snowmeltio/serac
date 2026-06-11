@@ -13,6 +13,7 @@ import { SessionManager } from './sessionManager.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId } from './sessionPolling.js';
 import { readSettings, ageGateDaysFor } from './settings.js';
 
 /** Read the active sibling-worktree age gate. Resolves
@@ -152,30 +153,17 @@ export class SiblingWorktreeManager {
       // Track all unread JSONLs in this sibling dir.
       const wtRoot = this.worktreeRootForKey.get(dir) ?? '';
       const wtLabel = this.worktreeLabelForKey.get(dir) ?? dir;
-      for (const file of files) {
-        if (!file.endsWith('.jsonl')) { continue; }
-        const sessionId = file.replace('.jsonl', '');
-        const compositeId = `${dir}/${sessionId}`;
-        if (this.sessions.has(compositeId)) { continue; }
-
-        const filePath = path.join(wsPath, file);
-        try {
-          const fstat = await fs.promises.stat(filePath);
-          if (now - fstat.mtimeMs > ageGate) { continue; }
-        } catch { continue; }
-
-        const manager = new SessionManager(sessionId, filePath, dir, { livenessProbe: this.probeFactory?.(sessionId) });
-        manager.setWorktreeOrigin(wtRoot, wtLabel);
-        try {
-          await manager.update();
-        } catch (err) {
-          this.log.warn(`Sibling session update failed (${compositeId}):`, err);
-        }
-        if (now - manager.getLastActivity().getTime() > ageGate) {
-          manager.dispose();
-          continue;
-        }
-        this.sessions.set(compositeId, manager);
+      if (await trackJsonlSessions({
+        wsPath, workspaceKey: dir, files,
+        sessions: this.sessions, now,
+        withinWindow: (_sessionId, lastActivityMs) => now - lastActivityMs <= ageGate,
+        makeManager: (sessionId, filePath) => {
+          const manager = new SessionManager(sessionId, filePath, dir, { livenessProbe: this.probeFactory?.(sessionId) });
+          manager.setWorktreeOrigin(wtRoot, wtLabel);
+          return manager;
+        },
+        warn: (compositeId, err) => this.log.warn(`Sibling session update failed (${compositeId}):`, err),
+      })) {
         changed = true;
       }
     }
@@ -226,7 +214,7 @@ export class SiblingWorktreeManager {
     const ageGate = ageGateMs();
     const candidates: { file: string; mtimeMs: number }[] = [];
     for (const file of files) {
-      if (!file.endsWith('.jsonl')) { continue; }
+      if (jsonlSessionId(file) === null) { continue; }
       try {
         const stat = await fs.promises.stat(path.join(wsPath, file));
         if (now - stat.mtimeMs > ageGate) { continue; }
@@ -236,7 +224,7 @@ export class SiblingWorktreeManager {
     candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
     for (const { file } of candidates) {
-      const sessionId = file.replace('.jsonl', '');
+      const sessionId = jsonlSessionId(file)!;
       const probe = new SessionManager(sessionId, path.join(wsPath, file), path.basename(wsPath));
       try {
         await probe.update();
@@ -248,7 +236,7 @@ export class SiblingWorktreeManager {
     return null;
   }
 
-  /** Poll active sibling sessions. Mirrors ForeignWorkspaceManager.poll(). */
+  /** Poll active sibling sessions (shared loop in sessionPolling.ts). */
   async poll(): Promise<boolean> {
     if (this.inert) { return false; }
     if (!readSettings().show.worktrees) { return false; }
@@ -256,33 +244,9 @@ export class SiblingWorktreeManager {
     const now = Date.now();
     const ageGate = ageGateMs();
 
-    for (const [compositeId, session] of this.sessions) {
-      const status = session.getStatus();
-      if (status !== 'running' && status !== 'waiting') {
-        if (now - session.getLastActivity().getTime() > ageGate) {
-          session.dispose();
-          this.sessions.delete(compositeId);
-          changed = true;
-          continue;
-        }
-        try {
-          const mtimeChanged = await session.checkMtime();
-          if (mtimeChanged) {
-            const hadData = await session.update();
-            if (hadData) { changed = true; }
-          }
-        } catch { /* skip */ }
-        // Freshness parity: same dormant background-shell sweep as primary.
-        if (session.sweepBackgroundWork(now)) { changed = true; }
-        continue;
-      }
-      try {
-        const hadData = await session.update();
-        if (hadData) { changed = true; }
-        if (!hadData && session.demoteIfStale(30_000)) {
-          changed = true;
-        }
-      } catch { /* skip */ }
+    if (await pollTrackedSessions(this.sessions, now,
+      (_sessionId, lastActivityMs) => now - lastActivityMs <= ageGate)) {
+      changed = true;
     }
     return changed;
   }
@@ -302,11 +266,7 @@ export class SiblingWorktreeManager {
   /** Any sibling session currently running/waiting — feeds the adaptive
    *  fast-poll so an active sibling card refreshes at the 500ms cadence. */
   hasActiveSessions(): boolean {
-    for (const session of this.sessions.values()) {
-      const status = session.getStatus();
-      if (status === 'running' || status === 'waiting') { return true; }
-    }
-    return false;
+    return hasActiveTrackedSessions(this.sessions);
   }
 
   getSnapshots(): SessionSnapshot[] {
