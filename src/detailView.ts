@@ -148,6 +148,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return la.role === lb.role && la.timestamp === lb.timestamp && la.content === lb.content;
   }
 
+  /** Focus a roster row by identity (dataset match — ids can hold characters
+   *  a selector would need escaping for). */
+  function focusNavRow(groupKey: string, agentId: string): void {
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('.wf-nav-row'))) {
+      if (el.dataset.group === groupKey && el.dataset.agent === agentId) { el.focus(); return; }
+    }
+  }
+
   function firstAgent(): { groupKey: string; agentId: string } | null {
     if (!model) { return null; }
     for (const g of model.groups) {
@@ -245,8 +253,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
     // Status rides in the title/aria-label so it survives ellipsis truncation
     // and is announced — the dot alone is colour-only signalling (WCAG 1.4.1).
     const nameWithStatus = a.label + ' · ' + a.status;
+    // Roving tabindex (UX-3): one Tab stop for the whole roster (the active
+    // row); ArrowUp/ArrowDown walk the rest. 50 agents are otherwise 50 stops.
     return '<div class="wf-nav-row' + (active ? ' active' : '') + (a.teammate ? ' teammate' : '') + '" data-group="' + escapeHtml(groupKey)
-      + '" data-agent="' + escapeHtml(a.agentId) + '" role="button" tabindex="0"'
+      + '" data-agent="' + escapeHtml(a.agentId) + '" role="button" tabindex="' + (active ? '0' : '-1') + '"'
       + ' title="' + escapeHtml(nameWithStatus) + '" aria-label="' + escapeHtml(nameWithStatus) + '"'
       + (active ? ' aria-current="true"' : '') + '>'
       + statusDot(a.status)
@@ -623,7 +633,38 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  The flag stays set until a settled (ready/error) render applies it. */
   let pendingTopOnSettle = false;
 
+  /** What to re-focus after the innerHTML swap. Captured from
+   *  document.activeElement before render() destroys it (UX-3): scroll gets
+   *  carefully restored, keyboard focus deserves the same care — a model push
+   *  mid-roster-walk otherwise drops focus to <body> silently. */
+  function captureFocus(): (() => void) | null {
+    const active = document.activeElement as HTMLElement | null;
+    if (!active || !root.contains(active)) { return null; }
+    const row = active.closest<HTMLElement>('.wf-nav-row');
+    if (row) {
+      const g = row.dataset.group ?? '';
+      const a = row.dataset.agent ?? '';
+      return () => focusNavRow(g, a);
+    }
+    const chip = active.closest<HTMLElement>('.wf-switch-chip');
+    if (chip) {
+      const id = chip.dataset.viewId;
+      return () => {
+        for (const el of Array.from(root.querySelectorAll<HTMLElement>('.wf-switch-chip'))) {
+          if (el.dataset.viewId === id) { el.focus(); return; }
+        }
+      };
+    }
+    for (const cls of ['wf-nav-toggle', 'wf-brief-head', 'wf-openconv'] as const) {
+      if (active.closest('.' + cls)) {
+        return () => { (root.querySelector('.' + cls) as HTMLElement | null)?.focus(); };
+      }
+    }
+    return null;
+  }
+
   function render(): void {
+    const refocus = captureFocus();
     const prevReader = root.querySelector('.wf-reader') as HTMLElement | null;
     const prevNav = root.querySelector('.wf-nav') as HTMLElement | null;
     const prevTop = prevReader ? prevReader.scrollTop : 0;
@@ -648,6 +689,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       root.innerHTML = renderHeader()
         + '<div class="wf-empty">No agents to show for this view.</div>';
       lastRenderedKey = null;
+      refocus?.();
       updateComposer();
       return;
     }
@@ -682,6 +724,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const st = selKey ? transcripts.get(selKey) : undefined;
     if (!st || st.state !== 'loading') { pendingTopOnSettle = false; }
     lastRenderedKey = selKey;
+    refocus?.();
     updateComposer();
   }
 
@@ -849,8 +892,26 @@ declare function acquireVsCodeApi(): VsCodeApi;
   });
 
   root.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key !== 'Enter' && e.key !== ' ') { return; }
     const target = e.target as HTMLElement;
+    // Arrow navigation (UX-3): Up/Down on a roster row moves selection AND
+    // focus to the adjacent agent, across group boundaries, matching VS
+    // Code's native list idiom (selection follows focus).
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      const row = target.closest<HTMLElement>('.wf-nav-row');
+      if (row && model) {
+        e.preventDefault();
+        const flat: Array<{ groupKey: string; agentId: string }> = [];
+        for (const g of model.groups) { for (const a of g.agents) { flat.push({ groupKey: g.key, agentId: a.agentId }); } }
+        const idx = flat.findIndex(x => x.groupKey === row.dataset.group && x.agentId === row.dataset.agent);
+        const next = idx === -1 ? undefined : flat[idx + (e.key === 'ArrowDown' ? 1 : -1)];
+        if (next) {
+          selectAgent(next.groupKey, next.agentId); // re-renders with the new active row
+          focusNavRow(next.groupKey, next.agentId);
+        }
+      }
+      return;
+    }
+    if (e.key !== 'Enter' && e.key !== ' ') { return; }
     const activatable = target.closest('.wf-nav-row, .wf-openconv, .wf-switch-chip, .wf-nav-toggle, .wf-brief-head');
     if (activatable) {
       e.preventDefault();

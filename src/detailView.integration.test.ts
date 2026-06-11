@@ -141,6 +141,53 @@ describe('detailView.ts — collapse + grouped switcher', () => {
     expect(q('.wf-nav-toggle .wf-rail-dot')!.classList.contains('done')).toBe(true);
   });
 
+  it('roster uses a roving tabindex: active row 0, the rest -1 (UX-3)', () => {
+    sendRender(twoSourceModel());
+    const rows = qa('.wf-nav-row');
+    expect(rows.find(r => r.classList.contains('active'))!.getAttribute('tabindex')).toBe('0');
+    expect(rows.filter(r => !r.classList.contains('active')).every(r => r.getAttribute('tabindex') === '-1')).toBe(true);
+  });
+
+  it('ArrowDown/ArrowUp move selection and focus through the roster (UX-3)', () => {
+    sendRender(twoSourceModel());
+    const first = qa('.wf-nav-row').find(r => r.dataset.agent === 'agent001')!;
+    first.focus();
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+
+    expect(q('.wf-nav-row.active')!.dataset.agent).toBe('agent002');
+    expect((document.activeElement as HTMLElement).dataset.agent).toBe('agent002');
+
+    // Down past the last row is a no-op…
+    (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    expect(q('.wf-nav-row.active')!.dataset.agent).toBe('agent002');
+
+    // …and Up walks back.
+    (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+    expect(q('.wf-nav-row.active')!.dataset.agent).toBe('agent001');
+    expect((document.activeElement as HTMLElement).dataset.agent).toBe('agent001');
+  });
+
+  it('keyboard focus survives a model-push re-render (UX-3)', () => {
+    sendRender(twoSourceModel());
+    const row = qa('.wf-nav-row').find(r => r.dataset.agent === 'agent002')!;
+    row.focus();
+    expect(document.activeElement).toBe(row);
+
+    // A model push rebuilds #wf-root — focus must land on the NEW row element.
+    sendRender(twoSourceModel());
+    const after = document.activeElement as HTMLElement;
+    expect(after).not.toBe(row);
+    expect(after.classList.contains('wf-nav-row')).toBe(true);
+    expect(after.dataset.agent).toBe('agent002');
+  });
+
+  it('focus on the nav toggle survives a re-render too (UX-3)', () => {
+    sendRender(twoSourceModel());
+    (q('.wf-nav-toggle') as HTMLElement).focus();
+    sendRender(twoSourceModel());
+    expect((document.activeElement as HTMLElement).classList.contains('wf-nav-toggle')).toBe(true);
+  });
+
   it('agentTranscriptAppend appends turn nodes without rebuilding the reader (PR 6b)', () => {
     sendRender(twoSourceModel());
     const KEY = 'workflow:wf_run1|wf_run1|agent001';
