@@ -27,7 +27,8 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `sessionDiscovery.ts` | Session lifecycle. Discovers JSONL files, manages metadata persistence (`session-meta.json`), sorts snapshots into two-zone order, handles dismiss/acknowledge. |
 | `usageProvider.ts` | Usage tracking. OAuth API polling for quota percentages, JSONL parsing for per-session costs, disk caching. |
 | `panelProvider.ts` | Webview provider. Generates full HTML/CSS inline, handles webview commands, updates panel badge. |
-| `panel.js` | Webview frontend. Keyed DOM reconciler with FLIP animations, status debouncing, ghost filtering, card rendering. |
+| `panel.js` | Webview frontend (bundled from `panel.ts` + `panelRender.ts`). `panel.ts` owns the mutable state, keyed DOM reconciler with FLIP animations, status debouncing, ghost filtering, and event wiring. |
+| `panelRender.ts` | Pure HTML builders for the sidebar (cards, foreign/worktree rows, archive rows, usage section) plus the webview view-type mirrors. No DOM access; ambient state arrives via an explicit `RenderContext` built once per render pass, so every builder is unit-testable without jsdom. |
 | `jsonlTailer.ts` | Byte-offset file reader. Tracks read position, buffers incomplete lines across reads. |
 | `sessionRepair.ts` | JSONL metadata repair. Reads tail 64KB, appends `custom-title` record if no metadata exists. |
 | `transcriptRenderer.ts` | JSONL to markdown converter. Renders user/assistant/system records with tool summaries. |
@@ -182,7 +183,7 @@ non-status** (same charter as `ToolOutcomeTracker`) and never moves
 - **Surface:** `SessionSnapshot.backgroundShellCount` (undefined when none),
   carried through to the webview on `PanelSession`.
 - **Display:** rendered as a quiet `.bg-shell-badge` ("⚙ N shell(s) running",
-  running-accent tint) in the card meta row by `panel.ts:renderCardInner`,
+  running-accent tint) in the card meta row by `panelRender.ts:renderCardInner`,
   whenever the count is `> 0` — on any status, including `done`. The badge is
   additive and never changes the card's status class, so the flicker-prone
   status path stays untouched. Ungated: the count is only non-zero when
@@ -490,7 +491,7 @@ The extension exposes a `serac.*` namespace via `package.json#contributes.config
 
 - **Reading:** `readSettings(): SeracSettings` returns a complete snapshot, falling back to `DEFAULT_SETTINGS` for any unset key. Defaults match the historical hardcoded constants so an upgrade with no `serac.*` keys behaves identically.
 - **Reactivity:** `onSettingsChanged(cb)` wraps `vscode.workspace.onDidChangeConfiguration` and fires the callback with a fresh snapshot whenever any `serac.*` key changes. `extension.ts` posts a new `settings` message to the webview and (when `serac.refresh.intervalSeconds` changed) rebuilds the refresh timer.
-- **Webview side:** `panel.ts` caches the last received `SettingsMessage` in `currentSettings`. Render functions consult it directly for visibility gates (`show.foreignWorkspaces`, `show.worktrees`, `show.usage`, `show.subagents`), thresholds (`usage.warnAtPercent`, `usage.criticalAtPercent`), and limits (`archive.maxDoneShown`, `worktrees.autoCollapseAfterSeconds`).
+- **Webview side:** `panel.ts` caches the last received `SettingsMessage` in `currentSettings` and snapshots it into the `RenderContext` each pass. The pure builders in `panelRender.ts` consult it for visibility gates (`show.foreignWorkspaces`, `show.worktrees`, `show.usage`, `show.subagents`), thresholds (`usage.warnAtPercent`, `usage.criticalAtPercent`), and limits (`archive.maxDoneShown`, `worktrees.autoCollapseAfterSeconds`).
 - **Discovery managers** (`foreignWorkspaceManager`, `siblingWorktreeManager`, `teamDiscovery`, `workflowDiscovery`) call `readSettings()` at the top of `scan()` / `poll()` to:
   - Short-circuit when the corresponding `show.*` setting is false (no background work for hidden sections).
   - Resolve their section's age gate via `ageGateDaysFor(section)`. `discovery.ageGateDays` is the inherited base; each section (`foreignWorkspaces`, `worktrees`, `teams`, `workflows`) may override it with `discovery.<section>AgeGateDays` (null = inherit). The resolver is the only supported read path, so the inherit-when-unset rule lives in one place; a non-positive or absent override falls back to the base rather than disabling the gate.
