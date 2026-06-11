@@ -286,9 +286,9 @@ describe('TeamDiscovery', () => {
 
     it('handles multiple teams', async () => {
       writeAgentTeamsConfig('team-a', teamConfig({ name: 'team-a', leadSessionId: 'lead-001' }));
-      writeAgentTeamsConfig('team-b', teamConfig({ name: 'team-b', leadSessionId: 'lead-002', leadCwd: '/Users/test/repos/other' }));
+      writeAgentTeamsConfig('team-b', teamConfig({ name: 'team-b', leadSessionId: 'lead-002' }));
       createJsonl('lead-001', PROJECT_CWD);
-      createJsonl('lead-002', '/Users/test/repos/other');
+      createJsonl('lead-002', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();
@@ -297,6 +297,26 @@ describe('TeamDiscovery', () => {
       expect(mockManagers.size).toBe(2);
       expect(mockManagers.has('lead-001')).toBe(true);
       expect(mockManagers.has('lead-002')).toBe(true);
+      td.dispose();
+    });
+
+    it('does not tail a team led from another workspace', async () => {
+      writeAgentTeamsConfig('team-a', teamConfig({ name: 'team-a', leadSessionId: 'lead-001' }));
+      writeAgentTeamsConfig('foreign-team', teamConfig({ name: 'foreign-team', leadSessionId: 'lead-002', leadCwd: '/Users/test/repos/other' }));
+      createJsonl('lead-001', PROJECT_CWD);
+      createJsonl('lead-002', '/Users/test/repos/other');
+
+      const td = makeDiscovery();
+      await td.scan();
+
+      // Foreign team is parsed (prune bookkeeping) but gets no SessionManager,
+      // so its activity can never hold this window on the fast poll cadence.
+      expect(mockManagers.has('lead-001')).toBe(true);
+      expect(mockManagers.has('lead-002')).toBe(false);
+
+      // And poll()'s pickup loop must not re-create it on the next cycle.
+      await td.poll();
+      expect(mockManagers.has('lead-002')).toBe(false);
       td.dispose();
     });
 
@@ -460,9 +480,9 @@ describe('TeamDiscovery', () => {
     it('stat-checks dormant sessions and updates woken ones', async () => {
       // Two teams (two leads), both dormant; only lead-002 has a changed mtime.
       writeAgentTeamsConfig('team-a', teamConfig({ name: 'team-a', leadSessionId: 'lead-001' }));
-      writeAgentTeamsConfig('team-b', teamConfig({ name: 'team-b', leadSessionId: 'lead-002', leadCwd: '/Users/test/repos/other' }));
+      writeAgentTeamsConfig('team-b', teamConfig({ name: 'team-b', leadSessionId: 'lead-002' }));
       createJsonl('lead-001', PROJECT_CWD);
-      createJsonl('lead-002', '/Users/test/repos/other');
+      createJsonl('lead-002', PROJECT_CWD);
 
       const td = makeDiscovery();
       await td.scan();

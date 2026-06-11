@@ -192,6 +192,18 @@ export class TeamDiscovery {
       this.manifestMtimes.set(teamId, fstat.mtimeMs);
       this.manifests.set(teamId, manifest);
 
+      // Only tail LOCAL teams' sessions. A team led from another workspace
+      // renders nowhere in this window, and tailing it would both hold open
+      // fds and let its activity drive every other window onto the 500ms fast
+      // cadence (hasActiveAgents feeds sessionDiscovery.hasActiveSessions).
+      // The manifest stays parsed so prune bookkeeping is unaffected; any
+      // managers created before the team moved (or by older builds) are
+      // released here.
+      if (!this.isLocalTeam(manifest)) {
+        this.disposeTeamManagers(teamId);
+        continue;
+      }
+
       // Create SessionManagers for orchestrator + agents with session IDs
       await this.ensureSessionManager(manifest.orchestrator.sessionId, manifest.orchestrator.cwd);
       for (const agent of manifest.agents) {
@@ -234,6 +246,15 @@ export class TeamDiscovery {
 
   /** Remove a team and dispose its SessionManagers (if not shared). */
   private removeTeam(teamId: string): void {
+    if (!this.manifests.has(teamId)) { return; }
+    this.disposeTeamManagers(teamId);
+    this.manifests.delete(teamId);
+    this.manifestMtimes.delete(teamId);
+  }
+
+  /** Dispose a team's SessionManagers, sparing any session another team still
+   *  claims. Used on team removal and when a known team turns out non-local. */
+  private disposeTeamManagers(teamId: string): void {
     const manifest = this.manifests.get(teamId);
     if (!manifest) { return; }
 
@@ -261,9 +282,6 @@ export class TeamDiscovery {
         }
       }
     }
-
-    this.manifests.delete(teamId);
-    this.manifestMtimes.delete(teamId);
   }
 
   /** Poll active team agents. Returns true if any changed. */
@@ -325,6 +343,8 @@ export class TeamDiscovery {
 
     // Try to pick up JSONLs for agents we don't have managers for yet
     for (const manifest of this.manifests.values()) {
+      // Non-local teams are parsed but never tailed (see scan()).
+      if (!this.isLocalTeam(manifest)) { continue; }
       if (!this.agents.has(manifest.orchestrator.sessionId)) {
         await this.ensureSessionManager(manifest.orchestrator.sessionId, manifest.orchestrator.cwd);
         if (this.agents.has(manifest.orchestrator.sessionId)) { changed = true; }
