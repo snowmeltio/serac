@@ -66,6 +66,8 @@ export class SessionDiscovery {
    *  workspaces, worktrees, teams, and workflows — the local card list keeps
    *  a stable window so it doesn't grow or shrink with discovery tuning. */
   private static readonly SCAN_AGE_GATE_MS = 7 * 24 * 60 * 60 * 1000;
+  /** How long an age-gate classification is trusted before re-statting. */
+  private static readonly KNOWN_OLD_TTL_MS = 30_000;
   private readonly log: Logger;
   /** Local CWD path (root of the user's VS Code workspace). */
   private readonly localCwd: string;
@@ -102,6 +104,16 @@ export class SessionDiscovery {
    *  Surfaced to the panel so the time-range bar can be revealed even when the
    *  active scan window is empty — gives the user an affordance to expand. */
   private olderSessionCount = 0;
+  /** Session ids classified outside the scan window, skipped per cycle so the
+   *  local scan doesn't re-stat every age-gated JSONL twice a second (audit
+   *  perf-io-3). Cleared every KNOWN_OLD_TTL_MS so a resumed old session
+   *  (fresh mtime on an old file) is still picked up within that window. */
+  private knownOldSessions = new Set<string>();
+  private knownOldClearedAt = 0;
+  /** Session ids present in the most recent workspace readdir; null while no
+   *  trustworthy listing exists (transient readdir failure). Drives the prune
+   *  pass with zero extra syscalls. */
+  private lastScanSessionIds: Set<string> | null = null;
 
   /** Hook-event router for the local workspace's own sessions. Passed
    *  through to SessionManager construction at line ~670. Undefined when
@@ -910,7 +922,11 @@ export class SessionDiscovery {
     const wsDir = path.join(this.projectsDir, this.workspaceKey);
     try {
       await fs.promises.access(wsDir);
-    } catch {
+    } catch (err) {
+      // Dir confirmed absent: nothing in it exists, so the prune pass may
+      // evict all tracked sessions. Any other failure (EACCES etc.) leaves
+      // the listing untrusted — never mass-evict off a transient error.
+      this.lastScanSessionIds = (err as NodeJS.ErrnoException).code === 'ENOENT' ? new Set() : null;
       return;
     }
 
@@ -922,21 +938,36 @@ export class SessionDiscovery {
     const now = Date.now();
     let olderCount = 0;
 
+    // Forget age-gate classifications on a slow cadence so a resumed old
+    // session is re-statted (and picked up) within the TTL.
+    if (now - this.knownOldClearedAt > SessionDiscovery.KNOWN_OLD_TTL_MS) {
+      this.knownOldSessions.clear();
+      this.knownOldClearedAt = now;
+    }
+
     try {
       const files = await fs.promises.readdir(workspacePath);
+      const seen = new Set<string>();
       for (const file of files) {
         const sessionId = jsonlSessionId(file);
         if (!sessionId) { continue; }
+        seen.add(sessionId);
 
         const filePath = path.join(workspacePath, file);
 
         if (!this.sessions.has(sessionId)) {
+          // Already classified as outside the window — count it, skip the stat.
+          if (this.knownOldSessions.has(sessionId)) {
+            olderCount++;
+            continue;
+          }
           // Age gate [Phase 6]: skip files older than SCAN_AGE_GATE_MS to avoid
           // loading hundreds of dormant sessions on startup
           try {
             const stat = await fs.promises.stat(filePath);
             if (now - stat.mtimeMs > SessionDiscovery.SCAN_AGE_GATE_MS) {
               olderCount++;
+              this.knownOldSessions.add(sessionId);
               continue;
             }
           } catch { continue; }
@@ -975,8 +1006,11 @@ export class SessionDiscovery {
         }
       }
       this.olderSessionCount = olderCount;
-    } catch {
-      // Skip unreadable directories
+      this.lastScanSessionIds = seen;
+    } catch (err) {
+      // Dir gone → trust emptiness for pruning; transient failure → distrust
+      // the listing and skip pruning this cycle (see scan()).
+      this.lastScanSessionIds = (err as NodeJS.ErrnoException).code === 'ENOENT' ? new Set() : null;
     }
   }
 
@@ -1140,11 +1174,14 @@ export class SessionDiscovery {
         }
       }
 
-      // Prune sessions whose files no longer exist
-      for (const [id, session] of this.sessions) {
-        try {
-          await fs.promises.access(session.getFilePath());
-        } catch {
+      // Prune sessions whose files no longer exist. Existence comes from the
+      // readdir scan() just did this cycle — zero extra syscalls, and it
+      // covers active sessions too (their update() path never stats for
+      // deletion). A null listing means the last readdir wasn't trustworthy;
+      // skip pruning rather than mass-evict off a transient error.
+      if (this.lastScanSessionIds) {
+        for (const [id, session] of this.sessions) {
+          if (this.lastScanSessionIds.has(id)) { continue; }
           session.dispose();
           this.sessions.delete(id);
           // Also prune orphaned meta entry [M5]

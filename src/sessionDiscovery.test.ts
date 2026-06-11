@@ -359,6 +359,61 @@ describe('SessionDiscovery', () => {
     discovery.stop();
   });
 
+  // ── Audit perf-io-3: knownOld stat-skip + readdir-based prune ──
+
+  it('age gate: does not re-stat a known-old file on subsequent scans, count stays correct', async () => {
+    const discovery = makeDiscovery();
+    const oldPath = createJsonlFile('old-session');
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(oldPath, tenDaysAgo, tenDaysAgo);
+    await discovery.start(() => {});
+    expect(discovery.getOlderSessionCount()).toBe(1);
+
+    const statSpy = vi.spyOn(fs.promises, 'stat');
+    const priv = discovery as unknown as { scan: () => Promise<void> };
+    await priv.scan();
+    await priv.scan();
+
+    expect(statSpy.mock.calls.filter(c => String(c[0]) === oldPath)).toHaveLength(0);
+    expect(discovery.getOlderSessionCount()).toBe(1);
+    statSpy.mockRestore();
+    discovery.stop();
+  });
+
+  it('age gate: picks up a resumed old session once the knownOld TTL lapses', async () => {
+    const discovery = makeDiscovery();
+    const oldPath = createJsonlFile('revived-session');
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(oldPath, tenDaysAgo, tenDaysAgo);
+    await discovery.start(() => {});
+    expect(discovery.getSnapshots().map(s => s.sessionId)).not.toContain('revived-session');
+
+    // Session resumes: mtime freshens. Within the TTL the old classification holds…
+    fs.utimesSync(oldPath, new Date(), new Date());
+    const priv = discovery as unknown as { scan: () => Promise<void>; knownOldClearedAt: number };
+    await priv.scan();
+    expect(discovery.getSnapshots().map(s => s.sessionId)).not.toContain('revived-session');
+
+    // …and once the TTL clears the set, the next scan re-stats and picks it up.
+    priv.knownOldClearedAt = 0;
+    await priv.scan();
+    expect(discovery.getSnapshots().map(s => s.sessionId)).toContain('revived-session');
+    discovery.stop();
+  });
+
+  it('prunes all sessions when the workspace directory itself is removed', async () => {
+    const discovery = makeDiscovery();
+    createJsonlFile('session-1');
+    await discovery.start(() => {});
+    expect(discovery.getSnapshots().map(s => s.sessionId)).toContain('session-1');
+
+    fs.rmSync(path.join(projectsDir, workspaceKey), { recursive: true, force: true });
+    await (discovery as unknown as { pollInner: (t: number) => Promise<void> }).pollInner(Date.now());
+
+    expect(discovery.getSnapshots().map(s => s.sessionId)).not.toContain('session-1');
+    discovery.stop();
+  });
+
   // ── Extended archive (setArchiveRange) ────────────────────────
 
   it('loads extended archive entries for sessions older than 7 days', async () => {
