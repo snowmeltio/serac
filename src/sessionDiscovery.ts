@@ -60,7 +60,11 @@ export class SessionDiscovery {
   private saveSeq = 0;
   /** Concurrency limit for session updates (stays under macOS ulimit -n 256) */
   private static readonly UPDATE_BATCH_SIZE = 50;
-  /** Age gate: skip JSONL files older than this during scan [Phase 6] */
+  /** Age gate: skip JSONL files older than this during scan [Phase 6].
+   *  Deliberately fixed rather than settings-driven: the
+   *  `serac.discovery.*AgeGateDays` settings scope themselves to foreign
+   *  workspaces, worktrees, teams, and workflows — the local card list keeps
+   *  a stable window so it doesn't grow or shrink with discovery tuning. */
   private static readonly SCAN_AGE_GATE_MS = 7 * 24 * 60 * 60 * 1000;
   private readonly log: Logger;
   /** Local CWD path (root of the user's VS Code workspace). */

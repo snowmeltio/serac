@@ -202,6 +202,15 @@ export function ageGateDaysFor(section: DiscoverySection, settings: SeracSetting
   return typeof override === 'number' && Number.isFinite(override) && override > 0 ? override : d.ageGateDays;
 }
 
+/** Day in ms, for the gate conversions below. */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** {@link ageGateDaysFor} in milliseconds — the one days-to-ms conversion.
+ *  Discovery managers call this instead of keeping private wrappers. */
+export function ageGateMsFor(section: DiscoverySection, settings: SeracSettings = readSettings()): number {
+  return ageGateDaysFor(section, settings) * DAY_MS;
+}
+
 function validForeignWindow(v: string): ForeignWindow {
   return (FOREIGN_WINDOWS as readonly string[]).includes(v) ? v as ForeignWindow : 'inherit';
 }
@@ -212,8 +221,8 @@ function validForeignWindow(v: string): ForeignWindow {
  *  the process registry can't answer for (degraded scan, no probe wired) —
  *  fail open to the time gate rather than blanking the section. */
 export function foreignWindowGate(settings: SeracSettings = readSettings()): { liveOnly: boolean; ageGateMs: number } {
-  const day = 24 * 60 * 60 * 1000;
-  const inherited = ageGateDaysFor('foreignWorkspaces', settings) * day;
+  const day = DAY_MS;
+  const inherited = ageGateMsFor('foreignWorkspaces', settings);
   switch (settings.discovery.foreignWorkspacesWindow) {
     case 'live-only': return { liveOnly: true, ageGateMs: inherited };
     case '1d': return { liveOnly: false, ageGateMs: day };

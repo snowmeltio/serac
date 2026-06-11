@@ -21,7 +21,8 @@ import type {
   SessionMeta, StatusConfidence, DisplayStatus,
 } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { ageGateDaysFor } from './settings.js';
+import { ageGateMsFor } from './settings.js';
+import { makeRescanGate } from './sessionPolling.js';
 
 /** A strict identifier used as a single on-disk path component for the inbox
  *  write path — no traversal, no separators, no leading dot. Stricter than
@@ -29,14 +30,6 @@ import { ageGateDaysFor } from './settings.js';
  *  write path fails closed on anything outside this allowlist. */
 const SAFE_PATH_COMPONENT = /^[A-Za-z0-9_-]+$/;
 
-/** Read the active team-manifest age gate. Resolves
- *  `serac.discovery.teamsAgeGateDays` when set, else the shared
- *  `serac.discovery.ageGateDays` base. */
-function ageGateMs(): number {
-  return ageGateDaysFor('teams') * 24 * 60 * 60 * 1000;
-}
-/** Full rescan every Nth poll cycle */
-const TEAM_SCAN_INTERVAL = 10;
 /** Batch size for concurrent session updates (shared FD budget) */
 const UPDATE_BATCH_SIZE = 50;
 
@@ -52,7 +45,6 @@ export class TeamDiscovery {
   private agents: Map<string, SessionManager> = new Map();
   /** Last known mtime per manifest file (ms), for change detection */
   private manifestMtimes: Map<string, number> = new Map();
-  private scanCounter = 0;
 
   /** Per-session registry liveness probe factory, injected by SessionDiscovery
    *  (freshness parity: team orchestrator sessions get the same death gate). */
@@ -79,18 +71,11 @@ export class TeamDiscovery {
     return sanitiseWorkspaceKey(manifest.orchestrator.cwd) === this.localWorkspaceKey;
   }
 
-  /** Whether it's time for a full rescan (every Nth poll cycle). */
-  /** Whether it's time for a full rescan.
-   *  Every cycle when agents are active (pick up new spawns quickly).
-   *  Every Nth cycle when dormant. */
+  /** Whether it's time for a full rescan: every cycle when agents are active
+   *  (pick up new spawns quickly), every Nth cycle when dormant. */
+  private readonly rescanGate = makeRescanGate(() => this.hasActiveAgents());
   shouldRescan(): boolean {
-    if (this.hasActiveAgents()) { return true; }
-    this.scanCounter++;
-    if (this.scanCounter >= TEAM_SCAN_INTERVAL) {
-      this.scanCounter = 0;
-      return true;
-    }
-    return false;
+    return this.rescanGate();
   }
 
   /** Whether any team agents are currently active (running/waiting). */
@@ -153,7 +138,7 @@ export class TeamDiscovery {
       }
 
       // Age gate
-      if (now - fstat.mtimeMs > ageGateMs()) { continue; }
+      if (now - fstat.mtimeMs > ageGateMsFor('teams')) { continue; }
 
       // Skip re-parse if mtime unchanged
       seenTeamIds.add(teamId);

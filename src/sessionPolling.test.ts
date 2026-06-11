@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   jsonlSessionId,
+  makeRescanGate,
   pollTrackedSessions,
   hasActiveTrackedSessions,
   trackJsonlSessions,
@@ -23,6 +24,33 @@ function fakeSession(overrides: Partial<PollableSession> = {}): PollableSession 
     ...overrides,
   };
 }
+
+describe('makeRescanGate', () => {
+  it('passes every Nth call when dormant', () => {
+    const gate = makeRescanGate();
+    const results = Array.from({ length: 20 }, () => gate());
+    expect(results.filter(Boolean)).toHaveLength(2);
+    expect(results[9]).toBe(true);
+    expect(results[19]).toBe(true);
+  });
+
+  it('passes every call while the active predicate holds, without consuming the counter', () => {
+    let active = true;
+    const gate = makeRescanGate(() => active);
+    expect(gate()).toBe(true);
+    expect(gate()).toBe(true);
+    active = false;
+    // Counter starts fresh: nine misses, then the tenth passes.
+    const results = Array.from({ length: 10 }, () => gate());
+    expect(results.slice(0, 9).every(r => r === false)).toBe(true);
+    expect(results[9]).toBe(true);
+  });
+
+  it('honours a custom interval', () => {
+    const gate = makeRescanGate(undefined, 3);
+    expect([gate(), gate(), gate()]).toEqual([false, false, true]);
+  });
+});
 
 describe('jsonlSessionId', () => {
   it('strips the extension from a .jsonl name', () => {

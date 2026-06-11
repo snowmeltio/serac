@@ -16,7 +16,7 @@ import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeIn
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, makeRescanGate } from './sessionPolling.js';
 import { readSettings, foreignWindowGate } from './settings.js';
 import { readIdeOpenFolders } from './claudeEnvSignals.js';
 
@@ -24,8 +24,6 @@ import { readIdeOpenFolders } from './claudeEnvSignals.js';
  *  ms). Read at the top of each scan / housekeeping pass so the value is
  *  always current; reactive to settings changes without restart. */
 type WindowGate = ReturnType<typeof foreignWindowGate>;
-/** Full rescan every Nth poll cycle */
-const FOREIGN_SCAN_INTERVAL = 10;
 /** Confidence ranking for max-confidence aggregation */
 const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 /** done → stale promotion delay (mirrors SessionDiscovery) */
@@ -57,7 +55,6 @@ export class ForeignWorkspaceManager {
    *  refreshed by SessionDiscovery on the same 60s cadence as the local
    *  worktree set. Drives the inline picker on aggregated rows. */
   private worktreesByRepoRoot: Map<string, WorktreeInfo[]> = new Map();
-  private scanCounter = 0;
   /** Returns the workspace keys that are sibling worktrees of the local repo
    *  and should therefore NOT be tracked here as foreign. Provided by
    *  SiblingWorktreeManager (defaults to an empty set). */
@@ -96,14 +93,11 @@ export class ForeignWorkspaceManager {
     this.getSiblingKeys = provider;
   }
 
-  /** Whether it's time for a full rescan (every Nth poll cycle). */
+  /** Whether it's time for a full rescan (every Nth poll cycle). No active
+   *  fast-path: a rescan walks the whole projectsDir, too costly per cycle. */
+  private readonly rescanGate = makeRescanGate();
   shouldRescan(): boolean {
-    this.scanCounter++;
-    if (this.scanCounter >= FOREIGN_SCAN_INTERVAL) {
-      this.scanCounter = 0;
-      return true;
-    }
-    return false;
+    return this.rescanGate();
   }
 
   /** Scan all workspace directories for foreign sessions within the age gate. */

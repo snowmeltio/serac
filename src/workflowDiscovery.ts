@@ -4,11 +4,9 @@ import type { SessionMeta, WorkflowAgentSnapshot, WorkflowRunStatus, WorkflowSna
 import type { Logger } from './sessionDiscovery.js';
 import { parseWorkflowSidecar } from './workflowSidecar.js';
 import { extractWorkflowMeta, extractAgentCalls, expandIndirectCalls, matchAgentCall, recoverInterpolatedLabel, type WorkflowAgentCall } from './workflowScript.js';
-import { readSettings, ageGateDaysFor } from './settings.js';
+import { readSettings, ageGateMsFor } from './settings.js';
+import { makeRescanGate } from './sessionPolling.js';
 import { isValidSessionId } from './validation.js';
-
-/** Periodic full rescan cadence (every Nth poll cycle) when nothing is live. */
-const WORKFLOW_SCAN_INTERVAL = 10;
 
 /** The slice of ProcessRegistry the live tier needs to confirm a parent session
  *  has died (so an abandoned run can be downgraded from 'running' to
@@ -18,12 +16,6 @@ export interface WorkflowLivenessProbe {
   isActive(): boolean;
   isScanClean(): boolean;
   isSessionLive(sessionId: string): boolean;
-}
-
-/** Resolve the active workflow age gate: `serac.discovery.workflowsAgeGateDays`
- *  when set, else the shared `serac.discovery.ageGateDays` base. */
-function ageGateMs(): number {
-  return ageGateDaysFor('workflows') * 24 * 60 * 60 * 1000;
 }
 
 /** The live-tier display label for a matched `agent()` call: a plain literal
@@ -58,7 +50,6 @@ export class WorkflowDiscovery {
   private readonly scriptMeta = new Map<string, { mtimeMs: number; name: string; phases: WorkflowSnapshot['phases']; agentCalls: WorkflowAgentCall[] }>();
   /** Set by scan() when the snapshot set changes; read + cleared by poll(). */
   private changedSincePoll = false;
-  private scanCounter = 0;
 
   constructor(
     private readonly projectsDir: string,
@@ -72,15 +63,10 @@ export class WorkflowDiscovery {
   }
 
   /** True every cycle while a run is live (so completion shows fast), else
-   *  every WORKFLOW_SCAN_INTERVAL cycles. */
+   *  every Nth cycle. */
+  private readonly rescanGate = makeRescanGate(() => this.hasActiveRuns());
   shouldRescan(): boolean {
-    if (this.hasActiveRuns()) { return true; }
-    this.scanCounter++;
-    if (this.scanCounter >= WORKFLOW_SCAN_INTERVAL) {
-      this.scanCounter = 0;
-      return true;
-    }
-    return false;
+    return this.rescanGate();
   }
 
   /** A workflow is "active" only in the live tier (running, no sidecar yet). */
@@ -169,7 +155,7 @@ export class WorkflowDiscovery {
       } catch {
         continue;
       }
-      if (now - stat.mtimeMs > ageGateMs()) { continue; } // stale: let pruning drop it
+      if (now - stat.mtimeMs > ageGateMsFor('workflows')) { continue; } // stale: let pruning drop it
 
       runIds.add(runId);
       seen.add(runId);
@@ -230,7 +216,7 @@ export class WorkflowDiscovery {
       }
       // A run dir with no sidecar that is older than the age gate is an
       // abandoned/killed run — drop it (pruning removes any stale snapshot).
-      if (now - stat.mtimeMs > ageGateMs()) { continue; }
+      if (now - stat.mtimeMs > ageGateMsFor('workflows')) { continue; }
 
       seen.add(runId);
       // Re-derive each cycle (cheap, journal is small); the live snapshot is

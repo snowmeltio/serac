@@ -13,17 +13,9 @@ import { SessionManager } from './sessionManager.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId } from './sessionPolling.js';
-import { readSettings, ageGateDaysFor } from './settings.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate } from './sessionPolling.js';
+import { readSettings, ageGateMsFor } from './settings.js';
 
-/** Read the active sibling-worktree age gate. Resolves
- *  `serac.discovery.worktreesAgeGateDays` when set, else the shared
- *  `serac.discovery.ageGateDays` base. */
-function ageGateMs(): number {
-  return ageGateDaysFor('worktrees') * 24 * 60 * 60 * 1000;
-}
-/** Full rescan every Nth poll cycle. */
-const SIBLING_SCAN_INTERVAL = 10;
 
 export class SiblingWorktreeManager {
   private sessions: Map<string, SessionManager> = new Map();
@@ -35,7 +27,6 @@ export class SiblingWorktreeManager {
   /** Workspace keys we've already determined are NOT sibling worktrees so
    *  subsequent scans can skip them without re-reading JSONLs. */
   private nonSiblingKeys: Set<string> = new Set();
-  private scanCounter = 0;
   private localRepoRoot: string | null = null;
 
   constructor(
@@ -79,14 +70,11 @@ export class SiblingWorktreeManager {
     return this.siblingKeys;
   }
 
-  /** Whether it's time for a full rescan (every Nth poll cycle). */
+  /** Whether it's time for a full rescan (every Nth poll cycle). No active
+   *  fast-path: a rescan walks the whole projectsDir, too costly per cycle. */
+  private readonly rescanGate = makeRescanGate();
   shouldRescan(): boolean {
-    this.scanCounter++;
-    if (this.scanCounter >= SIBLING_SCAN_INTERVAL) {
-      this.scanCounter = 0;
-      return true;
-    }
-    return false;
+    return this.rescanGate();
   }
 
   /** Scan all non-local workspace directories. For each candidate that
@@ -98,7 +86,7 @@ export class SiblingWorktreeManager {
     if (this.inert) { return false; }
     if (!readSettings().show.worktrees) { return false; }
     const now = Date.now();
-    const ageGate = ageGateMs();
+    const ageGate = ageGateMsFor('worktrees');
     // Drop siblings whose worktree directory has been removed (e.g. `git
     // worktree remove`). Their JSONLs linger in ~/.claude/projects, but the
     // worktree is gone — without this they'd persist as undismissable zombie
@@ -211,7 +199,7 @@ export class SiblingWorktreeManager {
     files: string[],
     now: number,
   ): Promise<string | null> {
-    const ageGate = ageGateMs();
+    const ageGate = ageGateMsFor('worktrees');
     const candidates: { file: string; mtimeMs: number }[] = [];
     for (const file of files) {
       if (jsonlSessionId(file) === null) { continue; }
@@ -242,7 +230,7 @@ export class SiblingWorktreeManager {
     if (!readSettings().show.worktrees) { return false; }
     let changed = false;
     const now = Date.now();
-    const ageGate = ageGateMs();
+    const ageGate = ageGateMsFor('worktrees');
 
     if (await pollTrackedSessions(this.sessions, now,
       (_sessionId, lastActivityMs) => now - lastActivityMs <= ageGate)) {

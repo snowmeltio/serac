@@ -41,6 +41,27 @@ export type WithinWindow = (sessionId: string, lastActivityMs: number) => boolea
 /** running→done demotion threshold shared by the dormant/active poll loop. */
 const DEMOTE_STALE_MS = 30_000;
 
+/** Default every-Nth-cycle full-rescan cadence, uniform across managers. */
+const RESCAN_INTERVAL = 10;
+
+/** Every-Nth-cycle rescan gate shared by the discovery managers. The optional
+ *  isActive predicate passes the gate every cycle while live work is in
+ *  flight, so teams/workflows pick up new artifacts quickly; managers whose
+ *  rescan walks the entire projectsDir (foreign, sibling) deliberately omit
+ *  it — the walk is too costly for the 500ms fast cadence. */
+export function makeRescanGate(isActive?: () => boolean, interval: number = RESCAN_INTERVAL): () => boolean {
+  let counter = 0;
+  return () => {
+    if (isActive?.()) { return true; }
+    counter++;
+    if (counter >= interval) {
+      counter = 0;
+      return true;
+    }
+    return false;
+  };
+}
+
 /** Session id for a `.jsonl` dirent, or null for anything else. The
  *  filter-and-strip pair this replaces appeared at five call sites. */
 export function jsonlSessionId(file: string): string | null {
