@@ -2,58 +2,16 @@
 // conversation). Source-keyed: renders a normalised DetailModel for workflow
 // runs, agent teams, or a session's subagents. Two panes: left = groups →
 // agents; right = the selected agent's transcript. Vanilla, no framework
-// (bundled to media/detailView.js). Cannot import extension-side modules, so the
-// data shapes are redeclared here to mirror types.ts.
+// (bundled to media/detailView.js). The data shapes and shared formatters come
+// from detailShared.ts — the same module the host's builders compile against,
+// so the contract is compiler-enforced rather than comment-mirrored.
 
 import { isNearBottom, chooseReaderScrollTop, STICK_THRESHOLD_PX } from './detailViewScroll.js';
-
-interface DetailAgentView {
-  agentId: string;
-  label: string;
-  status: string;
-  tokens: number;
-  toolCalls: number;
-  durationMs: number | null;
-  model: string;
-  phaseTitle?: string | null;
-  attempt?: number;
-  promptPreview?: string;
-  resultPreview?: string | null;
-  teammate?: boolean;
-  /** Teammate is still on the roster + lead process alive — gates the composer. */
-  alive?: boolean;
-}
-
-interface DetailGroupView {
-  key: string;
-  title: string | null;
-  status: string | null;
-  agents: DetailAgentView[];
-}
-
-interface DetailViewChoice {
-  id: string;
-  kind: string;
-  label: string;
-  status: string;
-  active: boolean;
-  /** Host-computed agent roll-up for the tooltip (e.g. "12 agents · 1 failed"). */
-  summary?: string;
-}
-
-interface DetailModel {
-  source: string;
-  containerId: string;
-  sessionId: string;
-  title: string;
-  chips: string[];
-  metrics: string;
-  groups: DetailGroupView[];
-  views?: DetailViewChoice[];
-  team?: string;
-}
-
-interface TranscriptEntry { timestamp: string; role: string; content: string }
+import { escapeHtml } from './panelUtils.js';
+import { fmtTokens, fmtDuration, transcriptKey } from './detailShared.js';
+import type {
+  DetailAgentView, DetailGroupView, DetailViewChoice, DetailModel, TranscriptEntry,
+} from './detailShared.js';
 
 type TranscriptState =
   | { state: 'loading' }
@@ -127,31 +85,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  regardless, so a tampered webview value cannot enable the write path. */
   const experimental = { teammateMessaging: false, operatorName: 'operator' };
 
-  /** Cache key for one agent's transcript. Prefixed with the drill-in owner so
-   *  an in-flight response from a PREVIOUS container can never collide with the
-   *  current one's keys (e.g. same member name across two teams). Mirrors the
-   *  host's key in detailPanel.sendAgentTranscript — keep the two in sync. */
+  /** Cache key for one agent's transcript — the shared transcriptKey() the
+   *  host also uses, so the two sides cannot drift. Model-less early calls
+   *  fall back to an owner-less key (matched only within this webview). */
   function tkey(groupKey: string, agentId: string): string {
-    return (model ? model.source + ':' + model.containerId : '') + '|' + groupKey + '|' + agentId;
-  }
-
-  function escapeHtml(s: string): string {
-    return s.replace(/[&<>"']/g, c =>
-      c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;');
-  }
-
-  function fmtTokens(n: number): string {
-    if (n >= 1000) { return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k'; }
-    return String(n);
-  }
-
-  function fmtDuration(ms: number | null): string {
-    if (!ms || ms <= 0) { return ''; }
-    const secs = Math.round(ms / 1000);
-    if (secs < 60) { return secs + 's'; }
-    const m = Math.floor(secs / 60);
-    const r = secs % 60;
-    return r > 0 ? m + 'm ' + r + 's' : m + 'm';
+    return model
+      ? transcriptKey(model.source, model.containerId, groupKey, agentId)
+      : '|' + groupKey + '|' + agentId;
   }
 
   /** A per-record time label: relative while recent ("just now", "5m ago",

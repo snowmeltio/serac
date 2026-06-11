@@ -100,9 +100,7 @@ interface PanelTeam {
   dismissed: boolean;
 }
 
-/** Detail-panel source key (mirrors DetailSource from types.ts; redeclared
- *  because the webview bundle cannot import extension-side modules). */
-type DetailSource = 'workflow' | 'team' | 'subagents';
+import type { DetailSource } from './detailShared.js';
 
 /** Workflow agent (subset of WorkflowAgentSnapshot the card needs). agentId and
  *  label are present at runtime (host sends the full snapshot) — they drive the

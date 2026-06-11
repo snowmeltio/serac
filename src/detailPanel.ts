@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { randomBytes } from 'crypto';
+import { fmtTokens, fmtDuration, transcriptKey } from './detailShared.js';
 import type {
   DetailAgentView, DetailGroupView, DetailModel, DetailViewChoice, DetailSource,
   SessionSnapshot, TeamSnapshot, WorkflowSnapshot,
@@ -216,14 +217,13 @@ export class DetailPanel {
         groups.push({
           key: selected.runId,
           title: 'Phase ' + ph.index + ' · ' + ph.title,
-          status: selected.status,
           agents: failedFirst(inPhase).map(a => this.workflowAgentView(a)),
         });
       }
       const ungrouped = selected.agents.filter(a => !seen.has(a.agentId));
       if (ungrouped.length > 0) {
         const title = selected.phases.length > 0 ? 'Other' : null;
-        groups.push({ key: selected.runId, title, status: selected.status, agents: failedFirst(ungrouped).map(a => this.workflowAgentView(a)) });
+        groups.push({ key: selected.runId, title, agents: failedFirst(ungrouped).map(a => this.workflowAgentView(a)) });
       }
     }
     const metricsBits = selected
@@ -242,7 +242,6 @@ export class DetailPanel {
       containerId: sessionId,
       sessionId: invokingSessionId,
       title: selected?.name ?? 'Workflow',
-      chips: selected ? [selected.source === 'live' ? 'live' : 'workflow', selected.status] : ['workflow'],
       metrics: metricsBits.join(' · '),
       groups,
       views: this.buildViewChoices(runs, selected?.runId ?? null, 'workflow', this.subsForViewChoices(sessionId, team), team),
@@ -427,10 +426,10 @@ export class DetailPanel {
     // searches all matching groups), so card deep-links keep resolving.
     const groups: DetailGroupView[] = team && teammates.length > 0 && plain.length > 0
       ? [
-        { key: '', title: 'Teammates', status: null, agents: teammates },
-        { key: '', title: 'Other subagents', status: null, agents: plain },
+        { key: '', title: 'Teammates', agents: teammates },
+        { key: '', title: 'Other subagents', agents: plain },
       ]
-      : [{ key: '', title: null, status: null, agents: [...teammates, ...plain] }];
+      : [{ key: '', title: null, agents: [...teammates, ...plain] }];
     const metricsBits: string[] = [];
     if (team) {
       metricsBits.push(teammates.length + ' teammate' + (teammates.length === 1 ? '' : 's'));
@@ -448,7 +447,6 @@ export class DetailPanel {
       containerId: sessionId,
       sessionId: invokingSessionId,
       title: team ? 'Teammates' : 'Subagents',
-      chips: team ? ['team'] : ['subagents'],
       metrics: metricsBits.join(' · '),
       groups,
       views: this.buildViewChoices(runs, null, 'subagents', { agents: [...teammates, ...plain], running }, team),
@@ -480,12 +478,10 @@ export class DetailPanel {
       containerId: teamId,
       sessionId: invokingSessionId,
       title: team?.name ?? 'Agent team',
-      chips: ['team'],
       metrics: metricsBits.join(' · '),
       groups: [{
         key: '',
         title: null,
-        status: null,
         // Resolution key is the member name (matched against agent-*.meta.json
         // agentType for in-process members, or its sessionId when present).
         agents: [
@@ -652,8 +648,9 @@ export class DetailPanel {
     const panel = this.panel;
     if (!panel) { return; }
     // Owner-prefixed so a response in flight across a drill-in switch can never
-    // collide with the new container's keys. Mirrors detailView's tkey().
-    const key = source + ':' + containerId + '|' + groupKey + '|' + agentId;
+    // collide with the new container's keys — the same shared transcriptKey()
+    // the webview uses, so the two sides cannot drift.
+    const key = transcriptKey(source, containerId, groupKey, agentId);
     const file = this.deps.resolveAgentFile(source, containerId, groupKey, agentId);
     if (!file) {
       void panel.webview.postMessage({ type: 'agentTranscriptError', key, message: 'Transcript not available yet.' });
@@ -750,16 +747,3 @@ export function rollupSummary(statuses: string[], noun: string): string | undefi
   return bits.join(' \u00b7 ');
 }
 
-function fmtTokens(n: number): string {
-  if (n >= 1000) { return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k'; }
-  return String(n);
-}
-
-function fmtDuration(ms: number | null): string {
-  if (!ms || ms <= 0) { return ''; }
-  const secs = Math.round(ms / 1000);
-  if (secs < 60) { return secs + 's'; }
-  const m = Math.floor(secs / 60);
-  const r = secs % 60;
-  return r > 0 ? m + 'm ' + r + 's' : m + 'm';
-}

@@ -189,7 +189,7 @@ describe('DetailPanel', () => {
       expect(m.groups[0].title).toContain('Audit');
       expect(m.groups[0].agents.map((a: any) => a.agentId)).toEqual(['a1', 'a2']);
       expect(m.groups[1].agents.map((a: any) => a.agentId)).toEqual(['a3']);
-      expect(m.chips).toContain('completed');
+      expect(m.views?.[0]).toMatchObject({ kind: 'workflow', status: 'completed' });
       expect(m.metrics).toContain('3 agents');
     });
 
@@ -260,10 +260,10 @@ describe('DetailPanel', () => {
       expect(rows.find((a: any) => a.agentId === 'boobook').status).toBe('done');
     });
 
-    it('marks a live workflow with a "live" chip', () => {
+    it('builds the model from a live-tier run with its running status', () => {
       const h = setup({ getWorkflows: vi.fn(() => [makeWorkflow({ source: 'live', status: 'running' })]) });
       h.panel.show('workflow', 'sess-1', 'sess-1');
-      expect(h.lastModel().chips).toContain('live');
+      expect(h.lastModel().views?.[0]).toMatchObject({ kind: 'workflow', status: 'running' });
     });
   });
 
@@ -701,7 +701,7 @@ describe('DetailPanel', () => {
       // most-recent-first, ordinal-disambiguated (same name)
       expect(m.views[0]).toMatchObject({ id: 'wf_new', kind: 'workflow', label: 'review #1', active: true });
       expect(m.views[1]).toMatchObject({ id: 'wf_old', kind: 'workflow', label: 'review #2', active: false });
-      expect(m.chips).toContain('live'); // newest run is live
+      expect(m.views[0].status).toBe('running'); // newest run is the live tier
     });
 
     it('still surfaces a single view in the switcher (it doubles as the scope heading)', () => {
@@ -719,7 +719,7 @@ describe('DetailPanel', () => {
       const m = h.lastModel();
       expect(m.groups.every((g: any) => g.key === 'wf_old')).toBe(true);
       expect(m.views.find((v: any) => v.id === 'wf_old').active).toBe(true);
-      expect(m.chips).toContain('completed');
+      expect(m.views.find((v: any) => v.id === 'wf_old').status).toBe('completed');
     });
 
     it('adds a Subagents view when the session also has plain subagents', () => {

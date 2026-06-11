@@ -45,7 +45,6 @@ function twoSourceModel() {
     containerId: 'wf_run1',
     sessionId: 'sess1',
     title: 'audit-run',
-    chips: [],
     metrics: '4 agents',
     groups: [
       {
@@ -144,7 +143,6 @@ describe('detailView.ts — collapse + grouped switcher', () => {
       containerId: 'at:squad',
       sessionId: 'sess1',
       title: 'squad',
-      chips: [],
       metrics: '',
       team: 'squad',
       groups: [{ key: '', title: null, status: null, agents: [agent({ agentId: 'memberxx', label: 'defender' })] }],
@@ -244,7 +242,7 @@ describe('detailView.ts — live transcript refresh', () => {
   it('DOES refresh an alive idle teammate (it can wake on an inbox message any moment)', () => {
     sendRender({
       source: 'subagents', containerId: 'lead-001', sessionId: 'sess1',
-      title: 'Teammates', chips: ['team'], metrics: '', team: 'my-team',
+      title: 'Teammates', metrics: '', team: 'my-team',
       groups: [{ key: '', title: null, status: null, agents: [
         { agentId: 'deadbeef', label: 'lyrebird', status: 'done',
           tokens: 0, toolCalls: 0, durationMs: null, model: '', teammate: true, alive: true },
@@ -258,7 +256,7 @@ describe('detailView.ts — live transcript refresh', () => {
   it('does NOT refresh a teammate that has left the team (alive false)', () => {
     sendRender({
       source: 'subagents', containerId: 'lead-001', sessionId: 'sess1',
-      title: 'Teammates', chips: ['team'], metrics: '', team: 'my-team',
+      title: 'Teammates', metrics: '', team: 'my-team',
       groups: [{ key: '', title: null, status: null, agents: [
         { agentId: 'deadbeef', label: 'lyrebird', status: 'done',
           tokens: 0, toolCalls: 0, durationMs: null, model: '', teammate: true, alive: false },
@@ -307,7 +305,7 @@ describe('detailView.ts — teammate composer (experimental)', () => {
   function teammateModel(over: Partial<{ status: string; teammate: boolean; alive: boolean }> = {}) {
     return {
       source: 'subagents', containerId: 'lead-001', sessionId: 'sess1',
-      title: 'Teammates', chips: ['team'], metrics: '1 teammate', team: 'my-team',
+      title: 'Teammates', metrics: '1 teammate', team: 'my-team',
       groups: [{ key: '', title: null, status: null, agents: [
         { agentId: 'deadbeef', label: 'defender', status: over.status ?? 'running',
           tokens: 0, toolCalls: 0, durationMs: null, model: '',

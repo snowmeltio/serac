@@ -4,11 +4,8 @@ import * as vscode from 'vscode';
 import { validateRecord, getContentBlocks } from './jsonlValidator.js';
 import type { JsonlRecord, JsonlContentBlock } from './types.js';
 
-export interface TranscriptEntry {
-  timestamp: string;
-  role: string;
-  content: string;
-}
+import type { TranscriptEntry } from './detailShared.js';
+export type { TranscriptEntry };
 
 /**
  * Renders a JSONL session file into a readable markdown transcript.
