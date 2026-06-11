@@ -817,3 +817,25 @@ describe('rollupSummary — chip tooltip roll-up', () => {
     expect(rollupSummary(['done', 'mystery'], 'agent')).toBe('2 agents · 1 done · 1 mystery');
   });
 });
+
+describe('per-build memoisation (audit refactor-detail-1/perf-render-3)', () => {
+  it('one team-orchestrator model build hits getSession and listSubagents once each', () => {
+    const h = setup({
+      getTeams: vi.fn(() => [makeTeam({ teamId: 'at:my-team', inProcessMembers: ['lyrebird'] })]),
+      getWorkflows: vi.fn(() => []),
+    });
+    h.panel.show('subagents', 'sess-1', 'sess-1');
+    // The team path used to reach these deps up to four times per build —
+    // each a sync dir scan / full snapshot rebuild at refresh cadence.
+    expect(vi.mocked(h.deps.getSession).mock.calls.length).toBe(1);
+    expect(vi.mocked(h.deps.listSubagents).mock.calls.length).toBe(1);
+  });
+
+  it('the memo does not leak across builds (a later refresh sees fresh data)', () => {
+    const h = setup({ getWorkflows: vi.fn(() => []) });
+    h.panel.show('subagents', 'sess-1', 'sess-1');
+    const first = vi.mocked(h.deps.getSession).mock.calls.length;
+    h.panel.refresh(); // dedupe may skip the post, but the model is rebuilt
+    expect(vi.mocked(h.deps.getSession).mock.calls.length).toBeGreaterThan(first);
+  });
+});

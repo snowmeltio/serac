@@ -176,7 +176,28 @@ export class DetailPanel {
 
   // ── Model builders (source → normalised DetailModel) ────────────────
 
+  // Per-build memo for the two expensive deps. buildViewChoices documents that
+  // the subagents dir-scan "happens once per model build"; that invariant broke
+  // as team support grew — the team path reached deps.listSubagents (sync
+  // readdir + per-agent reads) and deps.getSession (full snapshot rebuild) up
+  // to four times per build, at refresh cadence. Cleared at buildModel entry so
+  // one build sees one consistent scan.
+  private readonly memoSession = new Map<string, SessionSnapshot | undefined>();
+  private readonly memoDisk = new Map<string, ReturnType<DetailPanelDeps['listSubagents']>>();
+
+  private sessionOnce(sessionId: string): SessionSnapshot | undefined {
+    if (!this.memoSession.has(sessionId)) { this.memoSession.set(sessionId, this.deps.getSession(sessionId)); }
+    return this.memoSession.get(sessionId);
+  }
+
+  private subagentFilesOnce(sessionId: string): ReturnType<DetailPanelDeps['listSubagents']> {
+    if (!this.memoDisk.has(sessionId)) { this.memoDisk.set(sessionId, this.deps.listSubagents(sessionId)); }
+    return this.memoDisk.get(sessionId)!;
+  }
+
   private buildModel(source: DetailSource, containerId: string, sessionId: string): DetailModel {
+    this.memoSession.clear();
+    this.memoDisk.clear();
     if (source === 'team') { return this.buildTeamModel(containerId, sessionId); }
     if (source === 'subagents') { return this.buildSubagentsModel(containerId, sessionId); }
     return this.buildWorkflowModel(containerId, sessionId);
@@ -334,7 +355,7 @@ export class DetailPanel {
    *  unioned with on-disk transcripts the tracker missed, so none is dropped.
    *  Shared by the subagents model and the view switcher's count. */
   private collectSubagents(sessionId: string): { agents: DetailAgentView[]; running: number } {
-    const session = this.deps.getSession(sessionId);
+    const session = this.sessionOnce(sessionId);
     // Live-tracked subagents carry rich progress (running state, tool counts,
     // result preview) but only once tracking resolved an agentId. Agent-tool
     // subagents that never relay `agent_progress` stay agentId-less, so the
@@ -354,7 +375,7 @@ export class DetailPanel {
     // silently dropped (the cause of the empty panel). These are treated as
     // completed — a disk-only agent with no live tracking has nothing running.
     const trackedIds = new Set(tracked.map(s => s.agentId));
-    for (const d of this.deps.listSubagents(sessionId)) {
+    for (const d of this.subagentFilesOnce(sessionId)) {
       if (trackedIds.has(d.agentId)) { continue; }
       agents.push({
         agentId: d.agentId,
@@ -390,8 +411,8 @@ export class DetailPanel {
     const subs = this.collectSubagents(sessionId);
     if (!team) { return { teammates: [], plain: subs.agents, running: subs.running }; }
     const roster = new Set([...team.agents.map(a => a.name), ...team.inProcessMembers]);
-    const typeById = new Map(this.deps.listSubagents(sessionId).map(d => [d.agentId, d.agentType]));
-    const leadGone = this.deps.getSession(sessionId)?.processLive === false;
+    const typeById = new Map(this.subagentFilesOnce(sessionId).map(d => [d.agentId, d.agentType]));
+    const leadGone = this.sessionOnce(sessionId)?.processLive === false;
     const byName = new Map<string, DetailAgentView>();
     const plain: DetailAgentView[] = [];
     for (const a of subs.agents) {
@@ -611,8 +632,8 @@ export class DetailPanel {
   private inProcessRosterRows(team: TeamSnapshot): DetailAgentView[] {
     if (team.inProcessMembers.length === 0) { return []; }
     const orchestratorId = team.orchestrator.sessionId;
-    const orchSession = this.deps.getSession(orchestratorId);
-    const typeById = new Map(this.deps.listSubagents(orchestratorId).map(d => [d.agentId, d.agentType]));
+    const orchSession = this.sessionOnce(orchestratorId);
+    const typeById = new Map(this.subagentFilesOnce(orchestratorId).map(d => [d.agentId, d.agentType]));
     const tracked = orchSession?.subagents ?? [];
     const leadAlive = orchSession?.processLive !== false;
     return team.inProcessMembers.map(name => ({
