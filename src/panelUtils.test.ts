@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   basename,
+  countsChipsHtml,
+  normPath,
+  pickerChildRow,
   escapeHtml,
   stripMarkdown,
   isPlaceholderTitle,
@@ -806,5 +809,52 @@ describe('basename', () => {
 
   it('returns the input when there is no separator', () => {
     expect(basename('serac')).toBe('serac');
+  });
+});
+
+describe('normPath', () => {
+  it('strips trailing slashes and leaves clean paths alone', () => {
+    expect(normPath('/repos/serac/')).toBe('/repos/serac');
+    expect(normPath('/repos/serac//')).toBe('/repos/serac');
+    expect(normPath('/repos/serac')).toBe('/repos/serac');
+  });
+});
+
+describe('countsChipsHtml', () => {
+  it('renders chips in W/R/D/S order, skipping zeros', () => {
+    expect(countsChipsHtml({ waiting: 1, running: 2, stale: 3 })).toBe(
+      '<span class="status-count waiting-count">1W</span>'
+      + '<span class="status-count running-count">2R</span>'
+      + '<span class="status-count stale-count">3S</span>'
+    );
+  });
+  it('returns empty string when all counts are zero or absent', () => {
+    expect(countsChipsHtml({})).toBe('');
+    expect(countsChipsHtml({ waiting: 0, done: 0 })).toBe('');
+  });
+});
+
+describe('pickerChildRow', () => {
+  const base = { cwd: '/r/wt', parentKey: 'repo:/r', label: 'fix', title: '~/r/wt', counts: {} };
+
+  it('emits the shared row scaffolding with escaped attributes', () => {
+    const html = pickerChildRow({ ...base, cwd: '/r/"wt"' });
+    expect(html).toContain('class="ws-row ws-picker-child ws-row-clickable"');
+    expect(html).toContain('data-cwd="/r/&quot;wt&quot;"');
+    expect(html).toContain('data-parent-key="repo:/r"');
+    expect(html).toContain('tabindex="0" role="button"');
+  });
+
+  it('gates confidence on live counts and flags waiting rows', () => {
+    expect(pickerChildRow(base)).not.toContain('data-confidence');
+    const live = pickerChildRow({ ...base, counts: { waiting: 1 }, confidence: 'low' });
+    expect(live).toContain('data-confidence="low"');
+    expect(live).toContain('ws-row-waiting');
+    expect(live).toContain('1W');
+  });
+
+  it('includes extra chips between name and counts', () => {
+    expect(pickerChildRow({ ...base, extraChipsHtml: '<span class="ws-main-chip">main</span>' }))
+      .toContain('</span><span class="ws-main-chip">main</span><div class="ws-counts">');
   });
 });

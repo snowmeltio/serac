@@ -554,3 +554,51 @@ export function formatResetTime(resetMs: number | undefined): string {
   return days + 'd ' + (hours % 24) + 'h';
 }
 
+
+/** Path with any trailing slashes stripped — the panel's canonical form for
+ *  comparing cwds and worktree paths. */
+export function normPath(p: string): string {
+  return p.replace(/\/+$/, '');
+}
+
+/** The compact W/R/D/S status-count chips shared by workspace, worktree, and
+ *  picker rows. Pure; returns '' when every count is zero. */
+export function countsChipsHtml(counts: Record<string, number | undefined>): string {
+  const waiting = counts['waiting'] || 0;
+  const running = counts['running'] || 0;
+  const done = counts['done'] || 0;
+  const stale = counts['stale'] || 0;
+  let html = '';
+  if (waiting) html += '<span class="status-count waiting-count">' + waiting + 'W</span>';
+  if (running) html += '<span class="status-count running-count">' + running + 'R</span>';
+  if (done) html += '<span class="status-count done-count">' + done + 'D</span>';
+  if (stale) html += '<span class="status-count stale-count">' + stale + 'S</span>';
+  return html;
+}
+
+/** One inline picker child row — shared scaffolding for the worktree and
+ *  scratch-dir pickers (same classes, data attributes, and confidence
+ *  gating; the pickers differ only in label, title, and optional chips). */
+export function pickerChildRow(opts: {
+  cwd: string;
+  parentKey: string;
+  label: string;
+  title: string;
+  counts: Record<string, number | undefined>;
+  confidence?: string;
+  extraChipsHtml?: string;
+}): string {
+  const waiting = opts.counts['waiting'] || 0;
+  const hasLive = (opts.counts['running'] || 0) > 0 || waiting > 0;
+  const cls = 'ws-row ws-picker-child ws-row-clickable' + (waiting > 0 ? ' ws-row-waiting' : '');
+  return '<div class="' + cls + '"'
+    + (hasLive ? ' data-confidence="' + escapeHtml(opts.confidence ?? 'medium') + '"' : '')
+    + ' data-cwd="' + escapeHtml(opts.cwd) + '"'
+    + ' data-parent-key="' + escapeHtml(opts.parentKey) + '"'
+    + ' tabindex="0" role="button"'
+    + ' title="' + escapeHtml(opts.title) + '">'
+    + '<span class="ws-name">' + escapeHtml(opts.label) + '</span>'
+    + (opts.extraChipsHtml ?? '')
+    + '<div class="ws-counts">' + countsChipsHtml(opts.counts) + '</div>'
+    + '</div>';
+}

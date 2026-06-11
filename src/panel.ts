@@ -6,6 +6,9 @@
 
 import {
   basename,
+  countsChipsHtml,
+  normPath,
+  pickerChildRow,
   escapeHtml,
   stripMarkdown,
   getDisplayName,
@@ -279,6 +282,10 @@ const RANGE_MS: Record<string, number> = {
 
   // Status debounce: tracks when each session entered waiting
   const needsInputSince: Record<string, number> = {};
+
+  // Last rendered inner HTML per card — reconcileCards skips the innerHTML
+  // write when unchanged. Pruned each render pass against renderedIds.
+  const cardHtmlCache = new Map<string, string>();
 
   // Worktree picker expansion state (persisted). Keyed on the synthetic
   // workspace key emitted by groupForeignWorkspaces (`repo:<repoRoot>`).
@@ -666,11 +673,11 @@ const RANGE_MS: Record<string, number> = {
     // row switches windows. Sessions whose worktreeRoot equals the current
     // workspace path ARE local (the current workspace is itself a worktree)
     // and stay in the list.
-    const wsRootNorm = workspacePath.replace(/\/+$/, '');
+    const wsRootNorm = normPath(workspacePath);
     sessions = sessions.filter(s => {
       if (isGhost(s)) { return false; }
       if (!s.worktreeRoot) { return true; }
-      return s.worktreeRoot.replace(/\/+$/, '') === wsRootNorm;
+      return normPath(s.worktreeRoot) === wsRootNorm;
     });
 
     const counts: Record<string, number> = { 'waiting': 0, running: 0, done: 0, stale: 0, archived: 0 };
@@ -789,6 +796,10 @@ const RANGE_MS: Record<string, number> = {
     }
     if (cards.length > 0 || archived.length > 0 || activeTeams.length > 0) {
       reconcileCards(doneSection, doneCards, now, prevRects, renderedIds);
+    }
+    // Drop cache entries for cards no longer rendered anywhere this pass.
+    for (const key of Array.from(cardHtmlCache.keys())) {
+      if (!renderedIds.has(key)) { cardHtmlCache.delete(key); }
     }
 
     // === Archive section ===
@@ -939,14 +950,23 @@ const RANGE_MS: Record<string, number> = {
       // A new element with a previous rect is a section move \u2014 FLIP it from
       // its old position below instead of playing the enter fade.
       const enters = isNew && !prevRects.has(s.sessionId);
-      el.className = 'card ' + s.status + (isFocused ? ' focused' : '') + (enters ? ' card-enter' : '');
+      const cls = 'card ' + s.status + (isFocused ? ' focused' : '') + (enters ? ' card-enter' : '');
+      if (el.className !== cls) { el.className = cls; }
       el.setAttribute('role', 'listitem');
       el.setAttribute('tabindex', '0');
       // setAttribute takes a plain DOM string \u2014 do NOT HTML-escape, or a screen
       // reader announces literal entities ("A&amp;B"). s.status is a fixed enum.
       el.setAttribute('aria-label', stripMarkdown(getDisplayName(s)) + ' \u2014 ' + s.status);
       el.dataset.confidence = s.confidence || 'high';
-      el.innerHTML = renderCardInner(s, now, isFocused);
+      // Skip the innerHTML write when the rendered card is byte-identical to
+      // the last pass \u2014 the string build is cheap, the DOM teardown is not.
+      // Skipping also stops an unchanged card's inline agent-list scroll and
+      // the transient "copied" pill being wiped on every tick.
+      const inner = renderCardInner(s, now, isFocused);
+      if (isNew || cardHtmlCache.get(s.sessionId) !== inner) {
+        el.innerHTML = inner;
+        cardHtmlCache.set(s.sessionId, inner);
+      }
 
       // Place in correct order
       let desiredNext: HTMLElement | null = prevNode ? prevNode.nextElementSibling as HTMLElement | null : container.firstElementChild as HTMLElement | null;
@@ -1339,8 +1359,6 @@ const RANGE_MS: Record<string, number> = {
   function renderWsRow(ws: WorkspaceGroup): string {
     const running = ws.counts['running'] || 0;
     const waiting = ws.counts['waiting'] || 0;
-    const done = ws.counts['done'] || 0;
-    const seen = ws.counts['stale'] || 0;
     const wtCount = ws.worktreeCount ?? 0;
     const wtMembers = ws.worktreeMembersLabel ?? '';
     const isAggregated = wtCount > 1;
@@ -1360,11 +1378,7 @@ const RANGE_MS: Record<string, number> = {
       + (pickerEligible ? ' ws-row-expandable' : '')
       + (waiting > 0 ? ' ws-row-waiting' : '')
       + ((pickerEligible || ws.cwd) ? ' ws-row-clickable' : '');
-    let countsHtml = '';
-    if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
-    if (running) countsHtml += '<span class="status-count running-count">' + running + 'R</span>';
-    if (done) countsHtml += '<span class="status-count done-count">' + done + 'D</span>';
-    if (seen) countsHtml += '<span class="status-count stale-count">' + seen + 'S</span>';
+    const countsHtml = countsChipsHtml(ws.counts);
     const hasLiveSessions = running > 0 || waiting > 0;
     const chevron = pickerEligible
       ? '<span class="ws-chevron' + (isExpanded ? ' expanded' : '') + '">&#x25B8;</span>'
@@ -1418,10 +1432,10 @@ const RANGE_MS: Record<string, number> = {
     if (ws.pseudoRepo === true) { return renderScratchPickerChildren(ws); }
     const worktrees = ws.worktrees ?? [];
     if (worktrees.length === 0) { return ''; }
-    const wsRootNorm = workspacePath.replace(/\/+$/, '');
+    const wsRootNorm = normPath(workspacePath);
     const memberByCwd = new Map<string, WorkspaceGroup>();
     for (const m of (ws.members ?? [])) {
-      if (m.cwd) { memberByCwd.set(m.cwd.replace(/\/+$/, ''), m); }
+      if (m.cwd) { memberByCwd.set(normPath(m.cwd), m); }
     }
     // Sort: main first, then by branch/path
     const sorted = [...worktrees].sort((a, b) => {
@@ -1432,43 +1446,26 @@ const RANGE_MS: Record<string, number> = {
     });
     let html = '<div class="ws-picker-children" role="group" aria-label="Worktrees">';
     for (const wt of sorted) {
-      const pathNorm = wt.path.replace(/\/+$/, '');
+      const pathNorm = normPath(wt.path);
       // Skip the worktree the user is already in — clicking it is a no-op.
       if (pathNorm === wsRootNorm) { continue; }
       const member = memberByCwd.get(pathNorm);
-      const counts = member?.counts ?? {};
-      const cRunning = counts['running'] || 0;
-      const cWaiting = counts['waiting'] || 0;
-      const cDone = counts['done'] || 0;
-      const cSeen = counts['stale'] || 0;
-      const childHasLive = cRunning > 0 || cWaiting > 0;
-      let childCountsHtml = '';
-      if (cWaiting) childCountsHtml += '<span class="status-count waiting-count">' + cWaiting + 'W</span>';
-      if (cRunning) childCountsHtml += '<span class="status-count running-count">' + cRunning + 'R</span>';
-      if (cDone) childCountsHtml += '<span class="status-count done-count">' + cDone + 'D</span>';
-      if (cSeen) childCountsHtml += '<span class="status-count stale-count">' + cSeen + 'S</span>';
-      const label = wt.branch || basename(wt.path);
       const mainChip = wt.isMain
         ? '<span class="ws-main-chip" title="Main checkout">main</span>'
         : '';
       const detachedHint = wt.branch ? '' : ' (detached)';
-      const titleText = tildeAbbrev(wt.path) + detachedHint;
       const noActivityHint = !member && !wt.isMain
         ? '<span class="ws-picker-quiet" title="No Claude Code activity in 7d">no activity</span>'
         : '';
-      const childCls = 'ws-row ws-picker-child ws-row-clickable'
-        + (cWaiting > 0 ? ' ws-row-waiting' : '');
-      html += '<div class="' + childCls + '"'
-        + (childHasLive ? ' data-confidence="' + escapeHtml(member?.confidence ?? 'medium') + '"' : '')
-        + ' data-cwd="' + escapeHtml(wt.path) + '"'
-        + ' data-parent-key="' + escapeHtml(ws.workspaceKey) + '"'
-        + ' tabindex="0" role="button"'
-        + ' title="' + escapeHtml(titleText) + '">'
-        + '<span class="ws-name">' + escapeHtml(label) + '</span>'
-        + mainChip
-        + noActivityHint
-        + '<div class="ws-counts">' + childCountsHtml + '</div>'
-        + '</div>';
+      html += pickerChildRow({
+        cwd: wt.path,
+        parentKey: ws.workspaceKey,
+        label: wt.branch || basename(wt.path),
+        title: tildeAbbrev(wt.path) + detachedHint,
+        counts: member?.counts ?? {},
+        confidence: member?.confidence,
+        extraChipsHtml: mainChip + noActivityHint,
+      });
     }
     html += '</div>';
     return html;
@@ -1482,35 +1479,20 @@ const RANGE_MS: Record<string, number> = {
   function renderScratchPickerChildren(ws: WorkspaceGroup): string {
     const members = ws.members ?? [];
     if (members.length === 0) { return ''; }
-    const wsRootNorm = workspacePath.replace(/\/+$/, '');
+    const wsRootNorm = normPath(workspacePath);
     const sorted = [...members].sort((a, b) => a.displayName.localeCompare(b.displayName));
     let html = '<div class="ws-picker-children" role="group" aria-label="Directories">';
     for (const m of sorted) {
       if (!m.cwd) { continue; }
-      const pathNorm = m.cwd.replace(/\/+$/, '');
-      if (pathNorm === wsRootNorm) { continue; }
-      const counts = m.counts ?? {};
-      const cRunning = counts['running'] || 0;
-      const cWaiting = counts['waiting'] || 0;
-      const cDone = counts['done'] || 0;
-      const cSeen = counts['stale'] || 0;
-      const childHasLive = cRunning > 0 || cWaiting > 0;
-      let childCountsHtml = '';
-      if (cWaiting) childCountsHtml += '<span class="status-count waiting-count">' + cWaiting + 'W</span>';
-      if (cRunning) childCountsHtml += '<span class="status-count running-count">' + cRunning + 'R</span>';
-      if (cDone) childCountsHtml += '<span class="status-count done-count">' + cDone + 'D</span>';
-      if (cSeen) childCountsHtml += '<span class="status-count stale-count">' + cSeen + 'S</span>';
-      const childCls = 'ws-row ws-picker-child ws-row-clickable'
-        + (cWaiting > 0 ? ' ws-row-waiting' : '');
-      html += '<div class="' + childCls + '"'
-        + (childHasLive ? ' data-confidence="' + escapeHtml(m.confidence ?? 'medium') + '"' : '')
-        + ' data-cwd="' + escapeHtml(m.cwd) + '"'
-        + ' data-parent-key="' + escapeHtml(ws.workspaceKey) + '"'
-        + ' tabindex="0" role="button"'
-        + ' title="' + escapeHtml(tildeAbbrev(m.cwd)) + '">'
-        + '<span class="ws-name">' + escapeHtml(basename(m.cwd)) + '</span>'
-        + '<div class="ws-counts">' + childCountsHtml + '</div>'
-        + '</div>';
+      if (normPath(m.cwd) === wsRootNorm) { continue; }
+      html += pickerChildRow({
+        cwd: m.cwd,
+        parentKey: ws.workspaceKey,
+        label: basename(m.cwd),
+        title: tildeAbbrev(m.cwd),
+        counts: m.counts ?? {},
+        confidence: m.confidence,
+      });
     }
     html += '</div>';
     return html;
@@ -1530,14 +1512,8 @@ const RANGE_MS: Record<string, number> = {
   function renderWorktreeRow(wt: PanelWorktreeRow): string {
     const running = wt.counts['running'] || 0;
     const waiting = wt.counts['waiting'] || 0;
-    const done = wt.counts['done'] || 0;
-    const seen = wt.counts['stale'] || 0;
     const hasLive = running > 0 || waiting > 0;
-    let countsHtml = '';
-    if (waiting) countsHtml += '<span class="status-count waiting-count">' + waiting + 'W</span>';
-    if (running) countsHtml += '<span class="status-count running-count">' + running + 'R</span>';
-    if (done) countsHtml += '<span class="status-count done-count">' + done + 'D</span>';
-    if (seen) countsHtml += '<span class="status-count stale-count">' + seen + 'S</span>';
+    const countsHtml = countsChipsHtml(wt.counts);
 
     const cls = 'ws-row ws-row-worktree'
       + (waiting > 0 ? ' ws-row-waiting' : '')
