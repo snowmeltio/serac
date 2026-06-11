@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.14.0 (2026-06-11) — Chat-style composer, honest card moves, failed agents surfaced
+
+### Changed
+- **Composer sends on Enter.** Enter sends, Shift+Enter inserts a newline; Cmd/Ctrl+Enter still sends for muscle memory. Enter mid-IME-composition never sends — there it confirms the composed text, not the message.
+- **Card activity snippet clamps at 3 lines** (was 4) — the card is a glance layer, not a reading surface.
+- **Other-workspaces rows pinned tight.** Row pitch was geometrically uniform but read uneven: badge-bearing rows fill the line box while bare lowercase names (rime, ws) leave it airy. An explicit 13px line-height plus slimmer padding keeps every row tight and deterministic.
+- **Failed workflow agents keep their own status.** The sidecar's `failed` state no longer flattens to `done` — the detail panel sorts failed agents first, rolls them up in the header, and tints their dots (`WorkflowAgentStatus` = `DisplayStatus` + `failed`).
+
+### Fixed
+- **A card changing sections moves instead of teleporting.** The FLIP "First" snapshot is now taken once per render across both the active and done sections, so a status flip (running → done) slides the card to its new home rather than fading it out in one place and in at another — exactly one element per session, ever. Snapshots capture painted (mid-animation) positions, so a render landing mid-move continues from where the card visually is.
+- **Card exits recede.** Removed cards fade at half duration, slightly scaled down and stacked beneath the in-flow cards sliding into the freed space; moves use standard-decelerate easing. Animation state commits via batched forced reflows, not rAF pairs, so transitions play deterministically under render bursts.
+
+### Internal
+- **Full typecheck is now a test gate.** `npm run test` runs `tsc --noEmit` over both the extension config (now ESNext/Bundler with DOM libs — matching how esbuild and the jsdom tests actually consume the files) and `tsconfig.webview.json` before vitest. The webview's hand-mirrored host types had drifted (four stale shapes, including the removed `show.teams` and undeclared `home`/`platformSupported` fields); all are fixed and now gated.
+- Suite at 1282 tests, including cross-section move coverage and composer keymap tests.
+
 ## v1.13.0 (2026-06-10) — Teammate messaging actually works, workflow-live cards, transcript truth
 
 Driven by a live aviary test team (three idle birds built to receive messages) that exposed the teammate-messaging feature as dead on arrival for its only real audience, plus a BHP overnight workflow run that exposed the done-card lie.
