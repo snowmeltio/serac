@@ -57,6 +57,7 @@ function makeUsage(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
     extraUsageEnabled: false,
     extraUsageCredits: null,
     apiConnected: true,
+    platformSupported: true,
     currentWorkspaceKey: 'test-workspace',
     loaded: true,
     lastPoll: Date.now(),
@@ -90,7 +91,10 @@ function makeWorkflow(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapsh
 
 describe('AgentPanelProvider', () => {
   let provider: AgentPanelProvider;
-  const extensionUri = Uri.file('/test/extension');
+  // The runtime module is mocked to ./__mocks__/vscode.js, so the mock Uri is
+  // what the provider actually receives — the cast only satisfies the
+  // compile-time signature, which names the real vscode.Uri.
+  const extensionUri = Uri.file('/test/extension') as unknown as import('vscode').Uri;
 
   beforeEach(() => {
     vi.clearAllMocks();

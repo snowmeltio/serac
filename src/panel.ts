@@ -153,6 +153,8 @@ interface UpdateMessage {
   sessions: PanelSession[];
   waitingCount: number;
   workspacePath: string;
+  /** Host home dir for ~-abbreviation — the webview has no process.env. */
+  home?: string;
   usage?: UsageData;
   foreignWorkspaces?: WorkspaceGroup[];
   foreignWaiting?: PanelSession[];
@@ -203,7 +205,7 @@ type WebviewIncomingMessage = UpdateMessage | FocusMessage | SettingsMessage;
  *  initial value before the first SettingsMessage arrives — kept in sync
  *  with the package.json `default` declarations. */
 const DEFAULT_PANEL_SETTINGS: PanelSettings = {
-  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, teams: true, workflows: true, fileCollisions: false },
+  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, workflows: true, fileCollisions: false },
   archive: { defaultRange: '1d', maxDoneShown: 20 },
   refresh: { intervalSeconds: 5 },
   discovery: { ageGateDays: 7 },
@@ -241,8 +243,8 @@ const RANGE_MS: Record<string, number> = {
    *  applies only to fresh installs (no saved state). */
   let archiveRangeFromSavedState = false;
   const savedState = vscode.getState();
-  if (savedState && savedState.archiveRange && savedState.archiveRange in RANGE_MS) {
-    archiveRange = savedState.archiveRange as string;
+  if (savedState && typeof savedState.archiveRange === 'string' && savedState.archiveRange in RANGE_MS) {
+    archiveRange = savedState.archiveRange;
     archiveRangeFromSavedState = true;
     // Notify extension of restored range so it can load extended archive if needed
     vscode.postMessage({ type: 'archiveRange', rangeMs: RANGE_MS[archiveRange] });
@@ -793,6 +795,21 @@ const RANGE_MS: Record<string, number> = {
       topBar.after(scrollWrap);
     }
 
+    // FLIP "First": snapshot every card's painted position before any layout
+    // mutation this pass. Shared across the active and done sections so a
+    // card whose status flips slides to its new section instead of fading
+    // out in one place and back in at another. Rects include any in-flight
+    // transform, which is exactly the visual position an interrupted
+    // animation must continue from.
+    const prevRects = new Map<string, DOMRect>();
+    scrollWrap.querySelectorAll('.card:not(.card-leave)').forEach(el => {
+      const id = (el as HTMLElement).dataset.sessionId;
+      if (id) { prevRects.set(id, el.getBoundingClientRect()); }
+    });
+    // Every session rendered as a card somewhere this pass — used to tell a
+    // cross-section move apart from a genuine removal.
+    const renderedIds = new Set(cards.map(c => c.sessionId));
+
     // === Foreign waiting band (other workspaces — needs you) ===
     if (currentSettings.show.foreignWorkspaces) {
       renderForeignWaitingSection(scrollWrap, now);
@@ -834,7 +851,7 @@ const RANGE_MS: Record<string, number> = {
       cardSection.innerHTML = '<div class="empty-state"><div class="icon">\u2298</div><div>'
         + escapeHtml(headline) + '</div><div class="hint">' + escapeHtml(hint) + '</div></div>';
     } else {
-      reconcileCards(cardSection, runningCards, now);
+      reconcileCards(cardSection, runningCards, now, prevRects, renderedIds);
     }
 
     // === Foreign-running strip (between local active and local done) ===
@@ -857,7 +874,7 @@ const RANGE_MS: Record<string, number> = {
       doneAnchor.after(doneSection);
     }
     if (cards.length > 0 || archived.length > 0 || activeTeams.length > 0) {
-      reconcileCards(doneSection, doneCards, now);
+      reconcileCards(doneSection, doneCards, now, prevRects, renderedIds);
     }
 
     // === Archive section ===
@@ -924,7 +941,12 @@ const RANGE_MS: Record<string, number> = {
   }
 
   // ===== DOM RECONCILER with FLIP =====
-  function reconcileCards(container: HTMLElement, cards: PanelSession[], now: number): void {
+  // prevRects is the cross-section position snapshot taken at the top of
+  // render(), before any layout mutation; renderedIds is every session that
+  // gets a card somewhere this pass. Together they let a card that changed
+  // sections FLIP-slide to its new home instead of cross-fading in two
+  // places at once.
+  function reconcileCards(container: HTMLElement, cards: PanelSession[], now: number, prevRects: Map<string, DOMRect>, renderedIds: Set<string>): void {
     // Clear non-card children
     const children = Array.from(container.children);
     for (const child of children) {
@@ -933,52 +955,57 @@ const RANGE_MS: Record<string, number> = {
       }
     }
 
-    // 1. Snapshot current positions (FLIP: First)
     const existing = container.querySelectorAll('.card');
-    const firstRects = new Map<string, DOMRect>();
     const containerRect = container.getBoundingClientRect();
-    const canAnimate = containerRect.height > 0;
+    const canAnimate = containerRect.height > 0 && TRANSITION_MS > 0;
 
-    existing.forEach(el => {
-      const id = (el as HTMLElement).dataset.sessionId;
-      if (id && canAnimate) {
-        firstRects.set(id, el.getBoundingClientRect());
-      }
-    });
-
-    // 2. Build new ID set
+    // 1. ID set for THIS container
     const newIds = new Set(cards.map(c => c.sessionId));
 
-    // 3. Mark removed cards for exit animation.
-    //    Take them out of flex flow (position: absolute) so siblings reflow
-    //    upward immediately; the FLIP step below then animates that reflow.
-    //    The card-leave class is added on the next frame so the browser
-    //    registers the pre-leave state and the opacity transition actually
-    //    animates.
+    // 2. Departures. Classify and measure before mutating anything: taking
+    //    one leaver out of flow reflows the next, so a second leaver measured
+    //    mid-loop would pin to the wrong spot.
+    //    - A card whose session moved to the other section is removed
+    //      outright; its replacement FLIPs from prevRects so the same card
+    //      visually slides rather than fading out here and in there.
+    //    - A genuinely removed card exits in place: pinned absolute so
+    //      siblings reflow (animated by the FLIP step), fading out behind.
+    const movers: HTMLElement[] = [];
+    const leavers: Array<{ el: HTMLElement; top: number; left: number; width: number; height: number }> = [];
     existing.forEach(el => {
       const htmlEl = el as HTMLElement;
       const id = htmlEl.dataset.sessionId;
-      if (id && !newIds.has(id) && !htmlEl.classList.contains('card-leave')) {
-        const topPx = htmlEl.offsetTop;
-        const leftPx = htmlEl.offsetLeft;
-        const widthPx = htmlEl.offsetWidth;
-        const heightPx = htmlEl.offsetHeight;
-        htmlEl.style.transition = 'none';
-        htmlEl.style.transform = '';
-        htmlEl.style.top = topPx + 'px';
-        htmlEl.style.left = leftPx + 'px';
-        htmlEl.style.width = widthPx + 'px';
-        htmlEl.style.height = heightPx + 'px';
-        htmlEl.style.position = 'absolute';
-        requestAnimationFrame(() => {
-          htmlEl.style.transition = '';
-          htmlEl.classList.add('card-leave');
-        });
-        setTimeout(() => { if (htmlEl.parentNode) htmlEl.parentNode.removeChild(htmlEl); }, TRANSITION_MS + 50);
+      if (!id || newIds.has(id) || htmlEl.classList.contains('card-leave')) { return; }
+      if (renderedIds.has(id)) {
+        movers.push(htmlEl);
+      } else {
+        leavers.push({ el: htmlEl, top: htmlEl.offsetTop, left: htmlEl.offsetLeft, width: htmlEl.offsetWidth, height: htmlEl.offsetHeight });
       }
     });
+    movers.forEach(el => container.removeChild(el));
+    if (canAnimate) {
+      for (const l of leavers) {
+        l.el.style.transition = 'none';
+        l.el.style.transform = '';
+        l.el.style.top = l.top + 'px';
+        l.el.style.left = l.left + 'px';
+        l.el.style.width = l.width + 'px';
+        l.el.style.height = l.height + 'px';
+        l.el.style.position = 'absolute';
+        setTimeout(() => { if (l.el.parentNode) { l.el.parentNode.removeChild(l.el); } }, TRANSITION_MS + 50);
+      }
+      if (leavers.length > 0) {
+        void container.offsetHeight; // commit the pinned pre-leave state
+        for (const l of leavers) {
+          l.el.style.transition = '';
+          l.el.classList.add('card-leave');
+        }
+      }
+    } else {
+      leavers.forEach(l => container.removeChild(l.el));
+    }
 
-    // 4. Create/update/reorder cards
+    // 3. Create/update/reorder cards
     const existingMap = new Map<string, HTMLElement>();
     container.querySelectorAll('.card:not(.card-leave)').forEach(el => {
       existingMap.set((el as HTMLElement).dataset.sessionId!, el as HTMLElement);
@@ -993,10 +1020,12 @@ const RANGE_MS: Record<string, number> = {
       if (!el) {
         el = document.createElement('div');
         el.dataset.sessionId = s.sessionId;
-        el.classList.add('card', 'card-enter');
       }
 
-      el.className = 'card ' + s.status + (isFocused ? ' focused' : '') + (isNew ? ' card-enter' : '');
+      // A new element with a previous rect is a section move \u2014 FLIP it from
+      // its old position below instead of playing the enter fade.
+      const enters = isNew && !prevRects.has(s.sessionId);
+      el.className = 'card ' + s.status + (isFocused ? ' focused' : '') + (enters ? ' card-enter' : '');
       el.setAttribute('role', 'listitem');
       el.setAttribute('tabindex', '0');
       // setAttribute takes a plain DOM string \u2014 do NOT HTML-escape, or a screen
@@ -1017,33 +1046,46 @@ const RANGE_MS: Record<string, number> = {
       prevNode = el;
     }
 
-    // 5. FLIP: Last, Invert, Play
+    // 4. FLIP: Last, Invert, Play. Batched with forced reflows rather than
+    //    rAF pairs: a reflow deterministically commits the inverted state, so
+    //    the release below always transitions (a lone rAF could coalesce both
+    //    writes into one style recalc and the animation never played).
+    const updated = Array.from(container.querySelectorAll('.card:not(.card-leave)')) as HTMLElement[];
     if (canAnimate) {
-      const updated = container.querySelectorAll('.card:not(.card-leave)');
-      updated.forEach(el => {
-        const htmlEl = el as HTMLElement;
-        const id = htmlEl.dataset.sessionId;
+      const entering: HTMLElement[] = [];
+      const flipped: Array<{ el: HTMLElement; first: DOMRect }> = [];
+      for (const el of updated) {
+        if (el.classList.contains('card-enter')) { entering.push(el); continue; }
+        const first = prevRects.get(el.dataset.sessionId!);
+        if (first) { flipped.push({ el, first }); }
+      }
 
-        if (htmlEl.classList.contains('card-enter')) {
-          requestAnimationFrame(() => { htmlEl.classList.remove('card-enter'); });
-          return;
-        }
+      // Invert: clear any in-flight transform so the measurement below is
+      // pure layout. prevRects holds the painted (mid-animation) position,
+      // so an interrupted move continues from where it visually is instead
+      // of jumping.
+      for (const f of flipped) {
+        f.el.style.transition = 'none';
+        f.el.style.transform = '';
+      }
+      if (flipped.length > 0) { void container.offsetHeight; }
+      const inverted: HTMLElement[] = [];
+      for (const f of flipped) {
+        const deltaY = f.first.top - f.el.getBoundingClientRect().top;
+        if (Math.abs(deltaY) < 1) { f.el.style.transition = ''; continue; }
+        f.el.style.transform = 'translateY(' + deltaY + 'px)';
+        inverted.push(f.el);
+      }
 
-        const firstRect = firstRects.get(id!);
-        if (!firstRect) return;
-
-        const lastRect = htmlEl.getBoundingClientRect();
-        const deltaY = firstRect.top - lastRect.top;
-        if (Math.abs(deltaY) < 1) return;
-
-        htmlEl.style.transition = 'none';
-        htmlEl.style.transform = 'translateY(' + deltaY + 'px)';
-
-        requestAnimationFrame(() => {
-          htmlEl.style.transition = '';
-          htmlEl.style.transform = '';
-        });
-      });
+      // Play: commit the inverted/enter state, then release in one batch.
+      if (inverted.length > 0 || entering.length > 0) { void container.offsetHeight; }
+      for (const el of inverted) {
+        el.style.transition = '';
+        el.style.transform = '';
+      }
+      for (const el of entering) { el.classList.remove('card-enter'); }
+    } else {
+      for (const el of updated) { el.classList.remove('card-enter'); }
     }
   }
 

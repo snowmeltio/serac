@@ -1,6 +1,9 @@
 {
   "compilerOptions": {
-    "module": "Node16",
+    // Type-check only — esbuild does the real emit (CJS for the extension
+    // host) and vitest runs tests as ESM, so ESNext/Bundler matches how the
+    // files are actually consumed and permits the tests' top-level await.
+    "module": "ESNext",
     "target": "ES2022",
     "outDir": "dist",
     "rootDir": "src",
@@ -8,11 +11,15 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "moduleResolution": "Node16",
-    "lib": ["ES2022"],
+    "moduleResolution": "Bundler",
+    // DOM lib is for the jsdom integration tests, which import the webview
+    // modules and so pull them into this program regardless of `exclude`.
+    // The webview bundle itself is additionally checked (with its own module
+    // settings) via tsconfig.webview.json — `npm run typecheck` runs both.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "declaration": false,
     "sourceMap": true
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist", "src/panel.ts", "src/detailView.ts"]
+  "exclude": ["node_modules", "dist"]
 }

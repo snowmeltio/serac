@@ -1,6 +1,6 @@
 import type {
-  DisplayStatus,
   WorkflowAgentSnapshot,
+  WorkflowAgentStatus,
   WorkflowPhase,
   WorkflowRunStatus,
   WorkflowSnapshot,
@@ -28,10 +28,11 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
-/** Map a sidecar per-agent `state` onto the shared DisplayStatus union.
- *  There is no 'failed' DisplayStatus — a failed agent is terminal, so it
- *  renders as 'done'; the run-level status + logs carry the failure. */
-function mapAgentState(state: unknown): DisplayStatus {
+/** Map a sidecar per-agent `state` onto WorkflowAgentStatus. 'failed' is
+ *  preserved as its own status: the detail panel sorts failed agents first
+ *  and rolls them up in the header, and the webview tints their dots — all
+ *  of which is dead weight if failures flatten to 'done'. */
+function mapAgentState(state: unknown): WorkflowAgentStatus {
   switch (state) {
     case 'done': return 'done';
     case 'completed': return 'done';
@@ -40,7 +41,7 @@ function mapAgentState(state: unknown): DisplayStatus {
     case 'start': return 'running';
     case 'waiting': return 'waiting';
     case 'queued': return 'waiting';
-    case 'failed': return 'done';
+    case 'failed': return 'failed';
     default: return 'running';
   }
 }

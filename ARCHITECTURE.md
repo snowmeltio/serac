@@ -421,7 +421,9 @@ When the user clicks "+ New", the extension snapshots known session IDs and open
 
 ### DOM reconciliation
 
-The webview uses a keyed reconciler (not innerHTML replacement). Cards are matched by session ID; new cards fade in, removed cards fade out, reordered cards animate via FLIP (First, Last, Invert, Play) with 300ms CSS transitions.
+The webview uses a keyed reconciler (not innerHTML replacement). Cards are matched by session ID; new cards fade in, removed cards fade out (at half duration, scaled down and stacked beneath in-flow cards), reordered cards animate via FLIP (First, Last, Invert, Play) with 300ms CSS transitions.
+
+The FLIP "First" snapshot is taken once per render, across both the active and done card sections, before any layout mutation. A card whose status flips section (running→done) is therefore a *move*, not an exit-plus-enter: the old element is removed outright and the new one FLIP-slides from the snapshot position. Because the snapshot captures painted positions (including any in-flight transform), a render landing mid-animation continues the move from where the card visually is. Animation state is committed with forced reflows (batched per phase), not rAF pairs, so transitions play deterministically under the 5s tick plus event-driven render bursts.
 
 ### Status debouncing
 
@@ -509,7 +511,7 @@ Per parent session at `~/.claude/projects/<workspaceKey>/<sessionId>/`:
 
 ### Status mapping
 
-The sidecar's per-agent `state` maps to `DisplayStatus`; run `status` maps to `WorkflowRunStatus` (`completed` / `running` / `failed` / `incomplete`). Sidecar roll-up numbers are preferred over recomputation (retries are surfaced via `attempt`).
+The sidecar's per-agent `state` maps to `WorkflowAgentStatus` (`DisplayStatus` plus `failed` — preserved so the detail panel can sort failed agents first and roll them up); run `status` maps to `WorkflowRunStatus` (`completed` / `running` / `failed` / `incomplete`). Sidecar roll-up numbers are preferred over recomputation (retries are surfaced via `attempt`).
 
 **Workflow-live status override.** The Workflow tool runs in the background, so the lead's turn ends — and the idle timer marks the session `done` — while its agents are mid-sweep. `panelUtils.ts:applyWorkflowLiveStatus`, applied host-side at the sessions↔workflows merge point (`extension.ts:sendUpdate`), upgrades a `done`/`stale` session that owns a **running, non-dismissed** run to `running` (confidence `high` — a live run is direct evidence). This is a presentation-layer merge rule, NOT a SessionManager state transition: the per-session machine stays workflow-blind; the override evaporates the moment the run completes (sidecar) or is marked `incomplete`. `waiting` is never downgraded.
 

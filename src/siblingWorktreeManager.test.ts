@@ -22,7 +22,7 @@ import * as os from 'os';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 
-const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {} };
+const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {}, trace: () => {} };
 
 let tmpDir: string;
 let projectsDir: string;

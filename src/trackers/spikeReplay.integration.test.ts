@@ -44,7 +44,8 @@ function loadCapture(name: string): Record<string, unknown>[] {
 function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
   return {
     parentToolUseId: 'tu', description: 'test', running: true, waitingOnPermission: false,
-    lastActivity: new Date(), activeTools: new Map(), permissionTracker: undefined,
+    lastActivity: new Date(), activeTools: new Map(),
+    permissionTracker: { reschedule: () => {}, cancel: () => {}, dispose: () => {} },
     acknowledged: false, tailer: null, silenceTimerId: undefined, agentId: null,
     startedAt: new Date(), resultPreview: null, toolsCompleted: 0,
     ...overrides,
@@ -272,10 +273,11 @@ describe('Extended Stop payload — all-hook-events-2026-06-10.jsonl (CC 2.1.159
     const SID = String(PAYLOADS[0].session_id);
     const router = new HookEventRouter();
     let fired = 0;
-    makePermissionTracker('Bash', {
-      hookRouter: router, sessionId: SID,
-      onWaiting: () => { fired += 1; }, onCleared: () => {},
-    });
+    makePermissionTracker({
+      getActiveTools: () => new Map(),
+      getLastToolResultAt: () => 0,
+      onWaitingFired: () => { fired += 1; },
+    }, { hookRouter: router, sessionId: SID });
     for (const p of PAYLOADS) {
       router.onHookEvent(SID, String(p.hook_event_name), p);
     }

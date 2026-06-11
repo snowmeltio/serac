@@ -5,23 +5,26 @@ import type { WorktreeInfo } from './gitWorktreeUtil.js';
 
 function makeSession(opts: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
-    sessionId: opts.sessionId ?? 'sess-1',
-    workspaceKey: opts.workspaceKey ?? '-test',
-    cwd: opts.cwd ?? '/test',
-    title: opts.title ?? '',
-    topic: opts.topic ?? '',
-    status: opts.status ?? 'done',
-    confidence: opts.confidence ?? 'high',
-    lastActivity: opts.lastActivity ?? Date.now(),
-    activity: opts.activity ?? '',
-    modelLabel: opts.modelLabel ?? '',
-    contextTokens: opts.contextTokens ?? 0,
-    subagents: opts.subagents ?? [],
-    dismissed: opts.dismissed ?? false,
-    acknowledged: opts.acknowledged ?? false,
-    worktreeRoot: opts.worktreeRoot,
-    worktreeLabel: opts.worktreeLabel,
-  } as SessionSnapshot;
+    sessionId: 'sess-1',
+    slug: 'test',
+    workspaceKey: '-test',
+    cwd: '/test',
+    title: '',
+    topic: '',
+    status: 'done',
+    confidence: 'high',
+    lastActivity: Date.now(),
+    firstActivity: Date.now() - 60_000,
+    activity: '',
+    modelLabel: '',
+    contextTokens: 0,
+    subagents: [],
+    dismissed: false,
+    searchText: '',
+    customTitle: '',
+    aiTitle: '',
+    ...opts,
+  };
 }
 
 const mainWt: WorktreeInfo = { path: '/repo', branch: 'main', isMain: true };

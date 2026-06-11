@@ -79,6 +79,7 @@ function makeTeam(overrides: Partial<TeamSnapshot> = {}): TeamSnapshot {
     ],
     inProcessMembers: [],
     counts: { done: 1, running: 1 },
+    updatedAt: 1000,
     dismissed: false,
     ...overrides,
   };

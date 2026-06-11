@@ -156,8 +156,8 @@ describe('extractAgentCalls', () => {
 
 describe('matchAgentCall', () => {
   const calls: WorkflowAgentCall[] = [
-    { label: 'review', phase: 'Review', staticSegments: ['Carefully review the authentication module for bugs'], promptTemplate: null, labelTemplate: null },
-    { label: 'verify', phase: 'Verify', staticSegments: ['Verify the populated list and report any discrepancies'], promptTemplate: null, labelTemplate: null },
+    { label: 'review', phase: 'Review', staticSegments: ['Carefully review the authentication module for bugs'], promptTemplate: null, labelTemplate: null, promptExpr: null, sourceIndex: 0 },
+    { label: 'verify', phase: 'Verify', staticSegments: ['Verify the populated list and report any discrepancies'], promptTemplate: null, labelTemplate: null, promptExpr: null, sourceIndex: 0 },
   ];
 
   it('matches the call whose static segment appears in the expanded prompt', () => {
@@ -171,8 +171,8 @@ describe('matchAgentCall', () => {
 
   it('prefers the call with the longest matched segment when several match', () => {
     const ambiguous: WorkflowAgentCall[] = [
-      { label: 'short', phase: 'A', staticSegments: ['shared distinctive prefix'], promptTemplate: null, labelTemplate: null },
-      { label: 'long', phase: 'B', staticSegments: ['shared distinctive prefix that continues much further'], promptTemplate: null, labelTemplate: null },
+      { label: 'short', phase: 'A', staticSegments: ['shared distinctive prefix'], promptTemplate: null, labelTemplate: null, promptExpr: null, sourceIndex: 0 },
+      { label: 'long', phase: 'B', staticSegments: ['shared distinctive prefix that continues much further'], promptTemplate: null, labelTemplate: null, promptExpr: null, sourceIndex: 0 },
     ];
     const prompt = 'x: shared distinctive prefix that continues much further — y';
     expect(matchAgentCall(prompt, ambiguous)!.label).toBe('long');

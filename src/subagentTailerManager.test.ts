@@ -15,7 +15,7 @@ function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     waitingOnPermission: false,
     lastActivity: new Date(),
     activeTools: new Map(),
-    permissionTimerId: undefined,
+    permissionTracker: { reschedule: () => {}, cancel: () => {}, dispose: () => {} },
     acknowledged: false,
     tailer: null,
     silenceTimerId: undefined,
@@ -161,14 +161,13 @@ describe('SubagentTailerManager', () => {
       expect(mgr.getActiveTailerCount()).toBe(0);
     });
 
-    it('does NOT touch permissionTimerId (owned by SessionManager)', () => {
+    it('does NOT touch the permission tracker (owned by SessionManager)', () => {
       const mgr = new SubagentTailerManager(makeContext());
-      const timerId = setTimeout(() => {}, 99999);
-      const sub = makeSubagent({ permissionTimerId: timerId });
+      const dispose = vi.fn();
+      const sub = makeSubagent({ permissionTracker: { reschedule: vi.fn(), cancel: vi.fn(), dispose } });
 
       mgr.disposeSubagent(sub);
-      expect(sub.permissionTimerId).toBe(timerId);
-      clearTimeout(timerId);
+      expect(dispose).not.toHaveBeenCalled();
     });
   });
 

@@ -808,8 +808,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
     composerInput.addEventListener('compositionstart', () => { composing = true; });
     composerInput.addEventListener('compositionend', () => { composing = false; sanitiseComposerInput(); });
     composerInput.addEventListener('keydown', (e: KeyboardEvent) => {
-      // Cmd/Ctrl+Enter sends; a bare Enter keeps inserting newlines (multiline).
-      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendComposer(); }
+      // Enter sends (chat-style, Murray 2026-06-11); Shift+Enter inserts a
+      // newline (textarea default). Cmd/Ctrl+Enter still sends for muscle
+      // memory. Never send mid-IME-composition — Enter there confirms the
+      // composed text, not the message.
+      if (e.key !== 'Enter' || e.shiftKey) { return; }
+      if (composing || e.isComposing) { return; }
+      e.preventDefault();
+      sendComposer();
     });
   }
   if (composerSend) { composerSend.addEventListener('click', sendComposer); }

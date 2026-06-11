@@ -42,8 +42,9 @@ describe('parseWorkflowSidecar', () => {
     expect(reportAgents).toHaveLength(0);
     // A retried agent is preserved with attempt > 1.
     expect(snap!.agents.some(a => a.attempt === 2)).toBe(true);
-    // A failed agent state maps to the terminal DisplayStatus 'done'.
-    expect(snap!.agents.find(a => a.label === 'verify:candidate-1')!.status).toBe('done');
+    // A failed agent keeps its own status — the detail panel sorts failed
+    // agents first and rolls them up; flattening to 'done' hid failures.
+    expect(snap!.agents.find(a => a.label === 'verify:candidate-1')!.status).toBe('failed');
     // resultPreview/lastToolName tolerate null.
     expect(snap!.agents.find(a => a.label === 'verify:candidate-1')!.resultPreview).toBeNull();
     // log() narrator lines are carried through.

@@ -67,6 +67,8 @@ export interface PanelSubagent {
 export interface UsageData {
   loaded: boolean;
   apiConnected?: boolean;
+  /** False on platforms where quota polling isn't available (non-macOS). */
+  platformSupported?: boolean;
   quotaPct5h?: number;
   quotaPctWeekly?: number;
   resetTime?: number;

@@ -430,6 +430,12 @@ export interface TeamSnapshot {
 /** Normalised run status (sidecar `status` mapped onto a closed union). */
 export type WorkflowRunStatus = 'completed' | 'running' | 'failed' | 'incomplete';
 
+/** Per-agent status. Workflow agents extend DisplayStatus with 'failed' —
+ *  the completion sidecar records which agents errored, and the detail panel
+ *  sorts those first and rolls them up ("2 failed"). Sessions/teammates never
+ *  carry 'failed'; their unions stay DisplayStatus. */
+export type WorkflowAgentStatus = DisplayStatus | 'failed';
+
 /** A phase declared in the workflow script's `meta.phases` (1-based index). */
 export interface WorkflowPhase {
   index: number;
@@ -447,7 +453,7 @@ export interface WorkflowAgentSnapshot {
   phaseTitle: string | null;
   model: string;
   agentType: string | null;
-  status: DisplayStatus;
+  status: WorkflowAgentStatus;
   startedAt: number;            // epoch ms
   durationMs: number | null;
   tokens: number;
@@ -501,7 +507,8 @@ export interface DetailAgentView {
    *  member name for team. */
   agentId: string;
   label: string;
-  status: DisplayStatus;
+  /** Cross-source: 'failed' occurs only for workflow agents. */
+  status: WorkflowAgentStatus;
   tokens: number;
   toolCalls: number;
   durationMs: number | null;

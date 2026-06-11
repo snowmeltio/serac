@@ -150,7 +150,12 @@ body {
   align-items: center;
   gap: 6px;
   font-size: 10px;
-  padding: 2px 0;
+  /* Explicit line-height + slim padding: rows with badge chips read tighter
+   * than bare lowercase names (rime, ws) under the UA's `normal` line box, so
+   * pin the box and keep the whole list tight (Murray, 2026-06-11). Chips and
+   * status counts all fit within 13px. */
+  line-height: 13px;
+  padding: 1px 0;
   border-radius: 3px;
 }
 .ws-name {
@@ -269,13 +274,22 @@ body {
   cursor: pointer;
   border-left: 3px solid transparent;
   /* Reactive: serac.animations.enabled flips --serac-transition-ms between 300ms and 0. */
-  transition: transform var(--serac-transition-ms, 300ms) ease-out, opacity var(--serac-transition-ms, 300ms) ease-out, background 0.1s;
+  transition: transform var(--serac-transition-ms, 300ms) cubic-bezier(0.2, 0, 0, 1), opacity var(--serac-transition-ms, 300ms) cubic-bezier(0.2, 0, 0, 1), background 0.1s;
   will-change: transform;
   position: relative;
 }
 
 .card.card-enter { opacity: 0; transform: translateY(-10px); }
-.card.card-leave { opacity: 0; pointer-events: none; }
+/* Exit at half the move duration and slightly scaled down, stacked beneath
+ * the in-flow cards FLIP-sliding into the freed space, so a removal reads as
+ * the card receding rather than two cards overlapping. */
+.card.card-leave {
+  opacity: 0;
+  transform: scale(0.96);
+  z-index: 0;
+  pointer-events: none;
+  transition-duration: calc(var(--serac-transition-ms, 300ms) / 2), calc(var(--serac-transition-ms, 300ms) / 2), 0.1s;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .card { transition: none; }
@@ -621,7 +635,8 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
-  -webkit-line-clamp: 4;
+  /* 3 lines max — glance layer, not a reading surface (Murray, 2026-06-11). */
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   white-space: normal;
 }

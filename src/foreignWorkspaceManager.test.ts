@@ -21,7 +21,7 @@ import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
 import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
 import { PSEUDO_TMP_REPO_ROOT } from './panelUtils.js';
 
-const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {} };
+const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {}, trace: () => {} };
 
 let tmpDir: string;
 let projectsDir: string;

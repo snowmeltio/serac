@@ -415,6 +415,33 @@ describe('detailView.ts — teammate composer (experimental)', () => {
     expect(cSend().disabled).toBe(false); // button still released
   });
 
+  it('sends on a bare Enter (chat-style)', () => {
+    sendSettings({ teammateMessaging: true, operatorName: 'murray' });
+    sendRender(teammateModel());
+    cInput().value = 'quick ping';
+    cInput().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    const sent = (postedMessages as any[]).find(m => m.type === 'sendTeammateMessage');
+    expect(sent).toMatchObject({ text: 'quick ping' });
+  });
+
+  it('Shift+Enter does NOT send (newline stays a newline)', () => {
+    sendSettings({ teammateMessaging: true, operatorName: 'murray' });
+    sendRender(teammateModel());
+    cInput().value = 'line one';
+    cInput().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }));
+    expect((postedMessages as any[]).filter(m => m.type === 'sendTeammateMessage')).toHaveLength(0);
+    expect(cInput().value).toBe('line one'); // draft untouched
+  });
+
+  it('Enter mid-IME-composition does NOT send', () => {
+    sendSettings({ teammateMessaging: true, operatorName: 'murray' });
+    sendRender(teammateModel());
+    cInput().value = 'にほんご';
+    cInput().dispatchEvent(new CompositionEvent('compositionstart'));
+    cInput().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' }));
+    expect((postedMessages as any[]).filter(m => m.type === 'sendTeammateMessage')).toHaveLength(0);
+  });
+
   it('ignores Cmd+Enter while a send is already in flight', () => {
     sendSettings({ teammateMessaging: true, operatorName: 'murray' });
     sendRender(teammateModel());

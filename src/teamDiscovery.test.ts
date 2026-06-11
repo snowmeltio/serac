@@ -72,7 +72,7 @@ let teamsDir: string;
 let projectsDir: string;
 const PROJECT_CWD = '/Users/test/repos/project';
 
-const log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
+const log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn(), trace: vi.fn() };
 
 /** The workspace key the discovery is scoped to (matches PROJECT_CWD). */
 const LOCAL_WS_KEY = PROJECT_CWD.replace(/[^a-zA-Z0-9]/g, '-');
@@ -80,7 +80,7 @@ const LOCAL_WS_KEY = PROJECT_CWD.replace(/[^a-zA-Z0-9]/g, '-');
 function makeDiscovery(localWorkspaceKey: string = LOCAL_WS_KEY): InstanceType<typeof TeamDiscovery> {
   const td = new TeamDiscovery(projectsDir, localWorkspaceKey, log);
   // Override teamsDir to our temp location
-  (td as Record<string, unknown>)['teamsDir'] = teamsDir;
+  (td as unknown as Record<string, unknown>)['teamsDir'] = teamsDir;
   return td;
 }
 

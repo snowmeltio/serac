@@ -145,6 +145,21 @@ describe('panel.ts integration', () => {
     expect(summary.textContent).toContain('1 done');
   });
 
+  it('moves a card between sections on status change without duplicating it', () => {
+    const sess = makeSession({ status: 'running' });
+    sendUpdate({ sessions: [sess] });
+    const active = document.querySelector('.card-section:not(.done-section)')!;
+    expect(active.querySelectorAll('.card').length).toBe(1);
+
+    // Status flips running -> done: the card must end up in the done
+    // section, with exactly one element for the session across the panel
+    // (the old element is removed outright, not left as a fading ghost).
+    sendUpdate({ sessions: [{ ...sess, status: 'done' }] });
+    const all = document.querySelectorAll(`.card[data-session-id="${sess.sessionId}"]`);
+    expect(all.length).toBe(1);
+    expect(all[0].closest('.done-section')).toBeTruthy();
+  });
+
   it('renders dismissed sessions in archive section', () => {
     sendUpdate({
       sessions: [
