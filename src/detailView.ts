@@ -635,9 +635,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
       updateComposer();
       return;
     }
+    // Rail dot (UX-6): when collapsed, the rail's only content is the toggle —
+    // this keeps the run's worst-case roll-up visible there. Always in the
+    // markup, shown purely by the .nav-collapsed CSS, so the no-re-render
+    // toggle animation is preserved; the steady refresh keeps it current.
+    const railStatus = aggStatus(allAgents());
+    const railDot = railStatus
+      ? '<span class="wf-dot wf-rail-dot ' + escapeHtml(railStatus === 'completed' ? 'done' : railStatus) + '" aria-hidden="true"></span>'
+      : '';
     const navInner = '<div class="wf-nav-head"><button class="wf-nav-toggle"'
       + ' title="Toggle agent list" aria-label="Toggle agent list">'
       + '<span class="wf-nav-toggle-icon" aria-hidden="true"></span>'
+      + railDot
       + '<span class="wf-nav-toggle-text">Agents</span></button></div>' + renderNav();
     root.innerHTML = renderHeader()
       + '<div class="wf-2pane">'

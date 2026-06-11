@@ -119,6 +119,24 @@ describe('detailView.ts — collapse + grouped switcher', () => {
     expect(live.textContent).toContain('pattern="eval(" path=src/');
   });
 
+  it('toggle carries the aggregate rail dot classed by the worst-case roll-up (UX-6)', () => {
+    sendRender(twoSourceModel());
+    // One running agent → aggregate is running.
+    const dot = q('.wf-nav-toggle .wf-rail-dot')!;
+    expect(dot.classList.contains('running')).toBe(true);
+
+    // Collapse is purely a class flip; the dot element survives untouched.
+    q('.wf-nav-toggle')!.click();
+    expect(root().classList.contains('nav-collapsed')).toBe(true);
+    expect(q('.wf-nav-toggle .wf-rail-dot')).toBe(dot);
+
+    // All-done model → dot rolls up to done on the next render.
+    const model = twoSourceModel() as any;
+    model.groups[0].agents = model.groups[0].agents.map((a: any) => ({ ...a, status: 'done' }));
+    sendRender(model);
+    expect(q('.wf-nav-toggle .wf-rail-dot')!.classList.contains('done')).toBe(true);
+  });
+
   it('does NOT collapse the agent list when selecting an agent (click-through stays open)', () => {
     sendRender(twoSourceModel());
     // First agent auto-selected; list is expanded.

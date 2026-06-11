@@ -200,6 +200,11 @@ body {
 .wf-nav-toggle-icon::before { content: '\2039'; } /* ‹ */
 #wf-root.nav-collapsed .wf-nav-toggle-icon::before { content: '\2630'; } /* ☰ */
 #wf-root.nav-collapsed .wf-nav-toggle-text { display: none; }
+/* Aggregate roll-up dot on the collapsed rail (UX-6): hidden while the roster
+ * is open (each row has its own dot), shown when collapsed so a failure or a
+ * completion still produces a visible change on the 34px rail. */
+.wf-rail-dot { display: none; }
+#wf-root.nav-collapsed .wf-rail-dot { display: inline-block; margin-left: 4px; }
 #wf-root.nav-collapsed .wf-nav-toggle {
   padding: 5px 7px;
   font-size: 14px;
