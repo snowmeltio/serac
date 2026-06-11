@@ -29,7 +29,7 @@ import {
   isTmpScratchPath,
   computeFileCollisions, RUNNING_QUIET_MS,
 } from './panelUtils.js';
-import { applyWorkflowLiveStatus } from './panelUtils.js';
+import { applyWorkflowLiveStatus, computeWaitingCount } from './panelUtils.js';
 
 // Helper to create a minimal session
 function session(overrides: Partial<PanelSession> = {}): PanelSession {
@@ -856,5 +856,27 @@ describe('pickerChildRow', () => {
   it('includes extra chips between name and counts', () => {
     expect(pickerChildRow({ ...base, extraChipsHtml: '<span class="ws-main-chip">main</span>' }))
       .toContain('</span><span class="ws-main-chip">main</span><div class="ws-counts">');
+  });
+});
+
+describe('computeWaitingCount', () => {
+  const team = (over: Partial<{ dismissed: boolean; orch: string; agents: string[] }> = {}) => ({
+    dismissed: over.dismissed,
+    orchestrator: { status: over.orch ?? 'running' },
+    agents: (over.agents ?? []).map(status => ({ status })),
+  });
+
+  it('sums local, foreign, and sibling counts with no teams', () => {
+    expect(computeWaitingCount({ localWaiting: 2, teams: [], foreignWaitingCount: 3, siblingWaitingCount: 1 })).toBe(6);
+  });
+
+  it('counts waiting team members and a waiting orchestrator', () => {
+    const teams = [team({ orch: 'waiting', agents: ['waiting', 'running', 'waiting'] })];
+    expect(computeWaitingCount({ localWaiting: 0, teams, foreignWaitingCount: 0, siblingWaitingCount: 0 })).toBe(3);
+  });
+
+  it('excludes dismissed teams entirely', () => {
+    const teams = [team({ dismissed: true, orch: 'waiting', agents: ['waiting'] })];
+    expect(computeWaitingCount({ localWaiting: 1, teams, foreignWaitingCount: 0, siblingWaitingCount: 0 })).toBe(1);
   });
 });

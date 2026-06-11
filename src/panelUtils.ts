@@ -461,6 +461,28 @@ export function debounceStatuses(
  *  pin a card. Applied host-side at the sessions↔workflows merge point.
  *  Generic + structural so the host passes SessionSnapshot/WorkflowSnapshot
  *  without coupling this webview-shared module to extension-side types. */
+/** Aggregate the needs-input badge count across every surface that renders
+ *  attention-demanding sessions: local waiting sessions, team members and
+ *  orchestrators (dismissed teams excluded), the foreign waiting strip, and
+ *  sibling-worktree cards (they render in the main feed like local cards).
+ *  Structural team shape so the webview bundle never pulls types.ts. */
+export function computeWaitingCount(opts: {
+  localWaiting: number;
+  teams: ReadonlyArray<{ dismissed?: boolean; orchestrator: { status: string }; agents: ReadonlyArray<{ status: string }> }>;
+  foreignWaitingCount: number;
+  siblingWaitingCount: number;
+}): number {
+  let n = opts.localWaiting;
+  for (const team of opts.teams) {
+    if (team.dismissed) { continue; }
+    for (const agent of team.agents) {
+      if (agent.status === 'waiting') { n++; }
+    }
+    if (team.orchestrator.status === 'waiting') { n++; }
+  }
+  return n + opts.foreignWaitingCount + opts.siblingWaitingCount;
+}
+
 export function applyWorkflowLiveStatus<S extends { sessionId: string; status: string; confidence?: string }>(
   sessions: S[],
   workflows: Array<{ sessionId: string; status: string; dismissed?: boolean }> | undefined,

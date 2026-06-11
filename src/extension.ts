@@ -12,7 +12,7 @@ import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from './claudeSettings.js';
-import { sanitiseWorkspaceKey, applyWorkflowLiveStatus, normPath } from './panelUtils.js';
+import { sanitiseWorkspaceKey, applyWorkflowLiveStatus, normPath, computeWaitingCount } from './panelUtils.js';
 import { buildWorktreeRows } from './worktreeRows.js';
 import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } from './workspaceOpener.js';
 import { HookEventRouter } from './hookEventRouter.js';
@@ -20,6 +20,26 @@ import { startHookIngress, type IngressHandle } from './hookIngress/index.js';
 import { applyForwarderPatch, removeForwarderPatch } from './hookSettings/patcher.js';
 import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
 import { appendInboxMessage, peekInboxMessages } from './teammateInbox.js';
+
+/** Open (or reveal) a Claude Code editor tab via the companion extension's
+ *  command. `sessionId` undefined opens a new chat. Failure usually means the
+ *  Claude Code extension isn't installed — callers choose how loudly to say
+ *  so. `onSettled` fires on success AND failure (the undismiss flows re-render
+ *  either way). */
+function openClaudeEditor(sessionId: string | undefined, opts: {
+  onSettled?: () => void;
+  failMessage?: string;
+  onFail?: (err: unknown) => void;
+} = {}): void {
+  vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
+    () => opts.onSettled?.(),
+    (err: unknown) => {
+      if (opts.failMessage) { void vscode.window.showInformationMessage(opts.failMessage); }
+      opts.onFail?.(err);
+      opts.onSettled?.();
+    },
+  );
+}
 
 export function activate(context: vscode.ExtensionContext): SeracExports {
   // Footer slot registry must be created up-front: companions resolve
@@ -225,12 +245,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       return discovery.getTeamAgentFilePath(containerId, agentId);
     },
     openConversation: (sessionId: string) => {
-      vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
-        undefined,
-        () => vscode.window.showInformationMessage(
-          'Could not open the conversation. Is the Claude Code extension installed?',
-        ),
-      );
+      openClaudeEditor(sessionId, { failMessage: 'Could not open the conversation. Is the Claude Code extension installed?' });
     },
     // Teammate messaging (experimental). Re-read on every send; the webview's
     // copy is display-only. operatorName is synthesized here, never from the
@@ -281,14 +296,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         ?? discovery.getTeamSessionFilePath(sessionId);
       if (jsonlPath) { void ensureSessionMetadata(sessionId, jsonlPath); }
     }
-    vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
-      undefined,
-      () => {
-        vscode.window.showInformationMessage(
-          'Could not focus Claude Code session. Is the Claude Code extension installed?'
-        );
-      },
-    );
+    openClaudeEditor(sessionId, { failMessage: 'Could not focus Claude Code session. Is the Claude Code extension installed?' });
   });
 
   // Auto-focus the card of a newly started session (ui-focus-1). Seeded on the
@@ -301,14 +309,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // card is focused by the generic new-session diff in sendUpdate() once its
   // JSONL appears.
   panelProvider.setNewChatHandler(() => {
-    vscode.commands.executeCommand('claude-vscode.editor.open', undefined, undefined, vscode.ViewColumn.One).then(
-      undefined,
-      () => {
-        vscode.window.showInformationMessage(
-          'Could not open new chat. Is the Claude Code extension installed?'
-        );
-      },
-    );
+    openClaudeEditor(undefined, { failMessage: 'Could not open new chat. Is the Claude Code extension installed?' });
   });
 
   // Handle cleanup: close all Claude Code editor tabs except the most recent
@@ -365,10 +366,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       if (jsonlPath) { void ensureSessionMetadata(sessionId, jsonlPath); }
     }
     // Open editor first, then update panel — avoids panel re-render stealing focus
-    vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
-      () => sendUpdate(),
-      () => sendUpdate(),
-    );
+    openClaudeEditor(sessionId, { onSettled: sendUpdate });
   });
 
 
@@ -410,10 +408,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     // `at:<name>`), so resolve the lead session from the snapshot.
     const orchSessionId = discovery.getTeamSnapshots().find(t => t.teamId === teamId)?.orchestrator.sessionId;
     if (orchSessionId) {
-      vscode.commands.executeCommand('claude-vscode.editor.open', orchSessionId, undefined, vscode.ViewColumn.One).then(
-        () => sendUpdate(),
-        () => sendUpdate(),
-      );
+      openClaudeEditor(orchSessionId, { onSettled: sendUpdate });
     } else {
       sendUpdate();
     }
@@ -430,10 +425,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     // Reopen the invoking conversation (the session that owns the run).
     const sessionId = discovery.getWorkflowSnapshots().find(w => w.runId === runId)?.sessionId;
     if (sessionId) {
-      vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
-        () => sendUpdate(),
-        () => sendUpdate(),
-      );
+      openClaudeEditor(sessionId, { onSettled: sendUpdate });
     } else {
       sendUpdate();
     }
@@ -509,9 +501,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     if (!hint) { return; }
     // Surface the card and tell Claude Code to open the editor for that session.
     panelProvider.focusSession(hint.sessionId);
-    vscode.commands.executeCommand(
-      'claude-vscode.editor.open', hint.sessionId, undefined, vscode.ViewColumn.One,
-    ).then(undefined, () => { /* extension may not be installed; the panel focus still helps */ });
+    // Failure is silent: the extension may not be installed; panel focus still helps.
+    openClaudeEditor(hint.sessionId);
   }
   // Run after the panel has had a moment to mount
   setTimeout(() => { void applyFocusHint(); }, 800);
@@ -589,10 +580,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // Register focus command (for external use)
   context.subscriptions.push(
     vscode.commands.registerCommand('agentActivity.focusSession', (sessionId: string) => {
-      vscode.commands.executeCommand('claude-vscode.editor.open', sessionId).then(
-        undefined,
-        err => log.warn('Failed to focus session:', err),
-      );
+      openClaudeEditor(sessionId, { onFail: err => log.warn('Failed to focus session:', err) });
     }),
   );
 
@@ -615,24 +603,16 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     // A done/stale card with a live background workflow is still working —
     // upgrade it to running at the merge point (see applyWorkflowLiveStatus).
     const sessions = applyWorkflowLiveStatus(discovery.getSnapshots(), workflows);
-    // Include team agents waiting on input in the badge count
-    let waitingCount = discovery.getWaitingCount();
-    for (const team of teams) {
-      if (team.dismissed) { continue; }
-      for (const agent of team.agents) {
-        if (agent.status === 'waiting') { waitingCount++; }
-      }
-      if (team.orchestrator.status === 'waiting') { waitingCount++; }
-    }
     const usage = usageProvider.getSnapshot();
     const foreignWorkspaces = discovery.getForeignWorkspaces();
     const foreignWaiting = discovery.getForeignWaitingSnapshots();
     const foreignRunning = discovery.getForeignRunningSnapshots();
-    // Foreign waiting cards demand attention too, so they bump the badge.
-    waitingCount += foreignWaiting.length;
-    // Sibling-worktree sessions render as cards in the main feed — a waiting
-    // one demands attention exactly like a local waiting card.
-    waitingCount += discovery.getSiblingWaitingCount();
+    const waitingCount = computeWaitingCount({
+      localWaiting: discovery.getWaitingCount(),
+      teams,
+      foreignWaitingCount: foreignWaiting.length,
+      siblingWaitingCount: discovery.getSiblingWaitingCount(),
+    });
     const olderSessionCount = discovery.getOlderSessionCount();
     const worktrees = buildWorktreeRows(discovery.getDiscoveredWorktrees(), sessions, wsPath);
     panelProvider.updateSessions({
