@@ -635,7 +635,11 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     waitingCount += discovery.getSiblingWaitingCount();
     const olderSessionCount = discovery.getOlderSessionCount();
     const worktrees = buildWorktreeRows(discovery.getDiscoveredWorktrees(), sessions, wsPath);
-    panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount, foreignRunning, worktrees, workflows);
+    panelProvider.updateSessions({
+      sessions, waitingCount, workspacePath: wsPath, usage,
+      foreignWorkspaces, compactSettings, teams, foreignWaiting,
+      olderSessionCount, foreignRunning, worktrees, workflows,
+    });
     detailPanel.refresh();
 
     // Auto-focus a single newly arrived live local session. Sibling-worktree

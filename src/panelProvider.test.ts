@@ -280,7 +280,7 @@ describe('AgentPanelProvider', () => {
       webview.postMessage.mockClear();
 
       const sessions = [makeSnapshot()];
-      provider.updateSessions(sessions, 1, '/test/ws', makeUsage());
+      provider.updateSessions({ sessions, waitingCount: 1, workspacePath: '/test/ws', usage: makeUsage() });
 
       expect(webview.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -299,9 +299,7 @@ describe('AgentPanelProvider', () => {
       webview.postMessage.mockClear();
 
       const workflows = [makeWorkflow()];
-      // workflows is the 12th positional arg on updateSessions.
-      provider.updateSessions([makeSnapshot()], 0, '/test/ws', null,
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, workflows);
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, workflows });
 
       expect(webview.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'update', workflows }),
@@ -314,7 +312,7 @@ describe('AgentPanelProvider', () => {
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       webview.postMessage.mockClear();
 
-      provider.updateSessions([makeSnapshot()], 0, '/test/ws', null);
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null });
 
       const payload = webview.postMessage.mock.calls.at(-1)![0];
       expect(payload.type).toBe('update');
@@ -326,7 +324,7 @@ describe('AgentPanelProvider', () => {
       const view = createMockWebviewView(webview);
       provider.resolveWebviewView(view as any, {} as any, {} as any);
 
-      provider.updateSessions([], 3, '/test/ws', null);
+      provider.updateSessions({ sessions: [], waitingCount: 3, workspacePath: '/test/ws', usage: null });
 
       expect(view.badge).toEqual({
         value: 3,
@@ -339,10 +337,10 @@ describe('AgentPanelProvider', () => {
       const view = createMockWebviewView(webview);
       provider.resolveWebviewView(view as any, {} as any, {} as any);
 
-      provider.updateSessions([], 2, '/test/ws', null);
+      provider.updateSessions({ sessions: [], waitingCount: 2, workspacePath: '/test/ws', usage: null });
       expect(view.badge).toBeDefined();
 
-      provider.updateSessions([], 0, '/test/ws', null);
+      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/test/ws', usage: null });
       expect(view.badge).toBeUndefined();
     });
 
@@ -351,13 +349,13 @@ describe('AgentPanelProvider', () => {
       const view = createMockWebviewView(webview);
       provider.resolveWebviewView(view as any, {} as any, {} as any);
 
-      provider.updateSessions([], 1, '/test/ws', null);
+      provider.updateSessions({ sessions: [], waitingCount: 1, workspacePath: '/test/ws', usage: null });
       expect(view.badge?.tooltip).toBe('1 session waiting');
     });
 
     it('does not send if view not resolved', () => {
       // No resolveWebviewView called — should not throw
-      provider.updateSessions([], 0, '/test/ws', null);
+      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/test/ws', usage: null });
     });
   });
 
@@ -389,7 +387,7 @@ describe('AgentPanelProvider', () => {
       provider.setFooterSlotBridge(() => [slot], () => {});
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       webview.postMessage.mockClear();
-      provider.updateSessions([], 0, '/ws', null);
+      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/ws', usage: null });
       expect(webview.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({ footerSlots: [slot] }),
       );
@@ -401,7 +399,7 @@ describe('AgentPanelProvider', () => {
       provider.setFooterSlotBridge(() => [], () => {});
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       webview.postMessage.mockClear();
-      provider.updateSessions([], 0, '/ws', null);
+      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/ws', usage: null });
       const msg = webview.postMessage.mock.calls[0][0];
       expect(msg.footerSlots).toBeUndefined();
     });

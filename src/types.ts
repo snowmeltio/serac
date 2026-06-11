@@ -322,6 +322,25 @@ export interface WorkspaceGroup {
  *  extension.ts from `discoverWorktrees()` + session counts; the panel just
  *  renders. Includes worktrees with no CC history (counts all zero) so the
  *  pane stays a faithful map of the repo's worktrees. */
+/** One sidebar refresh — everything the host pushes to the panel per tick.
+ *  Named fields by design: sessions, foreignWaiting, and foreignRunning all
+ *  share the type SessionSnapshot[], so the previous 12-positional signature
+ *  let a transposition type-check silently into a wrong-section render. */
+export interface PanelUpdate {
+  sessions: SessionSnapshot[];
+  waitingCount: number;
+  workspacePath: string;
+  usage: UsageSnapshot | null;
+  foreignWorkspaces?: WorkspaceGroup[];
+  compactSettings?: import('./claudeSettings.js').CompactSettings;
+  teams?: TeamSnapshot[];
+  foreignWaiting?: SessionSnapshot[];
+  olderSessionCount?: number;
+  foreignRunning?: SessionSnapshot[];
+  worktrees?: WorktreeRow[];
+  workflows?: WorkflowSnapshot[];
+}
+
 export interface WorktreeRow {
   /** Absolute path to the worktree's working tree (canonical). */
   path: string;

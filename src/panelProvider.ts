@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import { randomBytes } from 'crypto';
-import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, FooterSlotPayload, WorktreeRow, DetailSource } from './types.js';
+import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, FooterSlotPayload, WorktreeRow, DetailSource, PanelUpdate } from './types.js';
 import type { CompactSettings } from './claudeSettings.js';
 import { parseWebviewCommand } from './validation.js';
 import { readSettings, type SeracSettings } from './settings.js';
@@ -183,24 +183,24 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   }
 
   /** Update the panel with new session data */
-  updateSessions(sessions: SessionSnapshot[], waitingCount: number, workspacePath: string, usage: UsageSnapshot | null, foreignWorkspaces?: WorkspaceGroup[], compactSettings?: CompactSettings, teams?: TeamSnapshot[], foreignWaiting?: SessionSnapshot[], olderSessionCount?: number, foreignRunning?: SessionSnapshot[], worktrees?: WorktreeRow[], workflows?: WorkflowSnapshot[]): void {
-    this.sessions = sessions;
-    this.waitingCount = waitingCount;
-    this.workspacePath = workspacePath;
-    this.usage = usage;
-    this.foreignWorkspaces = foreignWorkspaces ?? [];
-    this.foreignWaiting = foreignWaiting ?? [];
-    this.foreignRunning = foreignRunning ?? [];
-    this.teams = teams ?? [];
-    this.workflows = workflows ?? [];
-    this.compactSettings = compactSettings;
-    this.olderSessionCount = olderSessionCount ?? 0;
-    this.worktrees = worktrees;
+  updateSessions(update: PanelUpdate): void {
+    this.sessions = update.sessions;
+    this.waitingCount = update.waitingCount;
+    this.workspacePath = update.workspacePath;
+    this.usage = update.usage;
+    this.foreignWorkspaces = update.foreignWorkspaces ?? [];
+    this.foreignWaiting = update.foreignWaiting ?? [];
+    this.foreignRunning = update.foreignRunning ?? [];
+    this.teams = update.teams ?? [];
+    this.workflows = update.workflows ?? [];
+    this.compactSettings = update.compactSettings;
+    this.olderSessionCount = update.olderSessionCount ?? 0;
+    this.worktrees = update.worktrees;
 
     // Update badge
     if (this.view) {
-      this.view.badge = waitingCount > 0
-        ? { value: waitingCount, tooltip: `${waitingCount} session${waitingCount > 1 ? 's' : ''} waiting` }
+      this.view.badge = update.waitingCount > 0
+        ? { value: update.waitingCount, tooltip: `${update.waitingCount} session${update.waitingCount > 1 ? 's' : ''} waiting` }
         : undefined;
     }
 
