@@ -137,8 +137,6 @@ export function parseAgentTeamsConfig(content: string, teamDirName: string): Tea
       parentSessionId: obj.leadSessionId as string,
       depth: 1,
       spawnedAt: joinedAt,
-      completedAt: null, // present in config = still active (removed on completion)
-      exitStatus: null,
       isActive,
     });
   }
@@ -152,7 +150,6 @@ export function parseAgentTeamsConfig(content: string, teamDirName: string): Tea
   }
 
   return {
-    version: 0, // Distinguishes Agent Teams config from Cornice sidecar (version: 1)
     orchestrator: {
       sessionId: obj.leadSessionId as string,
       name: obj.name as string,

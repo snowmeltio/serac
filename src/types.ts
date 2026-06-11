@@ -341,12 +341,6 @@ export interface WorktreeRow {
 
 // ── Team types (Agent Teams integration) ──────
 
-/** Terminal exit status of a team agent. Agent Teams configs never carry one
- *  (members are removed on completion); the field/type are retained as the
- *  wire shape — non-null values were only ever set by the removed Cornice
- *  sidecar parser. */
-export type AgentExitStatus = 'success' | 'failed' | 'cancelled';
-
 /** Agent entry in a normalised team manifest. */
 export interface TeamAgentEntry {
   /** Claude Code session ID. Null for Agent Teams members without session tracking. */
@@ -356,16 +350,14 @@ export interface TeamAgentEntry {
   parentSessionId: string;
   depth: number;
   spawnedAt: number;       // epoch ms
-  completedAt: number | null;
-  exitStatus: AgentExitStatus | null;
   /** Whether the agent is currently active (from Agent Teams isActive field) */
   isActive: boolean | null;
 }
 
-/** Parsed team manifest (normalised from an Agent Teams config.json). */
+/** Parsed team manifest (normalised from an Agent Teams config.json). A raw
+ *  config carrying a `version` field is REJECTED at parse time (that marked
+ *  the legacy Cornice sidecar format) — see teamManifest.ts. */
 export interface TeamManifest {
-  /** Schema version. 0 = Agent Teams config (the only live source). */
-  version: number;
   orchestrator: {
     sessionId: string;
     name: string;
@@ -397,7 +389,6 @@ export interface TeamAgentSnapshot {
   /** Session-level subagents within this agent (from its JSONL) */
   subagents: SubagentSnapshot[];
   contextTokens: number;
-  exitStatus: AgentExitStatus | null;
 }
 
 /** Full team snapshot sent to webview */

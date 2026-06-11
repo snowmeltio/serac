@@ -370,7 +370,7 @@ export class TeamDiscovery {
         let status: DisplayStatus;
         if (snapshot) {
           status = snapshot.status;
-        } else if (entry.completedAt !== null || entry.isActive === false) {
+        } else if (entry.isActive === false) {
           status = 'done';
         } else if (entry.isActive === true) {
           status = 'running';
@@ -392,7 +392,6 @@ export class TeamDiscovery {
           confidence: snapshot?.confidence ?? 'low',
           subagents: snapshot?.subagents ?? [],
           contextTokens: snapshot?.contextTokens ?? 0,
-          exitStatus: entry.exitStatus,
         });
       }
 

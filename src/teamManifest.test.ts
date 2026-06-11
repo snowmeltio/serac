@@ -44,7 +44,6 @@ describe('parseAgentTeamsConfig', () => {
   it('parses a valid Agent Teams config', () => {
     const result = parseAgentTeamsConfig(JSON.stringify(validAgentTeamsConfig()), 'serac-audit');
     expect(result).not.toBeNull();
-    expect(result!.version).toBe(0);
     expect(result!.orchestrator.sessionId).toBe('38161772-e647-4661-95e0-6efb3a101db9');
     expect(result!.orchestrator.name).toBe('serac-audit');
     expect(result!.orchestrator.startedAt).toBe(1774873638749);
@@ -85,12 +84,12 @@ describe('parseAgentTeamsConfig', () => {
     expect(result!.inProcessMembers).toEqual([]);
   });
 
-  it('treats all present members as active (no completedAt)', () => {
+  it('carries the member isActive flag through to the manifest', () => {
     const result = parseAgentTeamsConfig(JSON.stringify(validAgentTeamsConfig()), 'serac-audit');
     expect(result).not.toBeNull();
-    // Members in config are active (removed on completion)
-    expect(result!.agents[0].completedAt).toBeNull();
-    expect(result!.agents[0].exitStatus).toBeNull();
+    // Members are removed from the config on completion, so isActive (not a
+    // completion timestamp) is the only liveness signal the wire shape needs.
+    expect(result!.agents[0].isActive).toBe(true);
   });
 
   it('uses epoch ms timestamps (not ISO 8601)', () => {

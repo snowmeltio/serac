@@ -592,8 +592,6 @@ describe('TeamDiscovery', () => {
       const snapshots = td.getTeamSnapshots(emptyMeta());
 
       expect(snapshots[0].agents[0].status).toBe('done');
-      // Agent Teams configs never carry an exit status.
-      expect(snapshots[0].agents[0].exitStatus).toBeNull();
 
       td.dispose();
     });

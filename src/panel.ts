@@ -79,7 +79,6 @@ interface PanelTeamAgent {
   confidence: string;
   subagents: PanelSession['subagents'];
   contextTokens: number;
-  exitStatus: string | null;
 }
 
 /** Team snapshot (mirrors TeamSnapshot from types.ts) */

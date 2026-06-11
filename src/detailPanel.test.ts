@@ -74,8 +74,8 @@ function makeTeam(overrides: Partial<TeamSnapshot> = {}): TeamSnapshot {
       modelLabel: 'Opus',
     },
     agents: [
-      { sessionId: null, name: 'defender', cwd: '/x', parentSessionId: 'orch-1', depth: 1, spawnedAt: 1000, status: 'done', activity: '', confidence: 'high', subagents: [], contextTokens: 1000, exitStatus: 'success' },
-      { sessionId: 'sk-1', name: 'skeptic', cwd: '/x', parentSessionId: 'orch-1', depth: 1, spawnedAt: 1000, status: 'running', activity: '', confidence: 'high', subagents: [], contextTokens: 2000, exitStatus: null },
+      { sessionId: null, name: 'defender', cwd: '/x', parentSessionId: 'orch-1', depth: 1, spawnedAt: 1000, status: 'done', activity: '', confidence: 'high', subagents: [], contextTokens: 1000 },
+      { sessionId: 'sk-1', name: 'skeptic', cwd: '/x', parentSessionId: 'orch-1', depth: 1, spawnedAt: 1000, status: 'running', activity: '', confidence: 'high', subagents: [], contextTokens: 2000 },
     ],
     inProcessMembers: [],
     counts: { done: 1, running: 1 },
@@ -102,7 +102,6 @@ function makeSession(overrides: Partial<SessionSnapshot> = {}): SessionSnapshot 
     ],
     lastActivity: 1000,
     contextTokens: 0,
-    exitStatus: null,
     ...overrides,
   } as SessionSnapshot;
 }
