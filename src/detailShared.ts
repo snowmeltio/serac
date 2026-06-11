@@ -30,6 +30,11 @@ export interface DetailAgentView {
   model: string;
   /** Optional enrichments (workflow carries these; team/subagents may omit). */
   phaseTitle?: string | null;
+  /** Live signal for a running agent: what it's doing right now. Both come
+   *  from the workflow live tier; rendered as a recessed tool line under the
+   *  reader head and dropped once the agent completes. */
+  lastToolName?: string | null;
+  lastToolSummary?: string | null;
   attempt?: number;
   promptPreview?: string;
   resultPreview?: string | null;

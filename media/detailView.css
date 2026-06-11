@@ -446,6 +446,9 @@ body {
   overflow-wrap: anywhere;
 }
 .wf-tool b { color: var(--vscode-foreground); font-weight: 600; }
+/* Live tool line in the reader head (UX-1) — same recessed .wf-tool chrome,
+ * just spaced to sit under the meta line rather than inside a bubble. */
+.wf-reader-live { margin: 6px 0 0; }
 .wf-bubble code {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 12px;

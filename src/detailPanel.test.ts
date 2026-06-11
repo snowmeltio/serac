@@ -192,6 +192,27 @@ describe('DetailPanel', () => {
       expect(m.metrics).toContain('3 agents');
     });
 
+    it('computes elapsed-so-far and passes the live tool for a running agent (UX-1)', () => {
+      const h = setup();
+      const wf = makeWorkflow({ status: 'running' });
+      wf.agents[2] = {
+        ...wf.agents[2],
+        status: 'running', durationMs: null, startedAt: Date.now() - 5000,
+        lastToolName: 'Bash', lastToolSummary: 'npm run test',
+      };
+      h.deps.getWorkflows.mockReturnValue([wf]);
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      const live = h.lastModel().groups[1].agents[0];
+      expect(live.durationMs).toBeGreaterThanOrEqual(5000);
+      expect(live.durationMs).toBeLessThan(60_000);
+      expect(live.lastToolName).toBe('Bash');
+      expect(live.lastToolSummary).toBe('npm run test');
+      // Completed agents never carry a live tool line.
+      const done = h.lastModel().groups[0].agents[0];
+      expect(done.lastToolName).toBeNull();
+      expect(done.durationMs).toBe(4000);
+    });
+
     it('deep-links to a target agent on show() via a one-shot select hint', () => {
       const h = setup();
       h.panel.show('workflow', 'sess-1', 'sess-1', { groupKey: 'wf_abc', agentId: 'a2' });

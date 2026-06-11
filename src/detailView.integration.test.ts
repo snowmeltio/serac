@@ -104,6 +104,21 @@ describe('detailView.ts — collapse + grouped switcher', () => {
     expect(q('.wf-reader-meta')!.textContent).toContain('7 tools');
   });
 
+  it('reader head shows the live tool line for a running agent only (UX-1)', () => {
+    const model = twoSourceModel() as any;
+    model.groups[0].agents[1] = {
+      ...agent({ agentId: 'agent002', label: 'audit:security', status: 'running', phaseTitle: 'Audit' }),
+      lastToolName: 'Grep', lastToolSummary: 'pattern="eval(" path=src/',
+    };
+    sendRender(model);
+    // Done agent selected: no live line.
+    expect(q('.wf-reader-live')).toBeNull();
+    qa('.wf-nav-row').find(r => r.dataset.agent === 'agent002')!.click();
+    const live = q('.wf-reader-live')!;
+    expect(live.textContent).toContain('Grep');
+    expect(live.textContent).toContain('pattern="eval(" path=src/');
+  });
+
   it('does NOT collapse the agent list when selecting an agent (click-through stays open)', () => {
     sendRender(twoSourceModel());
     // First agent auto-selected; list is expanded.

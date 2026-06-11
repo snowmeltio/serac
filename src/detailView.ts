@@ -268,9 +268,17 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (dur) { metaBits.push(dur); }
     if (agent.attempt && agent.attempt > 1) { metaBits.push('attempt ' + agent.attempt); }
 
+    // Live signal (UX-1): for a running agent, a recessed tool line answers
+    // "what is it doing right now?" — the meta duration above answers "for how
+    // long" (the host sends elapsed-so-far while durationMs is unsettled).
+    const liveTool = agent.status === 'running' && agent.lastToolName
+      ? '<div class="wf-reader-live wf-tool"><b>' + escapeHtml(agent.lastToolName) + '</b>'
+        + (agent.lastToolSummary ? ' ' + escapeHtml(agent.lastToolSummary) : '') + '</div>'
+      : '';
     const head = '<div class="wf-reader-head">'
       + '<div class="wf-reader-title">' + statusDot(agent.status) + escapeHtml(agent.label) + '</div>'
-      + '<div class="wf-reader-meta">' + metaBits.join(' · ') + '</div></div>';
+      + '<div class="wf-reader-meta">' + metaBits.join(' · ') + '</div>'
+      + liveTool + '</div>';
 
     let body = '<div class="wf-reader-body">';
     const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));

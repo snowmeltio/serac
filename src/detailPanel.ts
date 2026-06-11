@@ -336,18 +336,25 @@ export class DetailPanel {
   }
 
   private workflowAgentView(a: WorkflowSnapshot['agents'][number]): DetailAgentView {
+    // A running agent has no final duration yet — show elapsed-so-far instead
+    // (UX-1). The webview's steady refresh keeps it current; no new timers.
+    const durationMs = a.durationMs ?? (a.status === 'running' && a.startedAt > 0
+      ? Date.now() - a.startedAt
+      : null);
     return {
       agentId: a.agentId,
       label: a.label || a.agentId.slice(0, 10),
       status: a.status,
       tokens: a.tokens,
       toolCalls: a.toolCalls,
-      durationMs: a.durationMs,
+      durationMs,
       model: a.model,
       phaseTitle: a.phaseTitle,
       attempt: a.attempt,
       promptPreview: a.promptPreview,
       resultPreview: a.resultPreview,
+      lastToolName: a.status === 'running' ? a.lastToolName : null,
+      lastToolSummary: a.status === 'running' ? a.lastToolSummary : null,
     };
   }
 
