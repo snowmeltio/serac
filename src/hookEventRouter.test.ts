@@ -161,4 +161,35 @@ describe('HookEventRouter', () => {
     r.onHookEvent('no-subscriber', 'E', {});
     expect(fired).toBe(1);
   });
+
+  it('caps distinct buffered sessions, evicting the stalest (audit security-sideeffects-1)', () => {
+    let clock = 0;
+    const r = new HookEventRouter({ bufferTtlMs: 1_000_000, now: () => clock });
+    // Fill well past the 64-session cap; each session a little newer.
+    for (let i = 0; i < 200; i++) {
+      clock = i;
+      r.onHookEvent(`sess-${i}`, 'E', { i });
+    }
+    // The earliest sessions were evicted; the newest survive.
+    expect(r.getBufferedCount('sess-0')).toBe(0);
+    expect(r.getBufferedCount('sess-199')).toBe(1);
+    // Bound holds: at most 64 sessions retain a buffer.
+    let retained = 0;
+    for (let i = 0; i < 200; i++) {
+      if (r.getBufferedCount(`sess-${i}`) > 0) { retained++; }
+    }
+    expect(retained).toBeLessThanOrEqual(64);
+  });
+
+  it('cap insert sweeps expired buffers before evicting live ones', () => {
+    let clock = 0;
+    const r = new HookEventRouter({ bufferTtlMs: 100, now: () => clock });
+    for (let i = 0; i < 64; i++) {
+      r.onHookEvent(`old-${i}`, 'E', { i });
+    }
+    clock = 10_000; // all of the above are now expired
+    r.onHookEvent('fresh', 'E', {});
+    expect(r.getBufferedCount('fresh')).toBe(1);
+    expect(r.getBufferedCount('old-0')).toBe(0);
+  });
 });

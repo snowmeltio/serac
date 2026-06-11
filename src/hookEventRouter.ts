@@ -28,6 +28,10 @@ export type HookEventCallback = (event: unknown) => void;
 /** Default cold-start replay window. Long enough to cover an extension
  *  activation, short enough that stale events never reach a late subscriber. */
 const DEFAULT_BUFFER_TTL_MS = 5_000;
+/** Hard ceiling on distinct sessions holding buffered events. Pruning is
+ *  otherwise lazy and per-key, so without this a flood of distinct session
+ *  ids (or the organic residue of ended sessions) grows the map forever. */
+const MAX_BUFFERED_SESSIONS = 64;
 
 interface BufferedEvent {
   eventType: string;
@@ -195,9 +199,24 @@ export class HookEventRouter {
     const buf = this.buffer.get(sessionId);
     if (buf) {
       buf.push(item);
-    } else {
-      this.buffer.set(sessionId, [item]);
+      return;
     }
+    // New key past the cap: sweep expired buffers globally, then if still
+    // full evict the stalest session — the buffer exists only for cold-start
+    // replay within the TTL, so the evictee was already past useful.
+    if (this.buffer.size >= MAX_BUFFERED_SESSIONS) {
+      for (const key of [...this.buffer.keys()]) { this.pruneBuffered(key); }
+      if (this.buffer.size >= MAX_BUFFERED_SESSIONS) {
+        let stalest: string | null = null;
+        let stalestAt = Number.POSITIVE_INFINITY;
+        for (const [key, items] of this.buffer) {
+          const newest = items[items.length - 1]?.receivedAt ?? 0;
+          if (newest < stalestAt) { stalestAt = newest; stalest = key; }
+        }
+        if (stalest !== null) { this.buffer.delete(stalest); }
+      }
+    }
+    this.buffer.set(sessionId, [item]);
   }
 
   private pruneBuffered(sessionId: string): void {

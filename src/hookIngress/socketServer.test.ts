@@ -61,6 +61,21 @@ describe('startSocketServer', () => {
   beforeEach(() => { dir = mktemp(); });
   afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
+  it('creates the socket parent dir owner-only and restricts the socket (audit security-sideeffects-2)', async () => {
+    const c = makeCaptured();
+    // Nested path so startSocketServer itself creates the parent dirs.
+    const sockPath = path.join(dir, 'deep', '.serac', 'hook.sock');
+    const handle = await startSocketServer(sockPath, c.router, {});
+    try {
+      const dirMode = fs.statSync(path.dirname(sockPath)).mode & 0o777;
+      expect(dirMode).toBe(0o700);
+      const sockMode = fs.statSync(sockPath).mode & 0o777;
+      expect(sockMode).toBe(0o600);
+    } finally {
+      await handle.dispose();
+    }
+  });
+
   it('routes a single newline-terminated payload to the router', async () => {
     const c = makeCaptured();
     await withServer(dir, c, async (h) => {

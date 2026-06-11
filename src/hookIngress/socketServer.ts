@@ -161,6 +161,11 @@ async function unlinkIfExists(socketPath: string): Promise<void> {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') { throw err; }
   }
   // Sanity: ensure parent dir exists. The orchestrator should have created it,
-  // but doing it here makes the function safe to use in tests too.
-  await fs.promises.mkdir(path.dirname(socketPath), { recursive: true });
+  // but doing it here makes the function safe to use in tests too. Owner-only
+  // (0700): the dir gates access before the socket even binds, which closes
+  // the bind-to-chmod window on the socket itself (mode applies only when the
+  // dir is created; the chmod enforces it for dirs from older builds).
+  const dir = path.dirname(socketPath);
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
+  try { await fs.promises.chmod(dir, 0o700); } catch { /* exotic fs — socket chmod still applies */ }
 }

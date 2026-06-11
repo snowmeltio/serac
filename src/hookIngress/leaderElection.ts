@@ -61,7 +61,9 @@ export function tryAcquireLeader(
   const isAlive = opts.isAlive ?? DEFAULT_IS_ALIVE;
 
   const seracDir = path.join(workspaceDir, '.serac');
-  fs.mkdirSync(seracDir, { recursive: true });
+  // Owner-only: this dir later holds the hook socket (session contents).
+  fs.mkdirSync(seracDir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(seracDir, 0o700); } catch { /* exotic fs */ }
   const lockPath = path.join(seracDir, 'hook.lock');
 
   for (let attempt = 0; attempt < 2; attempt++) {
