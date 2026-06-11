@@ -12,7 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
-import { resolveRepoRoot, discoverWorktrees, type WorktreeInfo } from './gitWorktreeUtil.js';
+import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeInfo } from './gitWorktreeUtil.js';
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
@@ -235,7 +235,7 @@ export class ForeignWorkspaceManager {
         continue;
       }
       const prev = this.worktreesByRepoRoot.get(root);
-      if (!prev || worktreeListChanged(prev, next)) {
+      if (!prev || worktreeSetChanged(prev, next)) {
         changed = true;
       }
       this.worktreesByRepoRoot.set(root, next);
@@ -533,15 +533,3 @@ export class ForeignWorkspaceManager {
   }
 }
 
-/** Compare two worktree lists for set equality (order-insensitive, branch-aware).
- *  Mirrors the helper in sessionDiscovery.ts so foreign worktree refresh can
- *  detect change without depending on local discovery internals. */
-function worktreeListChanged(a: WorktreeInfo[], b: WorktreeInfo[]): boolean {
-  if (a.length !== b.length) { return true; }
-  const key = (w: WorktreeInfo): string => `${w.path}\0${w.branch ?? ''}`;
-  const aKeys = new Set(a.map(key));
-  for (const w of b) {
-    if (!aKeys.has(key(w))) { return true; }
-  }
-  return false;
-}

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { resolveRepoRoot } from './gitWorktreeUtil.js';
+import { resolveRepoRoot, worktreeSetChanged } from './gitWorktreeUtil.js';
 
 let tmpDir: string;
 
@@ -100,5 +100,28 @@ describe('resolveRepoRoot', () => {
 
   it('returns null for an empty cwd', async () => {
     expect(await resolveRepoRoot('')).toBeNull();
+  });
+});
+
+describe('worktreeSetChanged', () => {
+  const wt = (p: string, branch: string | null = null) => ({ path: p, branch, isMain: false });
+
+  it('reports no change for equal sets regardless of order', () => {
+    const a = [wt('/r/a', 'main'), wt('/r/b', 'fix')];
+    const b = [wt('/r/b', 'fix'), wt('/r/a', 'main')];
+    expect(worktreeSetChanged(a, b)).toBe(false);
+  });
+
+  it('detects added and removed worktrees', () => {
+    expect(worktreeSetChanged([wt('/r/a')], [wt('/r/a'), wt('/r/b')])).toBe(true);
+    expect(worktreeSetChanged([wt('/r/a'), wt('/r/b')], [wt('/r/a')])).toBe(true);
+  });
+
+  it('detects a branch change on the same path', () => {
+    expect(worktreeSetChanged([wt('/r/a', 'main')], [wt('/r/a', 'fix')])).toBe(true);
+  });
+
+  it('treats null branch as distinct from a named branch', () => {
+    expect(worktreeSetChanged([wt('/r/a', null)], [wt('/r/a', 'main')])).toBe(true);
   });
 });

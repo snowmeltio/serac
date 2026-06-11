@@ -39,8 +39,6 @@ function ageGateMs(): number {
 const TEAM_SCAN_INTERVAL = 10;
 /** Batch size for concurrent session updates (shared FD budget) */
 const UPDATE_BATCH_SIZE = 50;
-/** Confidence ranking for max-confidence aggregation */
-const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 
 export class TeamDiscovery {
   private readonly teamsDir: string;
@@ -104,7 +102,9 @@ export class TeamDiscovery {
     return false;
   }
 
-  /** Scan ~/.claude/teams/ for manifests (flat .json files and subdirectory config.json). */
+  /** Scan ~/.claude/teams/ for team subdirectories containing a config.json.
+   *  Flat (non-directory) entries are skipped — the flat sidecar format was
+   *  the legacy Cornice shape, removed with native Agent Teams support. */
   async scan(): Promise<void> {
     const now = Date.now();
     let entries: string[];
@@ -323,7 +323,7 @@ export class TeamDiscovery {
       if (session.demoteIfStale(30_000)) { changed = true; }
     }
 
-    // Try to pick up JONLs for agents we don't have managers for yet
+    // Try to pick up JSONLs for agents we don't have managers for yet
     for (const manifest of this.manifests.values()) {
       if (!this.agents.has(manifest.orchestrator.sessionId)) {
         await this.ensureSessionManager(manifest.orchestrator.sessionId, manifest.orchestrator.cwd);

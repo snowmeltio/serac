@@ -10,9 +10,9 @@
    * never read as a status. */
   --sm-team-violet: #b48ef0;
   --sm-team-violet-rgb: 180, 142, 240;
-  --sm-snow-blue: #b0c2fb;
   --sm-salmon-red: #f76361;
   --sm-salmon-red-rgb: 247, 99, 97;
+  --sm-orange: #d9a23a;
   --sm-orange-rgb: 217, 162, 58;
 }
 
@@ -157,10 +157,9 @@ body {
 }
 /* Fade the roster out as the rail closes (and in as it opens), so rows don't sit
  * half-clipped at 34px. Hidden rows can't be clicked. */
-.wf-nav-row, .wf-nav-phase, .wf-nav-run { transition: opacity 120ms ease; }
+.wf-nav-row, .wf-nav-phase { transition: opacity 120ms ease; }
 #wf-root.nav-collapsed .wf-nav-row,
-#wf-root.nav-collapsed .wf-nav-phase,
-#wf-root.nav-collapsed .wf-nav-run { opacity: 0; pointer-events: none; }
+#wf-root.nav-collapsed .wf-nav-phase { opacity: 0; pointer-events: none; }
 .wf-nav-head {
   display: flex;
   align-items: center;
@@ -217,23 +216,10 @@ body {
 
 /* Respect reduced-motion: collapse still works, just without the slide/fade. */
 @media (prefers-reduced-motion: reduce) {
-  .wf-nav, .wf-nav-row, .wf-nav-phase, .wf-nav-run { transition: none; }
+  .wf-nav, .wf-nav-row, .wf-nav-phase { transition: none; }
 }
 
 /* ── Nav ── */
-.wf-nav-run {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 10px 12px 4px;
-  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.wf-run-status { font-size: 9px; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.3px; }
-.wf-run-status.running { color: var(--sm-blizzard-blue); }
-.wf-run-status.failed { color: var(--sm-salmon-red); }
-
 .wf-nav-phase {
   font-size: 10px;
   text-transform: uppercase;
@@ -267,7 +253,7 @@ body {
 .wf-nav-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wf-nav-tokens { font-size: 9px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
 /* Teammate marker — sets Agent Team members apart from plain Task subagents in
- * the same list (teal, the team accent, vs the neutral subagent row). */
+ * the same list (violet, the team accent, vs the neutral subagent row). */
 .wf-teammate-badge {
   font-size: 8px;
   font-weight: 600;

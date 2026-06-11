@@ -5,6 +5,7 @@
  */
 
 import {
+  basename,
   escapeHtml,
   stripMarkdown,
   getDisplayName,
@@ -1364,13 +1365,17 @@ const RANGE_MS: Record<string, number> = {
     }
     const hasWf = !!wfs && wfs.length > 0;
     const showSubChip = hasSubagents && currentSettings.show.subagents;
-    const chipState = detailChipState(wfs, s.subagents);
+    // Hidden subagents (show.subagents off) must not drive the chip's count or
+    // tint when a workflow keeps the chip visible — mirror the show.workflows
+    // gate, which zeroes its data at the ingress.
+    const subsForChip = currentSettings.show.subagents ? s.subagents : undefined;
+    const chipState = detailChipState(wfs, subsForChip);
     // One chip for everything beneath a card — agents (be they workflow agents,
     // subagents, or teammates), rendered as 🤖 + live count + arrow. The source
     // still routes the drill-in: prefer the workflow view when a run is present
     // (richer), else the subagents view.
     if (hasWf || showSubChip) {
-      const live = countLiveAgents(wfs, s.subagents);
+      const live = countLiveAgents(wfs, subsForChip);
       const label = live > 0 ? 'agents — ' + live + ' running' : 'agents';
       metaHtml += renderDetailChip(label, hasWf ? 'workflow' : 'subagents',
         s.sessionId, s.sessionId, chipState, agentsChipHtml(live));
@@ -1414,11 +1419,11 @@ const RANGE_MS: Record<string, number> = {
       + contextBarHtml;
   }
 
-  /** Render a single foreign workspace row (shared by grouped and ungrouped rendering).
+  /** Render a single foreign workspace row.
    *  When the row aggregates 2+ worktrees, becomes a click-to-expand picker
    *  parent (chevron, no data-cwd) followed by an inline child list of every
    *  worktree of the repo. Otherwise behaves as a direct-open row. */
-  function renderWsRow(ws: WorkspaceGroup, grouped: boolean = false): string {
+  function renderWsRow(ws: WorkspaceGroup): string {
     const running = ws.counts['running'] || 0;
     const waiting = ws.counts['waiting'] || 0;
     const done = ws.counts['done'] || 0;
@@ -1438,7 +1443,6 @@ const RANGE_MS: Record<string, number> = {
     );
     const isExpanded = pickerEligible && expandedWorkspaces.has(ws.workspaceKey);
     const rowClass = 'ws-row'
-      + (grouped ? ' ws-row-grouped' : '')
       + (isAggregated ? ' ws-row-aggregated' : '')
       + (pickerEligible ? ' ws-row-expandable' : '')
       + (waiting > 0 ? ' ws-row-waiting' : '')
@@ -1477,7 +1481,7 @@ const RANGE_MS: Record<string, number> = {
       rowAttrs = '';
     }
     let html = '<div class="' + rowClass + '"'
-      + (hasLiveSessions ? ' data-confidence="' + (ws.confidence || 'medium') + '"' : '')
+      + (hasLiveSessions ? ' data-confidence="' + escapeHtml(ws.confidence || 'medium') + '"' : '')
       + rowAttrs + '>'
       + chevron
       + '<span class="ws-name">' + escapeHtml(ws.displayName) + '</span>'
@@ -1530,7 +1534,7 @@ const RANGE_MS: Record<string, number> = {
       if (cRunning) childCountsHtml += '<span class="status-count running-count">' + cRunning + 'R</span>';
       if (cDone) childCountsHtml += '<span class="status-count done-count">' + cDone + 'D</span>';
       if (cSeen) childCountsHtml += '<span class="status-count stale-count">' + cSeen + 'S</span>';
-      const label = wt.branch || basenameOf(wt.path);
+      const label = wt.branch || basename(wt.path);
       const mainChip = wt.isMain
         ? '<span class="ws-main-chip" title="Main checkout">main</span>'
         : '';
@@ -1591,18 +1595,12 @@ const RANGE_MS: Record<string, number> = {
         + ' data-parent-key="' + escapeHtml(ws.workspaceKey) + '"'
         + ' tabindex="0" role="button"'
         + ' title="' + escapeHtml(tildeAbbrev(m.cwd)) + '">'
-        + '<span class="ws-name">' + escapeHtml(basenameOf(m.cwd)) + '</span>'
+        + '<span class="ws-name">' + escapeHtml(basename(m.cwd)) + '</span>'
         + '<div class="ws-counts">' + childCountsHtml + '</div>'
         + '</div>';
     }
     html += '</div>';
     return html;
-  }
-
-  function basenameOf(p: string): string {
-    const trimmed = p.endsWith('/') ? p.slice(0, -1) : p;
-    const idx = trimmed.lastIndexOf('/');
-    return idx === -1 ? trimmed : trimmed.slice(idx + 1);
   }
 
   /** Abbreviate a path by replacing $HOME with ~. */

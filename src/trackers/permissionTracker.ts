@@ -10,24 +10,25 @@
  *     subagent bubble policy).
  *
  * FALSE-POSITIVE NOTE: the `PermissionRequest` hook (ground truth, 25-29 ms)
- * is not wired in production yet (hookEventRouter is a stub), so the TIMER is
- * the sole signal — and a timer alone cannot tell a slow-EXECUTING tool from
- * one BLOCKED on a permission prompt (both look like "tool_use, then silence").
- * The slow delay is therefore generous (15s) so a routine long Bash — tests,
- * builds, packaging — completes and clears before the timer flags it, instead
- * of flickering the card to "Waiting for permission" mid-run. A genuine wait
- * is still surfaced within 15s (or 30s in a rapid command sequence, via the
- * recency doubling); the real cure is wiring the hook. See BACKLOG.md and
- * project_permission_false_positives.
+ * IS wired in production (extension.ts hook ingress → hookEventRouter), so a
+ * genuine prompt normally surfaces in well under a second and this TIMER is
+ * the backstop for hook-silence modes (hooks disabled, foreign and sibling
+ * sessions without ingress). A timer alone cannot tell a slow-EXECUTING tool
+ * from one BLOCKED on a permission prompt (both look like "tool_use, then
+ * silence"), so the slow delay stays generous (15s): a routine long Bash —
+ * tests, builds, packaging — completes and clears before the timer flags it,
+ * instead of flickering the card to "Waiting for permission" mid-run. Do NOT
+ * drop it back to 6s; that reintroduces the slow-Bash flicker (decision
+ * recorded 2026-06-10). See BACKLOG.md and project_permission_false_positives.
  *
  * Used in two scopes per session:
  *   1. Session-level — host reads session activeTools, sets "Waiting for permission".
  *   2. Per-subagent — host reads subagent.activeTools, sets waitingOnPermission,
  *      bubbles to parent only when allRunningSubagentsBlocked().
  *
- * The hook variant (Phase 4) will replace the timer with subscriptions to
- * Claude Code's `PermissionRequest` event (25-29 ms ground-truth latency vs
- * 3-6 s heuristic). Same interface; different fire source.
+ * The hook variant subscribes to Claude Code's `PermissionRequest` event and
+ * pre-empts the timer when ingress is live (25-29 ms ground truth vs the
+ * seconds-scale heuristic). Same interface; different fire source.
  */
 
 import { getToolProfile } from '../toolProfiles.js';

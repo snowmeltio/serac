@@ -285,7 +285,9 @@ export interface GroupableWorkspace {
   pseudoRepo?: boolean;
 }
 
-function basename(p: string): string {
+/** Last path segment, tolerating a trailing slash. Pure helper, shared with
+ *  the webview bundle (panel.ts). */
+export function basename(p: string): string {
   const trimmed = p.endsWith('/') ? p.slice(0, -1) : p;
   const idx = trimmed.lastIndexOf('/');
   return idx === -1 ? trimmed : trimmed.slice(idx + 1);

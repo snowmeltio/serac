@@ -5,7 +5,7 @@ import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
-import { resolveRepoRoot, discoverWorktrees, type WorktreeInfo } from './gitWorktreeUtil.js';
+import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeInfo } from './gitWorktreeUtil.js';
 import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
@@ -1207,13 +1207,3 @@ export class SessionDiscovery {
   }
 }
 
-/** Compare two worktree lists for set equality (order-insensitive, branch-aware). */
-function worktreeSetChanged(a: WorktreeInfo[], b: WorktreeInfo[]): boolean {
-  if (a.length !== b.length) { return true; }
-  const key = (w: WorktreeInfo) => `${w.path}\0${w.branch ?? ''}`;
-  const aKeys = new Set(a.map(key));
-  for (const w of b) {
-    if (!aKeys.has(key(w))) { return true; }
-  }
-  return false;
-}

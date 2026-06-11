@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  basename,
   escapeHtml,
   stripMarkdown,
   isPlaceholderTitle,
@@ -791,5 +792,19 @@ describe('applyWorkflowLiveStatus — done card with a live background workflow'
     expect(applyWorkflowLiveStatus([other], [wf('running')])[0]).toBe(other);
     const input = [sess('done')];
     expect(applyWorkflowLiveStatus(input, undefined)).toBe(input);
+  });
+});
+
+describe('basename', () => {
+  it('returns the last path segment', () => {
+    expect(basename('/Users/x/repos/serac')).toBe('serac');
+  });
+
+  it('tolerates a trailing slash', () => {
+    expect(basename('/Users/x/repos/serac/')).toBe('serac');
+  });
+
+  it('returns the input when there is no separator', () => {
+    expect(basename('serac')).toBe('serac');
   });
 });

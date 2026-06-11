@@ -4,17 +4,20 @@
   --sm-arctic-teal: #61c1c4;
   --sm-blizzard-blue: #6185f7;
   --sm-blizzard-light: #809df8;
-  --sm-snow-blue: #b0c2fb;
   --sm-popsicle-pink: #ffc2c2;
   --sm-salmon-red: #f76361;
   --sm-teal-bright: #7acdd0;
   --sm-light-orange: #fad7c3;
   --sm-ice-blue: #c4f5f7;
+  /* Team accent — deliberately OUTSIDE the status palette (matches
+   * detailView.css) so team affordances never read as a status. */
+  --sm-team-violet: #b48ef0;
   /* RGB components for alpha variants */
   --sm-blizzard-blue-rgb: 97, 133, 247;
   --sm-frozen-peach-rgb: 245, 176, 135;
   --sm-salmon-red-rgb: 247, 99, 97;
   --sm-arctic-teal-rgb: 97, 193, 196;
+  --sm-team-violet-rgb: 180, 142, 240;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -187,15 +190,6 @@ body {
 .ws-counts .status-count.running-count { background: var(--sm-blizzard-light); color: #ffffff; }
 .ws-counts .status-count.done-count    { background: var(--sm-teal-bright); color: #1e1e1e; }
 .ws-counts .status-count.stale-count   { background: #555555; color: #cccccc; }
-.ws-group-header {
-  font-size: 9px;
-  font-weight: 500;
-  color: var(--vscode-descriptionForeground, #555555);
-  font-family: var(--vscode-editor-font-family, 'SF Mono', 'Fira Code', monospace);
-  padding: 6px 0 1px;
-  letter-spacing: 0.2px;
-}
-.ws-row-grouped { padding-left: 12px; }
 
 /* Worktree picker: aggregated rows with 2+ worktrees are click-to-expand,
  * revealing an inline list of every worktree (incl. main). The chevron
@@ -498,14 +492,6 @@ body.vscode-light .worktree-count-chip {
   color: var(--sm-blizzard-light, #809df8);
   padding: 2px 8px 4px;
 }
-.archive-header {
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  text-transform: uppercase;
-  color: #888888;
-  padding: 6px 2px 4px;
-}
 .foreign-running-row {
   display: flex;
   align-items: center;
@@ -640,30 +626,6 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
   -webkit-box-orient: vertical;
   white-space: normal;
 }
-/* === SUBAGENT SECTION === */
-.subagent-section { margin-top: 3px; padding-top: 3px; border-top: 1px solid rgba(255,255,255,0.05); }
-.subagent-summary { font-size: 9px; color: #888888; display: flex; gap: 6px; align-items: center; margin-top: 1px; }
-.subagent-summary .running-count { color: var(--sm-blizzard-blue); }
-.subagent-item { display: flex; align-items: flex-start; padding: 0; gap: 4px; font-size: 10px; color: #999999; line-height: 1.5; }
-.subagent-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
-.subagent-dot.done { background: #444444; }
-.subagent-dot.running { background: var(--sm-blizzard-blue); box-shadow: 0 0 3px rgba(var(--sm-blizzard-blue-rgb), 0.4); }
-.subagent-dot.waiting { background: var(--sm-frozen-peach); box-shadow: 0 0 3px rgba(var(--sm-frozen-peach-rgb), 0.4); }
-.subagent-dot.background { background: var(--sm-arctic-teal); opacity: 0.6; }
-.subagent-background { opacity: 0.7; }
-.subagent-status.background-status { color: var(--sm-arctic-teal); opacity: 0.8; }
-.subagent-content { flex: 1; min-width: 0; }
-.subagent-header { display: flex; align-items: center; gap: 4px; }
-.subagent-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.subagent-result { font-size: 9px; color: #666666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; margin-top: 1px; }
-.subagent-tools { font-size: 8px; color: #777777; margin-right: 3px; }
-.subagent-status { font-size: 9px; color: #888888; flex-shrink: 0; }
-.subagent-status.running-status { color: var(--sm-blizzard-blue); }
-.subagent-status.waiting-status { color: var(--sm-frozen-peach); }
-.subagent-summary .waiting-count { color: var(--sm-frozen-peach); }
-.subagent-overflow { font-size: 9px; color: #666666; padding-left: 9px; line-height: 1.5; }
-.subagent-toggle { cursor: pointer; color: var(--sm-blizzard-light); font-size: 9px; margin-left: 4px; }
-
 /* Inline not-done agent rows under a card (teammates / subagents / workflow
  * agents) — the live "who's still working" list. Capped to ~6 rows, then it
  * scrolls. Each row deep-links the detail panel to that agent. */
@@ -676,7 +638,6 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 .card-agent-dot.waiting { background: var(--sm-frozen-peach); box-shadow: 0 0 3px rgba(var(--sm-frozen-peach-rgb), 0.4); }
 .card-agent-dot.failed { background: var(--sm-salmon-red); }
 .card-agent-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.subagent-toggle:hover { text-decoration: underline; }
 .mini-spinner { display: inline-block; width: 7px; height: 7px; border: 1px solid rgba(var(--sm-blizzard-blue-rgb), 0.2); border-top-color: var(--sm-blizzard-blue); border-radius: 50%; animation: spin 1s linear infinite; flex-shrink: 0; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -874,7 +835,7 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 .team-orchestrator .card-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .team-orchestrator .card-detail { font-size: 11px; color: var(--vscode-descriptionForeground, #888888); line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.team-badge { font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; line-height: 13px; color: var(--sm-blizzard-blue); background: rgba(var(--sm-blizzard-blue-rgb), 0.15); }
+.team-badge { font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; line-height: 13px; color: var(--sm-team-violet); background: rgba(var(--sm-team-violet-rgb), 0.15); }
 
 /* Agent summary row (expandable) */
 .team-agent-summary {
@@ -1002,19 +963,6 @@ body.vscode-light .ws-counts .status-count.stale-count   { background: #d0d0d0; 
 body.vscode-light .action-btn:hover { background: rgba(0,0,0,0.06); }
 body.vscode-light .dismiss-btn:hover { background: rgba(0,0,0,0.06); }
 
-/* -- Subagents -- */
-body.vscode-light .subagent-section { border-top-color: rgba(0, 0, 0, 0.08); }
-body.vscode-light .subagent-summary { color: #999999; }
-body.vscode-light .subagent-summary .running-count { color: #4a6cd4; }
-body.vscode-light .subagent-summary .waiting-count { color: #c47a3a; }
-body.vscode-light .subagent-item { color: #666666; }
-body.vscode-light .subagent-dot.done { background: #cccccc; }
-body.vscode-light .subagent-result { color: #888888; }
-body.vscode-light .subagent-tools { color: #999999; }
-body.vscode-light .subagent-status { color: #999999; }
-body.vscode-light .subagent-status.running-status { color: #4a6cd4; }
-body.vscode-light .subagent-status.waiting-status { color: #c47a3a; }
-body.vscode-light .subagent-status.background-status { color: #4a9a9c; }
 body.vscode-light .mini-spinner { border-color: rgba(74, 108, 212, 0.25); border-top-color: #4a6cd4; }
 
 /* -- Context bar -- */
@@ -1047,7 +995,7 @@ body.vscode-light .usage-weekly-sep { border-top-color: rgba(0, 0, 0, 0.06); }
 body.vscode-light .team-group { background: var(--vscode-editor-background, #ffffff); }
 body.vscode-light .team-group.team-stale { border-left-color: #cccccc; }
 body.vscode-light .team-orchestrator:hover { background: var(--vscode-list-hoverBackground, #f0f0f0); }
-body.vscode-light .team-badge { color: #4a6cd4; background: rgba(var(--sm-blizzard-blue-rgb), 0.1); }
+body.vscode-light .team-badge { color: #8a5fd6; background: rgba(var(--sm-team-violet-rgb), 0.1); }
 body.vscode-light .team-agent:hover { background: rgba(0, 0, 0, 0.04); }
 body.vscode-light .team-agent-dot.done { background: #cccccc; }
 body.vscode-light .team-agent-dot.stale { background: #dddddd; }

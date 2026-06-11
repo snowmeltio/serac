@@ -158,3 +158,16 @@ async function readHeadBranch(headPath: string): Promise<string | null> {
     return null;
   }
 }
+
+/** Compare two worktree lists for set equality (order-insensitive,
+ *  branch-aware). Shared by local and foreign discovery so both detect
+ *  worktree refresh the same way. */
+export function worktreeSetChanged(a: WorktreeInfo[], b: WorktreeInfo[]): boolean {
+  if (a.length !== b.length) { return true; }
+  const key = (w: WorktreeInfo): string => `${w.path}\0${w.branch ?? ''}`;
+  const aKeys = new Set(a.map(key));
+  for (const w of b) {
+    if (!aKeys.has(key(w))) { return true; }
+  }
+  return false;
+}

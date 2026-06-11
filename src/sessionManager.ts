@@ -20,8 +20,10 @@
  * !running      → running       system: compact_boundary                 processSystemRecord() → setRunning()
  *
  * running       → waiting       AskUserQuestion tool_use                 processAssistantRecord()
- * running       → waiting       permission timer (3s/6s, doubled to     PermissionTracker fire (session)
- *                                6s/12s if recent tool result <3s ago)
+ * running       → waiting       permission timer (3s fast / 15s slow,    PermissionTracker fire (session)
+ *                                doubled to 6s/30s if a tool result
+ *                                arrived <3s ago; the PermissionRequest
+ *                                hook pre-empts it when ingress is live)
  * running       → waiting       all subagents blocked                    PermissionTracker fire (subagent, bubbles)
  * running       → waiting       computeDemotion + active tools (no subs) demoteIfStale()
  *
@@ -29,6 +31,11 @@
  * running       → done          idle timer (no output, process dead)     resetIdleTimer() + isProcessAlive()
  * running       → done          idle timer (all-subagents-done)          resetIdleTimer() timeout
  * running       → done          all-subagents-done on user record        processUserRecord()
+ * running       → done          Stop hook (turn ended; ignored while     TurnLifecycleTracker → onTurnEnded()
+ *                                stop_hook_active continuation)
+ *               (background agents: markSessionDone exempts live background agents;
+ *                their completion arrives via the harness's <task-notification>
+ *                user record — processTaskNotification() — or the dormant sweep)
  * running       → done          computeDemotion (no active tools)        demoteIfStale()
  * running       → done          hard ceiling (3 min)                     computeDemotion()
  * waiting       → done          hard ceiling (10 min)                    computeDemotion()
@@ -241,10 +248,10 @@ export class SessionManager {
    *  Non-invasive: default no-op. Used by the replay harness to verify a
    *  captured transition stream is reproducible from JSONL. */
   private readonly onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void;
-  /** Optional hook-event router. Held but unused in PR-C — PR-D will switch
-   *  tracker construction (permission/cwd/subagent/compact) to hook variants
-   *  that subscribe via this router. Undefined when not available (foreign
-   *  workspaces, sibling worktrees owned by another window, tests). */
+  /** Optional hook-event router, passed to every tracker factory at
+   *  construction; hook-capable trackers subscribe via it and fall back to
+   *  JSONL inference when it is undefined (foreign workspaces, sibling
+   *  worktrees owned by another window, tests). */
   private readonly hookRouter?: HookEventRouter;
   /** Tool_use IDs whose tool_result was processed before the tool_use record
    *  (Claude Code occasionally flushes tool_result ahead of tool_use for fast
