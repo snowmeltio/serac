@@ -416,6 +416,141 @@ body {
 body.vscode-light .worktree-count-chip {
   color: #777777;
 }
+/* Clickable workspace / worktree rows */
+.ws-row-clickable { cursor: pointer; }
+/* Neutral grey hover — blue is overloaded across the panel, so reserve it for
+ * status/identity cues. Falls back to a low-alpha grey when VS Code's list
+ * hover variable isn't defined. */
+.ws-row-clickable:hover { background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.06)); }
+body.vscode-light .ws-row-clickable:hover { background: var(--vscode-list-hoverBackground, rgba(0, 0, 0, 0.05)); }
+.ws-row-clickable:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007acc); outline-offset: 1px; }
+
+/* Waiting rows in the Worktrees + Other workspaces panes wash peach so a
+ * waiting agent stands out at a glance even when the row is collapsed. The
+ * tint stays low-alpha so the row text/counts remain readable, and it
+ * stacks under :hover so the row still highlights on pointer-over. */
+.ws-row-waiting { background: rgba(var(--sm-frozen-peach-rgb), 0.10); }
+.ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach-rgb), 0.18); }
+body.vscode-light .ws-row-waiting { background: rgba(var(--sm-frozen-peach-rgb), 0.18); }
+body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach-rgb), 0.28); }
+
+.card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  /* Wrap when a card is unusually loaded (e.g. bg-shell badge + view-workflows
+   * + view-subagents + actions) so the row never overflows the panel width and
+   * pushes the action buttons out of reach behind a horizontal scrollbar. */
+  flex-wrap: wrap;
+}
+
+.session-id-pill {
+  font-size: 9px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-descriptionForeground, #555555);
+  letter-spacing: 0.2px;
+  flex-shrink: 0;
+}
+.session-id-pill.clickable { cursor: pointer; }
+.session-id-pill.clickable:hover { color: var(--vscode-foreground, #cccccc); text-decoration: underline; }
+
+.model-pill {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground, #666666);
+  flex-shrink: 0;
+}
+/* Hue comes from a per-model hash (--model-hue, set inline); sat/light fixed
+ * per theme so model pills form their own colour register, distinct from the
+ * status palette. Fallback hue 0 with low sat ~ the old neutral grey. */
+.model-pill { color: hsl(var(--model-hue, 0) 45% 70%); }
+body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
+
+.branch-pill {
+  font-size: 9px;
+  color: var(--vscode-descriptionForeground, #666666);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+}
+
+.tool-error-badge {
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--sm-salmon-red);
+  border: 1px solid color-mix(in srgb, var(--sm-salmon-red) 45%, transparent);
+  border-radius: 7px;
+  padding: 0 5px;
+  flex-shrink: 0;
+}
+
+/* Background-shell badge — quiet outlined chip in the meta row, tinted with the
+ * running accent so a `done` card still reads "a build is still going". The
+ * fixed line-height keeps the bordered chip from inflating the row (same recipe
+ * as .ws-main-chip). Non-status: the card's real status is unchanged. */
+.bg-shell-badge {
+  font-size: 9px;
+  line-height: 1.2;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  color: var(--sm-blizzard-blue);
+  opacity: 0.85;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+/* A running shell is inherently a live signal (blue); dim it when the parent
+ * card is seen/stale, matching the detail chips. */
+.card.stale .bg-shell-badge { opacity: 0.5; }
+
+.card-detail {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground, #888888);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  /* 3 lines max — glance layer, not a reading surface (Murray, 2026-06-11). */
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+}
+/* Inline not-done agent rows under a card (teammates / subagents / workflow
+ * agents) — the live "who's still working" list. Capped to ~6 rows, then it
+ * scrolls. Each row deep-links the detail panel to that agent. */
+.card-agent-list { margin-top: 3px; display: flex; flex-direction: column; gap: 1px; max-height: 116px; overflow-y: auto; }
+.card-agent-row { display: flex; align-items: center; gap: 6px; padding: 2px 4px; border-radius: 3px; cursor: pointer; font-size: 10px; color: #b0b0b0; }
+.card-agent-row:hover { background: rgba(255, 255, 255, 0.05); color: var(--vscode-foreground, #e0e0e0); }
+.card-agent-row:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: -1px; }
+.card-agent-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+.card-agent-dot.running { background: var(--sm-blizzard-blue); box-shadow: 0 0 3px rgba(var(--sm-blizzard-blue-rgb), 0.4); }
+.card-agent-dot.waiting { background: var(--sm-frozen-peach); box-shadow: 0 0 3px rgba(var(--sm-frozen-peach-rgb), 0.4); }
+.card-agent-dot.failed { background: var(--sm-salmon-red); }
+.card-agent-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-spinner { display: inline-block; width: 7px; height: 7px; border: 1px solid rgba(var(--sm-blizzard-blue-rgb), 0.2); border-top-color: var(--sm-blizzard-blue); border-radius: 50%; animation: spin 1s linear infinite; flex-shrink: 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* === CONTEXT BAR (bottom border of card) === */
+.context-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+}
+.context-fill {
+  height: 100%;
+  background: #666666;
+  transition: width 300ms ease-out;
+  border-radius: 0 1px 0 0;
+}
+.context-fill.hot { background: #3a3a3a; }
+
 /* === ARCHIVE SECTION (seamless after cards) === */
 .archive-list { padding: 0 6px 4px 6px; }
 
@@ -568,6 +703,9 @@ body.vscode-light .worktree-count-chip {
 .usage-slot-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1; }
 
 /* === TEAM GROUPS (Cornice agent teams) === */
+/* Team affiliation badge (archive compact rows) — violet, the team accent. */
+.team-badge { font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; line-height: 13px; color: var(--sm-team-violet); background: rgba(var(--sm-team-violet-rgb), 0.15); }
+
 /* Team archive compact row */
 .team-compact-row { display: flex; align-items: center; padding: 4px 8px; border-radius: 4px; cursor: pointer; gap: 7px; transition: background 0.1s; }
 .team-compact-row:hover { background: var(--vscode-list-hoverBackground, #2a2a2a); }
