@@ -481,44 +481,91 @@ describe('extension', () => {
     });
   });
 
-  describe('new chat auto-focus', () => {
-    it('auto-focuses when new session appears after new chat', () => {
-      activate(context as any);
-      mockDiscovery.getSnapshots.mockReturnValue([{ sessionId: 'existing-1' }]);
-
-      const newChatHandler = vi.mocked(mockPanelProvider.setNewChatHandler).mock.calls[0][0];
-      newChatHandler();
-
-      // New session appears
-      mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1' },
-        { sessionId: 'new-session' },
-      ]);
-
-      // Trigger update via start callback
-      vi.advanceTimersByTime(500);
+  describe('new-session auto-focus', () => {
+    function tick() {
       const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
       startCb();
+      // sendUpdate is debounced to 200ms — flush so each tick is one update.
+      vi.advanceTimersByTime(250);
+    }
+
+    it('does not focus on the seeding (first) update', () => {
+      activate(context as any);
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'existing-1', status: 'running' },
+      ]);
+      tick();
+      expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
+    });
+
+    it('focuses a single newly discovered live local session — no arming needed', () => {
+      activate(context as any);
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'existing-1', status: 'running' },
+      ]);
+      tick(); // seed
+
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'existing-1', status: 'running' },
+        { sessionId: 'new-session', status: 'running' },
+      ]);
+      tick();
 
       expect(mockPanelProvider.focusSession).toHaveBeenCalledWith('new-session');
     });
 
-    it('clears pending new chat after 30s timeout', () => {
+    it('ignores sibling-worktree and non-live newcomers', () => {
       activate(context as any);
-      mockDiscovery.getSnapshots.mockReturnValue([{ sessionId: 'existing-1' }]);
-
-      const newChatHandler = vi.mocked(mockPanelProvider.setNewChatHandler).mock.calls[0][0];
-      newChatHandler();
-
-      vi.advanceTimersByTime(30_000);
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'existing-1', status: 'running' },
+      ]);
+      tick(); // seed
 
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1' },
-        { sessionId: 'late-session' },
+        { sessionId: 'existing-1', status: 'running' },
+        { sessionId: 'wt-session', status: 'running', worktreeRoot: '/repos/serac-wt' },
+        { sessionId: 'old-run', status: 'done' },
       ]);
-      vi.advanceTimersByTime(200);
-      const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
-      startCb();
+      tick();
+
+      expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
+    });
+
+    it('skips a burst of multiple new live sessions', () => {
+      activate(context as any);
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'existing-1', status: 'running' },
+      ]);
+      tick(); // seed
+
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'existing-1', status: 'running' },
+        { sessionId: 'burst-a', status: 'running' },
+        { sessionId: 'burst-b', status: 'waiting' },
+      ]);
+      tick();
+
+      expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
+    });
+
+    it('does not re-fire when a known session is promoted to live', () => {
+      activate(context as any);
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'existing-1', status: 'running' },
+      ]);
+      tick(); // seed
+
+      // Newcomer arrives done (absorbed silently), then later goes running.
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'existing-1', status: 'running' },
+        { sessionId: 'sleeper', status: 'done' },
+      ]);
+      tick();
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'existing-1', status: 'running' },
+        { sessionId: 'sleeper', status: 'running' },
+      ]);
+      tick();
 
       expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
     });

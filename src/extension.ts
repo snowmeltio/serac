@@ -293,25 +293,19 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     );
   });
 
-  // Handle new chat: open a fresh Claude Code editor panel, then auto-focus
-  // when the JSONL file appears (which happens on first message, not on panel open).
-  // We snapshot known IDs and let the regular poll loop detect the new session.
-  let pendingNewChatKnownIds: Set<string> | null = null;
-  let pendingNewChatTimer: ReturnType<typeof setTimeout> | null = null;
-  const NEW_CHAT_TIMEOUT_MS = 30_000;
+  // Auto-focus the card of a newly started session (ui-focus-1). Seeded on the
+  // first update so activation never grabs a card. Covers "+ New", sessions
+  // started from the Claude Code tab, and terminal sessions alike — the JSONL
+  // appears on first message and the next poll diff focuses it.
+  let knownSessionIds: Set<string> | null = null;
 
+  // Handle new chat: open a fresh Claude Code editor panel. The new session's
+  // card is focused by the generic new-session diff in sendUpdate() once its
+  // JSONL appears.
   panelProvider.setNewChatHandler(() => {
-    pendingNewChatKnownIds = new Set(discovery.getSnapshots().map(s => s.sessionId));
-    // Clear stale pending state if user abandons the new chat (closes without sending)
-    if (pendingNewChatTimer) { clearTimeout(pendingNewChatTimer); }
-    pendingNewChatTimer = setTimeout(() => {
-      pendingNewChatKnownIds = null;
-      pendingNewChatTimer = null;
-    }, NEW_CHAT_TIMEOUT_MS);
     vscode.commands.executeCommand('claude-vscode.editor.open', undefined, undefined, vscode.ViewColumn.One).then(
       undefined,
       () => {
-        pendingNewChatKnownIds = null;
         vscode.window.showInformationMessage(
           'Could not open new chat. Is the Claude Code extension installed?'
         );
@@ -618,14 +612,22 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     panelProvider.updateSessions(sessions, waitingCount, wsPath, usage, foreignWorkspaces, compactSettings, teams, foreignWaiting, olderSessionCount, foreignRunning, worktrees, workflows);
     detailPanel.refresh();
 
-    // Auto-focus new session created via "+ New" button
-    if (pendingNewChatKnownIds) {
-      const freshSession = sessions.find(s => !pendingNewChatKnownIds!.has(s.sessionId));
-      if (freshSession) {
-        pendingNewChatKnownIds = null;
-        if (pendingNewChatTimer) { clearTimeout(pendingNewChatTimer); pendingNewChatTimer = null; }
-        panelProvider.focusSession(freshSession.sessionId);
+    // Auto-focus a single newly arrived live local session. Sibling-worktree
+    // sessions (worktreeRoot set) never yank this window's highlight, and a
+    // multi-session burst (wake-from-sleep, first scan of a busy dir) doesn't
+    // pick a winner arbitrarily. All ids are absorbed every tick so a status
+    // promotion of a known session can never re-fire the focus.
+    if (knownSessionIds === null) {
+      knownSessionIds = new Set(sessions.map(s => s.sessionId));
+    } else {
+      const fresh = sessions.filter(s =>
+        !knownSessionIds!.has(s.sessionId)
+        && !s.worktreeRoot
+        && (s.status === 'running' || s.status === 'waiting'));
+      if (fresh.length === 1) {
+        panelProvider.focusSession(fresh[0].sessionId);
       }
+      for (const s of sessions) { knownSessionIds.add(s.sessionId); }
     }
   }
 
