@@ -191,7 +191,7 @@ describe('WorkflowDiscovery', () => {
     const runDir = path.join(sessionDir(), 'subagents', 'workflows', 'wf_live-002');
     fs.mkdirSync(runDir, { recursive: true });
     fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
-      JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'live01' }), 'utf-8');
+      JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'live01' }) + '\n', 'utf-8');
     const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
     await d.scan();
     expect(d.getWorkflowSnapshots(emptyMeta())).toHaveLength(1);
@@ -211,7 +211,7 @@ describe('WorkflowDiscovery', () => {
       JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'live01' }),
       JSON.stringify({ type: 'started', key: 'v2:b', agentId: 'live02' }),
       JSON.stringify({ type: 'result', key: 'v2:a', agentId: 'live01', result: 'ok' }),
-    ].join('\n'), 'utf-8');
+    ].join('\n') + '\n', 'utf-8');
     // A script so the live run can be named.
     const scriptsDir = path.join(sessionDir(), 'workflows', 'scripts');
     fs.mkdirSync(scriptsDir, { recursive: true });
@@ -239,7 +239,7 @@ describe('WorkflowDiscovery', () => {
       const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
       fs.mkdirSync(runDir, { recursive: true });
       fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
-        JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'liveaaa1' }), 'utf-8');
+        JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'liveaaa1' }) + '\n', 'utf-8');
     }
 
     it('marks the run incomplete when the parent session is dead in a clean, active registry', async () => {
@@ -281,7 +281,7 @@ describe('WorkflowDiscovery', () => {
     fs.writeFileSync(path.join(runDir, 'journal.jsonl'), [
       JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'revaaa1' }),
       JSON.stringify({ type: 'started', key: 'v2:b', agentId: 'verbbb2' }),
-    ].join('\n'), 'utf-8');
+    ].join('\n') + '\n', 'utf-8');
     // record-0 prompts: the review agent's expanded prompt contains the call's
     // static head; the verify agent's is wholly dynamic.
     fs.writeFileSync(path.join(runDir, 'agent-revaaa1.jsonl'),
@@ -327,7 +327,7 @@ describe('WorkflowDiscovery', () => {
     fs.writeFileSync(path.join(runDir, 'journal.jsonl'), [
       JSON.stringify({ type: 'started', key: 'v2:x', agentId: 'aaaaaa1' }),
       JSON.stringify({ type: 'started', key: 'v2:y', agentId: 'bbbbbb2' }),
-    ].join('\n'), 'utf-8');
+    ].join('\n') + '\n', 'utf-8');
     fs.writeFileSync(path.join(runDir, 'agent-aaaaaa1.jsonl'),
       JSON.stringify({ type: 'user', message: { content: 'SHARED HEAD. Audit the security posture of the entire system end to end.' } }) + '\n', 'utf-8');
     fs.writeFileSync(path.join(runDir, 'agent-bbbbbb2.jsonl'),
@@ -368,7 +368,7 @@ describe('WorkflowDiscovery', () => {
     fs.writeFileSync(path.join(runDir, 'journal.jsonl'), [
       JSON.stringify({ type: 'started', key: 'v2:p', agentId: 'agprivacy' }),
       JSON.stringify({ type: 'started', key: 'v2:s', agentId: 'agsecurit' }),
-    ].join('\n'), 'utf-8');
+    ].join('\n') + '\n', 'utf-8');
     const mkPrompt = (dim: string) =>
       `=== YOUR DIMENSION: ${dim} ===\n\nAudit the claude profile system for this dimension.`;
     fs.writeFileSync(path.join(runDir, 'agent-agprivacy.jsonl'),
@@ -422,12 +422,185 @@ describe('WorkflowDiscovery', () => {
     d.dispose();
   });
 
+  describe('live-tier caching (perf-io-1)', () => {
+    function mkLiveRun(runId: string, journalLines: Record<string, unknown>[]): string {
+      const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        journalLines.map(l => JSON.stringify(l) + '\n').join(''), 'utf-8');
+      return runDir;
+    }
+
+    function writeSidecarIn(sessionId: string, runId: string): void {
+      const dir = path.join(projectsDir, WS_KEY, sessionId, 'workflows');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `${runId}.json`), JSON.stringify(validSidecar(runId)), 'utf-8');
+    }
+
+    it('tails the journal instead of re-reading it (consumed bytes are never re-folded)', async () => {
+      const line1 = { type: 'started', key: 'v2:a', agentId: 'agaaaaaa' };
+      const runDir = mkLiveRun('wf_tail-001', [line1]);
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].agents.map(a => a.agentId)).toEqual(['agaaaaaa']);
+
+      // Rewrite the already-consumed first line in place (same byte length,
+      // different agentId) and append a genuinely new record. A tailer must
+      // pick up only the appended record; a from-scratch re-reader would
+      // surface the rewritten id instead.
+      const rewritten = { type: 'started', key: 'v2:a', agentId: 'agcccccc' };
+      expect(JSON.stringify(rewritten).length).toBe(JSON.stringify(line1).length);
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify(rewritten) + '\n' + JSON.stringify({ type: 'started', key: 'v2:b', agentId: 'agbbbbbb' }) + '\n',
+        'utf-8');
+      await d.scan();
+      const ids = d.getWorkflowSnapshots(emptyMeta())[0].agents.map(a => a.agentId).sort();
+      expect(ids).toEqual(['agaaaaaa', 'agbbbbbb']);
+      d.dispose();
+    });
+
+    it('folds an appended result record and reports the change via the snapshot signature', async () => {
+      const runDir = mkLiveRun('wf_fold-001', [
+        { type: 'started', key: 'v2:a', agentId: 'agaaaaaa' },
+        { type: 'started', key: 'v2:b', agentId: 'agbbbbbb' },
+      ]);
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      expect(await d.poll()).toBe(true);
+      await d.scan();
+      expect(await d.poll()).toBe(false); // idle cycle → no churn
+
+      fs.appendFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify({ type: 'result', key: 'v2:a', agentId: 'agaaaaaa', result: 'ok' }) + '\n', 'utf-8');
+      await d.scan();
+      expect(await d.poll()).toBe(true); // status flip detected
+      const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+      expect(snap.counts.done).toBe(1);
+      expect(snap.counts.running).toBe(1);
+      d.dispose();
+    });
+
+    it('clears the accumulators and replays on journal truncation', async () => {
+      const runDir = mkLiveRun('wf_trunc-001', [
+        { type: 'started', key: 'v2:a', agentId: 'agaaaaaa' },
+        { type: 'started', key: 'v2:b', agentId: 'agbbbbbb' },
+      ]);
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].agents).toHaveLength(2);
+
+      // The journal shrinks to different content — stale agents must not linger.
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify({ type: 'started', key: 'v2:z', agentId: 'agzzzzzz' }) + '\n', 'utf-8');
+      await d.scan();
+      const agents = d.getWorkflowSnapshots(emptyMeta())[0].agents;
+      expect(agents.map(a => a.agentId)).toEqual(['agzzzzzz']);
+      d.dispose();
+    });
+
+    it('caches the record-0 prompt correlation (no per-cycle head re-read)', async () => {
+      const runDir = mkLiveRun('wf_corrcache-01', [{ type: 'started', key: 'v2:a', agentId: 'revaaa1' }]);
+      fs.writeFileSync(path.join(runDir, 'agent-revaaa1.jsonl'),
+        JSON.stringify({ type: 'user', message: { content: 'Carefully review the authentication module for security bugs.' } }) + '\n', 'utf-8');
+      const scriptsDir = path.join(sessionDir(), 'workflows', 'scripts');
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      fs.writeFileSync(path.join(scriptsDir, 'cc-wf_corrcache-01.js'), [
+        "export const meta = { name: 'cc', description: 'd', phases: [{ title: 'Review' }] }",
+        "agent('Carefully review the authentication module for security bugs.', { label: 'review:auth', phase: 'Review' })",
+      ].join('\n'), 'utf-8');
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].agents[0].label).toBe('review:auth');
+
+      const openSpy = vi.spyOn(fs.promises, 'open');
+      await d.scan();
+      await d.scan();
+      const headReads = openSpy.mock.calls.filter(c => String(c[0]).endsWith('agent-revaaa1.jsonl'));
+      expect(headReads).toHaveLength(0);
+      openSpy.mockRestore();
+      // The cached correlation still renders.
+      const a = d.getWorkflowSnapshots(emptyMeta())[0].agents[0];
+      expect(a.label).toBe('review:auth');
+      expect(a.phaseTitle).toBe('Review');
+      d.dispose();
+    });
+
+    it('recomputes a cached correlation when the script appears after the agent started', async () => {
+      const runDir = mkLiveRun('wf_latescript-1', [{ type: 'started', key: 'v2:a', agentId: 'revaaa1' }]);
+      fs.writeFileSync(path.join(runDir, 'agent-revaaa1.jsonl'),
+        JSON.stringify({ type: 'user', message: { content: 'Carefully review the authentication module for security bugs.' } }) + '\n', 'utf-8');
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      // No script yet → fallback label, no phase (correlation cached at scriptV -1).
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].agents[0].label).toBe('Agent · revaaa1');
+      await d.poll(); // drain
+
+      const scriptsDir = path.join(sessionDir(), 'workflows', 'scripts');
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      fs.writeFileSync(path.join(scriptsDir, 'ls-wf_latescript-1.js'), [
+        "export const meta = { name: 'ls', description: 'd', phases: [{ title: 'Review' }] }",
+        "agent('Carefully review the authentication module for security bugs.', { label: 'review:auth', phase: 'Review' })",
+      ].join('\n'), 'utf-8');
+      await d.scan();
+      const a = d.getWorkflowSnapshots(emptyMeta())[0].agents[0];
+      expect(a.label).toBe('review:auth');
+      expect(a.phaseTitle).toBe('Review');
+      expect(await d.poll()).toBe(true); // the improved correlation is a reported change
+      d.dispose();
+    });
+
+    it('scopes fast rescans to sessions owning live runs, with a full walk every 10th scan', async () => {
+      const SID2 = '22222222-3333-4444-5555-666666666666';
+      const SID3 = '33333333-4444-5555-6666-777777777777';
+      writeSidecarIn(SID2, 'wf_other-001');
+      mkLiveRun('wf_scoped-001', [{ type: 'started', key: 'v2:a', agentId: 'agaaaaaa' }]);
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan(); // #1: full walk — sees both sessions
+      expect(d.getWorkflowSnapshots(emptyMeta()).map(s => s.runId).sort())
+        .toEqual(['wf_other-001', 'wf_scoped-001']);
+      expect(d.hasActiveRuns()).toBe(true);
+
+      // Lands in a session with no live run — invisible to scoped scans.
+      writeSidecarIn(SID3, 'wf_new-001');
+      await d.scan(); // #2: scoped to SID
+      const ids = d.getWorkflowSnapshots(emptyMeta()).map(s => s.runId);
+      expect(ids).not.toContain('wf_new-001');
+      // And the scoped scan must not prune the unvisited SID2 run.
+      expect(ids).toContain('wf_other-001');
+
+      for (let i = 0; i < 8; i++) { await d.scan(); } // #3–#10: still scoped
+      expect(d.getWorkflowSnapshots(emptyMeta()).map(s => s.runId)).not.toContain('wf_new-001');
+
+      await d.scan(); // #11: full walk again
+      expect(d.getWorkflowSnapshots(emptyMeta()).map(s => s.runId)).toContain('wf_new-001');
+      d.dispose();
+    });
+
+    it('a scoped rescan still sees the owning session complete (live → sidecar)', async () => {
+      mkLiveRun('wf_finish-001', [{ type: 'started', key: 'v2:a', agentId: 'agaaaaaa' }]);
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan(); // #1: full — live run discovered
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].status).toBe('running');
+
+      writeSidecar('wf_finish-001', validSidecar('wf_finish-001'));
+      await d.scan(); // #2: scoped to SID, which owns the run — completion lands
+      const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+      expect(snap.source).toBe('sidecar');
+      expect(snap.status).toBe('completed');
+      expect(d.hasActiveRuns()).toBe(false);
+      d.dispose();
+    });
+  });
+
   it('prefers the sidecar over the live dir once a run completes', async () => {
     // Both a sidecar AND a run dir exist (the normal completed case).
     writeSidecar('wf_done-001', validSidecar('wf_done-001'));
     const runDir = path.join(sessionDir(), 'subagents', 'workflows', 'wf_done-001');
     fs.mkdirSync(runDir, { recursive: true });
-    fs.writeFileSync(path.join(runDir, 'journal.jsonl'), JSON.stringify({ type: 'started', agentId: 'x' }), 'utf-8');
+    fs.writeFileSync(path.join(runDir, 'journal.jsonl'), JSON.stringify({ type: 'started', agentId: 'x' }) + '\n', 'utf-8');
     const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
     await d.scan();
     const snaps = d.getWorkflowSnapshots(emptyMeta());

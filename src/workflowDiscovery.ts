@@ -7,6 +7,7 @@ import { extractWorkflowMeta, extractAgentCalls, expandIndirectCalls, matchAgent
 import { readSettings, ageGateMsFor } from './settings.js';
 import { makeRescanGate } from './sessionPolling.js';
 import { isValidSessionId } from './validation.js';
+import { JsonlTailer } from './jsonlTailer.js';
 
 /** The slice of ProcessRegistry the live tier needs to confirm a parent session
  *  has died (so an abandoned run can be downgraded from 'running' to
@@ -26,6 +27,86 @@ function resolveLiveLabel(call: WorkflowAgentCall, prompt: string): string | nul
   if (!call.label) { return null; }
   if (!call.label.includes('${')) { return call.label; } // plain literal label
   return recoverInterpolatedLabel(call, prompt);          // interpolated → recover or null
+}
+
+/** Display fields derived from an agent's (immutable) record-0 prompt and the
+ *  script version it was correlated against. Cached per agent — see liveRuns. */
+interface AgentCorrelation {
+  scriptV: number;
+  label: string;
+  phaseIndex: number | null;
+  phaseTitle: string | null;
+  promptPreview: string;
+}
+
+/** Per-run live-tier accumulator (audit perf-io-1). The journal is append-only,
+ *  so it is tailed incrementally instead of re-read from byte 0 on every fast
+ *  poll cycle; started/resolved fold idempotently, so a truncation replay (the
+ *  tailer resets to byte 0 and returns the whole file) is safe once the
+ *  accumulators are cleared. */
+interface LiveRunState {
+  tailer: JsonlTailer;
+  /** agentId -> first-seen journal key. */
+  started: Map<string, string>;
+  /** agentIds that have a result record. */
+  resolved: Set<string>;
+  /** agentId -> cached prompt correlation (immutable per script version). */
+  corr: Map<string, AgentCorrelation>;
+  /** Signature of the last snapshot emitted for this run. */
+  sig: string;
+}
+
+/** Derive the live-tier display fields for one agent from its record-0
+ *  prompt. Interpolated (${...}) prompt parts differ per agent, so the call
+ *  match uses the longest static segment; unmatched (e.g. agent(c.prompt)) →
+ *  flat fallback. The label never leaks a raw `${…}` template: a plain
+ *  literal label is used as-is; an interpolated label (`audit:${d.key}`) is
+ *  recovered from this agent's own prompt, so fan-out agents get distinct
+ *  labels (audit:privacy, audit:security, …); when the value can't be
+ *  recovered, a phase-scoped, agent-distinct label stands in. */
+function correlateAgent(
+  agentId: string,
+  prompt: string,
+  scriptV: number,
+  agentCalls: WorkflowAgentCall[],
+  phaseIndexByTitle: Map<string, number>,
+): AgentCorrelation {
+  let label = `Agent · ${agentId.slice(0, 8)}`;
+  let phaseIndex: number | null = null;
+  let phaseTitle: string | null = null;
+  const promptPreview = prompt.slice(0, 140);
+  const call = matchAgentCall(prompt, agentCalls);
+  if (call) {
+    if (call.phase) {
+      const idx = phaseIndexByTitle.get(call.phase);
+      if (idx !== undefined) { phaseIndex = idx; phaseTitle = call.phase; }
+    }
+    const resolved = resolveLiveLabel(call, prompt);
+    if (resolved !== null) {
+      label = resolved;
+    } else if (phaseTitle) {
+      label = `${phaseTitle} · ${agentId.slice(0, 8)}`;
+    }
+  }
+  return { scriptV, label, phaseIndex, phaseTitle, promptPreview };
+}
+
+/** Cheap change signature for a rebuilt live snapshot, covering every field
+ *  that can differ between rebuilds (the rest are live-tier constants).
+ *  Replaces a JSON.stringify deep-compare of old + new snapshots per cycle
+ *  (audit perf-io-1). agentCount/counts are derived from agents and need no
+ *  own term; phaseTitle is derived from phaseIndex + phases. */
+function liveSnapshotSig(snap: WorkflowSnapshot): string {
+  const parts: string[] = [
+    snap.status,
+    snap.name,
+    String(snap.startTime),
+    snap.phases.map(p => `${p.index}\u0000${p.title}\u0000${p.detail}`).join('\u0001'),
+  ];
+  for (const a of snap.agents) {
+    parts.push([a.agentId, a.status, a.tokens, a.toolCalls, a.label, a.phaseIndex ?? '', a.promptPreview].join('\u0000'));
+  }
+  return parts.join('\u0002');
 }
 
 /**
@@ -48,8 +129,15 @@ export class WorkflowDiscovery {
   /** Per-run script parse, keyed on mtime — the script is immutable per run,
    *  so the 500ms live poll must not re-read and re-parse it every cycle. */
   private readonly scriptMeta = new Map<string, { mtimeMs: number; name: string; phases: WorkflowSnapshot['phases']; agentCalls: WorkflowAgentCall[] }>();
+  /** Per-run live-tier accumulator: journal tailer + cached prompt
+   *  correlations + last-emitted signature (audit perf-io-1). */
+  private readonly liveRuns = new Map<string, LiveRunState>();
   /** Set by scan() when the snapshot set changes; read + cleared by poll(). */
   private changedSincePoll = false;
+  /** Counts scan() invocations so the live cadence can walk the full
+   *  workspace only every Nth scan — see scan(). */
+  private scanCount = 0;
+  private static readonly FULL_WALK_INTERVAL = 10;
 
   constructor(
     private readonly projectsDir: string,
@@ -87,49 +175,82 @@ export class WorkflowDiscovery {
     return changed;
   }
 
-  /** Full walk of the workspace's session dirs for workflow sidecars + live runs. */
+  /** Reset all discovery state and flag the change (settings-off / dir gone). */
+  private clearAll(): void {
+    if (this.snapshots.size > 0) {
+      this.snapshots.clear();
+      this.mtimes.clear();
+      this.scriptMeta.clear();
+      this.liveRuns.clear();
+      this.agentStatsCache.clear();
+      this.changedSincePoll = true;
+    }
+  }
+
+  /** Walk the workspace's session dirs for workflow sidecars + live runs.
+   *  While a run is live the rescan gate calls this every fast cycle, but only
+   *  the sessions owning live runs need that cadence (so completion shows
+   *  fast) — the full walk, one readdir per session dir, runs on every Nth
+   *  scan to discover new runs in other sessions (audit perf-io-1). With no
+   *  live runs the gate itself throttles scan(), so every walk is full. */
   async scan(): Promise<void> {
     if (!readSettings().show.workflows) {
-      if (this.snapshots.size > 0) {
-        this.snapshots.clear();
-        this.mtimes.clear();
-        this.changedSincePoll = true;
-      }
+      this.clearAll();
       return;
     }
 
     const now = Date.now();
-    let entries: fs.Dirent[];
-    try {
-      entries = await fs.promises.readdir(this.wsDir, { withFileTypes: true });
-    } catch {
-      // Workspace dir absent (no CC history) — clear and bail.
-      if (this.snapshots.size > 0) {
-        this.snapshots.clear();
-        this.mtimes.clear();
-        this.changedSincePoll = true;
+    const liveSessions = new Set<string>();
+    for (const snap of this.snapshots.values()) {
+      if (snap.status === 'running') { liveSessions.add(snap.sessionId); }
+    }
+    const fullWalk = liveSessions.size === 0
+      || this.scanCount % WorkflowDiscovery.FULL_WALK_INTERVAL === 0;
+    this.scanCount++;
+
+    let sessionIds: string[];
+    if (fullWalk) {
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(this.wsDir, { withFileTypes: true });
+      } catch {
+        // Workspace dir absent (no CC history) — clear and bail.
+        this.clearAll();
+        return;
       }
-      return;
+      sessionIds = entries
+        .filter(ent => ent.isDirectory() && isValidSessionId(ent.name))
+        .map(ent => ent.name);
+    } else {
+      sessionIds = [...liveSessions];
     }
 
     const seen = new Set<string>();
-    for (const ent of entries) {
-      if (!ent.isDirectory()) { continue; }
-      const sessionId = ent.name;
-      if (!isValidSessionId(sessionId)) { continue; }
-
+    for (const sessionId of sessionIds) {
       const sidecarRunIds = await this.scanSidecars(sessionId, now, seen);
       await this.scanLiveRuns(sessionId, now, seen, sidecarRunIds);
     }
 
-    // Prune snapshots whose sidecar/run dir vanished or aged out.
-    for (const runId of [...this.snapshots.keys()]) {
-      if (!seen.has(runId)) {
-        this.snapshots.delete(runId);
-        this.mtimes.delete(runId);
-        this.scriptMeta.delete(runId);
-        this.changedSincePoll = true;
-      }
+    // Prune snapshots whose sidecar/run dir vanished or aged out. A scoped
+    // scan never visited the other sessions, so their runs must survive it.
+    for (const [runId, snap] of [...this.snapshots]) {
+      if (seen.has(runId)) { continue; }
+      if (!fullWalk && !liveSessions.has(snap.sessionId)) { continue; }
+      this.snapshots.delete(runId);
+      this.mtimes.delete(runId);
+      this.scriptMeta.delete(runId);
+      this.liveRuns.delete(runId);
+      this.pruneAgentStats(snap.sessionId, runId);
+      this.changedSincePoll = true;
+    }
+  }
+
+  /** Drop cached per-agent stats for a pruned run (the cache is keyed by
+   *  transcript path, which lives under the run dir). */
+  private pruneAgentStats(sessionId: string, runId: string): void {
+    const prefix = path.join(this.wsDir, sessionId, 'subagents', 'workflows', runId) + path.sep;
+    for (const key of [...this.agentStatsCache.keys()]) {
+      if (key.startsWith(prefix)) { this.agentStatsCache.delete(key); }
     }
   }
 
@@ -182,6 +303,8 @@ export class WorkflowDiscovery {
       }
       this.snapshots.set(runId, snap);
       this.mtimes.set(runId, stat.mtimeMs);
+      // The sidecar supersedes the live tier — drop the run's accumulator.
+      this.liveRuns.delete(runId);
       this.changedSincePoll = true;
     }
     return runIds;
@@ -219,15 +342,17 @@ export class WorkflowDiscovery {
       if (now - stat.mtimeMs > ageGateMsFor('workflows')) { continue; }
 
       seen.add(runId);
-      // Re-derive each cycle (cheap, journal is small); the live snapshot is
-      // transient and is replaced by the sidecar on completion. Only flag a
-      // change when the rebuilt snapshot actually differs — otherwise an idle
-      // live run would churn the whole panel every poll cycle (~500ms, since a
-      // running run holds the fast cadence). Mirrors the sidecar tier's skip.
+      // Re-derive each cycle (the journal tail + cached correlations make it
+      // cheap); the live snapshot is transient and is replaced by the sidecar
+      // on completion. Only flag a change when the rebuilt snapshot actually
+      // differs — otherwise an idle live run would churn the whole panel every
+      // poll cycle (~500ms, since a running run holds the fast cadence).
       const snap = await this.buildLiveSnapshot(sessionId, runId, runDir, stat.mtimeMs);
       if (snap) {
-        const prev = this.snapshots.get(runId);
-        if (!prev || JSON.stringify(prev) !== JSON.stringify(snap)) {
+        const state = this.liveRuns.get(runId);
+        const sig = liveSnapshotSig(snap);
+        if (!state || state.sig !== sig) {
+          if (state) { state.sig = sig; }
           this.snapshots.set(runId, snap);
           this.changedSincePoll = true;
         }
@@ -242,12 +367,28 @@ export class WorkflowDiscovery {
     runDir: string,
     startTime: number,
   ): Promise<WorkflowSnapshot | null> {
+    let state = this.liveRuns.get(runId);
+    if (!state) {
+      state = {
+        tailer: new JsonlTailer(path.join(runDir, 'journal.jsonl')),
+        started: new Map(),
+        resolved: new Set(),
+        corr: new Map(),
+        sig: '',
+      };
+      this.liveRuns.set(runId, state);
+    }
+
     // Name + phase scaffold from the (never-eval'd) script meta, if present.
     // Also pull the agent() call sites so each running agent can be correlated
     // back to the phase the script assigned it (best-effort; see below).
+    // scriptV identifies the script version a correlation was computed against
+    // (-1 = no script parsed yet), so cached correlations recompute exactly
+    // once if the script appears or changes after they were cached.
     let name = runId;
     let phases: WorkflowSnapshot['phases'] = [];
     let agentCalls: WorkflowAgentCall[] = [];
+    let scriptV = -1;
     const phaseIndexByTitle = new Map<string, number>();
     try {
       const scriptsDir = path.join(this.wsDir, sessionId, 'workflows', 'scripts');
@@ -259,6 +400,7 @@ export class WorkflowDiscovery {
         const cached = this.scriptMeta.get(runId);
         if (cached && cached.mtimeMs === sstat.mtimeMs) {
           ({ name, phases, agentCalls } = cached);
+          scriptV = cached.mtimeMs;
         } else if (sstat.size > WorkflowDiscovery.SCRIPT_MAX_BYTES) {
           this.log.warn(`[workflows] Script exceeds size cap, skipping parse: ${scriptFile}`);
         } else {
@@ -276,6 +418,7 @@ export class WorkflowDiscovery {
           // The script is immutable per run — cache on mtime so the live poll
           // stops re-reading and re-parsing it at 2Hz.
           this.scriptMeta.set(runId, { mtimeMs: sstat.mtimeMs, name, phases, agentCalls });
+          scriptV = sstat.mtimeMs;
         }
         for (const p of phases) { phaseIndexByTitle.set(p.title, p.index); }
       }
@@ -283,89 +426,82 @@ export class WorkflowDiscovery {
       // no script yet — fall back to runId + no phases + no correlation
     }
 
-    // Agents from the journal: started → running, result → done. No phase grouping.
-    const agents: WorkflowAgentSnapshot[] = [];
-    const counts: Record<string, number> = {};
-    const resolved = new Set<string>();
-    try {
-      const journal = await this.readCapped(path.join(runDir, 'journal.jsonl'), WorkflowDiscovery.JOURNAL_MAX_BYTES);
-      const started = new Map<string, string>(); // agentId -> first-seen label/key
-      for (const line of journal.split('\n')) {
-        if (!line.trim()) { continue; }
-        let rec: unknown;
-        try { rec = JSON.parse(line); } catch { continue; }
-        if (!rec || typeof rec !== 'object') { continue; }
-        const r = rec as Record<string, unknown>;
+    // Agents from the journal: started → running, result → done. The journal
+    // is append-only, so only new bytes are read each cycle; the offset cap
+    // preserves the bound the old whole-file read enforced (beyond it, no
+    // further journal bytes are folded). A missing journal reads as empty →
+    // phase-only scaffold. On truncation the tailer replays the whole file in
+    // the same call, so the accumulators are cleared before folding.
+    if (state.tailer.getOffset() < WorkflowDiscovery.JOURNAL_MAX_BYTES) {
+      const records = await state.tailer.readNewRecords();
+      if (state.tailer.truncated) {
+        state.started.clear();
+        state.resolved.clear();
+      }
+      for (const rec of records) {
+        const r = rec as unknown as Record<string, unknown>;
         const agentId = typeof r.agentId === 'string' ? r.agentId : null;
         if (!agentId) { continue; }
-        if (r.type === 'started' && !started.has(agentId)) {
-          started.set(agentId, typeof r.key === 'string' ? r.key : '');
+        if (r.type === 'started' && !state.started.has(agentId)) {
+          state.started.set(agentId, typeof r.key === 'string' ? r.key : '');
         } else if (r.type === 'result') {
-          resolved.add(agentId);
+          state.resolved.add(agentId);
         }
       }
-      for (const [agentId, key] of started) {
-        const status = resolved.has(agentId) ? 'done' : 'running';
-        counts[status] = (counts[status] ?? 0) + 1;
+    }
 
-        // Correlate this agent back to its agent() call via its record-0 prompt,
-        // so the live tier can group it under the right phase. Interpolated
-        // (${...}) prompt parts differ per agent, so we match on the longest
-        // static segment. Unmatched (e.g. agent(c.prompt)) → flat fallback.
-        // The journal key (`v2:<sha>`) is an implementation detail and must
-        // never reach the webview as a label — agent-distinct fallback instead.
-        let label = `Agent · ${agentId.slice(0, 8)}`;
-        let phaseIndex: number | null = null;
-        let phaseTitle: string | null = null;
-        let promptPreview = '';
-        void key;
-        if (isValidSessionId(agentId)) {
+    const agents: WorkflowAgentSnapshot[] = [];
+    const counts: Record<string, number> = {};
+    for (const [agentId, key] of state.started) {
+      const status = state.resolved.has(agentId) ? 'done' : 'running';
+      counts[status] = (counts[status] ?? 0) + 1;
+
+      // Correlate this agent back to its agent() call via its record-0 prompt,
+      // so the live tier can group it under the right phase. The prompt is
+      // immutable once written and the call sites are immutable per scriptV,
+      // so the correlation is computed once and cached — not re-read from a
+      // 256KB head window per agent per fast cycle (audit perf-io-1). A null
+      // prompt (transcript not started yet) is not cached, so it retries.
+      // The journal key (`v2:<sha>`) is an implementation detail and must
+      // never reach the webview as a label — agent-distinct fallback instead.
+      let label = `Agent · ${agentId.slice(0, 8)}`;
+      let phaseIndex: number | null = null;
+      let phaseTitle: string | null = null;
+      let promptPreview = '';
+      void key;
+      if (isValidSessionId(agentId)) {
+        let corr = state.corr.get(agentId);
+        if (!corr || corr.scriptV !== scriptV) {
           const prompt = await this.readFirstRecordPrompt(path.join(runDir, `agent-${agentId}.jsonl`));
-          if (prompt) { promptPreview = prompt.slice(0, 140); }
-          const call = prompt ? matchAgentCall(prompt, agentCalls) : null;
-          if (call) {
-            if (call.phase) {
-              const idx = phaseIndexByTitle.get(call.phase);
-              if (idx !== undefined) { phaseIndex = idx; phaseTitle = call.phase; }
-            }
-            // Resolve a display label, never letting a raw `${...}` template
-            // reach the webview. A plain literal label is used as-is; an
-            // interpolated label (`audit:${d.key}`) is recovered from this
-            // agent's own prompt, so fan-out agents get distinct labels
-            // (audit:privacy, audit:security, …) instead of identical source.
-            // When the value can't be recovered, fall back to a phase-scoped,
-            // agent-distinct label rather than repeat the raw template per row.
-            const resolved = resolveLiveLabel(call, prompt as string);
-            if (resolved !== null) {
-              label = resolved;
-            } else if (phaseTitle) {
-              label = `${phaseTitle} · ${agentId.slice(0, 8)}`;
-            }
+          if (prompt) {
+            corr = correlateAgent(agentId, prompt, scriptV, agentCalls, phaseIndexByTitle);
+            state.corr.set(agentId, corr);
           }
         }
-        const stats = await this.liveAgentStats(runDir, agentId, status);
-
-        agents.push({
-          agentId,
-          label,
-          phaseIndex,
-          phaseTitle,
-          model: '',
-          agentType: null,
-          status,
-          startedAt: 0,
-          durationMs: null,
-          tokens: stats.tokens,
-          toolCalls: stats.toolCalls,
-          attempt: 1,
-          promptPreview,
-          resultPreview: null,
-          lastToolName: null,
-          lastToolSummary: null,
-        });
+        if (corr) {
+          ({ label, phaseIndex, phaseTitle, promptPreview } = corr);
+        }
       }
-    } catch {
-      // journal not written yet — emit a phase-only scaffold
+      const stats = await this.liveAgentStats(runDir, agentId, status);
+
+      agents.push({
+        agentId,
+        label,
+        phaseIndex,
+        phaseTitle,
+        model: '',
+        agentType: null,
+        status,
+        startedAt: 0,
+        durationMs: null,
+        tokens: stats.tokens,
+        toolCalls: stats.toolCalls,
+        attempt: 1,
+        promptPreview,
+        resultPreview: null,
+        lastToolName: null,
+        lastToolSummary: null,
+      });
     }
 
     // A live run with no sidecar whose parent session is confirmed dead was
@@ -409,26 +545,13 @@ export class WorkflowDiscovery {
    *  than the throttle, capped at 8 MB — beyond that the last stats stick. */
   private agentStatsCache = new Map<string, { size: number; scannedAt: number; tokens: number; toolCalls: number }>();
   private static readonly STATS_RESCAN_MS = 5_000;
-  /** Read at most maxBytes from the head of a file. A truncated tail line is
-   *  dropped naturally by per-line JSON parsing. Untrusted-input guard. */
-  private async readCapped(filePath: string, maxBytes: number): Promise<string> {
-    const fh = await fs.promises.open(filePath, 'r');
-    try {
-      const size = (await fh.stat()).size;
-      const buf = Buffer.alloc(Math.min(maxBytes, size));
-      if (buf.length === 0) { return ''; }
-      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
-      return buf.subarray(0, bytesRead).toString('utf-8');
-    } finally {
-      await fh.close();
-    }
-  }
 
   private static readonly STATS_MAX_BYTES = 8 * 1024 * 1024;
   /** Untrusted-input caps for the other per-run reads (the codebase invariant
    *  is that every on-disk read path is size-capped — see teamDiscovery). The
-   *  harness caps scripts at 512KB; sidecar and journal are JSON(L) we parse
-   *  whole or per-line. */
+   *  harness caps scripts at 512KB; sidecar is JSON we parse whole. The
+   *  journal cap bounds the tailer's lifetime offset, not a single read —
+   *  the tailer itself caps each cycle's read. */
   private static readonly SIDECAR_MAX_BYTES = 1024 * 1024;
   private static readonly SCRIPT_MAX_BYTES = 1024 * 1024;
   private static readonly JOURNAL_MAX_BYTES = 4 * 1024 * 1024;
@@ -538,5 +661,8 @@ export class WorkflowDiscovery {
   dispose(): void {
     this.snapshots.clear();
     this.mtimes.clear();
+    this.scriptMeta.clear();
+    this.liveRuns.clear();
+    this.agentStatsCache.clear();
   }
 }
