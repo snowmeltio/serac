@@ -71,6 +71,19 @@ function mcpProgress(): JsonlRecord {
   return { type: 'progress', timestamp: new Date().toISOString(), data: { type: 'mcp_progress' } };
 }
 
+/** A tool_result delivered via the agent_progress relay channel — the wrapped
+ *  shape processProgressRecord unpacks at data.message.message.content. */
+function agentProgressToolResult(toolUseId: string, parentToolUseID: string): JsonlRecord {
+  return {
+    type: 'progress', parentToolUseID,
+    timestamp: new Date().toISOString(),
+    data: {
+      type: 'agent_progress',
+      message: { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: toolUseId }] } },
+    },
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Subagent bubble policy — the /red-team-flagged seam
 // ─────────────────────────────────────────────────────────────────────────
@@ -140,6 +153,29 @@ describe('Bubble policy: subagent permission wait → parent session', () => {
 
     // Tool result arrives — subagent unblocks
     await feed(mgr, [sidechainToolResult('sc-1', 'agent-1')]);
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(false);
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('blocked subagent unblocks via agent_progress relay → parent recovers to running', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [spawnAgent('agent-1')]);
+    await feed(mgr, [sidechainToolUse('SomeTool', 'sc-1', 'agent-1')]);
+    vi.advanceTimersByTime(3_001);
+    expect(mgr.getStatus()).toBe('waiting');
+
+    // The tool_result arrives via the agent_progress relay — once relay works
+    // it is the ONLY delivery channel (onProgress disposes the targeted
+    // tailer), so parent recovery must run on this path too, not just the
+    // sidechain one. Regression: the relay copy rescheduled the permission
+    // timer instead of cancelling and never recovered the parent.
+    await feed(mgr, [agentProgressToolResult('sc-1', 'agent-1')]);
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(false);
+    expect(mgr.getStatus()).toBe('running');
+
+    // And the cancelled timer must not re-fire and re-block the subagent.
+    vi.advanceTimersByTime(30_000);
     expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(false);
     expect(mgr.getStatus()).toBe('running');
   });

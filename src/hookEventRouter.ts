@@ -149,6 +149,13 @@ export class HookEventRouter {
     return this.buffer.get(sessionId)?.length ?? 0;
   }
 
+  /** Current subscriber count for a session — primarily for tests (pins the
+   *  SessionManager.dispose() symmetry: every tracker registration must be
+   *  released, or pruned managers leak their whole state graph). */
+  getSubscriberCount(sessionId: string): number {
+    return this.subscribers.get(sessionId)?.length ?? 0;
+  }
+
   /** Release all subscribers and buffers. After dispose(), the router is
    *  inert: register() returns a no-op unsubscribe, onHookEvent() is a no-op. */
   dispose(): void {

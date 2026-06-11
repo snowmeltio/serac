@@ -191,3 +191,24 @@ describe('PermissionRequest acceleration (tool_name-keyed label)', () => {
     expect(mgr.getSnapshot().activity).toBe('Waiting for permission');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Dispose symmetry — every tracker registration released (audit
+// refactor-sessionmanager-2). Before the fix, HookCwdTracker (2),
+// HookCompactBoundaryTracker (1), and HookSubagentLifecycleTracker (1)
+// survived dispose(), each closure retaining the dead manager's state graph.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('SessionManager.dispose() router-subscription symmetry', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; mockTruncated = false; });
+
+  it('releases every hook subscription for the sessionId on dispose', () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    // Construction registers all hook-capable trackers.
+    expect(router.getSubscriberCount(SID)).toBeGreaterThan(0);
+
+    mgr.dispose();
+    expect(router.getSubscriberCount(SID)).toBe(0);
+  });
+});

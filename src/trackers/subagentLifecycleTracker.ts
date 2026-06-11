@@ -60,6 +60,10 @@ export interface SubagentLifecycleTracker {
   /** Dispose all subagent tailer resources. Called on session reset or
    *  disposal. */
   disposeAll(subagents: SubagentInfo[]): void;
+  /** Release the tracker's own subscriptions (hook variant: the router
+   *  registration). Does NOT touch per-subagent tailers — those are released
+   *  via disposeAll, which needs the subagents array. Idempotent. */
+  dispose(): void;
 }
 
 export class JsonlDerivedSubagentLifecycleTracker implements SubagentLifecycleTracker {
@@ -100,6 +104,8 @@ export class JsonlDerivedSubagentLifecycleTracker implements SubagentLifecycleTr
   disposeAll(subagents: SubagentInfo[]): void {
     this.mgr.disposeAll(subagents);
   }
+
+  dispose(): void { /* no hook subscriptions */ }
 }
 
 /**
@@ -153,14 +159,11 @@ class HookSubagentLifecycleTracker implements SubagentLifecycleTracker {
   getActiveTailerCount(): number { return this.fallback.getActiveTailerCount(); }
   disposeAll(subagents: SubagentInfo[]): void { this.fallback.disposeAll(subagents); }
 
-  /** Test/observability helper — caller-side dispose, not part of the
-   *  interface. SessionManager calls disposeAll on session reset; this
-   *  releases the router subscription separately if the tracker is
-   *  retired without a session-reset. */
-  releaseHook(): void {
+  dispose(): void {
     if (this.disposed) { return; }
     this.disposed = true;
     this.unsubscribe();
+    this.fallback.dispose();
   }
 }
 

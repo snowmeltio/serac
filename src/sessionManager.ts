@@ -759,14 +759,9 @@ export class SessionManager {
       // permission tracker and all) so the card's agents chip and roster stay
       // truthful; it completes via task-notification or the dormant sweep.
       if (subagent.background && subagent.running) { continue; }
-      subagent.running = false;
-      subagent.waitingOnPermission = false;
-      this.clearTools(subagent.activeTools);
-      subagent.permissionTracker.dispose();
-      // Release any open tailer + pending silence timer for a mid-flight
-      // subagent at turn-end — otherwise activeTailerCount stays stuck and the
-      // silence timer dangles. agentId is preserved so the drill-in still works.
-      this.subagentLifecycle.disposeTailerAndTimer(subagent);
+      // Turn-end completion preserves whatever resultPreview the subagent
+      // already accumulated (or null). agentId survives so drill-in still works.
+      this.completeSubagent(subagent, subagent.resultPreview);
     }
     this.clearSessionTimers();
   }
@@ -862,12 +857,17 @@ export class SessionManager {
   dispose(): void {
     this.disposed = true;
     this.clearSessionTimers();
+    // All eight hook-capable trackers release their router subscriptions here
+    // — a pruned manager must leave no closures retaining its state graph.
     this.permissionTracker.dispose();
     this.turnLifecycleTracker.dispose();
     this.loopTracker.dispose();
     this.toolOutcomeTracker.dispose();
     this.sessionLifecycleTracker.dispose();
     this.backgroundShellTracker.dispose();
+    this.cwdTracker.dispose();
+    this.compactBoundaryTracker.dispose();
+    this.subagentLifecycle.dispose();
     this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
       subagent.permissionTracker.dispose();
@@ -1227,36 +1227,22 @@ export class SessionManager {
           // [Phase 1] Extract tool_use/tool_result from nested agent_progress content.
           // agent_progress records wrap the subagent's messages at data.message.message.content.
           // Without this extraction, subagent activeTools is never populated from progress
-          // records, and permission timers can't fire.
+          // records, and permission timers can't fire. The helpers are shared
+          // with the sidechain and direct-tailer channels so the
+          // cancel-vs-reschedule decision and parent recovery stay identical
+          // across all three delivery paths.
           const innerMsg = record.data?.message as Record<string, unknown> | undefined;
           const innerType = innerMsg?.type as string | undefined;
           const innerContent = (innerMsg?.message as Record<string, unknown>)?.content;
-          if (Array.isArray(innerContent)) {
-            if (innerType === 'assistant') {
-              for (const block of innerContent as JsonlContentBlock[]) {
-                if (block.type === 'tool_use' && block.id && block.name) {
-                  if (this.earlyToolResults.has(block.id)) {
-                    this.earlyToolResults.delete(block.id);
-                    continue;
-                  }
-                  this.addTool(subagent.activeTools, block.id, block.name);
-                }
-              }
-            } else if (innerType === 'user') {
-              for (const block of innerContent as JsonlContentBlock[]) {
-                if (block.type === 'tool_result' && block.tool_use_id) {
-                  if (subagent.activeTools.has(block.tool_use_id)) {
-                    this.removeTool(subagent.activeTools, block.tool_use_id);
-                  } else {
-                    this.earlyToolResults.add(block.tool_use_id);
-                  }
-                  subagent.toolsCompleted++;
-                }
-              }
-            }
+          if (Array.isArray(innerContent) && innerType === 'assistant') {
+            this.applySubagentToolUseBlocks(subagent, innerContent as JsonlContentBlock[]);
+          } else if (Array.isArray(innerContent) && innerType === 'user') {
+            this.applySubagentToolResultBlocks(subagent, innerContent as JsonlContentBlock[]);
+          } else {
+            // Progress without tool blocks (thinking/text relay) still means
+            // the subagent is working — push the permission timer out.
+            subagent.permissionTracker.reschedule();
           }
-
-          subagent.permissionTracker.reschedule();
 
           // [Phase 2] Record agentId mapping and cancel silence timer.
           // agent_progress.data.agentId maps to the subagent JSONL filename.
@@ -1570,8 +1556,22 @@ export class SessionManager {
    *  the turn alive via processProgressRecord). */
   private applySubagentAssistantRecord(subagent: SubagentInfo, record: JsonlRecord): void {
     this.updateSubagentActivity(subagent);
-    const content = getContentBlocks(record);
-    for (const block of content) {
+    this.applySubagentToolUseBlocks(subagent, getContentBlocks(record));
+  }
+
+  /** Apply a user record to a subagent: remove tools, increment toolsCompleted,
+   *  clear permission state, recover parent status if unblocked. */
+  private applySubagentUserRecord(subagent: SubagentInfo, record: JsonlRecord): void {
+    this.updateSubagentActivity(subagent);
+    this.applySubagentToolResultBlocks(subagent, getContentBlocks(record));
+  }
+
+  /** Apply a subagent's tool_use blocks: add to activeTools (respecting
+   *  early-tool-result reordering) and push the permission timer out. The
+   *  single implementation behind all three delivery channels — agent_progress
+   *  relay, sidechain records, and the direct tailer. */
+  private applySubagentToolUseBlocks(subagent: SubagentInfo, blocks: JsonlContentBlock[]): void {
+    for (const block of blocks) {
       if (block.type === 'tool_use' && block.id && block.name) {
         if (this.earlyToolResults.has(block.id)) {
           this.earlyToolResults.delete(block.id);
@@ -1583,12 +1583,15 @@ export class SessionManager {
     subagent.permissionTracker.reschedule();
   }
 
-  /** Apply a user record to a subagent: remove tools, increment toolsCompleted,
-   *  clear permission state, recover parent status if unblocked. */
-  private applySubagentUserRecord(subagent: SubagentInfo, record: JsonlRecord): void {
-    this.updateSubagentActivity(subagent);
-    const content = getContentBlocks(record);
-    for (const block of content) {
+  /** Apply a subagent's tool_result blocks: remove from activeTools, count
+   *  completions, CANCEL the permission timer (a result means the gate
+   *  resolved — rescheduling here would re-fire and re-block), and recover a
+   *  bubbled parent. The single implementation behind all three delivery
+   *  channels: the relay copy used to reschedule instead of cancel and skip
+   *  parent recovery, leaving a bubbled parent stuck on "Subagent waiting for
+   *  permission" when relay was the only live channel. */
+  private applySubagentToolResultBlocks(subagent: SubagentInfo, blocks: JsonlContentBlock[]): void {
+    for (const block of blocks) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         if (subagent.activeTools.has(block.tool_use_id)) {
           this.removeTool(subagent.activeTools, block.tool_use_id);
@@ -1603,7 +1606,8 @@ export class SessionManager {
       subagent.waitingOnPermission = false;
     }
     subagent.permissionTracker.cancel();
-    // Re-evaluate parent status
+    // Re-evaluate parent status: recover waiting→running unless a non-exempt
+    // parent tool holds the gate or the bubble condition still holds.
     if (this.state.status === 'waiting') {
       const parentHasNonExempt = [...this.state.activeTools.values()].some(
         name => !getToolProfile(name).exempt
