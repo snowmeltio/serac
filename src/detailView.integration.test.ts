@@ -29,8 +29,12 @@ function sendRender(model: Record<string, unknown>, select?: { groupKey: string;
   window.dispatchEvent(new MessageEvent('message', { data: { type: 'render', model, select } }));
 }
 
-function sendTranscript(key: string, entries: { timestamp: string; role: string; content: string }[]): void {
-  window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscript', key, entries } }));
+function sendTranscript(key: string, entries: { timestamp: string; role: string; content: string }[], suffix: { timestamp: string; role: string; content: string }[] = []): void {
+  window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscript', key, entries, suffix } }));
+}
+
+function sendTranscriptAppend(key: string, entries: { timestamp: string; role: string; content: string }[], suffix: { timestamp: string; role: string; content: string }[] = []): void {
+  window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscriptAppend', key, entries, suffix } }));
 }
 
 const root = () => document.getElementById('wf-root')!;
@@ -135,6 +139,65 @@ describe('detailView.ts — collapse + grouped switcher', () => {
     model.groups[0].agents = model.groups[0].agents.map((a: any) => ({ ...a, status: 'done' }));
     sendRender(model);
     expect(q('.wf-nav-toggle .wf-rail-dot')!.classList.contains('done')).toBe(true);
+  });
+
+  it('agentTranscriptAppend appends turn nodes without rebuilding the reader (PR 6b)', () => {
+    sendRender(twoSourceModel());
+    const KEY = 'workflow:wf_run1|wf_run1|agent001';
+    sendTranscript(KEY, [
+      { timestamp: 't1', role: 'user', content: 'the brief' },
+      { timestamp: 't2', role: 'assistant', content: 'first reply' },
+    ]);
+    const firstTurn = q('.wf-turn.assistant')!;
+    const body = q('.wf-reader-body')!;
+
+    sendTranscriptAppend(KEY, [{ timestamp: 't3', role: 'assistant', content: 'second reply' }]);
+
+    // Same DOM nodes — no innerHTML rebuild — with the new turn appended after.
+    expect(q('.wf-reader-body')).toBe(body);
+    expect(q('.wf-turn.assistant')).toBe(firstTurn);
+    const turns = qa('.wf-turn.assistant');
+    expect(turns).toHaveLength(2);
+    expect(turns[1].textContent).toContain('second reply');
+  });
+
+  it('append replaces the inbox suffix wholesale (it can shrink)', () => {
+    sendRender(twoSourceModel());
+    const KEY = 'workflow:wf_run1|wf_run1|agent001';
+    sendTranscript(KEY, [
+      { timestamp: 't1', role: 'user', content: 'the brief' },
+      { timestamp: 't2', role: 'assistant', content: 'reply' },
+    ], [{ timestamp: 'q1', role: 'system', content: 'Queued for delivery (from murray): hello' }]);
+    expect(q('.wf-suffix')!.textContent).toContain('hello');
+
+    // Teammate drained its inbox: empty suffix, no new entries.
+    sendTranscriptAppend(KEY, [], []);
+    expect(q('.wf-suffix')).toBeNull();
+    // The real turns survive untouched.
+    expect(qa('.wf-turn.assistant')).toHaveLength(1);
+  });
+
+  it('falls back to a full render when the first user entry arrives in a delta (brief pin-out)', () => {
+    sendRender(twoSourceModel());
+    const KEY = 'workflow:wf_run1|wf_run1|agent001';
+    // No user entry yet — the brief is the promptPreview fallback (none here).
+    sendTranscript(KEY, [{ timestamp: 't1', role: 'assistant', content: 'working' }]);
+    expect(q('.wf-brief')).toBeNull();
+
+    sendTranscriptAppend(KEY, [{ timestamp: 't2', role: 'user', content: 'late brief' }]);
+    // Structure changed: the user entry is pinned out as the brief.
+    expect(q('.wf-brief')!.textContent).toContain('Inception brief');
+    expect(q('.wf-brief-body')!.textContent).toContain('late brief');
+  });
+
+  it('re-requests a full snapshot when an append arrives with no cached anchor', () => {
+    sendRender(twoSourceModel());
+    postedMessages.length = 0;
+    // Selected key (agent001 auto-selected) but the cache holds only 'loading'.
+    sendTranscriptAppend('workflow:wf_run1|wf_run1|agent001', [{ timestamp: 't', role: 'assistant', content: 'x' }]);
+    const req = postedMessages.find(m => (m as { type?: string }).type === 'viewAgent') as { full?: boolean } | undefined;
+    expect(req).toBeTruthy();
+    expect(req!.full).toBe(true);
   });
 
   it('does NOT collapse the agent list when selecting an agent (click-through stays open)', () => {

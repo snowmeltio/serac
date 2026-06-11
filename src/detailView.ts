@@ -16,7 +16,10 @@ import type {
 type TranscriptState =
   | { state: 'loading' }
   | { state: 'error'; message: string }
-  | { state: 'ready'; entries: TranscriptEntry[] };
+  /** `entries` is the append-only JSONL prefix; `suffix` is the teammate
+   *  inbox tail, replaced wholesale on every host post (it shrinks when the
+   *  member drains its inbox, so it can never be folded into entries). */
+  | { state: 'ready'; entries: TranscriptEntry[]; suffix: TranscriptEntry[] };
 
 interface VsCodeApi {
   postMessage(msg: unknown): void;
@@ -160,7 +163,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const k = tkey(groupKey, agentId);
     if (!transcripts.has(k) && model) {
       transcripts.set(k, { state: 'loading' });
-      vscode.postMessage({ type: 'viewAgent', source: model.source, containerId: model.containerId, groupKey, agentId });
+      // full: the webview holds nothing for this key, so an append delta
+      // would be unanchored — the host must answer with a whole snapshot.
+      vscode.postMessage({ type: 'viewAgent', source: model.source, containerId: model.containerId, groupKey, agentId, full: true });
     }
     render();
   }
@@ -283,6 +288,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     let body = '<div class="wf-reader-body">';
     const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
     const entries = (st && st.state === 'ready') ? st.entries : [];
+    const suffix = (st && st.state === 'ready') ? st.suffix : [];
 
     // The agent's first prompt turn is its inception brief — the task it was
     // spawned with. Pull it out of the flow and pin it, distinct, at the top so
@@ -307,8 +313,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
         body += '<div class="wf-note">No further turns recorded.</div>';
       }
     }
+    body += renderSuffix(suffix);
     body += '</div>';
     return head + body;
+  }
+
+  /** The teammate-inbox tail, in ONE replaceable container — the append fast
+   *  path swaps this node wholesale while only ever appending turn nodes. */
+  function renderSuffix(suffix: TranscriptEntry[]): string {
+    if (suffix.length === 0) { return ''; }
+    let html = '<div class="wf-suffix">';
+    for (const e of suffix) { html += renderTurn(e); }
+    return html + '</div>';
   }
 
   /** The inception brief — the agent's spawning prompt — pinned at the top of
@@ -885,23 +901,65 @@ declare function acquireVsCodeApi(): VsCodeApi;
       }
       render();
     } else if (msg.type === 'agentTranscript') {
+      // Full snapshot: first load for this key, or a host-side reset
+      // (truncation, file swap). Authoritative — requests are serialised on
+      // the host, so a shrink here is a real truncation, not a stale race.
       const key = String(msg.key);
       const incoming = (msg.entries as TranscriptEntry[]) || [];
+      const suffix = (msg.suffix as TranscriptEntry[]) || [];
       const existing = transcripts.get(key);
-      // Steady-tick dedup: an unchanged transcript must NOT re-render — the
-      // innerHTML swap would destroy any text selection the user is holding
-      // mid-copy. Transcripts are append-only, so length + last-entry equality
-      // is a sufficient (and cheap) identity check.
-      if (existing && existing.state === 'ready' && sameTranscript(existing.entries, incoming)) {
+      // Dedup: an unchanged transcript must NOT re-render — the innerHTML
+      // swap would destroy any text selection the user is holding mid-copy.
+      if (existing && existing.state === 'ready'
+          && sameTranscript(existing.entries, incoming) && sameTranscript(existing.suffix, suffix)) {
         return;
       }
-      // An agent transcript only grows; a response that lost the race against a
-      // newer one would step the reader backwards — drop it (the steady tick
-      // re-converges, and an owner change clears the cache outright).
-      if (!(existing && existing.state === 'ready' && incoming.length < existing.entries.length)) {
-        transcripts.set(key, { state: 'ready', entries: incoming });
-      }
+      // Copy at the message boundary: the cache arrays are mutated by the
+      // append path, and message data must never be aliased into owned state.
+      transcripts.set(key, { state: 'ready', entries: incoming.slice(), suffix: suffix.slice() });
       if (key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
+    } else if (msg.type === 'agentTranscriptAppend') {
+      // Delta post (audit perf-render-4): new JSONL entries since the last
+      // post, plus the full replacement inbox suffix. Appends DOM turn nodes
+      // in place when it can — rebuilding #wf-root re-runs the markdown
+      // pipeline over every prior turn and destroys any text selection.
+      const key = String(msg.key);
+      const delta = (msg.entries as TranscriptEntry[]) || [];
+      const suffix = (msg.suffix as TranscriptEntry[]) || [];
+      const existing = transcripts.get(key);
+      if (!existing || existing.state !== 'ready') {
+        // No anchor to append to (webview reloaded mid-stream, or an error
+        // state). Only the selected agent is ever steady-polled, so if this
+        // is the selected key, re-request a full snapshot; otherwise drop.
+        if (model && selectedGroupKey !== null && selectedAgentId !== null
+            && key === tkey(selectedGroupKey, selectedAgentId)) {
+          transcripts.set(key, { state: 'loading' });
+          vscode.postMessage({ type: 'viewAgent', source: model.source, containerId: model.containerId, groupKey: selectedGroupKey, agentId: selectedAgentId, full: true });
+        }
+        return;
+      }
+      // The brief is the FIRST user entry: appending can only change the
+      // structure when no user entry existed yet (promptPreview fallback) and
+      // one arrives now — pin-out then needs a full render.
+      const briefStable = existing.entries.some(e => e.role === 'user') || !delta.some(e => e.role === 'user');
+      const canFastAppend = key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')
+        && existing.entries.length > 0
+        && briefStable
+        && root.querySelector('.wf-reader-body') !== null;
+      existing.entries.push(...delta);
+      existing.suffix = suffix.slice();
+      if (!canFastAppend) {
+        if (key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
+        return;
+      }
+      const reader = root.querySelector('.wf-reader') as HTMLElement;
+      const body = root.querySelector('.wf-reader-body') as HTMLElement;
+      const stick = isNearBottom(reader.scrollTop, reader.clientHeight, reader.scrollHeight, STICK_THRESHOLD_PX);
+      body.querySelector('.wf-suffix')?.remove();
+      let html = '';
+      for (const e of delta) { html += renderTurn(e); }
+      body.insertAdjacentHTML('beforeend', html + renderSuffix(suffix));
+      if (stick) { reader.scrollTop = reader.scrollHeight; }
     } else if (msg.type === 'agentTranscriptError') {
       transcripts.set(String(msg.key), { state: 'error', message: String(msg.message || 'Failed to load transcript.') });
       if (String(msg.key) === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }

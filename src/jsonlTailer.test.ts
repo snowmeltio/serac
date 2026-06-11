@@ -24,6 +24,19 @@ describe('JsonlTailer', () => {
     expect(records[1].type).toBe('assistant');
   });
 
+  it('starts mid-file from initialOffset, skipping the partial first line', async () => {
+    const l1 = '{"type":"user","text":"one"}\n';
+    const l2 = '{"type":"assistant","text":"two"}\n';
+    const l3 = '{"type":"user","text":"three"}\n';
+    fs.writeFileSync(tmpFile, l1 + l2 + l3);
+    // Offset lands inside line 2: its remainder fails JSON.parse and is
+    // skipped; only line 3 comes back.
+    const tailer = new JsonlTailer(tmpFile, l1.length + 5);
+    const records = await tailer.readNewRecords();
+    expect(records).toHaveLength(1);
+    expect((records[0] as { text?: string }).text).toBe('three');
+  });
+
   it('buffers incomplete lines across reads', async () => {
     fs.writeFileSync(tmpFile, '{"type":"us');
     const tailer = new JsonlTailer(tmpFile);

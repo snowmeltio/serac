@@ -11,13 +11,11 @@ vi.mock('crypto', () => ({
   randomBytes: () => ({ toString: () => 'dGVzdG5vbmNlMTIzNDU2Nzg=' }),
 }));
 
-// Mock the transcript reader so viewAgent resolution is observable
-vi.mock('./transcriptRenderer.js', () => ({
-  parseTranscript: vi.fn(),
-}));
-
 import { DetailPanel, rollupSummary, type DetailPanelDeps } from './detailPanel.js';
-import { parseTranscript } from './transcriptRenderer.js';
+import { JsonlTailer } from './jsonlTailer.js';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   Uri,
   createMockWebview,
@@ -29,6 +27,19 @@ import {
 import type { WorkflowSnapshot, TeamSnapshot, SessionSnapshot } from './types.js';
 
 // ── Fixtures ─────────────────────────────────────────────────────────
+
+/** Real on-disk JSONL for the viewAgent tests — the incremental reader tails
+ *  bytes, so transcript content lives in temp files rather than a parser mock. */
+let transcriptDir: string;
+function writeAgentJsonl(name: string, records: Array<Record<string, unknown>>): string {
+  if (!transcriptDir) { transcriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'serac-detail-')); }
+  const file = path.join(transcriptDir, name);
+  fs.writeFileSync(file, records.map(r => JSON.stringify(r)).join('\n') + (records.length ? '\n' : ''));
+  return file;
+}
+function userRecord(text: string, ts = '2026-06-13T00:00:00Z'): Record<string, unknown> {
+  return { type: 'user', timestamp: ts, message: { role: 'user', content: [{ type: 'text', text }] } };
+}
 
 function makeWorkflow(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
   return {
@@ -318,66 +329,142 @@ describe('DetailPanel', () => {
   });
 
   describe('viewAgent message', () => {
+    /** The transcript queue's file I/O spans several event-loop turns. */
+    const settleIo = async () => { for (let i = 0; i < 10; i++) { await new Promise(r => setTimeout(r, 0)); } };
+
     it('resolves the transcript and posts agentTranscript', async () => {
-      vi.mocked(parseTranscript).mockResolvedValue([{ timestamp: 't', role: 'user', content: 'hi' }]);
-      const h = setup();
+      const file = writeAgentJsonl('a1.jsonl', [userRecord('hi')]);
+      const resolveAgentFile = vi.fn(() => file);
+      const h = setup({ resolveAgentFile });
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
-      // allow the async handler to settle
-      await new Promise(r => setTimeout(r, 0));
-      expect(h.deps.resolveAgentFile).toHaveBeenCalledWith('workflow', 'sess-1', 'wf_abc', 'a1');
+      await settleIo();
+      expect(resolveAgentFile).toHaveBeenCalledWith('workflow', 'sess-1', 'wf_abc', 'a1');
       const msg = h.posted().find(m => m.type === 'agentTranscript');
       expect(msg).toBeTruthy();
       expect(msg.key).toBe('workflow:sess-1|wf_abc|a1');
       expect(msg.entries).toHaveLength(1);
+      expect(msg.entries[0].content).toBe('hi');
+    });
+
+    it('steady re-request posts nothing when the file is unchanged, a delta when it grows', async () => {
+      const file = writeAgentJsonl('a1-grow.jsonl', [userRecord('hi')]);
+      const h = setup({ resolveAgentFile: vi.fn(() => file) });
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
+      await h.webview._fireMessage(req);
+      await settleIo();
+      const baseline = h.posted().filter(m => m.type === 'agentTranscript' || m.type === 'agentTranscriptAppend').length;
+
+      // Unchanged file → no transcript message at all (audit perf-io-4).
+      await h.webview._fireMessage(req);
+      await settleIo();
+      expect(h.posted().filter(m => m.type === 'agentTranscript' || m.type === 'agentTranscriptAppend')).toHaveLength(baseline);
+
+      // Appended record → an append delta carrying ONLY the new entry.
+      fs.appendFileSync(file, JSON.stringify({ type: 'assistant', timestamp: 't2', message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }) + '\n');
+      await h.webview._fireMessage(req);
+      await settleIo();
+      const append = h.posted().find(m => m.type === 'agentTranscriptAppend');
+      expect(append).toBeTruthy();
+      expect(append.entries).toHaveLength(1);
+      expect(append.entries[0].content).toBe('reply');
+    });
+
+    it('truncation resets the slot and re-posts a full snapshot', async () => {
+      const file = writeAgentJsonl('a1-trunc.jsonl', [userRecord('one'), userRecord('two')]);
+      const h = setup({ resolveAgentFile: vi.fn(() => file) });
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
+      await h.webview._fireMessage(req);
+      await settleIo();
+
+      fs.writeFileSync(file, JSON.stringify(userRecord('rewritten')) + '\n');
+      await h.webview._fireMessage(req);
+      await settleIo();
+      const fulls = h.posted().filter(m => m.type === 'agentTranscript');
+      expect(fulls).toHaveLength(2);
+      expect(fulls[1].entries.map((e: any) => e.content)).toEqual(['rewritten']);
+    });
+
+    it('full:true re-serves the cached entries as a full snapshot (webview reload)', async () => {
+      const file = writeAgentJsonl('a1-full.jsonl', [userRecord('hi')]);
+      const h = setup({ resolveAgentFile: vi.fn(() => file) });
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
+      await h.webview._fireMessage(req);
+      await settleIo();
+
+      // Same key, unchanged file, but the webview asks for a full snapshot.
+      await h.webview._fireMessage({ ...req, full: true });
+      await settleIo();
+      const fulls = h.posted().filter(m => m.type === 'agentTranscript');
+      expect(fulls).toHaveLength(2);
+      expect(fulls[1].entries).toHaveLength(1);
     });
 
     it('posts agentTranscriptError when the file cannot be resolved', async () => {
       const h = setup({ resolveAgentFile: vi.fn(() => null) });
       h.panel.show('subagents', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'subagents', containerId: 'sess-1', groupKey: '', agentId: 'sa1' });
-      await new Promise(r => setTimeout(r, 0));
+      await settleIo();
       const msg = h.posted().find(m => m.type === 'agentTranscriptError');
       expect(msg).toBeTruthy();
       expect(msg.key).toBe('subagents:sess-1||sa1');
     });
 
-    it('posts agentTranscriptError when parseTranscript throws', async () => {
-      vi.mocked(parseTranscript).mockRejectedValue(new Error('boom'));
+    it('posts agentTranscriptError when the transcript read throws', async () => {
+      const spy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords').mockRejectedValue(new Error('boom'));
       const h = setup();
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
-      await new Promise(r => setTimeout(r, 0));
+      await settleIo();
       const msg = h.posted().find(m => m.type === 'agentTranscriptError');
       expect(msg).toBeTruthy();
       expect(String(msg.message)).toContain('boom');
+      spy.mockRestore();
     });
 
-    it('appends queued inbox messages to a team-roster member transcript', async () => {
-      vi.mocked(parseTranscript).mockResolvedValue([{ timestamp: 't', role: 'user', content: 'brief' }]);
+    it('ships queued inbox messages as a separate suffix on a team-roster member transcript', async () => {
+      const file = writeAgentJsonl('lyrebird.jsonl', [userRecord('brief')]);
+      const peek = vi.fn(() => [{ from: 'murray', text: 'hello bird', timestamp: 'ts1' }]);
       const h = setup({
+        resolveAgentFile: vi.fn(() => file),
         getTeams: vi.fn(() => [makeTeam({ teamId: 'at:my-team', agents: [], counts: {}, inProcessMembers: ['lyrebird'] })]),
         getMessagingSettings: vi.fn(() => ({ enabled: true, operatorName: 'murray' })),
-        peekTeammateInbox: vi.fn(() => [{ from: 'murray', text: 'hello bird', timestamp: 'ts1' }]),
+        peekTeammateInbox: peek,
       });
       h.panel.show('team', 'at:my-team', 'orch-1');
-      await h.webview._fireMessage({ type: 'viewAgent', source: 'team', containerId: 'at:my-team', groupKey: '', agentId: 'lyrebird' });
-      await new Promise(r => setTimeout(r, 0));
+      const req = { type: 'viewAgent', source: 'team', containerId: 'at:my-team', groupKey: '', agentId: 'lyrebird' };
+      await h.webview._fireMessage(req);
+      await settleIo();
       const msg = h.posted().find(m => m.type === 'agentTranscript');
-      expect(msg.entries.some((e: any) => e.role === 'system' && e.content.includes('hello bird'))).toBe(true);
+      // Inbox turns are a suffix, never folded into the append-only entries.
+      expect(msg.entries.some((e: any) => e.content.includes('hello bird'))).toBe(false);
+      expect(msg.suffix.some((e: any) => e.role === 'system' && e.content.includes('hello bird'))).toBe(true);
+
+      // Drain the inbox: the JSONL is unchanged, but the suffix change alone
+      // must produce an append post with the (now empty) suffix.
+      peek.mockReturnValue([]);
+      await h.webview._fireMessage(req);
+      await settleIo();
+      const append = h.posted().find(m => m.type === 'agentTranscriptAppend');
+      expect(append).toBeTruthy();
+      expect(append.entries).toHaveLength(0);
+      expect(append.suffix).toHaveLength(0);
     });
 
     it('does not peek an inbox for an off-roster team row', async () => {
-      vi.mocked(parseTranscript).mockResolvedValue([]);
       const peek = vi.fn(() => []);
       const h = setup({
+        resolveAgentFile: vi.fn(() => writeAgentJsonl('off-roster.jsonl', [])),
         getTeams: vi.fn(() => [makeTeam({ teamId: 'at:my-team', agents: [], counts: {}, inProcessMembers: ['lyrebird'] })]),
         getMessagingSettings: vi.fn(() => ({ enabled: true, operatorName: 'murray' })),
         peekTeammateInbox: peek,
       });
       h.panel.show('team', 'at:my-team', 'orch-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'team', containerId: 'at:my-team', groupKey: '', agentId: 'not-a-member' });
-      await new Promise(r => setTimeout(r, 0));
+      await settleIo();
       expect(peek).not.toHaveBeenCalled();
     });
 
@@ -385,21 +472,23 @@ describe('DetailPanel', () => {
       const h = setup();
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'nope', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
-      await new Promise(r => setTimeout(r, 0));
+      await settleIo();
       expect(h.deps.resolveAgentFile).not.toHaveBeenCalled();
     });
 
-    it('does not post a transcript to a panel disposed mid-parse', async () => {
-      let resolveParse!: (v: { timestamp: string; role: string; content: string }[]) => void;
-      vi.mocked(parseTranscript).mockReturnValue(new Promise(r => { resolveParse = r; }));
+    it('does not post a transcript to a panel disposed mid-read', async () => {
+      let resolveRead!: (v: never[]) => void;
+      const spy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords')
+        .mockReturnValue(new Promise<never[]>(r => { resolveRead = r; }) as unknown as ReturnType<JsonlTailer['readNewRecords']>);
       const h = setup();
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
-      // Dispose the panel before the parse resolves, then resolve.
+      // Dispose the panel before the read resolves, then resolve.
       h.mockPanel._fireDispose();
-      resolveParse([{ timestamp: 't', role: 'user', content: 'late' }]);
-      await new Promise(r => setTimeout(r, 0));
+      resolveRead([]);
+      await settleIo();
       expect(h.posted().find(m => m.type === 'agentTranscript')).toBeUndefined();
+      spy.mockRestore();
     });
   });
 

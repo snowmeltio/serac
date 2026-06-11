@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import { randomBytes } from 'crypto';
 import { fmtTokens, fmtDuration, transcriptKey } from './detailShared.js';
 import type {
   DetailAgentView, DetailGroupView, DetailModel, DetailViewChoice, DetailSource,
   SessionSnapshot, TeamSnapshot, WorkflowSnapshot,
 } from './types.js';
-import { parseTranscript } from './transcriptRenderer.js';
+import { entryFromRecord } from './transcriptRenderer.js';
+import type { TranscriptEntry } from './detailShared.js';
+import { JsonlTailer } from './jsonlTailer.js';
 import { isValidSessionId, parseTeammateMessageCommand } from './validation.js';
 
 /**
@@ -76,6 +79,28 @@ export class DetailPanel {
    *  skip re-posting when nothing changed (a full re-render resets reader scroll
    *  + focus, jarring on an idle panel). */
   private lastPushed: string | null = null;
+
+  /** Incremental live-transcript cache (audit perf-io-4): ONE slot, keyed by
+   *  the transcript key the steady tick re-requests — the selected agent.
+   *  Holds a byte-offset tailer plus the entries parsed so far, so a refresh
+   *  tick costs a stat (+ appended bytes) instead of a whole-file re-parse.
+   *  `inboxSig` fingerprints the teammate inbox suffix, which is NOT
+   *  append-only (drained on delivery) and therefore ships separately from
+   *  the JSONL entries on every post. Selecting another agent replaces the
+   *  slot; truncation or a file swap resets it. */
+  private liveTranscript: {
+    key: string;
+    filePath: string;
+    tailer: JsonlTailer;
+    entries: TranscriptEntry[];
+    inboxSig: string;
+  } | null = null;
+  /** Transcript requests run strictly one at a time — interleaved tailer
+   *  reads on the shared slot would double-append. Steady ticks are dropped
+   *  while one is queued (the next tick re-converges); full requests always
+   *  run (the webview shows "loading" until they answer). */
+  private transcriptQueue: Promise<void> = Promise.resolve();
+  private transcriptQueueDepth = 0;
   /** One-shot deep-link target from an inline card agent row: the webview selects
    *  this agent on the next render, then it's cleared so refresh ticks don't yank
    *  the selection back. */
@@ -116,6 +141,7 @@ export class DetailPanel {
         this.containerId = null;
         this.sessionId = null;
         this.lastPushed = null;
+        this.liveTranscript = null;
       });
     } else {
       // Reveal in the panel's CURRENT column, not Beside. `Beside` recomputes
@@ -158,6 +184,7 @@ export class DetailPanel {
     this.containerId = null;
     this.sessionId = null;
     this.lastPushed = null;
+    this.liveTranscript = null;
   }
 
   private postRender(force: boolean): void {
@@ -540,7 +567,7 @@ export class DetailPanel {
         && typeof msg.containerId === 'string'
         && typeof msg.groupKey === 'string'
         && typeof msg.agentId === 'string') {
-      await this.sendAgentTranscript(msg.source, msg.containerId, msg.groupKey, msg.agentId);
+      this.enqueueTranscript(msg.source, msg.containerId, msg.groupKey, msg.agentId, msg.full === true);
     } else if (msg.type === 'selectDetailView'
         && (msg.kind === 'workflow' || msg.kind === 'subagents' || msg.kind === 'team')
         && typeof msg.id === 'string') {
@@ -668,9 +695,23 @@ export class DetailPanel {
     return onRoster ? { teamDir: teamId.slice(3), member: memberName } : null;
   }
 
-  private async sendAgentTranscript(source: DetailSource, containerId: string, groupKey: string, agentId: string): Promise<void> {
+  /** Serialise transcript requests (see transcriptQueue). */
+  private enqueueTranscript(source: DetailSource, containerId: string, groupKey: string, agentId: string, wantFull: boolean): void {
+    if (!wantFull && this.transcriptQueueDepth > 0) { return; }
+    this.transcriptQueueDepth++;
+    this.transcriptQueue = this.transcriptQueue
+      .then(() => this.sendAgentTranscript(source, containerId, groupKey, agentId, wantFull))
+      .catch(() => { /* errors are posted in-band; never break the chain */ })
+      .finally(() => { this.transcriptQueueDepth--; });
+  }
+
+  /** Hard cap on the initial window read of a huge transcript: start the tail
+   *  at size − cap rather than byte 0 (matches the old parseTranscript cap). */
+  private static readonly TRANSCRIPT_WINDOW_BYTES = 50 * 1024 * 1024;
+
+  private async sendAgentTranscript(source: DetailSource, containerId: string, groupKey: string, agentId: string, wantFull: boolean): Promise<void> {
     // Capture the panel up front and re-check identity after the await: the
-    // transcript parse is async, and the panel can be disposed (or reused for a
+    // transcript read is async, and the panel can be disposed (or reused for a
     // different drill-in) before it resolves. Posting to a disposed webview
     // throws; posting to a reused one bleeds a stale transcript into the new view.
     const panel = this.panel;
@@ -684,37 +725,89 @@ export class DetailPanel {
       void panel.webview.postMessage({ type: 'agentTranscriptError', key, message: 'Transcript not available yet.' });
       return;
     }
+
+    // Reuse the slot when it matches this key+file; otherwise start fresh.
+    let slot = this.liveTranscript;
+    let reset = false;
+    if (!slot || slot.key !== key || slot.filePath !== file) {
+      let initialOffset = 0;
+      try {
+        const stat = await fs.promises.stat(file);
+        if (stat.size > DetailPanel.TRANSCRIPT_WINDOW_BYTES) {
+          initialOffset = stat.size - DetailPanel.TRANSCRIPT_WINDOW_BYTES;
+        }
+      } catch { /* missing file reads as empty below, like the old parser */ }
+      slot = { key, filePath: file, tailer: new JsonlTailer(file, initialOffset), entries: [], inboxSig: '' };
+      reset = true;
+    }
+
+    // Drain appended bytes. The tailer reads ≤16MB per call, so loop until the
+    // offset stops advancing; truncation resets the slot's entries (the tailer
+    // has already restarted from byte 0 within the same call).
+    const appended: TranscriptEntry[] = [];
     try {
-      const entries = await parseTranscript(file);
-      if (this.panel !== panel) { return; } // disposed or replaced mid-parse
-      // Inbox read-side: messages sent to this teammate that it has not yet
-      // drained appear as queued turns at the tail — so "did my message land?"
-      // is answerable from the thread itself. Gated on the same server-side
-      // settings as the composer; fail-silent (display affordance only).
-      // Covers both teammate surfaces: the subagents view (agentId = subagent
-      // hash, roster-resolved) and the team roster view (agentId = member name).
-      if ((source === 'subagents' || source === 'team') && this.deps.peekTeammateInbox
-          && this.deps.getMessagingSettings?.().enabled) {
-        try {
-          const target = source === 'subagents'
-            ? (this.deps.resolveInboxTarget ? this.deps.resolveInboxTarget(containerId, agentId) : null)
-            : this.inboxTargetForRosterMember(containerId, agentId);
-          if (target) {
-            for (const m of this.deps.peekTeammateInbox(target.teamDir, target.member)) {
-              entries.push({
-                timestamp: m.timestamp,
-                role: 'system',
-                content: 'Queued for delivery (from ' + m.from + '): ' + m.text,
-              });
-            }
-          }
-        } catch { /* never block the transcript on inbox state */ }
+      for (;;) {
+        const before = slot.tailer.getOffset();
+        const records = await slot.tailer.readNewRecords();
+        if (slot.tailer.truncated) {
+          slot.entries = [];
+          appended.length = 0;
+          reset = true;
+        }
+        for (const r of records) {
+          const entry = entryFromRecord(r);
+          if (entry) { appended.push(entry); }
+        }
+        if (slot.tailer.getOffset() <= before) { break; }
       }
-      void panel.webview.postMessage({ type: 'agentTranscript', key, entries });
     } catch (err) {
       if (this.panel !== panel) { return; }
       void panel.webview.postMessage({ type: 'agentTranscriptError', key, message: String(err) });
+      return;
     }
+    slot.entries.push(...appended);
+    if (this.panel !== panel) { return; } // disposed or replaced mid-read
+
+    // Inbox read-side: messages sent to this teammate that it has not yet
+    // drained appear as queued turns at the tail — so "did my message land?"
+    // is answerable from the thread itself. Gated on the same server-side
+    // settings as the composer; fail-silent (display affordance only).
+    // Covers both teammate surfaces: the subagents view (agentId = subagent
+    // hash, roster-resolved) and the team roster view (agentId = member name).
+    // Shipped as a SEPARATE suffix on every post (never folded into entries):
+    // the inbox drains on delivery, so the suffix can shrink while the JSONL
+    // prefix only grows — the webview replaces it wholesale each time.
+    const suffix: TranscriptEntry[] = [];
+    if ((source === 'subagents' || source === 'team') && this.deps.peekTeammateInbox
+        && this.deps.getMessagingSettings?.().enabled) {
+      try {
+        const target = source === 'subagents'
+          ? (this.deps.resolveInboxTarget ? this.deps.resolveInboxTarget(containerId, agentId) : null)
+          : this.inboxTargetForRosterMember(containerId, agentId);
+        if (target) {
+          for (const m of this.deps.peekTeammateInbox(target.teamDir, target.member)) {
+            suffix.push({
+              timestamp: m.timestamp,
+              role: 'system',
+              content: 'Queued for delivery (from ' + m.from + '): ' + m.text,
+            });
+          }
+        }
+      } catch { /* never block the transcript on inbox state */ }
+    }
+    const inboxSig = JSON.stringify(suffix);
+    const inboxChanged = inboxSig !== slot.inboxSig;
+    slot.inboxSig = inboxSig;
+    this.liveTranscript = slot;
+
+    if (wantFull || reset) {
+      // Full snapshot: first load for a webview that holds nothing, or a
+      // truncation/file-swap reset. Authoritative — may legitimately shrink.
+      void panel.webview.postMessage({ type: 'agentTranscript', key, entries: slot.entries, suffix });
+    } else if (appended.length > 0 || inboxChanged) {
+      void panel.webview.postMessage({ type: 'agentTranscriptAppend', key, entries: appended, suffix });
+    }
+    // else: nothing changed — post nothing; the webview keeps its cache.
   }
 
   private getHtml(webview: vscode.Webview): string {

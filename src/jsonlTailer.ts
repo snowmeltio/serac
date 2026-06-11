@@ -19,7 +19,12 @@ export class JsonlTailer {
   private offset = 0;
   private lineBuffer: Buffer = Buffer.alloc(0);
 
-  constructor(private readonly filePath: string) {}
+  /** `initialOffset` starts the tail mid-file (e.g. last-N-MB window on a huge
+   *  transcript). Starting mid-line is safe: bytes up to the first newline
+   *  fail JSON.parse and are skipped, exactly like a malformed line. */
+  constructor(private readonly filePath: string, initialOffset = 0) {
+    this.offset = Math.max(0, initialOffset);
+  }
 
   /** Whether the last readNewRecords() detected a file truncation */
   truncated = false;

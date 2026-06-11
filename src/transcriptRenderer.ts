@@ -65,31 +65,41 @@ export async function parseTranscript(filePath: string): Promise<TranscriptEntry
     const record = validateRecord(parsed);
     if (!record) { continue; }
 
-    const timestamp = (record.timestamp as string) || '';
-
-    if (record.type === 'user') {
-      const { content, hasPromptText } = extractUserContent(record);
-      if (content) {
-        // A user record can be a genuine prompt (text blocks) OR tool plumbing:
-        // tool_result blocks ride back to the assistant inside a user-role
-        // record. Labelling those "prompt" misreads the conversation — they are
-        // responses TO the assistant, so they get their own role.
-        entries.push({ timestamp, role: hasPromptText ? 'user' : 'tool', content });
-      }
-    } else if (record.type === 'assistant') {
-      const content = extractAssistantContent(record);
-      if (content) {
-        entries.push({ timestamp, role: 'assistant', content });
-      }
-    } else if (record.type === 'system' && record.subtype === 'turn_duration') {
-      const duration = record.duration as number | undefined;
-      if (duration) {
-        entries.push({ timestamp, role: 'system', content: `*Turn completed (${duration}ms)*` });
-      }
-    }
+    const entry = entryFromRecord(record);
+    if (entry) { entries.push(entry); }
   }
 
   return entries;
+}
+
+/** Map one validated JSONL record to a renderable entry (or null for record
+ *  types the transcript doesn't show). Shared by the whole-file parser above
+ *  and the incremental live-viewer path (detailPanel + JsonlTailer), so the
+ *  two can never drift on what a turn looks like. */
+export function entryFromRecord(record: JsonlRecord): TranscriptEntry | null {
+  const timestamp = (record.timestamp as string) || '';
+
+  if (record.type === 'user') {
+    const { content, hasPromptText } = extractUserContent(record);
+    if (content) {
+      // A user record can be a genuine prompt (text blocks) OR tool plumbing:
+      // tool_result blocks ride back to the assistant inside a user-role
+      // record. Labelling those "prompt" misreads the conversation — they are
+      // responses TO the assistant, so they get their own role.
+      return { timestamp, role: hasPromptText ? 'user' : 'tool', content };
+    }
+  } else if (record.type === 'assistant') {
+    const content = extractAssistantContent(record);
+    if (content) {
+      return { timestamp, role: 'assistant', content };
+    }
+  } else if (record.type === 'system' && record.subtype === 'turn_duration') {
+    const duration = record.duration as number | undefined;
+    if (duration) {
+      return { timestamp, role: 'system', content: `*Turn completed (${duration}ms)*` };
+    }
+  }
+  return null;
 }
 
 function extractUserContent(record: JsonlRecord): { content: string; hasPromptText: boolean } {
