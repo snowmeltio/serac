@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.15.0 (2026-06-12) — The audit release: background agents survive turn-end, faster panels, hardened state inference
+
+Thirty-one commits from a full-codebase audit (quick wins, security, performance, refactor, UI consistency, subagent UX) plus the deferred state-machine review.
+
+### Added
+- **Background agents survive turn-end.** Background-task banners are detected, task-notification completion is tracked, and the robot chip counts live background agents — a card no longer goes quiet while its background work runs on.
+- **Running workflow agents show a live signal** — elapsed time and the tool currently executing, read from the journal tail.
+- **Arrow-key roster navigation.** The detail-panel roster is keyboard-navigable, and focus survives re-renders.
+- **Aggregate status dot on the collapsed nav rail** — collapsed Serac still tells you when something needs attention.
+- **A newly started session auto-focuses its card.**
+
+### Fixed
+- **A blocked subagent now unblocks via the agent_progress relay.** The relay copy of tool-block handling rescheduled the permission timer on tool_result instead of cancelling it, and skipped the parent waiting→running recovery — a bubbled "Subagent waiting for permission" stuck until the next main-thread record. All three delivery channels now share one pair of helpers.
+- **`Workflow` joined the slow-tool profile** (15s permission backstop). It was missing from TOOL_PROFILES entirely, so every workflow launch raced a 3s timer (observed launch latency up to 2.3s, and the tool raises a real permission prompt — so it stays timer-eligible rather than exempt).
+- **Context bar fixed for Fable/Mythos sessions** — the 1M-token capacity entry was missing, so the fill bar read 5× too full on what is now the dominant model.
+- **Security hardening:** `openWorkspace` confined to discovered workspace paths; hook-router buffers bounded; the `.serac` runtime dir is created owner-only.
+- **Workflow read caps, script-parse memoisation, and expansion bounds** keep a pathological run directory from stalling the panel.
+- **Detail panel polish** — roster accessibility, failed agents rolled into the header, zero counts only shown when honest.
+- CSS consistency pass, including restoring live CSS an earlier cleanup had swallowed.
+
+### Performance
+- **The workflow live tier no longer re-reads the world** — journal tailing, a correlation cache, and scoped rescans (full-directory rescans only when something actually changed).
+- **The detail panel streams transcript increments** instead of re-sending the whole transcript every poll.
+- **Age-gated JSONLs are pruned via the scan readdir** instead of being re-statted every cycle, and TeamDiscovery tails only this workspace's teams.
+- Detail model build collects session data in one pass.
+
+### Internal
+- Subagent tool-block handling deduplicated behind shared helpers; tracker dispose symmetry (no leaked hook-router subscriptions).
+- Pure sidebar renderers extracted to `panelRender.ts` behind an explicit `RenderContext`; shared `detailShared.ts` panel contract; hook-ingress wiring extracted to `hookWiring.ts`; discovery polling shared via `sessionPolling.ts`; dead Cornice-era wire shape deleted.
+- State-machine review (Phase 3) closed out the April audit deferrals; the new `mode` JSONL record type is documented.
+- Suite 1282 → 1428 tests; full typecheck remains a test gate.
+
 ## v1.14.0 (2026-06-11) — Chat-style composer, honest card moves, failed agents surfaced
 
 ### Changed
