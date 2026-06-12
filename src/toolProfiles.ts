@@ -65,6 +65,10 @@ const TOOL_PROFILES = new Map<string, ToolProfile>([
   ['RemoteTrigger',   { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['PushNotification',{ exempt: true,  slow: false, userInput: false, orchestration: false }],
   // Slow (network/shell/streaming)
+  // Workflow launches return fast (observed p50 0.1s, max 2.3s over 49 calls) but the
+  // tool raises a real permission prompt, so it must not be exempt; the slow delay
+  // (15s backstop) absorbs launch latency while still catching a blocked prompt.
+  ['Workflow',        { exempt: false, slow: true,  userInput: false, orchestration: false }],
   ['Bash',            { exempt: false, slow: true,  userInput: false, orchestration: false }],
   ['WebSearch',       { exempt: false, slow: true,  userInput: false, orchestration: false }],
   ['WebFetch',        { exempt: false, slow: true,  userInput: false, orchestration: false }],

@@ -36,7 +36,8 @@ import type { HookEventRouter } from '../hookEventRouter.js';
 
 /** Base permission delay for normal (non-slow) tools. */
 export const PERMISSION_DELAY_MS = 3_000;
-/** Permission delay for slow tools (Bash, WebSearch, WebFetch, Skill, MCP).
+/** Permission delay for slow tools (the slow-flagged entries in TOOL_PROFILES:
+ *  Workflow, Bash, WebSearch, WebFetch, Skill, Monitor, and all MCP tools).
  *  Generous on purpose — see the FALSE-POSITIVE NOTE in the module header: with
  *  no hook ground truth, this is long enough that a routine slow Bash (test /
  *  build / package run) finishes before the timer mistakes it for a prompt. */

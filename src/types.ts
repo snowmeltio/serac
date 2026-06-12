@@ -648,6 +648,10 @@ export type JsonlRecordType =
   | 'last-prompt'
   | 'summary'
   | 'agent-name'
+  // Permission-mode change marker: {"type":"mode","mode":"normal",...}. No state
+  // action today, but it is the signal a future auto-accept-aware permission
+  // timer would read (skip the timer when the mode allows the tool).
+  | 'mode'
   | (string & {}); // allows any string but provides autocomplete for known types
 
 /** Raw JSONL record from Claude Code transcript files */

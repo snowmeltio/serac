@@ -370,6 +370,12 @@ describe('formatResetTime', () => {
 });
 
 describe('getModelCapacity', () => {
+  it('returns 1M for Fable', () => {
+    expect(getModelCapacity('Fable')).toBe(1_000_000);
+  });
+  it('returns 1M for Mythos', () => {
+    expect(getModelCapacity('Mythos')).toBe(1_000_000);
+  });
   it('returns 1M for Opus', () => {
     expect(getModelCapacity('Opus')).toBe(1_000_000);
   });

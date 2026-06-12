@@ -133,6 +133,15 @@ describe('getToolProfile', () => {
     expect(p.exempt).toBe(false);
   });
 
+  it('returns slow (not exempt) profile for Workflow', () => {
+    // Workflow raises a real permission prompt, so it must stay timer-eligible;
+    // slow delay absorbs launch latency (observed max 2.3s).
+    const p = getToolProfile('Workflow');
+    expect(p.slow).toBe(true);
+    expect(p.exempt).toBe(false);
+    expect(p.orchestration).toBe(false);
+  });
+
   it('returns userInput profile for AskUserQuestion', () => {
     const p = getToolProfile('AskUserQuestion');
     expect(p.userInput).toBe(true);

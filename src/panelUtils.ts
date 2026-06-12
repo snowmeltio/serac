@@ -503,6 +503,8 @@ export function applyWorkflowLiveStatus<S extends { sessionId: string; status: s
 
 /** Model's theoretical maximum context window (tokens). */
 const MODEL_CAPACITY: Record<string, number> = {
+  'Fable': 1_000_000,
+  'Mythos': 1_000_000,
   'Opus': 1_000_000,
   'Sonnet': 1_000_000,
   'Haiku': 200_000,
