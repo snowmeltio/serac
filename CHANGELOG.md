@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.1 (2026-06-15) — Fix: live workflow agents grouped under their phases for shared-preamble scripts
+
+### Fixed
+- **Live workflow agents no longer all fall into the "other" bucket while a run is in progress.** The live tier groups each running agent under its phase by matching the agent's first-message prompt back to an `agent()` call site. The matcher only lifted matchable text when the prompt argument began with a quote, so the dominant multi-agent shape — `agent(COMMON + \`…\`, …)`, where every call prepends a shared preamble const — produced no static segments and every agent rendered ungrouped for the whole live run (it self-corrected only once the completion sidecar materialised). The extractor now harvests segments from the embedded literals of a concatenated prompt, and the same scan skips over each literal so a comma or `${…}` brace inside a template can no longer truncate the prompt argument or misplace the opts object (which had also corrupted `label`/`phase` extraction for these calls). Bare `c.prompt` / `fn(args)` indirect shapes are unchanged. Verified against a real 21-agent run: all agents now group correctly live, matching the completed sidecar.
+
 ## v1.15.0 (2026-06-12) — The audit release: background agents survive turn-end, faster panels, hardened state inference
 
 Thirty-one commits from a full-codebase audit (quick wins, security, performance, refactor, UI consistency, subagent UX) plus the deferred state-machine review.

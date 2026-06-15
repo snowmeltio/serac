@@ -152,6 +152,41 @@ describe('extractAgentCalls', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].label).toBe('r');
   });
+
+  it('harvests segments from a shared-preamble concatenation (COMMON + `...`)', () => {
+    // The dominant multi-agent shape: every call is `agent(COMMON + `...`, opts)`.
+    // The prompt's first char is `C` (not a quote), so the old extractor took
+    // the bare-expression path and emitted NO segments — every agent then fell
+    // into the ungrouped bucket for the whole live run. The template also
+    // carries top-level commas and a ${interp}; neither may truncate the opts
+    // object that follows (else label/phase would be read from the wrong brace).
+    const src = "agent(COMMON + `\\nYOUR JOB (Foundation): extract the style grammar, fonts, and ${X} colours now.`, { label: 'F1 style', phase: 'Foundation' })";
+    const [call] = extractAgentCalls(src);
+    expect(call.label).toBe('F1 style');
+    expect(call.phase).toBe('Foundation');
+    expect(call.staticSegments[0]).toContain('YOUR JOB (Foundation): extract the style grammar');
+    // A single embedded literal still exposes its interpolation slot.
+    expect(call.promptTemplate!.exprs).toEqual(['X']);
+  });
+
+  it('harvests segments from every literal in a multi-part concatenation', () => {
+    const src = "agent(PRE + `a distinctive middle segment here` + `another distinctive tail segment`, { phase: 'X' })";
+    const [call] = extractAgentCalls(src);
+    expect(call.phase).toBe('X');
+    expect(call.staticSegments).toContain('a distinctive middle segment here');
+    expect(call.staticSegments).toContain('another distinctive tail segment');
+    // Several literals → alignment is ambiguous, so promptTemplate is left null.
+    expect(call.promptTemplate).toBeNull();
+  });
+
+  it('leaves a bare call-expression prompt for the indirect resolver (no harvest)', () => {
+    // No top-level `+` → not a concatenation; segments stay empty and promptExpr
+    // is captured so expandIndirectCalls can chase `fn(args)` to its body.
+    const [call] = extractAgentCalls("agent(buildPrompt(d), { phase: 'Verify' })");
+    expect(call.phase).toBe('Verify');
+    expect(call.staticSegments).toEqual([]);
+    expect(call.promptExpr).toBe('buildPrompt(d)');
+  });
 });
 
 describe('matchAgentCall', () => {
@@ -176,6 +211,16 @@ describe('matchAgentCall', () => {
     ];
     const prompt = 'x: shared distinctive prefix that continues much further — y';
     expect(matchAgentCall(prompt, ambiguous)!.label).toBe('long');
+  });
+
+  it('correlates a shared-preamble concatenation agent back to its phase end-to-end', () => {
+    // The full live-tier path: extract the call from the script, then match a
+    // running agent's expanded record-0 prompt (COMMON's text is prepended at
+    // runtime, so the harvested template segment must still appear verbatim).
+    const src = "agent(COMMON + `\\nRun the distinctive synthesis pass over all cases now.`, { label: 'S1', phase: 'Synthesis' })";
+    const [call] = extractAgentCalls(src);
+    const expandedPrompt = 'HARD CONTEXT: obey throughout.\nRun the distinctive synthesis pass over all cases now.';
+    expect(matchAgentCall(expandedPrompt, [call])!.phase).toBe('Synthesis');
   });
 });
 

@@ -284,8 +284,15 @@ export function extractAgentCalls(source: string): WorkflowAgentCall[] {
     if (!argList) { continue; }
     const inner = argList.slice(1, -1); // drop the outer parens
 
-    // First argument = the prompt. Either a string/template literal (matchable)
-    // or a bare expression like `c.prompt` (unmatchable → no segments).
+    // First argument = the prompt. One of three shapes:
+    //  - a string/template literal (`...`) — matchable directly;
+    //  - a CONCATENATION embedding literals (`COMMON + `...``) — harvest the
+    //    embedded literals' segments (the shared preamble const is identical
+    //    across agents; the per-call template is the distinctive part), so a
+    //    script built on a common preamble still correlates each agent to its
+    //    phase rather than dropping them all into the ungrouped bucket;
+    //  - a bare expression (`c.prompt`, `fn(args)`) — unmatchable here; left
+    //    for the indirect resolver (expandIndirectCalls) to chase.
     let i = 0;
     while (i < inner.length && /\s/.test(inner[i])) { i++; }
     let staticSegments: string[] = [];
@@ -301,18 +308,40 @@ export function extractAgentCalls(source: string): WorkflowAgentCall[] {
         afterPrompt = i + lit.length;
       }
     } else {
-      // Bare-expression prompt (identifier/member/call). Capture its text up
-      // to the top-level argument comma so the indirect resolver can chase it.
+      // Non-literal prompt. Walk to the top-level argument comma, skipping over
+      // each embedded string/template literal IN FULL so a comma or brace
+      // inside a template can't truncate the prompt arg or misplace the opts
+      // object. Track a depth-0 `+` to tell a concatenation (harvest literals)
+      // from a bare call/member expression (leave to the indirect resolver).
       let depth = 0;
       let j = i;
-      for (; j < inner.length; j++) {
+      let topLevelPlus = false;
+      const literals: string[] = [];
+      while (j < inner.length) {
         const c = inner[j];
+        if (c === '`' || c === "'" || c === '"') {
+          const lit = extractStringLiteral(inner, j);
+          if (!lit) { break; } // unterminated — stop the scan
+          literals.push(lit);
+          j += lit.length;
+          continue;
+        }
         if (c === '(' || c === '[' || c === '{') { depth++; }
         else if (c === ')' || c === ']' || c === '}') { depth--; }
-        else if (c === ',' && depth === 0) { break; }
+        else if (depth === 0 && c === ',') { break; }
+        else if (depth === 0 && c === '+') { topLevelPlus = true; }
+        j++;
       }
       promptExpr = inner.slice(i, j).trim() || null;
       afterPrompt = j;
+      if (topLevelPlus && literals.length > 0) {
+        const parts = literals.map(templatePartsOf);
+        staticSegments = distinctiveSegments(parts.flatMap(p => p.statics));
+        // A single embedded literal carries the interpolation slots a `${…}`
+        // label is recovered from; with several, alignment is ambiguous, so
+        // leave promptTemplate null (the honest phase-scoped label stands in).
+        if (parts.length === 1) { promptTemplate = parts[0]; }
+      }
     }
 
     // Second argument = the opts object literal; pull label/phase from it only
