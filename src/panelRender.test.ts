@@ -288,6 +288,30 @@ describe('renderCardInner', () => {
     const html = renderCardInner(makeCtx(), s, NOW, false);
     expect(html).not.toContain('<img');
   });
+
+  it('suppresses the quiet qualifier on a card owning a live workflow', () => {
+    // Workflow-upgraded card: applyWorkflowLiveStatus pins it running+high even
+    // though its own JSONL has been idle 13m (the fan-out runs under a separate
+    // pipeline). The pill must read plain Running, not "quiet".
+    const s = makeSession({ status: 'running', confidence: 'high', lastActivity: NOW - 13 * 60_000 });
+    const wfs = new Map([[s.sessionId, [makeWorkflow({ status: 'running' })]]]);
+    const html = renderCardInner(makeCtx({ workflowsBySession: wfs }), s, NOW, false);
+    expect(html).toContain('status-pill');
+    expect(html).not.toContain('quiet');
+  });
+
+  it('still flags quiet when the only workflow has stopped running (incomplete)', () => {
+    const s = makeSession({ status: 'running', confidence: 'high', lastActivity: NOW - 13 * 60_000 });
+    const wfs = new Map([[s.sessionId, [makeWorkflow({ status: 'incomplete' })]]]);
+    const html = renderCardInner(makeCtx({ workflowsBySession: wfs }), s, NOW, false);
+    expect(html).toContain('quiet');
+  });
+
+  it('still flags quiet on a plain running card with no workflow', () => {
+    const s = makeSession({ status: 'running', confidence: 'high', lastActivity: NOW - 13 * 60_000 });
+    const html = renderCardInner(makeCtx(), s, NOW, false);
+    expect(html).toContain('quiet');
+  });
 });
 
 // ===== foreign workspace / worktree rows =====

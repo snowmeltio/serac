@@ -4,7 +4,7 @@
  * cover all branches explicitly and catch regressions faster.
  */
 import { describe, it, expect } from 'vitest';
-import { computeDemotion, getToolProfile } from './sessionManager.js';
+import { computeDemotion, getToolProfile, SessionManager } from './sessionManager.js';
 
 describe('computeDemotion', () => {
   const NOW = 100_000;
@@ -208,5 +208,40 @@ describe('getToolProfile', () => {
     for (const name of ['NotebookEdit', 'EnterWorktree', 'ExitWorktree']) {
       expect(getToolProfile(name).exempt).toBe(true);
     }
+  });
+});
+
+describe('SessionManager.extractAssistantPreview', () => {
+  const extract = (t: string, cap?: number) => SessionManager.extractAssistantPreview(t, cap);
+
+  it('stops at the sentence boundary instead of straddling a trailing heading (the reported bug)', () => {
+    const text = "Everything's set up and the fan-out is running. Status:\n\n**Done this session**\n- FY25 closed out";
+    expect(extract(text)).toBe("Everything's set up and the fan-out is running.");
+  });
+
+  it('skips a leading markdown heading and takes the first prose line', () => {
+    expect(extract('## Status\n\nThe build is green and deployed.')).toBe('The build is green and deployed.');
+  });
+
+  it('returns empty for an all-headings/rules message so the prior preview is kept', () => {
+    expect(extract('## Status\n\n**Done this session**\n\n---')).toBe('');
+  });
+
+  it('does not truncate at abbreviations or dotted filenames', () => {
+    const text = 'Updated config.json and added e.g. a regression test for the loader and parser changes.';
+    expect(extract(text)).toBe('Updated config.json and added e.g. a regression test for the loader and parser changes.');
+  });
+
+  it('keeps a short two-sentence reply whole (boundary is below the floor)', () => {
+    expect(extract('All done. Shipping now.')).toBe('All done. Shipping now.');
+  });
+
+  it('strips a leading list marker from a bulleted reply', () => {
+    expect(extract('**Summary**\n- Fixed the parser bug and added a test\n- Updated docs')).toBe('Fixed the parser bug and added a test');
+  });
+
+  it('caps an over-long single line', () => {
+    const long = 'x'.repeat(500);
+    expect(extract(long, 200)).toHaveLength(200);
   });
 });

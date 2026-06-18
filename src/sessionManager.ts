@@ -1119,10 +1119,14 @@ export class SessionManager {
         }
       }
     }
-    // And the most recent assistant text — the done-card preview.
+    // And the most recent assistant text — the done-card preview. Take the
+    // first coherent prose line/sentence, not a blind 200-char tail that can
+    // straddle a trailing "Status" / "Done this session" heading and read as
+    // running and done at once.
     for (const block of content) {
       if (block.type === 'text' && block.text && block.text.trim()) {
-        this.lastAssistantText = block.text.trim().slice(0, 200);
+        const preview = SessionManager.extractAssistantPreview(block.text);
+        if (preview) { this.lastAssistantText = preview; }
       }
     }
 
@@ -1653,6 +1657,41 @@ export class SessionManager {
       if (len >= 2000) { break; }
     }
     return parts.length ? parts.join('\n').slice(0, 2000) : null;
+  }
+
+  /** Extract a coherent one-line preview from an assistant text block for the
+   *  done/stale card. Takes the first non-empty prose line — skipping markdown
+   *  headings, bold-only "heading" lines, and horizontal rules — then trims to
+   *  the first genuine sentence boundary if one sits comfortably under the cap.
+   *  Faithful: it only selects a boundary, never rewrites or summarises.
+   *
+   *  Fixes the blind-slice bug where `text.slice(0, 200)` ran the opening prose
+   *  straight into a trailing "Status" / "**Done this session**" heading, so the
+   *  card read as running and done at once. Returns '' for an all-headings/rules
+   *  message so the caller keeps the prior preview instead of clobbering it. */
+  static extractAssistantPreview(text: string, cap = 200): string {
+    const isSkippable = (line: string): boolean =>
+      /^#{1,6}\s/.test(line)                        // markdown heading
+      || /^(\*\*.+\*\*|__.+__):?\s*$/.test(line)    // bold-only "heading" line
+      || /^[-*_]{3,}$/.test(line);                  // horizontal rule
+    let chosen = '';
+    for (const raw of text.split('\n')) {
+      const line = raw.trim();
+      if (!line || isSkippable(line)) { continue; }
+      chosen = line;
+      break;
+    }
+    if (!chosen) { return ''; }
+    // Strip a leading list marker so a bulleted reply reads cleanly.
+    chosen = chosen.replace(/^([-*+]|\d+[.)])\s+/, '');
+    // Stop at the first real sentence end — punctuation followed by a space and
+    // a capital, or end of line — but only past a small floor, so "e.g." and
+    // "config.json" don't truncate the thought mid-sentence.
+    const m = chosen.match(/[.!?](?=\s+[A-Z]|\s*$)/);
+    if (m && m.index !== undefined && m.index >= 40 && m.index + 1 <= cap) {
+      chosen = chosen.slice(0, m.index + 1);
+    }
+    return chosen.slice(0, cap).trim();
   }
 
   /** Extract a short result preview from a tool_result block */

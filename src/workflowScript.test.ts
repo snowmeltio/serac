@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { extractWorkflowMeta, extractAgentCalls, matchAgentCall, recoverInterpolatedLabel, _matchStringFieldForTest, type WorkflowAgentCall } from './workflowScript.js';
+import { extractWorkflowMeta, extractAgentCalls, expandIndirectCalls, matchAgentCall, recoverInterpolatedLabel, _matchStringFieldForTest, type WorkflowAgentCall } from './workflowScript.js';
 
 function loadScript(name: string): string {
   return fs.readFileSync(path.resolve(__dirname, '__fixtures__', 'workflows', 'scripts', name), 'utf8');
@@ -282,5 +282,85 @@ describe('recoverInterpolatedLabel', () => {
   it('never emits a raw ${…} even when recovery partially fails', () => {
     const out = recoverInterpolatedLabel(call, 'no anchors at all');
     expect(out === null || !out.includes('${')).toBe(true);
+  });
+});
+
+// The dominant real multi-agent shape: every prompt is an INDIRECT expression
+// (s.prompt over SOURCES.map, synthPrompt('P1'), bare gapsPrompt) built from a
+// shared-preamble helper. Before helper-call substitution these all landed in
+// the ungrouped "other" bucket live. This mirrors the real
+// rdti-fy26-reconstruction script that surfaced the bug.
+describe('expandIndirectCalls — preamble-helper / indirect-prompt shapes', () => {
+  const SHARED = 'You are reconstructing FY26 R&D activity.';
+  // Build the script with escaped backticks/${} so it round-trips as source text.
+  const SCRIPT = [
+    `const SHARED_CONTEXT = '${SHARED}'`,
+    `const entriesJSON = '[]'`,
+    'const ev = (src, extra) => `${SHARED_CONTEXT}\\n\\n=== YOUR SOURCE: ${src} ===\\n${extra}`'.replace(/\\n/g, '\n'),
+    `const SOURCES = [`,
+    `  { key: 'cc', label: 'sweep:cc-workspace', prompt: ev('Claude Code workspace', \`Inventory every project directory under the workspace.\`) },`,
+    `  { key: 'gran', label: 'sweep:granola', prompt: ev('Granola meeting transcripts', \`Use Granola MCP tools across the income year.\`) },`,
+    `]`,
+    `const NAMES = { P1: 'Complexity', P2: 'AI-First' }`,
+    'const synthPrompt = (proj) => `${SHARED_CONTEXT}\\n\\n=== YOUR TASK: build the FY26 day schedule for PROJECT ${proj} ===\\n${entriesJSON}`'.replace(/\\n/g, '\n'),
+    'const gapsPrompt = `${SHARED_CONTEXT}\\n\\n=== YOUR TASK: produce the what-Murray-must-supply list ===\\n${entriesJSON}`'.replace(/\\n/g, '\n'),
+    'const verifyPrompt = (proj, synthObj) => `${SHARED_CONTEXT}\\n\\n=== YOUR ROLE: adversarial reviewer ===\\nChallenge the schedule for project ${proj} (${NAMES[proj]}). Return concrete challenges and a defensible day range, defaulting to skepticism throughout the entire review.\\n${JSON.stringify(synthObj)}`'.replace(/\\n/g, '\n'),
+    ``,
+    `phase('Evidence sweep')`,
+    `const swept = await parallel(SOURCES.map(s => () => agent(s.prompt, { label: s.label, phase: 'Evidence sweep', schema: {} })))`,
+    `phase('Synthesis')`,
+    `const p1 = await agent(synthPrompt('P1'), { label: 'synth:P1', phase: 'Synthesis' })`,
+    `const p2 = await agent(synthPrompt('P2'), { label: 'synth:P2', phase: 'Synthesis' })`,
+    `const gaps = await agent(gapsPrompt, { label: 'synth:gaps', phase: 'Synthesis' })`,
+    `phase('Adversarial verify')`,
+    `const v1 = await agent(verifyPrompt('P1', p1), { label: 'verify:P1', phase: 'Adversarial verify' })`,
+    `const v2 = await agent(verifyPrompt('P2', p2), { label: 'verify:P2', phase: 'Adversarial verify' })`,
+  ].join('\n');
+
+  const calls = expandIndirectCalls(SCRIPT, extractAgentCalls(SCRIPT));
+
+  // Expanded record-0 prompts the runtime writes (preamble + framing + body).
+  const evPrompt = (src: string, extra: string) => `${SHARED}\n\n=== YOUR SOURCE: ${src} ===\n${extra}`;
+  const synthExpanded = (proj: string) => `${SHARED}\n\n=== YOUR TASK: build the FY26 day schedule for PROJECT ${proj} ===\n[]`;
+  const gapsExpanded = `${SHARED}\n\n=== YOUR TASK: produce the what-Murray-must-supply list ===\n[]`;
+  const verifyExpanded = (proj: string, name: string) => `${SHARED}\n\n=== YOUR ROLE: adversarial reviewer ===\nChallenge the schedule for project ${proj} (${name}). Return concrete challenges and a defensible day range, defaulting to skepticism throughout the entire review.\n{"total":1}`;
+
+  it('expands 6 indirect call sites into 7 matchable virtual calls, grouped by phase', () => {
+    expect(calls).toHaveLength(7);
+    expect(calls.filter(c => c.phase === 'Evidence sweep')).toHaveLength(2);
+    expect(calls.filter(c => c.phase === 'Synthesis')).toHaveLength(3);
+    expect(calls.filter(c => c.phase === 'Adversarial verify')).toHaveLength(2);
+  });
+
+  it('groups every evidence-sweep agent (s.prompt over SOURCES.map) by phase, distinctly per source', () => {
+    const cc = matchAgentCall(evPrompt('Claude Code workspace', 'Inventory every project directory under the workspace.'), calls);
+    const gran = matchAgentCall(evPrompt('Granola meeting transcripts', 'Use Granola MCP tools across the income year.'), calls);
+    expect(cc?.phase).toBe('Evidence sweep');
+    expect(gran?.phase).toBe('Evidence sweep');
+    expect(cc).not.toBe(gran); // src substituted → each correlates to its own element
+  });
+
+  it('correlates synthPrompt(\'P1\') and synthPrompt(\'P2\') to DISTINCT calls/labels (the substitution win)', () => {
+    const p1 = matchAgentCall(synthExpanded('P1'), calls);
+    const p2 = matchAgentCall(synthExpanded('P2'), calls);
+    expect(p1?.label).toBe('synth:P1');
+    expect(p2?.label).toBe('synth:P2');
+    expect(p1?.phase).toBe('Synthesis');
+    expect(p2?.phase).toBe('Synthesis');
+  });
+
+  it('resolves a bare-identifier prompt (agent(gapsPrompt, …)) to its phase + label', () => {
+    const gaps = matchAgentCall(gapsExpanded, calls);
+    expect(gaps?.label).toBe('synth:gaps');
+    expect(gaps?.phase).toBe('Synthesis');
+  });
+
+  it('distinguishes two verifyPrompt(\'Px\') agents that share a long body, via the matched-length tiebreak', () => {
+    const v1 = matchAgentCall(verifyExpanded('P1', 'Complexity'), calls);
+    const v2 = matchAgentCall(verifyExpanded('P2', 'AI-First'), calls);
+    expect(v1?.phase).toBe('Adversarial verify');
+    expect(v2?.phase).toBe('Adversarial verify');
+    expect(v1?.label).toBe('verify:P1');
+    expect(v2?.label).toBe('verify:P2'); // would collide on verify:P1 without the sum tiebreak
   });
 });

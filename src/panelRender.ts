@@ -354,7 +354,13 @@ export function modelHue(label: string): number {
 }
 
 export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number, isFocused: boolean): string {
-  const statusLabel = getStatusLabel(s, now);
+  const wfs = ctx.workflowsBySession.get(s.sessionId);
+  // A card owning a live workflow run is pinned `running` by applyWorkflowLiveStatus
+  // even while its own JSONL is idle between fan-out waves; suppress the "quiet"
+  // qualifier so the pill doesn't contradict that upgrade. Same `status === 'running'`
+  // test the host upgrade uses (dismissed runs are already filtered out of this map).
+  const liveWorkflow = (wfs ?? []).some(w => w.status === 'running');
+  const statusLabel = getStatusLabel(s, now, { liveWorkflow });
   const displayName = stripMarkdown(getDisplayName(s));
 
   let subagentHtml = '';
@@ -384,7 +390,6 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
   actionsHtml += '<button class="action-btn dismiss-btn' + (isLive ? ' dismiss-btn-force' : '') + '" data-dismiss-id="' + escapeHtml(s.sessionId) + '" title="' + escapeHtml(dismissTitle) + '" aria-label="Archive session">&times;</button>';
   actionsHtml += '</div>';
 
-  const wfs = ctx.workflowsBySession.get(s.sessionId);
   let metaHtml = '<div class="card-meta">';
   metaHtml += '<span class="session-id-pill clickable" data-copy-id="' + escapeHtml(s.sessionId) + '" title="Copy session ID">' + escapeHtml(s.sessionId.slice(0, 8)) + '</span>';
   if (s.modelLabel) {

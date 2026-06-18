@@ -452,6 +452,13 @@ export class WorkflowDiscovery {
 
     const agents: WorkflowAgentSnapshot[] = [];
     const counts: Record<string, number> = {};
+    // Run-level roll-up for the header chip. No completion sidecar exists yet,
+    // so there is no runtime total on disk — sum the per-agent live stats as we
+    // build the roster (matches the sidecar tier, which shows the same sum from
+    // raw.totalTokens/totalToolCalls). Without this the header read "0 tokens ·
+    // 0 tools" while every per-agent row showed real usage.
+    let totalTokens = 0;
+    let totalToolCalls = 0;
     for (const [agentId, key] of state.started) {
       const status = state.resolved.has(agentId) ? 'done' : 'running';
       counts[status] = (counts[status] ?? 0) + 1;
@@ -483,6 +490,8 @@ export class WorkflowDiscovery {
         }
       }
       const stats = await this.liveAgentStats(runDir, agentId, status);
+      totalTokens += stats.tokens;
+      totalToolCalls += stats.toolCalls;
 
       agents.push({
         agentId,
@@ -529,8 +538,8 @@ export class WorkflowDiscovery {
       durationMs: null,
       defaultModel: '',
       agentCount: agents.length,
-      totalTokens: 0,
-      totalToolCalls: 0,
+      totalTokens,
+      totalToolCalls,
       phases,
       agents,
       counts,

@@ -178,7 +178,11 @@ export function formatAgeCoarse(ms: number): string {
  *  `waiting` (blocked on the user) — this is "blocked on nothing visible". */
 export const RUNNING_QUIET_MS = 5 * 60 * 1000;
 
-export function getStatusLabel(s: PanelSession, now: number): string {
+export function getStatusLabel(
+  s: PanelSession,
+  now: number,
+  opts?: { liveWorkflow?: boolean },
+): string {
   // Wrap the elapsed-time chunk so the pill's text-transform: uppercase
   // doesn't capitalise the unit letters (h/m/s/d) \u2014 those should remain
   // lowercase to match the rest of the UI.
@@ -195,8 +199,17 @@ export function getStatusLabel(s: PanelSession, now: number): string {
     // neither healthy-running nor waiting — flag the silence, neutrally
     // ("quiet", not "stalled": a long silent build is legitimate, but you
     // want to KNOW it's been 12 minutes either way).
+    //
+    // Exemption: a card that owns a live workflow run is upgraded to `running`
+    // by applyWorkflowLiveStatus even when its own JSONL is idle between
+    // fan-out waves. The workflow's agents churn under a SEPARATE pipeline that
+    // never touches s.lastActivity, so the quiet timer would always fire and
+    // contradict the very upgrade that put the card here. Suppress the
+    // qualifier \u2014 the caller gates `liveWorkflow` on the same `status ===
+    // 'running'` test applyWorkflowLiveStatus uses, so a stalled/abandoned
+    // workflow (downgraded to incomplete) still surfaces as quiet.
     case 'running':
-      return now - s.lastActivity > RUNNING_QUIET_MS
+      return now - s.lastActivity > RUNNING_QUIET_MS && !opts?.liveWorkflow
         ? 'Running \u00b7 quiet ' + t(now - s.lastActivity)
         : 'Running';
     // Orphan/live annotation (terminal cards only): a done card whose CC
