@@ -74,6 +74,30 @@ describe('SessionManager — registry liveness gate (permission false-positive)'
     expect(mgr.getSnapshot().activity).not.toBe('Waiting for your response');
   });
 
+  it('resolves a no-output running (extended-thinking) session to done once registry-confirmed dead', async () => {
+    // A turn with no output yet defers to liveness instead of the 3-min hard
+    // ceiling (see computeDemotion extended-thinking grace). The registry
+    // death-gate must still settle it PROMPTLY when the process exits — not hang
+    // out to the 15-min backstop. This is the safety property the ceiling fix
+    // relies on.
+    const mgr = makeManager();
+    await feed(mgr, [userRecord('think hard about this')]); // no assistant output, no tools
+    expect(mgr.getStatus()).toBe('running');
+
+    // Well past the threshold but far under the 15-min backstop. Process still
+    // live → grace holds, stays running (latches seen-live).
+    probeValue = true;
+    vi.advanceTimersByTime(200_000);
+    expect(mgr.demoteIfStale(30_000)).toBe(false);
+    expect(mgr.getStatus()).toBe('running');
+
+    // Process exits → registry drops it → next demote resolves to done at once,
+    // ahead of the backstop.
+    probeValue = false;
+    expect(mgr.demoteIfStale(30_000)).toBe(true);
+    expect(mgr.getStatus()).toBe('done');
+  });
+
   it('does NOT downgrade a waiting session never seen live in the registry', async () => {
     // Registry is active but never had an entry for this session (e.g. a class
     // it does not track) → absence is "unknown", never "dead". Probe must be

@@ -105,6 +105,42 @@ describe('computeDemotion', () => {
   it('hard ceiling overrides blocking subagents', () => {
     expect(demote({ age: 181_000, blockingSubs: true })).toBe('done');
   });
+
+  // Extended thinking (coherent, no output, no tools) is NOT demoted by the
+  // 3-min hard ceiling — it defers to the caller's liveness check up to the
+  // 15-min extended backstop. A long ruminate before a tool/Workflow launch.
+  // (now is large here so the turn-start timestamps stay positive.)
+  it('does not demote a no-output extended-thinking turn past the 3-min ceiling', () => {
+    const now = 1_000_000;
+    const turnStart = now - 200_000; // 3m20s of pure thinking
+    const lastActivity = turnStart;  // no records since the turn began (coherent)
+    expect(computeDemotion(
+      'running', lastActivity, 0, false, now, THRESHOLD, turnStart, false,
+    )).toBeNull();
+  });
+
+  // Still deferring just UNDER the 15-min backstop (this point discriminates the
+  // EXTENDED_THINKING_CEILING_MS value — would be 'done' under the old 3-min
+  // ceiling AND if the constant were lowered below ~14.6 min).
+  it('keeps deferring a no-output extended-thinking turn just under the 15-min backstop', () => {
+    const now = 1_000_000;
+    const turnStart = now - 880_000; // 14m40s of pure thinking, under the backstop
+    const lastActivity = turnStart;
+    expect(computeDemotion(
+      'running', lastActivity, 0, false, now, THRESHOLD, turnStart, false,
+    )).toBeNull();
+  });
+
+  // ...but the generous 15-min backstop still fires (truly hung / unconfirmable).
+  // Pairs with the 880k point above to bracket the constant within [880k, 901k].
+  it('demotes a no-output extended-thinking turn past the 15-min backstop', () => {
+    const now = 1_000_000;
+    const turnStart = now - 901_000; // past EXTENDED_THINKING_CEILING_MS
+    const lastActivity = turnStart;
+    expect(computeDemotion(
+      'running', lastActivity, 0, false, now, THRESHOLD, turnStart, false,
+    )).toBe('done');
+  });
 });
 
 describe('getToolProfile', () => {

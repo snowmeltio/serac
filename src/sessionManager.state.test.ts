@@ -416,7 +416,7 @@ describe('SessionManager: turn guard (extended thinking)', () => {
     expect(mgr.getStatus()).toBe('done');
   });
 
-  it('still demotes at hard ceiling even during active turn', async () => {
+  it('stays running past the 3-min ceiling during a no-output turn while alive', async () => {
     const mgr = makeManager();
     await feed(mgr, [{
       type: 'user', timestamp: ts(),
@@ -424,10 +424,35 @@ describe('SessionManager: turn guard (extended thinking)', () => {
     }]);
     expect(mgr.getStatus()).toBe('running');
 
-    // 3+ minutes passes — hard ceiling should override turn guard
+    // 3+ minutes of extended thinking (no output, no tools). The old 3-min hard
+    // ceiling demoted this to done; it now defers to PID-liveness — with no
+    // captured writer PID the process reads as alive, so the turn stays running.
+    // (Genuine death is covered by the registry death-gate, tested separately.)
     vi.advanceTimersByTime(181_000);
     const changed = mgr.demoteIfStale(30_000);
-    expect(changed).toBe(true);
+    expect(changed).toBe(false);
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('demotes a no-output turn past the 15-min extended-thinking backstop', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [{
+      type: 'user', timestamp: ts(),
+      message: { content: [{ type: 'text', text: 'Hello' }] },
+    }]);
+    expect(mgr.getStatus()).toBe('running');
+
+    // Just UNDER EXTENDED_THINKING_CEILING_MS (15 min): still deferring to
+    // liveness, so it stays running (this discriminates the backstop window —
+    // it would have demoted under the old 3-min ceiling).
+    vi.advanceTimersByTime(880_000);
+    expect(mgr.demoteIfStale(30_000)).toBe(false);
+    expect(mgr.getStatus()).toBe('running');
+
+    // Past the backstop: the generous bound fires even when liveness can't be
+    // confirmed, so a truly hung turn can't read running forever.
+    vi.advanceTimersByTime(21_000); // now > 901_000
+    expect(mgr.demoteIfStale(30_000)).toBe(true);
     expect(mgr.getStatus()).toBe('done');
   });
 });
