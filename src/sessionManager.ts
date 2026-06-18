@@ -1505,8 +1505,12 @@ export class SessionManager {
       } else {
         // Grace period expired — check if process is still alive
         if (this.isProcessAlive()) {
-          // Process alive, likely still thinking — re-arm for another 30s
-          // (will be capped by the 3min hard ceiling via computeDemotion)
+          // Process alive, likely still thinking — re-arm for another 30s.
+          // A no-output turn is no longer force-demoted at the 3-min hard
+          // ceiling: computeDemotion defers it to this same liveness check up to
+          // the 15-min EXTENDED_THINKING_CEILING_MS backstop, so the poll path
+          // and this timer agree (a live ruminate stays running, a dead one is
+          // marked done here / by the registry death-gate).
           this.resetIdleTimer();
         } else {
           // Process dead — mark done immediately

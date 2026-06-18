@@ -13,12 +13,24 @@ import type { SessionStatus } from './types.js';
 // ── Demotion ceilings ────────────────────────────────────────────────
 
 /** Hard ceiling: 3 min of no activity forces done.
- *  Covers: laptop sleep, quota hits, VS Code quit. */
+ *  Covers: laptop sleep, quota hits, VS Code quit. Applies to a turn that has
+ *  already produced output or holds an active tool — NOT to a no-output
+ *  extended-thinking turn, which defers to process liveness (see below). */
 export const HARD_CEILING_MS = 180_000;
 
 /** Extended ceiling for waiting sessions: 10 min.
  *  Genuine permission waits resolve within seconds to minutes. */
 export const NEEDS_INPUT_CEILING_MS = 600_000;
+
+/** Generous absolute backstop for a no-output extended-thinking turn (15 min).
+ *  Such a turn defers to the caller's PID-liveness check rather than the 3-min
+ *  hard ceiling — a model can ruminate for many minutes before its first text
+ *  or tool_use (e.g. before launching a Workflow), and the 3-min ceiling was
+ *  falsely demoting those live sessions to `done`. The liveness check marks a
+ *  genuinely dead/slept process done within a poll; this ceiling only bounds the
+ *  rare case where liveness can't be confirmed (no writer PID captured), so a
+ *  truly hung process can't read `running` forever. */
+export const EXTENDED_THINKING_CEILING_MS = 900_000;
 
 // ── Tool profiles ────────────────────────────────────────────────────
 
@@ -112,17 +124,26 @@ export function computeDemotion(
 
   const age = nowMs - lastActivityMs;
 
-  // Hard ceiling: 3 min for running, 10 min for waiting
+  // Turn in progress with no output yet (extended thinking / streaming): a
+  // running turn that has produced no text/tool_use and holds no active tool is
+  // mid-think. Defer to the caller's PID-liveness check (it marks done only when
+  // the process is actually gone) instead of the 3-min hard ceiling, up to a
+  // generous absolute backstop. Coherence check: turnStartMs must be close to
+  // lastActivityMs (within threshold). Checked BEFORE the ceiling so a long
+  // think (e.g. a 4-5 min ruminate before a Workflow launch) is not falsely
+  // demoted to done while the process is still alive.
+  const turnCoherent = turnStartMs > 0 && (turnStartMs - lastActivityMs) < thresholdMs;
+  const extendedThinking = status === 'running' && turnCoherent
+    && !seenOutputInTurn && activeToolCount === 0;
+  if (extendedThinking && age <= EXTENDED_THINKING_CEILING_MS) return null;
+
+  // Hard ceiling: 3 min for running (with output / an active tool, or an
+  // extended-thinking turn past its 15-min backstop), 10 min for waiting.
   const ceiling = status === 'waiting' ? NEEDS_INPUT_CEILING_MS : HARD_CEILING_MS;
   if (age > ceiling) return 'done';
 
   // Below ceiling: only demote 'running'
   if (status !== 'running') return null;
-
-  // Turn in progress with no output yet (extended thinking / streaming).
-  // Coherence check: turnStartMs must be close to lastActivityMs (within threshold).
-  const turnCoherent = turnStartMs > 0 && (turnStartMs - lastActivityMs) < thresholdMs;
-  if (turnCoherent && !seenOutputInTurn && activeToolCount === 0 && age <= ceiling) return null;
 
   if (age > thresholdMs) {
     if (hasBlockingSubagents) return null;
