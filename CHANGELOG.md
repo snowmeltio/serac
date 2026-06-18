@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.15.2 (2026-06-18) — Fixes: workflow card classifier, thinking-turn liveness, card layout, tool-result reader lines
+
+### Fixed
+- **Workflow card classifier.** Four display/correlation fixes for a session running a background `Workflow`: a live-workflow parent no longer reads "Running · quiet" (the stall qualifier is suppressed while the card owns a running run, since the fan-out churns under a separate pipeline that never advances the lead's `lastActivity`); the card preview takes the first coherent prose line instead of a blind 200-char tail that straddled a trailing heading and read as running-and-done at once; the live header sums per-agent tokens/tools into run-level totals (was hardcoded 0/0); and live-tier phase correlation now resolves the dominant indirect-prompt shapes (`synthPrompt('P1')`, `ev('src', …)` over `SOURCES.map`, bare `gapsPrompt`) with a matched-length tiebreak so sibling fan-out calls get distinct labels.
+- **No-output extended-thinking turns defer to liveness, not the 3-minute ceiling.** A turn that is still thinking with no emitted output no longer gets force-aged to quiet by the stall ceiling; liveness gates it instead.
+- **Branch pill on its own line.** The git branch — the widest, most variable item in the card meta row — is lifted onto its own `.card-branch` row beneath the meta, so the action buttons stop wrapping up beside the status pill. Rendered only when the session has a branch, and the pill now truncates to the full card width rather than capping at 110px.
+- **Tool result renders as a single reader line, not a box-in-a-box.** Internal whitespace is collapsed before truncating, so a multi-line result (e.g. WebSearch's `…query…\n\nLinks: […]`) stays one `> ` line instead of splitting across a recessed tool box and a separate prose block. The inner `.wf-tool` box chrome is stripped inside a tool turn's bubble (which already is the box), giving a single container.
+
 ## v1.15.1 (2026-06-15) — Fix: live workflow agents grouped under their phases for shared-preamble scripts
 
 ### Fixed
