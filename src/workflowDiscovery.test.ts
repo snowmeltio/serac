@@ -234,6 +234,32 @@ describe('WorkflowDiscovery', () => {
     d.dispose();
   });
 
+  it('sums per-agent live tokens/tools into the run-level header totals (no sidecar)', async () => {
+    const runDir = path.join(sessionDir(), 'subagents', 'workflows', 'wf_live-agg');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'journal.jsonl'), [
+      JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'live01' }),
+      JSON.stringify({ type: 'started', key: 'v2:b', agentId: 'live02' }),
+    ].join('\n') + '\n', 'utf-8');
+    // live01 → 100 tokens, 1 tool_use
+    fs.writeFileSync(path.join(runDir, 'agent-live01.jsonl'), [
+      JSON.stringify({ message: { usage: { output_tokens: 100 }, content: [{ type: 'tool_use', name: 'Bash' }] } }),
+    ].join('\n') + '\n', 'utf-8');
+    // live02 → 50 tokens, 2 tool_use
+    fs.writeFileSync(path.join(runDir, 'agent-live02.jsonl'), [
+      JSON.stringify({ message: { usage: { output_tokens: 50 }, content: [{ type: 'tool_use' }, { type: 'text', text: 'x' }, { type: 'tool_use' }] } }),
+    ].join('\n') + '\n', 'utf-8');
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+    // Header totals must equal the sum of the per-agent rows, not the old 0/0.
+    expect(snap.totalTokens).toBe(150);
+    expect(snap.totalToolCalls).toBe(3);
+    expect(snap.totalTokens).toBe(snap.agents.reduce((n, a) => n + a.tokens, 0));
+    expect(snap.totalToolCalls).toBe(snap.agents.reduce((n, a) => n + a.toolCalls, 0));
+    d.dispose();
+  });
+
   describe('abandoned live run → incomplete (liveness probe)', () => {
     function writeLiveRun(runId: string): void {
       const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);

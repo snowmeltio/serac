@@ -409,17 +409,28 @@ function extractPromptArrays(source: string): PromptArray[] {
         if (depth === 0) {
           const objText = extractBalanced(arrText, i, '{', '}');
           if (objText) {
-            // matchStringField is single-line by design (meta fields); prompt
-            // templates are routinely multiline, so scan the literal directly.
+            // The prompt field is either a literal (matchStringField is
+            // single-line by design, but prompt templates are routinely
+            // multiline, so scan the literal directly) or a helper call
+            // (`ev('src', `…`)`) over a shared preamble — resolve both so a
+            // preamble-helper script still correlates each element's agent.
+            let promptTemplate: TemplateParts | null = null;
             const promptLit = extractFieldLiteralBody(objText, 'prompt');
             if (promptLit !== null) {
+              promptTemplate = templatePartsFromDecoded(promptLit);
+            } else {
+              const valueExpr = extractFieldValueExpr(objText, 'prompt');
+              const callShape = valueExpr ? parseCallExpr(valueExpr) : null;
+              if (callShape) { promptTemplate = substituteHelperCall(source, callShape.callee, callShape.args); }
+            }
+            if (promptTemplate) {
               const props = new Map<string, string>();
               // Capture sibling plain-string fields for label resolution.
               for (const fieldMatch of objText.matchAll(/([A-Za-z_$][\w$]*)\s*:/g)) {
                 const v = matchStringField(objText.slice(fieldMatch.index ?? 0), fieldMatch[1]);
                 if (v !== null && !v.includes('${')) { props.set(fieldMatch[1], v); }
               }
-              elements.push({ promptTemplate: templatePartsFromDecoded(promptLit), props });
+              elements.push({ promptTemplate, props });
             }
             i += objText.length - 1;
             continue;
@@ -454,6 +465,39 @@ function extractFieldLiteralBody(objText: string, field: string): string | null 
     if (q !== '`' && q !== "'" && q !== '"') { return null; }
     const lit = extractStringLiteral(objText, at);
     return lit ? lit.slice(1, -1) : null;
+  }
+  return null;
+}
+
+/** Source text of an object-literal field's VALUE — whatever shape it takes
+ *  (a literal, a `fn(...)` call, a member access) — read up to the top-level
+ *  comma or the object's close brace, with strings/brackets opaque. Used to
+ *  recognise a `prompt: ev('src', `…`)` helper call that
+ *  extractFieldLiteralBody (literal-only) skips. Null when the field is absent
+ *  or empty. */
+function extractFieldValueExpr(objText: string, field: string): string | null {
+  const inString = buildStringMask(objText);
+  const re = new RegExp('\\b' + field + '\\s*:\\s*', 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(objText)) !== null) {
+    if (inString[m.index]) { continue; }
+    const start = m.index + m[0].length;
+    let depth = 0;
+    let inStr: string | null = null;
+    let i = start;
+    for (; i < objText.length; i++) {
+      const c = objText[i];
+      if (inStr) {
+        if (c === '\\') { i++; continue; }
+        if (c === inStr) { inStr = null; }
+        continue;
+      }
+      if (c === "'" || c === '"' || c === '`') { inStr = c; continue; }
+      if (c === '(' || c === '[' || c === '{') { depth++; }
+      else if (c === ')' || c === ']' || c === '}') { if (depth === 0) { break; } depth--; }
+      else if (depth === 0 && c === ',') { break; }
+    }
+    return objText.slice(start, i).trim() || null;
   }
   return null;
 }
@@ -521,6 +565,133 @@ function functionBodyTemplates(source: string, fnName: string): TemplateParts[] 
     return templates;
   }
   return [];
+}
+
+// ── Helper-call substitution (resolve agent(fn(lit, …)) and {prompt: fn(lit, …)}) ──
+//
+// The dominant real-world multi-agent shape passes the prompt as a helper call
+// over a shared preamble — `agent(synthPrompt('P1'), …)`, or array elements
+// `{ prompt: ev('cc-workspace', `…`) }`. The helper is an expression-bodied
+// arrow (`const ev = (src, extra) => `…${src}…${extra}``), so its distinctive
+// framing lives in the helper body, not the call arguments. Resolving the body
+// AND substituting the call's literal args back into it recovers a static
+// segment specific to THIS call (e.g. `=== YOUR SOURCE: cc-workspace ===`),
+// so each running agent correlates to its own call/phase. Still no eval —
+// everything below is bounded brace/string matching.
+
+/** Split a call expression `fn(a, b)` into its callee name and the source text
+ *  of each top-level argument (strings + nested brackets are opaque). Null when
+ *  the text isn't a simple `IDENT(...)` call. */
+function parseCallExpr(expr: string): { callee: string; args: string[] } | null {
+  const m = expr.match(/^([A-Za-z_$][\w$]*)\s*\(/);
+  if (!m) { return null; }
+  const parenIdx = expr.indexOf('(', m[1].length);
+  const argList = parenIdx < 0 ? null : extractBalanced(expr, parenIdx, '(', ')');
+  if (!argList) { return null; }
+  const inner = argList.slice(1, -1);
+  const args: string[] = [];
+  let depth = 0;
+  let inStr: string | null = null;
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (inStr) {
+      if (c === '\\') { i++; continue; }
+      if (c === inStr) { inStr = null; }
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') { inStr = c; continue; }
+    if (c === '(' || c === '[' || c === '{') { depth++; }
+    else if (c === ')' || c === ']' || c === '}') { depth--; }
+    else if (depth === 0 && c === ',') { args.push(inner.slice(start, i).trim()); start = i + 1; }
+  }
+  const tail = inner.slice(start).trim();
+  if (tail || args.length > 0) { args.push(tail); }
+  return { callee: m[1], args };
+}
+
+/** Resolve `const NAME = (params) => `tpl`` / `const NAME = p => `tpl`` /
+ *  `const NAME = `tpl`` (an expression-bodied helper returning ONE template) to
+ *  its parameter names + body template. Null for a block-bodied function/arrow,
+ *  a non-template body, or a missing binding — those keep the existing
+ *  functionBodyTemplates path. */
+function resolveExpressionHelper(source: string, name: string): { params: string[]; body: TemplateParts } | null {
+  const inString = buildStringMask(source);
+  const re = new RegExp('\\bconst\\s+' + name + '\\s*=\\s*', 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source)) !== null) {
+    if (inString[m.index]) { continue; }
+    let pos = m.index + m[0].length;
+    let params: string[] = [];
+    const rest = source.slice(pos);
+    // Optional arrow header: `(p1, p2) =>` or `ident =>`. A bare const value
+    // (no arrow) leaves params empty and pos at the value itself.
+    const paren = rest.match(/^\(([^)]*)\)\s*=>\s*/);
+    const ident = paren ? null : rest.match(/^([A-Za-z_$][\w$]*)\s*=>\s*/);
+    if (paren) { params = paren[1].split(',').map(s => s.trim()).filter(Boolean); pos += paren[0].length; }
+    else if (ident) { params = [ident[1].trim()]; pos += ident[0].length; }
+    while (pos < source.length && /\s/.test(source[pos])) { pos++; }
+    const q = source[pos];
+    if (q !== '`' && q !== "'" && q !== '"') { return null; } // block body / other expr
+    const lit = extractStringLiteral(source, pos);
+    if (!lit) { return null; }
+    return { params, body: templatePartsOf(lit) };
+  }
+  return null;
+}
+
+/** A call argument resolved for substitution into a helper body. */
+type ResolvedArg =
+  | { kind: 'string'; value: string }
+  | { kind: 'template'; parts: TemplateParts }
+  | { kind: 'opaque' };
+
+/** Classify a single argument's source: a plain string literal inlines as a
+ *  value, a template splices its parts, anything else is opaque (left a gap). */
+function classifyArg(argSrc: string): ResolvedArg {
+  const c = argSrc[0];
+  if (c === "'" || c === '"' || c === '`') {
+    const lit = extractStringLiteral(argSrc, 0);
+    if (lit && lit.length === argSrc.length) {
+      const pt = templatePartsOf(lit);
+      return pt.exprs.length === 0 ? { kind: 'string', value: pt.statics[0] } : { kind: 'template', parts: pt };
+    }
+  }
+  return { kind: 'opaque' };
+}
+
+/** Substitute a helper call's literal args into its body template: inline a
+ *  string arg (turning `=== SOURCE: ${src} ===` with src='cc' into one
+ *  distinctive static), splice a template arg, and leave every other
+ *  interpolation — an unknown identifier (e.g. a shared-preamble const) or an
+ *  opaque arg — as a gap. The result is a TemplateParts that correlates a
+ *  running agent to THIS specific call. Null when the callee isn't an
+ *  expression helper (caller falls back). */
+function substituteHelperCall(source: string, callee: string, argExprs: string[]): TemplateParts | null {
+  const helper = resolveExpressionHelper(source, callee);
+  if (!helper) { return null; }
+  const argByParam = new Map<string, ResolvedArg>();
+  helper.params.forEach((p, i) => { if (i < argExprs.length) { argByParam.set(p, classifyArg(argExprs[i])); } });
+  const body = helper.body;
+  const outStatics: string[] = [];
+  const outExprs: string[] = [];
+  let cur = body.statics[0] ?? '';
+  for (let i = 0; i < body.exprs.length; i++) {
+    const arg = argByParam.get(body.exprs[i].trim());
+    const nextStatic = body.statics[i + 1] ?? '';
+    if (arg && arg.kind === 'string') {
+      cur += arg.value + nextStatic;
+    } else if (arg && arg.kind === 'template') {
+      const t = arg.parts;
+      cur += t.statics[0] ?? '';
+      for (let k = 0; k < t.exprs.length; k++) { outStatics.push(cur); outExprs.push(t.exprs[k]); cur = t.statics[k + 1] ?? ''; }
+      cur += nextStatic;
+    } else {
+      outStatics.push(cur); outExprs.push(body.exprs[i].trim()); cur = nextStatic;
+    }
+  }
+  outStatics.push(cur);
+  return { statics: outStatics, exprs: outExprs };
 }
 
 /**
@@ -595,11 +766,29 @@ export function expandIndirectCalls(source: string, calls: WorkflowAgentCall[]):
         continue;
       }
     } else if (fnMatch && out.length < MAX_VIRTUAL_CALLS) {
+      // Prefer arg-substitution: an expression helper `const f = (p) => `…${p}…``
+      // resolved with THIS call's literal args yields a call-specific segment, so
+      // `synthPrompt('P1')` and `synthPrompt('P2')` correlate to distinct calls.
+      const parsed = parseCallExpr(call.promptExpr);
+      const substituted = parsed ? substituteHelperCall(source, parsed.callee, parsed.args) : null;
+      if (substituted && distinctiveSegments(substituted.statics).length > 0) {
+        out.push({ ...call, promptTemplate: substituted, staticSegments: distinctiveSegments(substituted.statics) });
+        continue;
+      }
+      // Fall back to a block-bodied helper's templates (existing behaviour).
       const templates = functionBodyTemplates(source, fnMatch[1]);
       if (templates.length > 0) {
         for (const pt of templates.slice(0, Math.max(1, MAX_VIRTUAL_CALLS - out.length))) {
           out.push({ ...call, promptTemplate: pt, staticSegments: distinctiveSegments(pt.statics) });
         }
+        continue;
+      }
+    } else if (call.promptExpr && /^[A-Za-z_$][\w$]*$/.test(call.promptExpr) && out.length < MAX_VIRTUAL_CALLS) {
+      // Bare-identifier prompt (`agent(gapsPrompt, …)`) → resolve the const's
+      // template body directly (no args to substitute).
+      const substituted = substituteHelperCall(source, call.promptExpr, []);
+      if (substituted && distinctiveSegments(substituted.statics).length > 0) {
+        out.push({ ...call, promptTemplate: substituted, staticSegments: distinctiveSegments(substituted.statics) });
         continue;
       }
     }
@@ -617,14 +806,24 @@ export function expandIndirectCalls(source: string, calls: WorkflowAgentCall[]):
  */
 export function matchAgentCall(prompt: string, calls: WorkflowAgentCall[]): WorkflowAgentCall | null {
   let best: WorkflowAgentCall | null = null;
-  let bestLen = 0;
+  let bestLen = 0;   // longest single matched segment — primary key
+  let bestSum = 0;   // total matched length — tiebreak
   for (const call of calls) {
+    let longest = 0;
+    let sum = 0;
     for (const seg of call.staticSegments) {
-      // staticSegments is longest-first, so the first hit is this call's best.
+      // Sum ALL matching segments, not just the first: sibling fan-out calls
+      // built from one helper share a long body segment, so the single-longest
+      // match ties between them. The discriminating segment (a substituted arg
+      // like `project P2`) is shorter, so it only breaks the tie via the sum —
+      // without it, two `verifyPrompt('Px')` agents both label as the first.
       if (prompt.includes(seg)) {
-        if (seg.length > bestLen) { bestLen = seg.length; best = call; }
-        break;
+        sum += seg.length;
+        if (seg.length > longest) { longest = seg.length; }
       }
+    }
+    if (longest > bestLen || (longest === bestLen && sum > bestSum)) {
+      bestLen = longest; bestSum = sum; best = call;
     }
   }
   return best;

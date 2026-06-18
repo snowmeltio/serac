@@ -771,6 +771,17 @@ describe('getStatusLabel — stall surfacing (quiet running cards)', () => {
   it('exactly at the threshold stays plain (strictly past)', () => {
     expect(getStatusLabel(s(now - RUNNING_QUIET_MS), now)).toBe('Running');
   });
+
+  it('suppresses the quiet qualifier when the card owns a live workflow', () => {
+    const quietAge = now - RUNNING_QUIET_MS - 7 * 60_000;
+    expect(getStatusLabel(s(quietAge), now, { liveWorkflow: true })).toBe('Running');
+  });
+
+  it('still flags quiet when there is no live workflow (liveWorkflow false)', () => {
+    const quietAge = now - RUNNING_QUIET_MS - 7 * 60_000;
+    expect(getStatusLabel(s(quietAge), now, { liveWorkflow: false }))
+      .toBe('Running · quiet <span class="status-pill-time">12m</span>');
+  });
 });
 
 describe('applyWorkflowLiveStatus — done card with a live background workflow', () => {
