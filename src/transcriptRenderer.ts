@@ -118,19 +118,26 @@ function extractUserContent(record: JsonlRecord): { content: string; hasPromptTe
     } else if (block.type === 'tool_result') {
       const toolId = block.tool_use_id || '';
       const resultContent = block.content;
-      let summary = '';
+      let raw = '';
       if (typeof resultContent === 'string') {
-        summary = resultContent.slice(0, 200);
+        raw = resultContent;
       } else if (Array.isArray(resultContent)) {
         for (const rb of resultContent as JsonlContentBlock[]) {
           if (rb.type === 'text' && rb.text) {
-            summary = rb.text.slice(0, 200);
+            raw = rb.text;
             break;
           }
         }
       }
-      if (summary) {
-        parts.push(`> **Tool result** (${toolId.slice(0, 12)}...): ${summary}${summary.length >= 200 ? '...' : ''}`);
+      // Collapse internal whitespace BEFORE truncating so a multi-line result
+      // (e.g. WebSearch's `…query…\n\nLinks: […]`) stays a single `> ` tool
+      // line. Otherwise the embedded newline splits the summary across a
+      // recessed tool box AND a separate prose block in the reader, burning
+      // vertical space (and breaking the `> ` blockquote in the markdown).
+      const collapsed = raw.replace(/\s+/g, ' ').trim();
+      if (collapsed) {
+        const summary = collapsed.slice(0, 200);
+        parts.push(`> **Tool result** (${toolId.slice(0, 12)}...): ${summary}${collapsed.length > 200 ? '...' : ''}`);
       }
     }
   }

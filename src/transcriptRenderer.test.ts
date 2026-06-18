@@ -159,6 +159,34 @@ describe('renderTranscript', async () => {
       expect(md).toContain('File contents here');
     });
 
+    it('collapses internal whitespace so a multi-line result stays one tool line', async () => {
+      // WebSearch results are shaped `…query…\n\nLinks: […]`. A short query puts
+      // the newline inside the 200-char window; without collapsing, the tail
+      // spills into a second block in the reader. Assert the summary is a single
+      // `> ` line with no embedded newline.
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'user',
+          timestamp: '2026-06-18T10:00:00Z',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_016B6c123456789',
+                content: 'Web search results for query: "EMDG tiers"\n\nLinks: [{"title":"Austrade"}]',
+              },
+            ],
+          },
+        },
+      ]));
+      expect(entries).toHaveLength(1);
+      const body = entries[0].content;
+      // Single tool line: starts with the blockquote marker, no newline within.
+      expect(body.startsWith('> **Tool result**')).toBe(true);
+      expect(body).not.toContain('\n');
+      expect(body).toContain('Web search results for query: "EMDG tiers" Links: [{"title":"Austrade"}]');
+    });
+
     it('skips tool results with no content', async () => {
       const md = await render([
         {

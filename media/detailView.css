@@ -386,6 +386,19 @@ body {
   padding: 7px 11px;
   color: var(--vscode-descriptionForeground);
 }
+/* The result summary is itself a `> ` line, which renderLines wraps in a
+ * `.wf-tool` box. Inside the recessed bubble that bubble IS the box — strip the
+ * inner box's background/padding/font so a tool result is a SINGLE container,
+ * not a box-in-a-box. Multiple results in one record keep a thin gap. (Scoped to
+ * tool turns: assistant inline tool calls and the live reader head keep theirs.) */
+.wf-turn.tool .wf-bubble .wf-tool {
+  background: none;
+  padding: 0;
+  margin: 0 0 4px;
+  font-family: inherit;
+  font-size: inherit;
+}
+.wf-turn.tool .wf-bubble .wf-tool:last-child { margin-bottom: 0; }
 /* A run of prose lines as one pre-wrap block: spacing is pure line-height
  * (uniform within and across wrapped lines); a blank source line becomes a
  * one-line paragraph gap. One margin separates the block from what follows. */
