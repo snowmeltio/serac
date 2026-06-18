@@ -470,14 +470,23 @@ body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach
 .model-pill { color: hsl(var(--model-hue, 0) 45% 70%); }
 body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 
+/* Branch / worktree indicator — lives on its OWN line beneath the meta row
+ * (.card-branch), present only when the session has a git branch. Off the
+ * wrapping meta flow it keeps that row short, so the action buttons no longer
+ * wrap up against the status pill; on its own line it can use the full card
+ * width (min-width:0 lets the pill truncate to that width rather than overflow). */
+.card-branch {
+  display: flex;
+  min-width: 0;
+  margin-bottom: 3px;
+}
 .branch-pill {
   font-size: 9px;
   color: var(--vscode-descriptionForeground, #666666);
-  max-width: 110px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex-shrink: 1;
 }
 
 .tool-error-badge {

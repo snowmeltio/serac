@@ -399,9 +399,6 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     // per theme in CSS, so the pills read as family, not as status.
     metaHtml += '<span class="model-pill" style="--model-hue:' + modelHue(s.modelLabel) + '">' + escapeHtml(s.modelLabel) + '</span>';
   }
-  if (s.gitBranch) {
-    metaHtml += '<span class="branch-pill" title="Git branch: ' + escapeHtml(s.gitBranch) + '">' + escapeHtml('⎇ ' + s.gitBranch) + '</span>';
-  }
   // Background-shell badge — a detached `run_in_background` shell is still
   // going after the turn ended. Non-status (the card keeps its real status);
   // a quiet running-tinted chip so a `done` card still flags the live build.
@@ -491,11 +488,21 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     (isTerminal && s.lastAssistantText ? s.lastAssistantText : s.activity) || 'No recent activity');
   const detailHtml = '<div class="card-detail">' + escapeHtml(activityText) + '</div>';
 
+  // Branch / worktree line — its own row beneath the meta, rendered ONLY when
+  // the session has a git branch (no branch ⇒ no line, no wasted height). The
+  // branch is the widest, most variable item in the meta row; lifting it out
+  // keeps that row short enough that the action buttons stop wrapping up beside
+  // the status pill, and the branch gets the full card width to itself.
+  const branchHtml = s.gitBranch
+    ? '<div class="card-branch"><span class="branch-pill" title="Git branch: ' + escapeHtml(s.gitBranch) + '">' + escapeHtml('⎇ ' + s.gitBranch) + '</span></div>'
+    : '';
+
   return '<div class="card-top">'
     + '<span class="card-name">' + escapeHtml(displayName) + '</span>'
     + '<span class="status-pill">' + statusLabel + '</span>'
     + '</div>'
     + metaHtml
+    + branchHtml
     + detailHtml
     + (wfs && wfs.length > 0 ? renderWorkflowBlock(wfs) : '')
     + subagentHtml
