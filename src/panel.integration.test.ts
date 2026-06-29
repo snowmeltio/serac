@@ -213,6 +213,27 @@ describe('panel.ts integration', () => {
     expect((focusMsg as any).sessionId).toBe(sess.sessionId);
   });
 
+  it('scrolls a newly auto-focused card into view (focusSession from the extension)', () => {
+    const a = makeSession({ sessionId: 'sess-a', status: 'running' });
+    const b = makeSession({ sessionId: 'sess-b', status: 'running' });
+    sendUpdate({ sessions: [a, b] });
+    const cardB = Array.from(document.querySelectorAll('.card'))
+      .find(el => (el as HTMLElement).dataset.sessionId === 'sess-b') as HTMLElement;
+    // jsdom does not implement scrollIntoView; install a spy on the element.
+    const spy = vi.fn();
+    cardB.scrollIntoView = spy;
+    // A plain render must NOT scroll — only the auto-focus message reveals.
+    sendUpdate({ sessions: [a, b] });
+    expect(spy).not.toHaveBeenCalled();
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'focusSession', sessionId: 'sess-b' },
+    }));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toMatchObject({ block: 'nearest' });
+    expect(cardB.classList.contains('focused')).toBe(true);
+  });
+
   it('does not render sibling-worktree sessions as cards (Worktrees pane handles them)', () => {
     const localSess = makeSession({ sessionId: 'local-1', status: 'running' });
     const siblingSess = makeSession({

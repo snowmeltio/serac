@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.15.3 (2026-06-29) — Fix: new-chat cards now grab focus and scroll into view
+
+### Fixed
+- **A newly created chat reliably takes the card highlight.** A new session's first JSONL record is `queue-operation: enqueue` (status `done`); only the following `dequeue`/user record flips it to `running`. The auto-focus diff absorbed every session id into its "known" set on every tick, so a new card observed during that brief `done` flicker was disqualified before its first turn and the highlight stayed on the previously focused card. A session is now absorbed only once seen live, so its `done`→`running` promotion is still focused; a `firstActivity` recency window (30s) keeps an old session re-discovered from outside the scan window (a resume) from re-firing focus, and a multi-session burst still picks no winner.
+
+### Changed
+- **An auto-focused card scrolls into view.** `scrollIntoView({block:'nearest'})` reveals a newly arrived card that would otherwise sit below the fold — a no-op when it is already visible (so it never yanks the viewport), and smooth only when animations are enabled and the OS is not requesting reduced motion. Only the extension's auto-focus triggers it; a manual card click does not.
+
 ## v1.15.2 (2026-06-18) — Fixes: workflow card classifier, thinking-turn liveness, card layout, tool-result reader lines
 
 ### Fixed

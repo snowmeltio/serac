@@ -552,11 +552,24 @@ describe('extension', () => {
       // sendUpdate is debounced to 200ms — flush so each tick is one update.
       vi.advanceTimersByTime(250);
     }
+    // A snapshot whose firstActivity defaults to "just now" (under fake timers),
+    // i.e. reads as a genuinely new chat unless a test overrides it. Real
+    // snapshots always carry firstActivity (sessionManager.getSnapshot).
+    function snap(over: Record<string, unknown>) {
+      return { firstActivity: Date.now(), ...over };
+    }
+    // Flush the one-shot startup timers (deferred sendUpdate @500ms, focus hint
+    // @800ms) so they can't consume the 200ms sendUpdate debounce window on a
+    // later tick(). Call after the seed tick, before any further diff tick.
+    function drainStartupTimers() {
+      vi.advanceTimersByTime(1000);
+      mockPanelProvider.focusSession.mockClear();
+    }
 
     it('does not focus on the seeding (first) update', () => {
       activate(context as any);
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
       ]);
       tick();
       expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
@@ -565,30 +578,56 @@ describe('extension', () => {
     it('focuses a single newly discovered live local session — no arming needed', () => {
       activate(context as any);
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
       ]);
       tick(); // seed
 
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
-        { sessionId: 'new-session', status: 'running' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
+        snap({ sessionId: 'new-session', status: 'running' }),
       ]);
       tick();
 
       expect(mockPanelProvider.focusSession).toHaveBeenCalledWith('new-session');
     });
 
+    it('focuses a new chat that arrived non-live, then dequeued to live (enqueue→dequeue race)', () => {
+      activate(context as any);
+      mockDiscovery.getSnapshots.mockReturnValue([
+        snap({ sessionId: 'existing-1', status: 'running' }),
+      ]);
+      tick(); // seed
+      drainStartupTimers();
+
+      // A new chat's first JSONL record is `enqueue` → status 'done'. It must
+      // not be focused while still non-live, and must not be absorbed away.
+      mockDiscovery.getSnapshots.mockReturnValue([
+        snap({ sessionId: 'existing-1', status: 'running' }),
+        snap({ sessionId: 'new-chat', status: 'done' }),
+      ]);
+      tick();
+      expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
+
+      // The moment it dequeues to running it is the new card to focus.
+      mockDiscovery.getSnapshots.mockReturnValue([
+        snap({ sessionId: 'existing-1', status: 'running' }),
+        snap({ sessionId: 'new-chat', status: 'running' }),
+      ]);
+      tick();
+      expect(mockPanelProvider.focusSession).toHaveBeenCalledWith('new-chat');
+    });
+
     it('ignores sibling-worktree and non-live newcomers', () => {
       activate(context as any);
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
       ]);
       tick(); // seed
 
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
-        { sessionId: 'wt-session', status: 'running', worktreeRoot: '/repos/serac-wt' },
-        { sessionId: 'old-run', status: 'done' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
+        snap({ sessionId: 'wt-session', status: 'running', worktreeRoot: '/repos/serac-wt' }),
+        snap({ sessionId: 'old-run', status: 'done' }),
       ]);
       tick();
 
@@ -598,36 +637,65 @@ describe('extension', () => {
     it('skips a burst of multiple new live sessions', () => {
       activate(context as any);
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
       ]);
       tick(); // seed
 
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
-        { sessionId: 'burst-a', status: 'running' },
-        { sessionId: 'burst-b', status: 'waiting' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
+        snap({ sessionId: 'burst-a', status: 'running' }),
+        snap({ sessionId: 'burst-b', status: 'waiting' }),
       ]);
       tick();
 
       expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
     });
 
-    it('does not re-fire when a known session is promoted to live', () => {
+    it('does not pick a winner when two new chats dequeue to live on the same tick', () => {
       activate(context as any);
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
+      ]);
+      tick(); // seed
+      drainStartupTimers();
+
+      // Both arrive non-live (parked, not absorbed)...
+      mockDiscovery.getSnapshots.mockReturnValue([
+        snap({ sessionId: 'existing-1', status: 'running' }),
+        snap({ sessionId: 'chat-a', status: 'done' }),
+        snap({ sessionId: 'chat-b', status: 'done' }),
+      ]);
+      tick();
+      // ...then dequeue together — the burst guard still picks no winner.
+      mockDiscovery.getSnapshots.mockReturnValue([
+        snap({ sessionId: 'existing-1', status: 'running' }),
+        snap({ sessionId: 'chat-a', status: 'running' }),
+        snap({ sessionId: 'chat-b', status: 'running' }),
+      ]);
+      tick();
+
+      expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
+    });
+
+    it('does not re-fire when an OLD re-discovered session is promoted to live', () => {
+      activate(context as any);
+      mockDiscovery.getSnapshots.mockReturnValue([
+        snap({ sessionId: 'existing-1', status: 'running' }),
       ]);
       tick(); // seed
 
-      // Newcomer arrives done (absorbed silently), then later goes running.
+      // A session re-discovered from outside the scan window replays to an old
+      // firstActivity. It arrives done then goes running — but a resume must
+      // never yank focus, so the stale firstActivity excludes it.
+      const oldFirstActivity = Date.now() - 10 * 60_000;
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
-        { sessionId: 'sleeper', status: 'done' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
+        { sessionId: 'sleeper', status: 'done', firstActivity: oldFirstActivity },
       ]);
       tick();
       mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'existing-1', status: 'running' },
-        { sessionId: 'sleeper', status: 'running' },
+        snap({ sessionId: 'existing-1', status: 'running' }),
+        { sessionId: 'sleeper', status: 'running', firstActivity: oldFirstActivity },
       ]);
       tick();
 

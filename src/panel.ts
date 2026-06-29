@@ -513,6 +513,11 @@ let FOREIGN_SLIDE_MS = 220;
       } else if (message.type === 'focusSession') {
         focusedSessionId = message.sessionId;
         if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+        // This message only ever originates from the extension auto-focusing a
+        // newly arrived session (panelProvider.focusSession) — a user clicking a
+        // card sets focus locally and never round-trips this type. So reveal it:
+        // a highlight below the fold is no highlight.
+        revealCard(message.sessionId);
       } else if (message.type === 'settings') {
         applySettings(message.settings);
       }
@@ -520,6 +525,23 @@ let FOREIGN_SLIDE_MS = 220;
       showErrorBoundary(err);
     }
   });
+
+  /** Scroll a just-auto-focused card into view. {block:'nearest'} is a no-op
+   *  when the card is already visible, so it never yanks the viewport; smooth
+   *  only when animations are on and the OS isn't asking for reduced motion. */
+  function revealCard(sessionId: string): void {
+    const cards = root.querySelectorAll('.card');
+    for (const el of Array.from(cards)) {
+      const card = el as HTMLElement;
+      if (card.dataset.sessionId !== sessionId) { continue; }
+      if (typeof card.scrollIntoView !== 'function') { return; }
+      const reduceMotion = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const behavior: ScrollBehavior = TRANSITION_MS > 0 && !reduceMotion ? 'smooth' : 'auto';
+      card.scrollIntoView({ block: 'nearest', behavior });
+      return;
+    }
+  }
 
   function setArchiveRange(range: string): void {
     archiveRange = range;

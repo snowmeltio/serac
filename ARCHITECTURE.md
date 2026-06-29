@@ -450,14 +450,16 @@ override — or where `Stop`/`Notification` prove unreliable enough that JSONL m
 
 **Extension to webview:** Three message types:
 - `update` — all session snapshots, usage data, needs-input count, and workspace path. A 200ms debounce guard prevents double-renders when onChange callbacks and the refresh timer overlap.
-- `focusSession` — sets `focusedSessionId` and re-renders with highlight. Used when a new chat is detected after the user clicks "+ New".
+- `focusSession` — sets `focusedSessionId`, re-renders with the highlight, and scrolls the card into view (`scrollIntoView({block:'nearest'})`, a no-op when it is already visible). Only the extension's auto-focus posts this type, so receiving it always means "a newly arrived session was auto-focused"; a user clicking a card sets focus locally without round-tripping.
 - `settings` — the current `serac.*` configuration snapshot. Posted once on `resolveWebviewView` (before the first `update` so the very first render sees the right visibility / heights) and again whenever `onDidChangeConfiguration` fires. Held separate from `update` because settings change rarely and updates are noisy.
 
 **Webview to extension:** Command messages (focusSession, dismissSession, undismissSession, viewTranscript, newChat, cleanup, copyToClipboard, requestUpdate).
 
 ### New chat detection
 
-When the user clicks "+ New", the extension snapshots known session IDs and opens a new Claude Code editor panel. The JSONL file only appears when the user sends their first message, so a fixed polling timer would expire before detection. Instead, a `pendingNewChatKnownIds` set persists across poll cycles. On each `sendUpdate()`, if the set is active, any session not in it is treated as the new chat — focused in the panel and the set is cleared.
+`sendUpdate()` auto-focuses a single newly arrived live local session (covers "+ New", the Claude Code tab, and terminal sessions alike). `knownSessionIds` is seeded on the first tick so activation never grabs a card. A candidate must be: not yet known, not a sibling-worktree session, currently `running`/`waiting`, and have a recent `firstActivity` (within `NEW_CHAT_FOCUS_WINDOW_MS`, 30s). If exactly one candidate exists it is focused; a multi-session burst picks no winner.
+
+The `firstActivity` recency gate and the absorb rule together handle the enqueue race: a brand-new chat's first JSONL record is `queue-operation: enqueue` (status `done`), and only the later `dequeue`/user record flips it to `running`. So a newcomer is routinely observed non-live on the tick it first appears. A session is therefore absorbed into `knownSessionIds` **only once seen live**, so its `done`→`running` promotion is still observed and focused — the old absorb-every-tick logic disqualified a new chat before its first turn. `firstActivity` (the first record's own timestamp, recent for a real new chat but old for a session re-discovered from outside the scan window) keeps a resume from re-firing focus.
 
 ### DOM reconciliation
 

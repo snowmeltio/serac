@@ -155,6 +155,14 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // started from the Claude Code tab, and terminal sessions alike — the JSONL
   // appears on first message and the next poll diff focuses it.
   let knownSessionIds: Set<string> | null = null;
+  // How long after a chat's first activity an arrival-to-live transition still
+  // counts as "newly created" for the focus highlight. A new chat's first JSONL
+  // record is `enqueue` (status 'done') and only dequeues to 'running' a poll
+  // later, so the highlight must fire on that promotion — but a session
+  // re-discovered from outside the scan window (an old resume) replays to an old
+  // firstActivity and must not. The window is generous against the sub-second
+  // enqueue→dequeue gap plus one poll interval.
+  const NEW_CHAT_FOCUS_WINDOW_MS = 30_000;
 
   // Handle new chat: open a fresh Claude Code editor panel. The new session's
   // card is focused by the generic new-session diff in sendUpdate() once its
@@ -473,22 +481,39 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     });
     detailPanel.refresh();
 
-    // Auto-focus a single newly arrived live local session. Sibling-worktree
-    // sessions (worktreeRoot set) never yank this window's highlight, and a
-    // multi-session burst (wake-from-sleep, first scan of a busy dir) doesn't
-    // pick a winner arbitrarily. All ids are absorbed every tick so a status
-    // promotion of a known session can never re-fire the focus.
+    // Auto-focus a single newly arrived live local session. Four gates keep the
+    // highlight on a genuinely new chat:
+    //   - The seed tick only records the baseline; activation never grabs a card.
+    //   - Sibling-worktree sessions (worktreeRoot set) never yank this window.
+    //   - A multi-session burst (wake-from-sleep, two chats starting at once)
+    //     picks no winner arbitrarily.
+    //   - firstActivity must be recent, which tells a brand-new chat (recent
+    //     first record) apart from an old session re-discovered from outside the
+    //     scan window (old replayed first record) — a resume must not re-fire.
+    // A newcomer is absorbed into knownSessionIds only once seen live, so its
+    // enqueue('done')→dequeue('running') promotion is still observed. The old
+    // absorb-every-tick logic disqualified a new chat on the first tick it
+    // flickered through 'done' before its turn began — the reported bug.
     if (knownSessionIds === null) {
       knownSessionIds = new Set(sessions.map(s => s.sessionId));
     } else {
-      const fresh = sessions.filter(s =>
+      const now2 = Date.now();
+      const candidates = sessions.filter(s =>
         !knownSessionIds!.has(s.sessionId)
         && !s.worktreeRoot
-        && (s.status === 'running' || s.status === 'waiting'));
-      if (fresh.length === 1) {
-        panelProvider.focusSession(fresh[0].sessionId);
+        && (s.status === 'running' || s.status === 'waiting')
+        && now2 - s.firstActivity < NEW_CHAT_FOCUS_WINDOW_MS);
+      if (candidates.length === 1) {
+        panelProvider.focusSession(candidates[0].sessionId);
       }
-      for (const s of sessions) { knownSessionIds.add(s.sessionId); }
+      // Absorb only once a session has been seen live (or is a worktree session,
+      // which can never be a candidate) — a non-live newcomer stays eligible so
+      // its later promotion to live is not missed.
+      for (const s of sessions) {
+        if (s.status === 'running' || s.status === 'waiting' || s.worktreeRoot) {
+          knownSessionIds.add(s.sessionId);
+        }
+      }
     }
   }
 
