@@ -397,7 +397,10 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     // per-model class list (which silently skipped new models). A separate
     // colour register from status colours — hue varies, sat/light are fixed
     // per theme in CSS, so the pills read as family, not as status.
-    metaHtml += '<span class="model-pill" style="--model-hue:' + modelHue(s.modelLabel) + '">' + escapeHtml(s.modelLabel) + '</span>';
+    // Hue keys on the family word ("Opus"), not the full "Opus 4.8", so every
+    // version of a family shares one colour and the pill reads as family.
+    const family = s.modelLabel.split(' ')[0];
+    metaHtml += '<span class="model-pill" style="--model-hue:' + modelHue(family) + '">' + escapeHtml(s.modelLabel) + '</span>';
   }
   // Background-shell badge — a detached `run_in_background` shell is still
   // going after the turn ended. Non-status (the card keeps its real status);

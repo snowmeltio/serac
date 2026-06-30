@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.5 (2026-07-01) — Model pills show the version, not just the family
+
+### Changed
+- **Model pills now read "Opus 4.8", "Sonnet 4", "Fable 5"** — not the bare family name. `formatModelLabel` derives the version from the model id across every shape Claude Code emits: the current `claude-opus-4-8` form, the `[1m]` context-window suffix, the trailing date stamp (`claude-haiku-4-5-20251001` → "Haiku 4.5"), and the legacy version-first ids (`claude-3-5-haiku-...` → "Haiku 3.5"). The pill colour still keys on the family word, so every version of a family shares one hue and the colour keeps reading as "this is an Opus session".
+
 ## v1.15.4 (2026-06-29) — Fix: new-chat auto-focus actually fires (local/sibling gate)
 
 ### Fixed

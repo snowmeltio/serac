@@ -1752,13 +1752,34 @@ export class SessionManager {
     }
   }
 
+  /** Derive a display label like "Opus 4.8" / "Sonnet 4" / "Fable 5" from a
+   *  model id. Handles both the new (`claude-opus-4-8`) and legacy version-first
+   *  (`claude-3-5-haiku-...`) id shapes, strips the context-window suffix
+   *  (`[1m]`) and the trailing date stamp (`-20251001`), and degrades to the
+   *  bare tier when no version is present. */
   private formatModelLabel(modelId: string): string {
     if (!modelId) return '';
-    if (modelId.includes('opus')) return 'Opus';
-    if (modelId.includes('sonnet')) return 'Sonnet';
-    if (modelId.includes('haiku')) return 'Haiku';
-    const parts = modelId.replace('claude-', '').split('-');
-    return parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+    // Drop the context-window suffix ("[1m]") and the "claude-" prefix.
+    const clean = modelId.replace(/\[[^\]]*\]/g, '').replace(/^claude-/, '');
+    const segments = clean.split('-');
+
+    // Tier: a known family by canonical name, else the first word-bearing segment.
+    let tier: string;
+    if (clean.includes('opus')) tier = 'Opus';
+    else if (clean.includes('sonnet')) tier = 'Sonnet';
+    else if (clean.includes('haiku')) tier = 'Haiku';
+    else {
+      const word = segments.find(p => /[a-z]/i.test(p));
+      if (!word) return '';
+      tier = word.charAt(0).toUpperCase() + word.slice(1);
+    }
+
+    // Version: numeric segments, excluding the 8-digit date stamp (YYYYMMDD).
+    const version = segments
+      .filter(p => /^\d+$/.test(p) && !/^\d{8}$/.test(p))
+      .join('.');
+
+    return version ? `${tier} ${version}` : tier;
   }
 
   // ── Centralised activeTools mutation (A2 audit fix) ──────────────

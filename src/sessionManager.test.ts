@@ -319,7 +319,7 @@ describe('SessionManager state machine', () => {
         usage: { input_tokens: 100 },
       } as Record<string, unknown>,
     } as JsonlRecord]);
-    expect(mgr.getSnapshot().modelLabel).toBe('Opus');
+    expect(mgr.getSnapshot().modelLabel).toBe('Opus 4.6');
   });
 
   // ── Custom title ───────────────────────────────────────────────

@@ -134,7 +134,7 @@ export interface SessionSnapshot {
   contextTokens: number;
   /** Concatenated searchable text (topic + slug + all activities) */
   searchText: string;
-  /** Short model label (e.g. "Opus", "Sonnet", "Haiku") */
+  /** Model label with version (e.g. "Opus 4.8", "Sonnet 4", "Fable 5") */
   modelLabel: string;
   /** Session title (from sessionRepair first-message extraction or custom-title JSONL record) */
   title: string | null;

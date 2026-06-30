@@ -526,7 +526,7 @@ describe('SessionManager sidechain tests', () => {
       expect(snap.contextTokens).toBe(700); // 500 + 200
       expect(snap.searchText).toContain('Fix the login bug');
       expect(snap.searchText).toContain('test-ses');
-      expect(snap.modelLabel).toBe('Sonnet');
+      expect(snap.modelLabel).toBe('Sonnet 4');
       expect(snap.title).toBeNull();
       expect(snap.customTitle).toBe('');
     });
@@ -537,26 +537,33 @@ describe('SessionManager sidechain tests', () => {
     });
 
     it('model label formatting for various models', async () => {
-      const mgr = makeManager();
-      await feedRecords(mgr, [userRecord('hi')]);
+      const feedModel = async (model: string): Promise<string> => {
+        const mgr = makeManager();
+        await feedRecords(mgr, [userRecord('hi')]);
+        await feedRecords(mgr, [{
+          type: 'assistant',
+          timestamp: new Date().toISOString(),
+          message: { content: [{ type: 'text', text: 'a' }], model } as Record<string, unknown>,
+        } as JsonlRecord]);
+        return mgr.getSnapshot().modelLabel;
+      };
 
-      // Opus
-      await feedRecords(mgr, [{
-        type: 'assistant',
-        timestamp: new Date().toISOString(),
-        message: { content: [{ type: 'text', text: 'a' }], model: 'claude-opus-4-6' } as Record<string, unknown>,
-      } as JsonlRecord]);
-      expect(mgr.getSnapshot().modelLabel).toBe('Opus');
+      // Tier + version, both major.minor and major-only.
+      expect(await feedModel('claude-opus-4-6')).toBe('Opus 4.6');
+      expect(await feedModel('claude-opus-4-8')).toBe('Opus 4.8');
+      expect(await feedModel('claude-sonnet-4-20250514')).toBe('Sonnet 4');
 
-      // Haiku
-      await feedRecords(mgr, [{
-        type: 'assistant',
-        timestamp: new Date().toISOString(),
-        message: { content: [{ type: 'text', text: 'b' }], model: 'claude-3-5-haiku-20241022' } as Record<string, unknown>,
-      } as JsonlRecord]);
-      expect(mgr.getSnapshot().modelLabel).toBe('Haiku');
+      // Context-window suffix is stripped.
+      expect(await feedModel('claude-opus-4-8[1m]')).toBe('Opus 4.8');
 
-      // Empty model
+      // Fable (and any non-opus/sonnet/haiku family) via the generic path.
+      expect(await feedModel('claude-fable-5')).toBe('Fable 5');
+
+      // Legacy version-first id shape, trailing date stamp dropped.
+      expect(await feedModel('claude-3-5-haiku-20241022')).toBe('Haiku 3.5');
+      expect(await feedModel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
+
+      // Empty model id.
       const mgr2 = makeManager();
       expect(mgr2.getSnapshot().modelLabel).toBe('');
     });
