@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.15.4 (2026-06-29) — Fix: new-chat auto-focus actually fires (local/sibling gate)
+
+### Fixed
+- **The new-chat card highlight now works in practice.** v1.15.3 fixed the `enqueue`→`dequeue` focus race, but auto-focus still never fired for local sessions: the candidate filter excluded any session carrying a `worktreeRoot`, and `sessionDiscovery` tags *every local* snapshot with `worktreeRoot === the workspace path` (so the panel can tell local cards from sibling-worktree cards). The gate now mirrors the panel's local/sibling split — a session is excluded only when its `worktreeRoot` points at a *different* workspace — so a newly started local chat takes the highlight and scrolls into view as intended. The auto-focus tests now carry the same `worktreeRoot` tagging production emits (verified: they fail against the old gate), so the gap can't regress unseen.
+
 ## v1.15.3 (2026-06-29) — Fix: new-chat cards now grab focus and scroll into view
 
 ### Fixed

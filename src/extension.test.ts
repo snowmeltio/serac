@@ -552,11 +552,15 @@ describe('extension', () => {
       // sendUpdate is debounced to 200ms — flush so each tick is one update.
       vi.advanceTimersByTime(250);
     }
-    // A snapshot whose firstActivity defaults to "just now" (under fake timers),
-    // i.e. reads as a genuinely new chat unless a test overrides it. Real
-    // snapshots always carry firstActivity (sessionManager.getSnapshot).
+    // A snapshot that mirrors what production actually emits for a LOCAL session:
+    // firstActivity defaults to "just now" (reads as a genuinely new chat), and
+    // worktreeRoot is tagged with the current workspace path — sessionDiscovery
+    // sets `snapshot.worktreeRoot = localCwd` for every local session, so a test
+    // omitting it would not exercise the local/sibling gate. The mock workspace
+    // is '/test/ws'. Override either field per test (e.g. a sibling worktreeRoot).
+    const WS = '/test/ws';
     function snap(over: Record<string, unknown>) {
-      return { firstActivity: Date.now(), ...over };
+      return { firstActivity: Date.now(), worktreeRoot: WS, ...over };
     }
     // Flush the one-shot startup timers (deferred sendUpdate @500ms, focus hint
     // @800ms) so they can't consume the 200ms sendUpdate debounce window on a
@@ -690,12 +694,12 @@ describe('extension', () => {
       const oldFirstActivity = Date.now() - 10 * 60_000;
       mockDiscovery.getSnapshots.mockReturnValue([
         snap({ sessionId: 'existing-1', status: 'running' }),
-        { sessionId: 'sleeper', status: 'done', firstActivity: oldFirstActivity },
+        snap({ sessionId: 'sleeper', status: 'done', firstActivity: oldFirstActivity }),
       ]);
       tick();
       mockDiscovery.getSnapshots.mockReturnValue([
         snap({ sessionId: 'existing-1', status: 'running' }),
-        { sessionId: 'sleeper', status: 'running', firstActivity: oldFirstActivity },
+        snap({ sessionId: 'sleeper', status: 'running', firstActivity: oldFirstActivity }),
       ]);
       tick();
 

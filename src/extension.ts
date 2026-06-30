@@ -484,7 +484,12 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     // Auto-focus a single newly arrived live local session. Four gates keep the
     // highlight on a genuinely new chat:
     //   - The seed tick only records the baseline; activation never grabs a card.
-    //   - Sibling-worktree sessions (worktreeRoot set) never yank this window.
+    //   - Sibling-worktree sessions (a worktreeRoot pointing at ANOTHER window)
+    //     never yank this window. NB sessionDiscovery tags every *local* snapshot
+    //     with worktreeRoot === this workspace path, so "has a worktreeRoot" is
+    //     NOT the sibling test — it would exclude every local session (and did:
+    //     auto-focus silently never fired once local tagging landed). The sibling
+    //     test mirrors the panel's local/sibling split (panel.ts).
     //   - A multi-session burst (wake-from-sleep, two chats starting at once)
     //     picks no winner arbitrarily.
     //   - firstActivity must be recent, which tells a brand-new chat (recent
@@ -498,19 +503,22 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       knownSessionIds = new Set(sessions.map(s => s.sessionId));
     } else {
       const now2 = Date.now();
+      const wsNorm = normPath(wsPath);
+      const isSibling = (s: { worktreeRoot?: string }): boolean =>
+        !!s.worktreeRoot && normPath(s.worktreeRoot) !== wsNorm;
       const candidates = sessions.filter(s =>
         !knownSessionIds!.has(s.sessionId)
-        && !s.worktreeRoot
+        && !isSibling(s)
         && (s.status === 'running' || s.status === 'waiting')
         && now2 - s.firstActivity < NEW_CHAT_FOCUS_WINDOW_MS);
       if (candidates.length === 1) {
         panelProvider.focusSession(candidates[0].sessionId);
       }
-      // Absorb only once a session has been seen live (or is a worktree session,
-      // which can never be a candidate) — a non-live newcomer stays eligible so
-      // its later promotion to live is not missed.
+      // Absorb only once a session has been seen live (or is a sibling worktree,
+      // which can never be a candidate) — a non-live local newcomer stays
+      // eligible so its later promotion to live is not missed.
       for (const s of sessions) {
-        if (s.status === 'running' || s.status === 'waiting' || s.worktreeRoot) {
+        if (s.status === 'running' || s.status === 'waiting' || isSibling(s)) {
           knownSessionIds.add(s.sessionId);
         }
       }
