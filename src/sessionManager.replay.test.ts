@@ -104,6 +104,27 @@ describe('SessionManager replay harness', () => {
     expect(finalStatus).toBe('running');
   });
 
+  it('onTransition reports activeToolCount (permission-FP diagnostic)', async () => {
+    // The 4th arg powers the [status] trace that discriminates a real permission
+    // wait (activeTools>0) from a stale one. AskUserQuestion → waiting carries
+    // its own tool; the closing user record clears it back to running at 0.
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'replay-atc-'));
+    const file = path.join(dir, 'session.jsonl');
+    await fs.promises.writeFile(file,
+      JSON.stringify({ type: 'assistant', timestamp: ts(),
+        message: { content: [{ type: 'tool_use', name: 'AskUserQuestion', id: 'tu1' }] } }) + '\n');
+    const seen: Array<{ to: SessionStatus; activeToolCount: number }> = [];
+    const mgr = new SessionManager('atc-sid', file, 'atc-ws', {
+      onTransition: (_from, to, _reason, activeToolCount) => seen.push({ to, activeToolCount }),
+    });
+    await mgr.update();
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+
+    const waiting = seen.find(s => s.to === 'waiting');
+    expect(waiting?.activeToolCount).toBe(1);
+  });
+
   it('default onTransition is a no-op (constructor without opts)', async () => {
     const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'replay-noop-'));
     const file = path.join(dir, 'session.jsonl');

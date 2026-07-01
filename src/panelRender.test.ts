@@ -161,6 +161,24 @@ describe('modelHue', () => {
   });
 });
 
+describe('model pill hue with unconfirmed (*-suffixed) labels', () => {
+  it('an unconfirmed bare-tier guess shares its hue with the confirmed tier', () => {
+    // "Opus*" (guessed, no version yet) must hash to the same --model-hue as
+    // "Opus" — the trailing '*' must not get glued onto the family word.
+    const confirmed = renderCardInner(makeCtx(), makeSession({ modelLabel: 'Opus' }), NOW, false);
+    const unconfirmed = renderCardInner(makeCtx(), makeSession({ modelLabel: 'Opus*' }), NOW, false);
+    const hueOf = (html: string) => html.match(/--model-hue:(-?\d+)/)?.[1];
+    expect(hueOf(unconfirmed)).toBe(hueOf(confirmed));
+  });
+
+  it('an unconfirmed versioned guess shares its hue with the confirmed version', () => {
+    const confirmed = renderCardInner(makeCtx(), makeSession({ modelLabel: 'Opus 4.8' }), NOW, false);
+    const unconfirmed = renderCardInner(makeCtx(), makeSession({ modelLabel: 'Opus 4.8*' }), NOW, false);
+    const hueOf = (html: string) => html.match(/--model-hue:(-?\d+)/)?.[1];
+    expect(hueOf(unconfirmed)).toBe(hueOf(confirmed));
+  });
+});
+
 // ===== chips and inline rows =====
 
 describe('renderDetailChip', () => {

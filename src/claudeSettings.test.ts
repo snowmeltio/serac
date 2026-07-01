@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
-import { readCompactSettings } from './claudeSettings.js';
+import { readCompactSettings, readDefaultModel } from './claudeSettings.js';
 
 vi.mock('fs');
 
@@ -63,5 +63,35 @@ describe('readCompactSettings', () => {
   it('handles malformed JSON gracefully', () => {
     vi.mocked(fs.readFileSync).mockReturnValue('not json');
     expect(readCompactSettings()).toEqual({ autoCompactWindow: 200_000, autoCompactPct: 95 });
+  });
+});
+
+describe('readDefaultModel', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('returns empty string when file is missing', () => {
+    vi.mocked(fs.readFileSync).mockImplementation(() => { throw new Error('ENOENT'); });
+    expect(readDefaultModel()).toBe('');
+  });
+
+  it('returns the model alias when set', () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ model: 'sonnet' }));
+    expect(readDefaultModel()).toBe('sonnet');
+  });
+
+  it('returns empty string when model is absent', () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ theme: 'dark' }));
+    expect(readDefaultModel()).toBe('');
+  });
+
+  it('returns empty string when model is not a string', () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ model: 42 }));
+    expect(readDefaultModel()).toBe('');
+  });
+
+  it('handles malformed JSON gracefully', () => {
+    vi.mocked(fs.readFileSync).mockReturnValue('not json');
+    expect(readDefaultModel()).toBe('');
   });
 });

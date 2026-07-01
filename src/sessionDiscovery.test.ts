@@ -35,7 +35,9 @@ function createJsonlFile(sessionId: string, content = ''): string {
 }
 
 function makeDiscovery(): SessionDiscovery {
-  return new SessionDiscovery(workspacePath, { projectsDir });
+  // defaultModelGuess pinned to '' — isolates this suite from the real
+  // machine's ~/.claude/settings.json (see [F10] above).
+  return new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '' });
 }
 
 /** Build a minimal SessionSnapshot for tests that inject feed entries directly

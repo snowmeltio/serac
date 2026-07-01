@@ -247,7 +247,7 @@ export class SessionManager {
   /** Optional replay/observability hook fired on every status transition.
    *  Non-invasive: default no-op. Used by the replay harness to verify a
    *  captured transition stream is reproducible from JSONL. */
-  private readonly onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void;
+  private readonly onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
   /** Optional hook-event router, passed to every tracker factory at
    *  construction; hook-capable trackers subscribe via it and fall back to
    *  JSONL inference when it is undefined (foreign workspaces, sibling
@@ -259,6 +259,13 @@ export class SessionManager {
    *  set, the late tool_use leaks into activeTools and never clears, causing
    *  demoteIfStale to falsely flag the session as 'waiting' after 30s. */
   private earlyToolResults: Set<string> = new Set();
+  /** Reason passed to the most recent setStatus('waiting', …). Lets the
+   *  stale-'waiting' reconciliation in demoteIfStale tell a permission-typed wait
+   *  ('permission_fired' / 'demote_waiting' / 'subagent_permission_bubble') —
+   *  which is only valid while a tool/subagent genuinely backs it — apart from a
+   *  hook-accelerated 'needs_user_input' (AskUserQuestion legitimately waits with
+   *  empty activeTools until its JSONL tool_use re-affirms). */
+  private lastWaitingReason = '';
   /** Glance-pack capture (display-only): branch, tool-error count, last reply. */
   private gitBranch = '';
   /** File paths tracked by the LATEST file-history-snapshot record — the
@@ -277,7 +284,7 @@ export class SessionManager {
     filePath: string,
     workspaceKey: string,
     opts: {
-      onTransition?: (from: SessionStatus, to: SessionStatus, reason: string) => void;
+      onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
       hookRouter?: HookEventRouter;
       livenessProbe?: () => boolean | null;
       /** Seed for the seen-live-in-registry latch, persisted across window
@@ -287,6 +294,11 @@ export class SessionManager {
       /** Fired once, the first time this instance observes the session live in
        *  the registry — the caller persists the latch. */
       onRegistrySeenLive?: () => void;
+      /** Configured default model (e.g. "sonnet"), used to seed the model pill
+       *  before the first assistant record confirms the actual model. Shown
+       *  with a trailing '*' until confirmed. Omit to leave the pill blank
+       *  until confirmed (current behaviour — used by tests). */
+      defaultModelGuess?: string;
     } = {},
   ) {
     const now = new Date();
@@ -373,7 +385,8 @@ export class SessionManager {
       idleTimerId: undefined,
       topic: '',
       contextTokens: 0,
-      modelId: '',
+      modelId: opts.defaultModelGuess || '',
+      modelConfirmed: !opts.defaultModelGuess,
       firstUserMessages: [],
       firstAssistantResponse: '',
       customTitle: '',
@@ -395,7 +408,11 @@ export class SessionManager {
     // Preserve customTitle, aiTitle, and topic across compaction — clearing
     // them causes the display name to fall back to the compacted summary text.
     this.state.contextTokens = 0;
-    this.state.modelId = '';
+    // modelId is deliberately NOT cleared — compaction rewrites the JSONL but
+    // doesn't change the model, so the last confirmed value is still the best
+    // guess. Just mark it unconfirmed until the next assistant record reaffirms
+    // it; the pill keeps showing (with a trailing '*') instead of going blank.
+    this.state.modelConfirmed = false;
     this.state.lastActivity = now;
     this.state.firstActivity = now;
     this.firstActivitySet = false;
@@ -507,7 +524,7 @@ export class SessionManager {
       dismissed: false,
       contextTokens: this.state.contextTokens,
       searchText: [this.state.topic, this.state.slug].join(' '),
-      modelLabel: this.formatModelLabel(this.state.modelId),
+      modelLabel: this.formatModelLabel(this.state.modelId, this.state.modelConfirmed),
       title: null,  // Populated by SessionDiscovery from session-meta.json
       customTitle: this.state.customTitle,
       aiTitle: this.state.aiTitle,
@@ -625,6 +642,31 @@ export class SessionManager {
       return true;
     }
 
+    // Stale-'waiting' reconciliation (permission-FP backstop). A permission-typed
+    // 'waiting' is only valid while a genuine wait backs it: a NON-EXEMPT active
+    // tool (the pending permission/AskUserQuestion) or a running subagent blocked
+    // on permission. Once that backing is gone — a slow-EXECUTING tool that
+    // tripped the timer then finished (permissionTracker FALSE-POSITIVE NOTE), or
+    // a background subagent that bubbled the parent then force-completed via the
+    // dormant sweep (completeSubagent does not reopen the parent) — nothing else
+    // re-checks the status, so computeDemotion holds it 'waiting' below the 10-min
+    // ceiling and the card grows "Waiting · Nm". Re-open to 'running' (preserving
+    // turnStartAt/seenOutputInTurn so the demotion below can still tell a live
+    // think from an ended turn) and scrub the stale subtitle. Excludes
+    // 'needs_user_input': a hook-accelerated AskUserQuestion legitimately waits
+    // with empty activeTools until its JSONL tool_use re-affirms.
+    let reconciled = false;
+    if (this.state.status === 'waiting'
+        && this.lastWaitingReason !== 'needs_user_input'
+        && ![...this.state.activeTools.values()].some(name => !getToolProfile(name).exempt)
+        && !this.state.subagents.some(s => s.running && s.waitingOnPermission)) {
+      this.setStatus('running', 'stale_waiting_reconciled');
+      if (WAITING_ACTIVITY_MESSAGES.has(this.state.activity)) {
+        this.state.activity = 'Processing';
+      }
+      reconciled = true;
+    }
+
     const result = computeDemotion(
       this.state.status,
       this.state.lastActivity.getTime(),
@@ -645,7 +687,9 @@ export class SessionManager {
         this.markSessionDone();
         return true;
       }
-      return false;
+      // A reconciliation with no further demotion (live extended think) is still
+      // a real status change — report it so the snapshot is pushed to the webview.
+      return reconciled;
     }
 
     if (result === 'done') {
@@ -1101,7 +1145,7 @@ export class SessionManager {
 
     // Extract model name and context token usage from the message
     const modelId = getModelId(record);
-    if (modelId) { this.state.modelId = modelId; }
+    if (modelId) { this.state.modelId = modelId; this.state.modelConfirmed = true; }
     const inputTokens = getInputTokens(record);
     if (inputTokens !== null) { this.state.contextTokens = inputTokens; }
 
@@ -1469,10 +1513,13 @@ export class SessionManager {
   /** Single mutation point for `state.status` so the optional onTransition
    *  callback fires on every real change. Same-status assignments are no-ops. */
   private setStatus(next: SessionStatus, reason: string): void {
+    // Record the waiting reason even on a same-status re-set (demote_waiting
+    // re-fires each poll) so the reconciliation always sees the live reason.
+    if (next === 'waiting') { this.lastWaitingReason = reason; }
     const prev = this.state.status;
     if (prev === next) { return; }
     this.state.status = next;
-    this.onTransition?.(prev, next, reason);
+    this.onTransition?.(prev, next, reason, this.state.activeTools.size);
   }
 
   /** Whether the session should transition to done: no active tools, or all
@@ -1756,8 +1803,9 @@ export class SessionManager {
    *  model id. Handles both the new (`claude-opus-4-8`) and legacy version-first
    *  (`claude-3-5-haiku-...`) id shapes, strips the context-window suffix
    *  (`[1m]`) and the trailing date stamp (`-20251001`), and degrades to the
-   *  bare tier when no version is present. */
-  private formatModelLabel(modelId: string): string {
+   *  bare tier when no version is present. A trailing '*' marks a label that's
+   *  still just a guess (not yet confirmed by an assistant record). */
+  private formatModelLabel(modelId: string, confirmed: boolean): string {
     if (!modelId) return '';
     // Drop the context-window suffix ("[1m]") and the "claude-" prefix.
     const clean = modelId.replace(/\[[^\]]*\]/g, '').replace(/^claude-/, '');
@@ -1779,7 +1827,8 @@ export class SessionManager {
       .filter(p => /^\d+$/.test(p) && !/^\d{8}$/.test(p))
       .join('.');
 
-    return version ? `${tier} ${version}` : tier;
+    const label = version ? `${tier} ${version}` : tier;
+    return confirmed ? label : `${label}*`;
   }
 
   // ── Centralised activeTools mutation (A2 audit fix) ──────────────

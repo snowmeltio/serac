@@ -250,6 +250,104 @@ describe('Session-level permission wait', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// Stale-'waiting' reconciliation — permission-FP backstop.
+//
+// A permission-typed 'waiting' must stay backed by a live wait (a non-exempt
+// active tool, or a running subagent blocked on permission). When the backing
+// vanishes without a reopening record — the demonstrable reachable case is a
+// background subagent that bubbled the parent to 'waiting' and is then
+// force-completed by the dormant sweep (completeSubagent does NOT reopen the
+// parent) — demoteIfStale re-opens the session so the card can't grow
+// "Waiting · Nm". Live waits must be preserved.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('Stale-waiting reconciliation', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  /** Verbatim launch banner — flags the Agent tool_result as a background spawn. */
+  const LAUNCH_BANNER = 'Async agent launched successfully.\n'
+    + "agentId: agent-bg-1 (internal ID - do not mention to user. Use SendMessage with to: 'agent-bg-1' to continue this agent.)\n"
+    + 'The agent is working in the background. You will be notified automatically when it completes.';
+
+  function bgToolResult(toolUseId: string, text: string): JsonlRecord {
+    return { type: 'user', timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content: text }] } };
+  }
+
+  it('background bubble force-completed by the sweep no longer sticks on waiting', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    // Spawn a BACKGROUND agent — its launch-banner tool_result clears the parent's
+    // activeTools, so the parent holds no non-exempt tool while the agent runs.
+    await feed(mgr, [{ type: 'assistant', timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'tool_use', name: 'Agent', id: 'agent-bg-1',
+        input: { description: 'bg', prompt: 'go', run_in_background: true } }] } }]);
+    await feed(mgr, [bgToolResult('agent-bg-1', LAUNCH_BANNER)]);
+    expect(mgr.getSnapshot().subagents[0].background).toBe(true);
+
+    // Subagent blocks → bubbles the parent to waiting (empty parent activeTools).
+    // The launch-banner tool_result was recent, so the permission delay is
+    // recency-DOUBLED (3s → 6s).
+    await feed(mgr, [sidechainToolUse('SomeTool', 'sc-1', 'agent-bg-1')]);
+    vi.advanceTimersByTime(6_001);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toContain('Subagent waiting for permission');
+
+    // The agent's JSONL never updates; past its 15-min ceiling the dormant sweep
+    // force-completes it via completeSubagent (which does not reopen the parent).
+    vi.advanceTimersByTime(16 * 60 * 1000);
+    mgr.sweepBackgroundWork(Date.now());
+    expect(mgr.getSnapshot().subagents[0].running).toBe(false);
+
+    // Without reconciliation the parent would sit on 'waiting' until the 10-min
+    // waiting ceiling. demoteIfStale must resolve the now-unbacked wait instead.
+    const changed = mgr.demoteIfStale(30_000);
+    expect(changed).toBe(true);
+    expect(mgr.getStatus()).not.toBe('waiting');
+    expect(mgr.getSnapshot().activity).not.toBe('Subagent waiting for permission');
+  });
+
+  it('does NOT reconcile a live session-level permission wait (non-exempt tool active)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [sessionToolUse('SomeTool', 'tu-1')]);
+    vi.advanceTimersByTime(3_001);
+    expect(mgr.getStatus()).toBe('waiting');
+
+    // The tool is genuinely pending (still in activeTools) — must stay waiting.
+    mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toContain('Waiting for permission');
+  });
+
+  it('does NOT reconcile a live subagent bubble (subagent still blocked)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [spawnAgent('agent-1')]);
+    await feed(mgr, [sidechainToolUse('SomeTool', 'sc-1', 'agent-1')]);
+    vi.advanceTimersByTime(3_001);
+    expect(mgr.getStatus()).toBe('waiting');
+
+    // The subagent is still blocked on permission — a real wait, keep it.
+    mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(true);
+  });
+
+  it('does NOT reconcile a needs_user_input wait (AskUserQuestion)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [sessionToolUse('AskUserQuestion', 'ask-1')]);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toContain('Waiting for your response');
+
+    mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // MCP progress reset regression — persona-panel gap (Sam)
 //
 // A chatty MCP tool emitting sub-6s `mcp_progress` events resets the

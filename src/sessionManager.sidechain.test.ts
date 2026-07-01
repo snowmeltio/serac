@@ -568,6 +568,50 @@ describe('SessionManager sidechain tests', () => {
       expect(mgr2.getSnapshot().modelLabel).toBe('');
     });
 
+    it('seeds an unconfirmed (*-suffixed) label from defaultModelGuess until an assistant record confirms it', async () => {
+      const mgr = new SessionManager('test-session-id', '/tmp/test.jsonl', 'test-workspace', {
+        defaultModelGuess: 'sonnet',
+      });
+
+      // Before any assistant record: the guess, marked unconfirmed.
+      expect(mgr.getSnapshot().modelLabel).toBe('Sonnet*');
+
+      // First assistant record confirms (and may correct) the actual model.
+      await feedRecords(mgr, [userRecord('hi')]);
+      await feedRecords(mgr, [{
+        type: 'assistant',
+        timestamp: new Date().toISOString(),
+        message: { content: [{ type: 'text', text: 'hi back' }], model: 'claude-sonnet-5' } as Record<string, unknown>,
+      } as JsonlRecord]);
+      expect(mgr.getSnapshot().modelLabel).toBe('Sonnet 5');
+    });
+
+    it('reverts to unconfirmed (not blank) across a JSONL truncation/compaction', async () => {
+      const mgr = new SessionManager('test-session-id', '/tmp/test.jsonl', 'test-workspace', {
+        defaultModelGuess: 'sonnet',
+      });
+      await feedRecords(mgr, [userRecord('hi')]);
+      await feedRecords(mgr, [{
+        type: 'assistant',
+        timestamp: new Date().toISOString(),
+        message: { content: [{ type: 'text', text: 'hi back' }], model: 'claude-opus-4-8' } as Record<string, unknown>,
+      } as JsonlRecord]);
+      expect(mgr.getSnapshot().modelLabel).toBe('Opus 4.8');
+
+      // Compaction truncates the JSONL — the last confirmed model carries over,
+      // marked unconfirmed, rather than going blank.
+      await feedRecordsWithTruncation(mgr, []);
+      expect(mgr.getSnapshot().modelLabel).toBe('Opus 4.8*');
+
+      // Next assistant record reaffirms it.
+      await feedRecords(mgr, [{
+        type: 'assistant',
+        timestamp: new Date().toISOString(),
+        message: { content: [{ type: 'text', text: 'back again' }], model: 'claude-opus-4-8' } as Record<string, unknown>,
+      } as JsonlRecord]);
+      expect(mgr.getSnapshot().modelLabel).toBe('Opus 4.8');
+    });
+
     it('context tokens aggregates all input token fields', async () => {
       const mgr = makeManager();
       await feedRecords(mgr, [userRecord('hi')]);

@@ -80,6 +80,11 @@ export interface SessionState {
   contextTokens: number;
   /** Model ID from the most recent assistant message (e.g. "claude-opus-4-6") */
   modelId: string;
+  /** True once modelId has been confirmed by a real assistant record. False
+   *  while it's only a guess (constructor seed from the configured default,
+   *  or carried over through a truncation/compaction reset) — the snapshot's
+   *  modelLabel gets a trailing '*' in that state. */
+  modelConfirmed: boolean;
   /** First 2-3 user messages (up to 500 chars total) for title generation */
   firstUserMessages: string[];
   /** First assistant text response (up to 500 chars) for title generation */

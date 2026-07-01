@@ -33,7 +33,9 @@ function createJsonlFile(wsKey: string, sessionId: string, content = ''): string
 }
 
 function makeDiscovery(): SessionDiscovery {
-  return new SessionDiscovery(workspacePath, { projectsDir });
+  // defaultModelGuess pinned to '' — isolates this suite from the real
+  // machine's ~/.claude/settings.json.
+  return new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '' });
 }
 
 describe('SessionDiscovery: foreign workspaces', () => {
@@ -441,7 +443,7 @@ describe('SessionDiscovery: foreign workspaces', () => {
     fs.mkdirSync(path.join(projectsDir, 'sibling-key'), { recursive: true });
     fs.writeFileSync(path.join(projectsDir, 'sibling-key', 's.jsonl'), siblingRecord + '\n');
 
-    const discovery = new SessionDiscovery(localCwd, { projectsDir });
+    const discovery = new SessionDiscovery(localCwd, { projectsDir, defaultModelGuess: '' });
     await discovery.start(() => {});
 
     // Sibling should not appear in foreign workspaces

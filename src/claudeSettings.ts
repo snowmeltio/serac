@@ -37,3 +37,17 @@ export function readCompactSettings(): CompactSettings {
     return { ...DEFAULTS };
   }
 }
+
+/** Reads the configured default model (the top-level `model` field in
+ *  settings.json, e.g. "sonnet" or "claude-opus-4-8") used to seed a
+ *  session's model pill before its first assistant record confirms the
+ *  actual model. Empty string if unset/unreadable. */
+export function readDefaultModel(): string {
+  try {
+    const raw = fs.readFileSync(getClaudeSettingsPath(), 'utf-8');
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.model === 'string' ? parsed.model : '';
+  } catch {
+    return '';
+  }
+}

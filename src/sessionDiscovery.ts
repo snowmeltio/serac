@@ -11,6 +11,7 @@ import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
 import { claudeStateDir } from './paths.js';
+import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
@@ -122,7 +123,13 @@ export class SessionDiscovery {
    *  sessions are owned by their own VS Code window's leader. */
   private readonly hookRouter?: HookEventRouter;
 
-  constructor(workspacePath: string, opts?: { projectsDir?: string; log?: Logger; hookRouter?: HookEventRouter }) {
+  /** Configured default model (e.g. "sonnet"), used to seed a session's model
+   *  pill before its first assistant record confirms the actual model. Read
+   *  once at construction; injectable for tests so they aren't coupled to the
+   *  real machine's settings.json. */
+  private readonly defaultModelGuess: string;
+
+  constructor(workspacePath: string, opts?: { projectsDir?: string; log?: Logger; hookRouter?: HookEventRouter; defaultModelGuess?: string }) {
     this.projectsDir = opts?.projectsDir ?? path.join(claudeStateDir(), 'projects');
     this.workspaceKey = sanitiseWorkspaceKey(workspacePath);
     this.metaFilePath = path.join(this.projectsDir, this.workspaceKey, 'session-meta.json');
@@ -130,6 +137,7 @@ export class SessionDiscovery {
     this.localCwd = workspacePath;
     this.localWorktreeLabel = path.basename(workspacePath) || workspacePath;
     this.hookRouter = opts?.hookRouter;
+    this.defaultModelGuess = opts?.defaultModelGuess ?? readDefaultModel();
     this.foreignManager = new ForeignWorkspaceManager(this.projectsDir, this.workspaceKey, this.log);
     this.siblingManager = new SiblingWorktreeManager(this.projectsDir, this.workspaceKey, this.log);
     this.foreignManager.setSiblingKeysProvider(() => this.siblingManager.getSiblingKeys());
@@ -974,6 +982,22 @@ export class SessionDiscovery {
 
           const manager = new SessionManager(sessionId, filePath, workspaceKey, {
             hookRouter: this.hookRouter,
+            defaultModelGuess: this.defaultModelGuess,
+            // Status-transition trace. Permission-FP diagnostics: the waiting
+            // lifecycle (and any stale-waiting reconciliation) surfaces at `info`
+            // so it is visible without enabling trace; every other transition
+            // logs at `trace`. Reason + activeTools count discriminate the path
+            // (permission_fired / demote_waiting / subagent_permission_bubble /
+            // needs_user_input / stale_waiting_reconciled). See
+            // project_permission_false_positives.
+            onTransition: (from, to, reason, activeToolCount) => {
+              const msg = `[status] ${sessionId.slice(0, 8)} ${from}→${to} (${reason}) activeTools=${activeToolCount}`;
+              if (to === 'waiting' || from === 'waiting' || reason === 'stale_waiting_reconciled') {
+                this.log.info(msg);
+              } else {
+                this.log.trace(msg);
+              }
+            },
             // Registry-backed liveness, bound to this session id. Tri-state:
             // null when the last scan was degraded (absence must never read as
             // death off a transient disk error), else whether a live process
