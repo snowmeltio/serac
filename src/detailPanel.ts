@@ -115,6 +115,12 @@ export class DetailPanel {
     tailer: JsonlTailer;
     entries: TranscriptEntry[];
     records: JsonlRecord[];
+    /** tool_use id → name correlation for entryFromRecord (Phase 2.1): a
+     *  tool_result names its originating tool in the log view. Lives on the
+     *  slot because a call and its result can straddle an append boundary —
+     *  the map must persist across tailer reads. Reset with entries/records
+     *  on truncation, same discipline. */
+    toolNames: Map<string, string>;
     inboxSig: string;
   } | null = null;
   /** Transcript requests run strictly one at a time — interleaved tailer
@@ -856,7 +862,7 @@ export class DetailPanel {
           initialOffset = stat.size - DetailPanel.TRANSCRIPT_WINDOW_BYTES;
         }
       } catch { /* missing file reads as empty below, like the old parser */ }
-      slot = { key, filePath: file, tailer: new JsonlTailer(file, initialOffset), entries: [], records: [], inboxSig: '' };
+      slot = { key, filePath: file, tailer: new JsonlTailer(file, initialOffset), entries: [], records: [], toolNames: new Map(), inboxSig: '' };
       reset = true;
     }
 
@@ -874,13 +880,14 @@ export class DetailPanel {
         if (slot.tailer.truncated) {
           slot.entries = [];
           slot.records = [];
+          slot.toolNames.clear();
           appended.length = 0;
           appendedRecords.length = 0;
           reset = true;
         }
         for (const r of records) {
           appendedRecords.push(r);
-          const entry = entryFromRecord(r);
+          const entry = entryFromRecord(r, slot.toolNames);
           if (entry) { appended.push(entry); }
         }
         if (slot.tailer.getOffset() <= before) { break; }

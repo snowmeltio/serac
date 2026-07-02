@@ -32,6 +32,10 @@ export async function renderTranscript(
  *  detail-panel reader (which formats the entries as webview HTML). */
 export async function parseTranscript(filePath: string): Promise<TranscriptEntry[]> {
   const entries: TranscriptEntry[] = [];
+  // Per-file tool_use id → name correlation (Phase 2.1): records are read in
+  // order, so an assistant tool_use always precedes its tool_result — the map
+  // fills as the loop advances and names the results after it. File-scoped.
+  const toolNames = new Map<string, string>();
   let raw: string;
   const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024; // 50MB cap [H4]
 
@@ -65,7 +69,7 @@ export async function parseTranscript(filePath: string): Promise<TranscriptEntry
     const record = validateRecord(parsed);
     if (!record) { continue; }
 
-    const entry = entryFromRecord(record);
+    const entry = entryFromRecord(record, toolNames);
     if (entry) { entries.push(entry); }
   }
 
@@ -93,8 +97,18 @@ function capRawField(s: string): string {
  *  one-entry-per-record function exactly as before; a record carrying more
  *  than one tool_use/tool_result block (rare, parallel tool calls) has its
  *  raw fields populated from the first such block only, documented on the
- *  type itself. */
-export function entryFromRecord(record: JsonlRecord): TranscriptEntry | null {
+ *  type itself.
+ *
+ *  `toolNameById` (Phase 2.1, optional) is the cross-record correlation this
+ *  function BOTH feeds and reads: an assistant record registers every
+ *  tool_use block's id → name, and a tool_result record looks its
+ *  `tool_use_id` up to set `entry.toolName` — the log view then names the
+ *  result instead of showing a bare toolu_ id. Callers own the map and its
+ *  lifetime (parseTranscript: per file; detailPanel: on the live slot, reset
+ *  with it on truncation). A miss (result whose use fell outside the read
+ *  window, or no map passed) leaves toolName unset — exactly the pre-2.1
+ *  shape. `content` is never affected. */
+export function entryFromRecord(record: JsonlRecord, toolNameById?: Map<string, string>): TranscriptEntry | null {
   const timestamp = (record.timestamp as string) || '';
 
   if (record.type === 'user') {
@@ -115,12 +129,24 @@ export function entryFromRecord(record: JsonlRecord): TranscriptEntry | null {
           const raw = rawToolResultText(block);
           if (raw) { entry.rawOutput = capRawField(raw); }
           if (typeof block.is_error === 'boolean') { entry.isError = block.is_error; }
+          // Correlated name (first block only, same caveat as rawOutput).
+          const useId = typeof block.tool_use_id === 'string' ? block.tool_use_id : '';
+          const name = useId && toolNameById ? toolNameById.get(useId) : undefined;
+          if (name) { entry.toolName = name; }
         }
       }
       return entry;
     }
   } else if (record.type === 'assistant') {
     const content = extractAssistantContent(record);
+    // Register EVERY tool_use block (not just the first): parallel calls all
+    // produce results, and each deserves its name. Registered even when the
+    // record yields no entry (empty content) — the results still arrive.
+    if (toolNameById) {
+      for (const b of getToolUseBlocks(record)) {
+        if (typeof b.id === 'string' && b.id && b.name) { toolNameById.set(b.id, b.name); }
+      }
+    }
     if (content) {
       const entry: TranscriptEntry = { timestamp, role: 'assistant', content };
       const toolBlocks = getToolUseBlocks(record);

@@ -108,11 +108,12 @@ export interface TranscriptEntry {
    *  record shapes that don't map cleanly onto one of these (e.g. the
    *  `turn_duration` system marker); `content`/`role` still describe them. */
   kind?: 'text' | 'tool_use' | 'tool_result' | 'task' | 'result';
-  /** Tool name for a `tool_use` (or `task`, i.e. Task/Agent) entry. NOT
-   *  populated for `tool_result` entries: a lone JSONL record only carries
-   *  `tool_use_id`, not the originating tool's name; recovering that needs
-   *  cross-record correlation, which this per-record function doesn't do
-   *  (see evidenceExtractor.ts's Bash pairing for that kind of matching). */
+  /** Tool name for a `tool_use` (or `task`, i.e. Task/Agent) entry. For a
+   *  `tool_result` entry it is the ORIGINATING tool's name, recovered by
+   *  cross-record correlation (Phase 2.1: entryFromRecord's optional
+   *  `toolNameById` map, fed by the preceding assistant tool_use records) —
+   *  unset when the correlation misses, e.g. a result whose tool_use fell
+   *  outside the read window. */
   toolName?: string;
   /** Tool_use input, JSON-stringified, untruncated (the future log view
    *  expands it in place). Capped at 64KB (65536 UTF-16 code units) per

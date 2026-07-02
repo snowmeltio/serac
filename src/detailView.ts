@@ -70,10 +70,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  true/false from the user's own toggle click overrides that default for
    *  every agent thereafter, persisted like the other collapse flags. */
   let resultStripCollapsed: boolean | null = null;
-  /** Log-mode kind filters (facet bar). All shown by default — hiding errors
-   *  by default would bury the one signal a "did it go wrong" scan needs most. */
+  /** Log-mode kind filters (facet bar). Default: Text + Error + Result on,
+   *  Tool OFF (Phase 2.1, Murray 2026-07-02) — for design/research agents the
+   *  prose IS the primary read, and tool chatter is on-demand. Errors are
+   *  their own bucket, so hiding Tool never hides a failure. Persisted as a
+   *  set (webview state, global not per-agent) so an enabled Tool chip
+   *  survives re-renders and reopens. */
   const kindFilters: { text: boolean; tool: boolean; error: boolean; result: boolean } = {
-    text: true, tool: true, error: true, result: true,
+    text: true, tool: false, error: true, result: true,
   };
   let logSearch = '';
   /** Row indices (within the selected agent's combined entries+suffix list)
@@ -96,6 +100,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     mode?: 'log' | 'classic';
     viewRowCollapsed?: boolean;
     resultStripCollapsed?: boolean | null;
+    kindFilters?: Partial<Record<'text' | 'tool' | 'error' | 'result', boolean>>;
   }
   const persisted = (vscode.getState() ?? {}) as PersistedState;
   navCollapsed = persisted.navCollapsed === true;
@@ -103,6 +108,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
   mode = persisted.mode === 'classic' ? 'classic' : 'log';
   viewRowCollapsed = persisted.viewRowCollapsed === true;
   resultStripCollapsed = typeof persisted.resultStripCollapsed === 'boolean' ? persisted.resultStripCollapsed : null;
+  // Per-key restore over the defaults, so adding a future kind can't be
+  // silently forced off by an older persisted state that never knew it.
+  if (persisted.kindFilters && typeof persisted.kindFilters === 'object') {
+    for (const k of ['text', 'tool', 'error', 'result'] as const) {
+      const v = persisted.kindFilters[k];
+      if (typeof v === 'boolean') { kindFilters[k] = v; }
+    }
+  }
   /** One-shot selection restore, consumed by the first matching render. */
   let pendingRestore: { owner: string; groupKey: string; agentId: string } | null =
     (typeof persisted.owner === 'string' && typeof persisted.groupKey === 'string'
@@ -120,6 +133,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       mode,
       viewRowCollapsed,
       resultStripCollapsed,
+      kindFilters: { ...kindFilters },
     } satisfies PersistedState);
   }
   /** Identity of the drill-in the cache below belongs to. The cache key is only
@@ -1114,16 +1128,45 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + badge + '</span>';
   }
 
-  /** Agent strip: the old left-nav's job in one row. Grouped by phase for a
-   *  workflow (group.title set), flat for subagents/team. Roving tabindex —
-   *  ArrowLeft/ArrowRight (see the keydown handler), mirroring the classic
-   *  nav's Up/Down (UX-3). */
+  /** Agent strip: the old left-nav's job. Phase 2.1: a workflow's phases each
+   *  get their OWN line — a phase header (title + done/total, failed called
+   *  out like the classic nav's phase header) with that phase's pills wrapping
+   *  beneath it — one phase after another vertically, so a phase reads as a
+   *  unit instead of pills and titles interleaving in one flowing row. Flat
+   *  sources (subagents/team, no titles) keep the single pill row. Roving
+   *  tabindex — ArrowLeft/ArrowRight walk EVERY pill in document order,
+   *  crossing phase lines like the classic nav's Up/Down crossed group
+   *  boundaries (one flat list either way; a 2D grid model would buy nothing
+   *  at these row counts and complicate focus restore). */
   function renderAgentStrip(): string {
     if (!model) { return ''; }
-    let html = '<div class="wf-agentstrip" role="tablist" aria-label="Agents">';
+    const phased = model.groups.some(g => g.title !== null);
+    if (!phased) {
+      let html = '<div class="wf-agentstrip" role="tablist" aria-label="Agents">';
+      for (const g of model.groups) {
+        for (const a of g.agents) { html += renderAgentPill(g.key, a); }
+      }
+      return html + '</div>';
+    }
+    let html = '<div class="wf-agentstrip phased" role="tablist" aria-label="Agents">';
     for (const g of model.groups) {
-      if (g.title !== null) { html += '<span class="wf-agentstrip-phase">' + escapeHtml(g.title) + '</span>'; }
+      html += '<div class="wf-agentstrip-phaserow">';
+      if (g.title !== null) {
+        const count = g.agents.length;
+        const done = g.agents.filter(a => a.status === 'done').length;
+        const failed = g.agents.filter(a => a.status === 'failed').length;
+        // Same failed-first-class treatment as the classic nav header (and the
+        // same .wf-nav-count-failed class, so the light-theme contrast override
+        // applies here too): "4/5" alone reads as still-running.
+        const failedHtml = failed > 0
+          ? ' · <span class="wf-nav-count-failed">' + failed + ' failed</span>'
+          : '';
+        html += '<div class="wf-agentstrip-phasehead"><span>' + escapeHtml(g.title) + '</span>'
+          + '<span class="wf-agentstrip-count">' + done + '/' + count + failedHtml + '</span></div>';
+      }
+      html += '<div class="wf-agentstrip-pills">';
       for (const a of g.agents) { html += renderAgentPill(g.key, a); }
+      html += '</div></div>';
     }
     return html + '</div>';
   }
@@ -1246,6 +1289,54 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return { glyph: '💬', cls: 'k-text' };
   }
 
+  // ── Prose rows (Phase 2.1) ───────────────────────────────────────────
+  // For design/research agents the assistant's prose IS the primary content;
+  // one truncated monospace line per paragraph made the log unreadable
+  // (Murray, 2026-07-02, live click-test). Text entries keep the gutter
+  // (time + glyph — the scannable log spine) but the body becomes a flowing,
+  // UI-font, pre-wrap block at the Phase 0 reading measure. Very long texts
+  // clamp with a "show all" expander riding the same expandedRows mechanism
+  // tool rows use; the inception brief defaults to a ~3-line clamp (its
+  // one-liner already lives in the Result strip — a fully open brief here
+  // was pure duplication).
+
+  const PROSE_CLAMP_LINES = 28;
+  const BRIEF_CLAMP_LINES = 3;
+  /** Nominal reading measure (chars per rendered line) for the clamp
+   *  heuristic. jsdom-free string-concat rendering can't measure real layout,
+   *  so "rendered lines" are estimated: each source line contributes
+   *  ceil(len/measure), minimum 1. The CSS -webkit-line-clamp is applied only
+   *  when this estimate exceeds the limit, so the clamp and its "show all"
+   *  affordance always agree (a clamp with no expander would trap content). */
+  const PROSE_NOMINAL_MEASURE_CH = 80;
+
+  /** A prose entry per the Phase 2.1 rule: kind text, or kind unset with a
+   *  conversational role (legacy hosts that predate the kind field). */
+  function isProseEntry(e: TranscriptEntry): boolean {
+    return e.kind === 'text' || (!e.kind && (e.role === 'user' || e.role === 'assistant'));
+  }
+
+  function proseLineEstimate(content: string): number {
+    let n = 0;
+    for (const line of content.split('\n')) {
+      n += Math.max(1, Math.ceil(line.length / PROSE_NOMINAL_MEASURE_CH));
+    }
+    return n;
+  }
+
+  /** Can this row expand in place? Tool rows: raw input/output to reveal.
+   *  Prose rows: a clamp to release (brief clamps at 3 estimated lines,
+   *  other prose at 28). Drives the click/fold-all handlers and the
+   *  `expandable` class the click handler gates on. */
+  function rowExpandable(r: LogRow): boolean {
+    const e = r.entry;
+    if (e.rawInput || e.rawOutput) { return true; }
+    if (isProseEntry(e)) {
+      return proseLineEstimate(e.content) > (r.isBrief ? BRIEF_CLAMP_LINES : PROSE_CLAMP_LINES);
+    }
+    return false;
+  }
+
   /** `content` already carries the transcript renderer's "> **Name** summary"
    *  / "> **Tool result** (id): summary" convention (transcriptRenderer.ts) —
    *  the row's own glyph + bold toolName already say WHAT this is, so strip
@@ -1253,7 +1344,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  row is a single line, ellipsis-truncated by CSS. */
   function logRowLabel(e: TranscriptEntry): string {
     const oneLine = e.content.replace(/\r?\n+/g, ' ').trim();
-    return oneLine.replace(/^>\s*\*\*[^*]+\*\*\s*/, '').replace(/^>\s*/, '');
+    let label = oneLine.replace(/^>\s*\*\*[^*]+\*\*\s*/, '').replace(/^>\s*/, '');
+    // A CORRELATED tool_result names its tool (bold, like tool_use rows) —
+    // the leading "(toolu_…):" id parenthetical is then pure noise, so strip
+    // it from the display label only (the raw-JSON escape hatch keeps the
+    // full record). An uncorrelated result keeps today's rendering intact.
+    if (e.kind === 'tool_result' && e.toolName) {
+      label = label.replace(/^\(toolu_[^)]*\)\s*:?\s*/, '');
+    }
+    return label;
   }
 
   /** Phase 4 native escape hatches (DESIGN-DETAIL-PANE-V2.md): small action
@@ -1292,24 +1391,44 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
     const timeLabel = (!isNaN(t) && !isNaN(baseTs)) ? fmtOffset(t - baseTs) : '';
     const glyph = logGlyph(e, r.isResult);
-    const hasExpand = !!(e.rawInput || e.rawOutput);
+    const prose = isProseEntry(e);
+    const hasExpand = rowExpandable(r);
     const expanded = hasExpand && expandedRows.has(r.idx);
-    const toolBit = e.toolName ? '<b>' + escapeHtml(e.toolName) + '</b> ' : '';
-    const label = highlightSearch(logRowLabel(e), logSearch);
     const classes = ['wf-log-row'];
+    if (prose) { classes.push('prose'); }
     if (e.isError) { classes.push('err'); }
     if (r.isBrief) { classes.push('brief'); }
     if (r.isResult) { classes.push('result'); }
     if (expanded) { classes.push('expanded'); }
+    if (hasExpand) { classes.push('expandable'); }
+    const tags = (r.isBrief ? '<span class="wf-log-tag">BRIEF</span> ' : '')
+      + (r.isResult ? '<span class="wf-log-tag">RESULT</span> ' : '');
+    let body: string;
+    if (prose) {
+      // Flowing block: full text, newlines preserved (pre-wrap), UI font,
+      // Phase 0 reading measure — see the .wf-log-prose CSS. A clamped body
+      // (estimate over the limit, not expanded) gets the line-clamp class and
+      // a "show all" affordance; the click handler treats the whole row as
+      // the toggle, so the span is decorative (aria-expanded rides the row).
+      const clampedNow = hasExpand && !expanded;
+      body = '<div class="wf-log-prosewrap">'
+        + '<div class="wf-log-prose' + (clampedNow ? (r.isBrief ? ' clamp-brief' : ' clamp-prose') : '') + '">'
+        + tags + highlightSearch(e.content, logSearch) + '</div>'
+        + (hasExpand ? '<span class="wf-log-showall" aria-hidden="true">' + (expanded ? 'show less ▴' : 'show all ▾') + '</span>' : '')
+        + '</div>';
+    } else {
+      const toolBit = e.toolName ? '<b>' + escapeHtml(e.toolName) + '</b> ' : '';
+      const label = highlightSearch(logRowLabel(e), logSearch);
+      body = '<span class="wf-log-body">' + tags + toolBit + label + '</span>';
+    }
     let html = '<div class="' + classes.join(' ') + '" data-idx="' + r.idx + '"'
       + ' role="button" tabindex="0" aria-expanded="' + (hasExpand ? String(expanded) : 'false') + '">'
       + '<span class="wf-log-t">' + escapeHtml(timeLabel) + '</span>'
       + '<span class="wf-log-glyph ' + glyph.cls + '">' + glyph.glyph + '</span>'
-      + '<span class="wf-log-body">'
-      + (r.isBrief ? '<span class="wf-log-tag">BRIEF</span> ' : '')
-      + (r.isResult ? '<span class="wf-log-tag">RESULT</span> ' : '')
-      + toolBit + label + '</span></div>';
-    if (expanded) { html += renderExpandedBlock(e, r.idx); }
+      + body + '</div>';
+    // The expand-below block is for raw tool payloads only — an expanded
+    // prose row simply un-clamps in place (its content is already the body).
+    if (expanded && (e.rawInput || e.rawOutput)) { html += renderExpandedBlock(e, r.idx); }
     return html;
   }
 
@@ -1603,6 +1722,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (facetKind) {
       const k = facetKind.dataset.kind as keyof typeof kindFilters;
       kindFilters[k] = !kindFilters[k];
+      saveState(); // the enabled-kind set persists (Phase 2.1, global)
       render();
       return;
     }
@@ -1612,7 +1732,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
         if (expandedRows.size > 0) {
           expandedRows.clear();
         } else {
-          for (const r of buildLogRows(agent)) { if (r.entry.rawInput || r.entry.rawOutput) { expandedRows.add(r.idx); } }
+          // Everything expandable: raw tool payloads AND clamped prose/brief.
+          for (const r of buildLogRows(agent)) { if (rowExpandable(r)) { expandedRows.add(r.idx); } }
         }
       }
       render();
@@ -1642,6 +1763,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     const logRow = target.closest<HTMLElement>('.wf-log-row');
     if (logRow) {
+      // Only expandable rows toggle (a short prose row has nothing to
+      // reveal, and the re-render would pointlessly destroy a text
+      // selection); a click that ENDS a text selection is a copy gesture,
+      // not a toggle — prose rows exist to be read and copied from.
+      if (!logRow.classList.contains('expandable')) { return; }
+      const sel = typeof window.getSelection === 'function' ? window.getSelection() : null;
+      if (sel && sel.toString().length > 0) { return; }
       const idx = Number(logRow.dataset.idx);
       if (!Number.isNaN(idx)) {
         if (expandedRows.has(idx)) { expandedRows.delete(idx); } else { expandedRows.add(idx); }

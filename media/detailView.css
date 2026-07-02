@@ -748,7 +748,11 @@ body {
 .wf-rstrip-mismatch-flag { color: var(--sm-salmon-red); font-weight: 600; white-space: nowrap; }
 .wf-rstrip-mismatch-why { color: var(--vscode-descriptionForeground); }
 
-/* ── 4. Agent strip ── */
+/* ── 4. Agent strip ──
+ * Flat sources: one wrapping pill row. A phased workflow (Phase 2.1) stacks
+ * one line per phase — a header (title + done/total + failed) over that
+ * phase's own wrapping pill row — replacing the old single-row interleave of
+ * titles and pills (.wf-agentstrip-phase, removed with its generator). */
 .wf-agentstrip {
   display: flex;
   align-items: center;
@@ -757,15 +761,25 @@ body {
   padding: 6px 14px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
 }
-.wf-agentstrip-phase {
+.wf-agentstrip.phased {
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+.wf-agentstrip-phaserow { display: flex; flex-direction: column; gap: 4px; }
+/* Mirrors the classic nav's .wf-nav-phase register (same job, new surface). */
+.wf-agentstrip-phasehead {
+  display: flex;
+  justify-content: space-between;
   font-size: 9px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.4px;
   color: var(--vscode-descriptionForeground);
-  margin: 0 2px 0 6px;
 }
-.wf-agentstrip-phase:first-child { margin-left: 0; }
+.wf-agentstrip-count { opacity: 0.7; }
+.wf-agentstrip-pills { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .wf-agent-pill {
   display: inline-flex;
   align-items: center;
@@ -852,6 +866,9 @@ body {
 }
 .wf-log-row:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
 .wf-log-row:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: -1px; }
+/* Only an expandable row is a real click target; a short prose row (or a
+ * tool row with nothing to reveal) reads as content, not control. */
+.wf-log-row:not(.expandable) { cursor: default; }
 .wf-log-row.brief { background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.06)); white-space: normal; }
 .wf-log-row.result { background: rgba(var(--sm-teal-bright-rgb), 0.08); }
 .wf-log-row.err .wf-log-body { color: var(--sm-salmon-red); }
@@ -864,7 +881,53 @@ body {
 .wf-log-glyph.k-res { color: var(--sm-teal-bright); }
 .wf-log-glyph.k-task { color: var(--sm-blizzard-blue); }
 .wf-log-body { overflow: hidden; text-overflow: ellipsis; color: var(--vscode-foreground); }
-.wf-log-row.brief .wf-log-body { white-space: normal; overflow-wrap: anywhere; }
+
+/* ── Prose rows (Phase 2.1) — the hybrid register ──
+ * Tool rows stay dense one-line monospace; text entries (the agents' actual
+ * reasoning — the PRIMARY content for design/research agents) become flowing
+ * blocks: UI font, comfortable line-height, pre-wrap, full text, at the same
+ * reading measure Phase 0 gave the classic reader. The gutter (time + glyph)
+ * stays, so the log spine remains scannable. */
+.wf-log-row.prose {
+  white-space: normal;
+  align-items: flex-start;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+.wf-log-prosewrap { flex: 1; min-width: 0; max-width: clamp(60ch, 92%, 130ch); }
+.wf-log-prose {
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--vscode-foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Clamp = the widely-supported line-clamp box. Applied only when the
+ * renderer's line ESTIMATE exceeds the limit (see PROSE_NOMINAL_MEASURE_CH
+ * in detailView.ts), so a clamped body always carries its "show all"
+ * affordance — CSS-only clamping could otherwise hide content with no way
+ * to reveal it. */
+.wf-log-prose.clamp-prose,
+.wf-log-prose.clamp-brief {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.wf-log-prose.clamp-prose { -webkit-line-clamp: 28; }
+.wf-log-prose.clamp-brief { -webkit-line-clamp: 3; }
+.wf-log-showall {
+  display: inline-block;
+  margin-top: 2px;
+  font-family: var(--vscode-font-family);
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 3px;
+  padding: 0 6px;
+  user-select: none;
+}
+.wf-log-row:hover .wf-log-showall { color: var(--vscode-foreground); }
 .wf-log-tag {
   font-size: 8.5px;
   font-weight: 700;

@@ -912,19 +912,45 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(q('.wf-log')!.textContent).toContain('reply text here');
   });
 
-  it('kind filters hide/show rows', () => {
+  // Phase 2.1 (E): tool rows are opt-in — the default filter set is Text +
+  // Error + Result on, Tool OFF. This test asserted the old all-on default
+  // (tool rows visible on first open); it now asserts the inverse, plus that
+  // toggling Tool on works and persists in the webview state.
+  it('tool rows are hidden by default; toggling Tool on shows them and persists', async () => {
     sendRender(logModel());
-    sendTranscript(KEY1, [
+    const ENTRIES = [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: 'some prose here', kind: 'text' },
       { timestamp: '2026-06-10T10:00:02Z', role: 'assistant', content: '> **Bash** rm -rf build/', kind: 'tool_use', toolName: 'Bash' },
-    ]);
+    ];
+    sendTranscript(KEY1, ENTRIES);
+    // Default: prose is the primary read; tool chatter is hidden.
     expect(q('.wf-log')!.textContent).toContain('some prose here');
-    expect(q('.wf-log')!.textContent).toContain('Bash');
+    expect(q('.wf-log')!.textContent).not.toContain('Bash');
+    // The chip visibly reads as off on first open (existing off styling).
+    const toolChip = q('.wf-facet-kind[data-kind="tool"]')!;
+    expect(toolChip.classList.contains('off')).toBe(true);
+    expect(toolChip.getAttribute('aria-checked')).toBe('false');
 
+    // Toggle Tool on: the row appears and the choice is persisted.
+    toolChip.click();
+    expect(q('.wf-log')!.textContent).toContain('Bash');
+    expect((webviewState as { kindFilters?: { tool?: boolean } }).kindFilters!.tool).toBe(true);
+
+    // Text off still hides prose while the tool row stays (separate buckets).
     q('.wf-facet-kind[data-kind="text"]')!.click();
     expect(q('.wf-log')!.textContent).not.toContain('some prose here');
-    expect(q('.wf-log')!.textContent).toContain('Bash'); // the tool row is a different bucket
+    expect(q('.wf-log')!.textContent).toContain('Bash');
+
+    // Rebuild (fresh module + DOM, same persisted state, like a reopen): the
+    // enabled-kind set survives — global, not per-agent.
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    await import('./detailView.js');
+    sendRender(logModel());
+    sendTranscript(KEY1, ENTRIES);
+    expect(q('.wf-log')!.textContent).toContain('Bash');
+    expect(q('.wf-log')!.textContent).not.toContain('some prose here');
   });
 
   it('search filters rows and highlights matches', () => {
@@ -956,6 +982,8 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
         kind: 'tool_use', toolName: 'Edit', rawInput: '{"old_string":"a"}', rawOutput: 'Error: not unique',
       },
     ]);
+    // Phase 2.1 (E): tool rows are opt-in by default — enable them first.
+    q('.wf-facet-kind[data-kind="tool"]')!.click();
     const row = qa('.wf-log-row').find(r => r.textContent!.includes('Edit'))!;
     expect(row.getAttribute('aria-expanded')).toBe('false');
     expect(q('.wf-log-expand')).toBeNull();
@@ -1113,12 +1141,166 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(false);
     expect((webviewState as { resultStripCollapsed?: boolean | null }).resultStripCollapsed).toBe(false);
   });
+
+  // ── Prose rows (Phase 2.1) — hybrid register ─────────────────────────
+
+  it('a text entry renders as a flowing prose block (UI-font class), full text, gutter intact', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: 'para one\n\npara two of the reasoning', kind: 'text' },
+    ]);
+    const row = qa('.wf-log-row.prose').find(r => r.textContent!.includes('para one'))!;
+    expect(row).toBeTruthy();
+    // The body is the prose class (the CSS keys --vscode-font-family, 13px,
+    // 1.5 line-height, pre-wrap off it — jsdom has no layout, so the class
+    // IS the assertion), with newlines preserved, not collapsed to one line.
+    const body = row.querySelector('.wf-log-prose')!;
+    expect(body.textContent).toContain('para one\n\npara two of the reasoning');
+    // Gutter intact: relative time + kind glyph keep the log spine scannable.
+    expect(row.querySelector('.wf-log-t')).not.toBeNull();
+    expect(row.querySelector('.wf-log-glyph')).not.toBeNull();
+    // Short prose has nothing to expand: no clamp, no affordance, no toggle.
+    expect(row.classList.contains('expandable')).toBe(false);
+    expect(row.querySelector('.wf-log-showall')).toBeNull();
+  });
+
+  it('the brief row defaults to a ~3-line clamp and expands in place (aria-expanded)', () => {
+    sendRender(logModel());
+    const longBrief = Array.from({ length: 10 }, (_, i) => 'brief line ' + i).join('\n');
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: longBrief },
+      { timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: 'working on it', kind: 'text' },
+    ]);
+    const brief = q('.wf-log-row.brief')!;
+    expect(brief.classList.contains('expandable')).toBe(true);
+    expect(brief.getAttribute('aria-expanded')).toBe('false');
+    expect(brief.querySelector('.wf-log-prose')!.classList.contains('clamp-brief')).toBe(true);
+    expect(brief.querySelector('.wf-log-showall')!.textContent).toContain('show all');
+
+    brief.click();
+    const after = q('.wf-log-row.brief')!; // click re-renders; re-query
+    expect(after.getAttribute('aria-expanded')).toBe('true');
+    expect(after.querySelector('.wf-log-prose')!.classList.contains('clamp-brief')).toBe(false);
+    expect(after.querySelector('.wf-log-showall')!.textContent).toContain('show less');
+  });
+
+  it('long prose clamps with a "show all" expander; expanding releases the clamp', () => {
+    sendRender(logModel());
+    const long = Array.from({ length: 40 }, (_, i) => 'reasoning line ' + i).join('\n');
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: long, kind: 'text' },
+    ]);
+    const row = qa('.wf-log-row.prose').find(r => r.textContent!.includes('reasoning line 39'))!;
+    expect(row.classList.contains('expandable')).toBe(true);
+    expect(row.querySelector('.wf-log-prose')!.classList.contains('clamp-prose')).toBe(true);
+    expect(row.querySelector('.wf-log-showall')!.textContent).toContain('show all');
+
+    row.click();
+    const after = qa('.wf-log-row.prose').find(r => r.textContent!.includes('reasoning line 39'))!;
+    expect(after.getAttribute('aria-expanded')).toBe('true');
+    expect(after.querySelector('.wf-log-prose')!.classList.contains('clamp-prose')).toBe(false);
+  });
+
+  it('search highlights matches inside prose bodies', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: 'first line\nthe needle sits mid-paragraph\nlast line', kind: 'text' },
+    ]);
+    const input = q('.wf-facet-search-input') as HTMLInputElement;
+    input.value = 'needle';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const hl = q('.wf-log-row.prose .wf-log-prose .wf-hl');
+    expect(hl).not.toBeNull();
+    expect(hl!.textContent).toBe('needle');
+  });
+
+  it('a correlated tool_result row shows the tool name bold and drops the toolu_ id parenthetical', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:01Z', role: 'tool', content: '> **Tool result** (toolu_012nYa...): 878 src/detailPanel.ts', kind: 'tool_result', toolName: 'Grep' },
+      { timestamp: '2026-06-10T10:00:02Z', role: 'tool', content: '> **Tool result** (toolu_099xxB...): uncorrelated output', kind: 'tool_result' },
+    ]);
+    q('.wf-facet-kind[data-kind="tool"]')!.click(); // tool rows are opt-in (E)
+    const rows = qa('.wf-log-row');
+    const named = rows.find(r => r.textContent!.includes('878'))!;
+    expect(named.querySelector('.wf-log-body b')!.textContent).toBe('Grep');
+    expect(named.textContent).not.toContain('toolu_'); // display-only strip
+    // Correlation miss → today's rendering, minus nothing: id kept, no bold.
+    const fallback = rows.find(r => r.textContent!.includes('uncorrelated'))!;
+    expect(fallback.textContent).toContain('(toolu_099xxB...)');
+    expect(fallback.querySelector('.wf-log-body b')).toBeNull();
+  });
+
+  // ── Phased agent strip (Phase 2.1, F) ────────────────────────────────
+
+  it('workflow phases each get their own line: header with done/total + failed, pills beneath', () => {
+    const m = logModel() as any;
+    m.groups = [
+      {
+        key: 'wf_run1', title: 'Phase 1 · Research',
+        agents: [
+          agent({ agentId: 'r1', label: 'research-a', status: 'done' }),
+          agent({ agentId: 'r2', label: 'research-b', status: 'failed' }),
+        ],
+      },
+      {
+        key: 'wf_run1', title: 'Phase 2 · Draft',
+        agents: [agent({ agentId: 'd1', label: 'draft-a', status: 'running' })],
+      },
+    ];
+    sendRender(m);
+    expect(q('.wf-agentstrip')!.classList.contains('phased')).toBe(true);
+    const heads = qa('.wf-agentstrip-phasehead');
+    expect(heads).toHaveLength(2);
+    expect(heads[0].textContent).toContain('Phase 1 · Research');
+    expect(heads[0].textContent).toContain('1/2');
+    expect(heads[0].querySelector('.wf-nav-count-failed')!.textContent).toBe('1 failed');
+    expect(heads[1].textContent).toContain('Phase 2 · Draft');
+    expect(heads[1].textContent).toContain('0/1');
+    // Pills live in their phase's own row, not interleaved with the headers.
+    const pillRows = qa('.wf-agentstrip-pills');
+    expect(pillRows).toHaveLength(2);
+    expect(pillRows[0].querySelectorAll('.wf-agent-pill')).toHaveLength(2);
+    expect(pillRows[1].querySelectorAll('.wf-agent-pill')).toHaveLength(1);
+  });
+
+  it('a flat source (no phase titles) keeps the single pill row', () => {
+    sendRender({
+      source: 'subagents', containerId: 'sess1', sessionId: 'sess1', title: 'Subagents', metrics: '',
+      groups: [{ key: '', title: null, agents: [agent({ agentId: 's1', label: 'explore' }), agent({ agentId: 's2', label: 'review' })] }],
+    });
+    expect(q('.wf-agentstrip')!.classList.contains('phased')).toBe(false);
+    expect(qa('.wf-agentstrip-phasehead')).toHaveLength(0);
+    expect(qa('.wf-agent-pill')).toHaveLength(2);
+  });
+
+  it('ArrowRight walks pills across phase lines in document order', () => {
+    const m = logModel() as any;
+    m.groups = [
+      { key: 'wf_run1', title: 'Phase 1', agents: [agent({ agentId: 'p1', label: 'one' })] },
+      { key: 'wf_run1', title: 'Phase 2', agents: [agent({ agentId: 'p2', label: 'two' })] },
+    ];
+    sendRender(m);
+    const first = qa('.wf-agent-pill').find(p => p.dataset.agent === 'p1')!;
+    first.focus();
+    first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    // Selection AND focus crossed the phase-line boundary.
+    expect(q('.wf-agent-pill.active')!.dataset.agent).toBe('p2');
+    expect((document.activeElement as HTMLElement).dataset.agent).toBe('p2');
+  });
 });
 
 describe('detailView.ts — native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V2.md)', () => {
   beforeEach(async () => {
     postedMessages = [];
-    webviewState = undefined;
+    // Phase 2.1 (E) hid Tool rows by default; every test here expands a tool
+    // row, so seed the persisted filter set with Tool enabled (the same
+    // mechanism a user's own toggle persists through).
+    webviewState = { kindFilters: { tool: true } };
     document.body.innerHTML = '<div id="wf-root"></div>';
     vi.resetModules();
     (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;

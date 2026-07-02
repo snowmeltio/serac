@@ -598,8 +598,9 @@ describe('renderTranscript', async () => {
       expect(entries[0].kind).toBe('tool_result');
       expect(entries[0].rawOutput).toBe('build succeeded');
       expect(entries[0].isError).toBe(false);
-      // No cross-record correlation is performed here, so the tool name that
-      // produced this result is not recoverable from a lone record.
+      // A LONE tool_result has no preceding tool_use in the file, so the
+      // Phase 2.1 name correlation misses and toolName stays unset — the
+      // pre-2.1 shape (see the correlation describe below for the hit case).
       expect(entries[0].toolName).toBeUndefined();
     });
 
@@ -750,6 +751,82 @@ describe('renderTranscript', async () => {
       ]));
       expect(entries).toHaveLength(1);
       expect(entries[0].kind).toBeUndefined();
+    });
+  });
+
+  // Phase 2.1: tool_use id → name correlation. entryFromRecord's optional
+  // toolNameById map is fed by assistant records and read by tool_result
+  // records; parseTranscript threads a per-file map through in record order.
+  describe('Phase 2.1: tool_result name correlation (toolNameById)', async () => {
+    const toolUse = (id: string, name: string, input: Record<string, unknown> = {}) => ({
+      type: 'assistant',
+      timestamp: '2026-07-02T10:00:00Z',
+      message: { content: [{ type: 'tool_use', name, id, input }] },
+    });
+    const toolResult = (id: string, output: string) => ({
+      type: 'user',
+      timestamp: '2026-07-02T10:00:01Z',
+      message: { content: [{ type: 'tool_result', tool_use_id: id, content: output }] },
+    });
+
+    it('names a tool_result from the preceding assistant tool_use', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        toolUse('toolu_grep1', 'Grep', { pattern: 'foo' }),
+        toolResult('toolu_grep1', '878 src/detailPanel.ts'),
+      ]));
+      expect(entries).toHaveLength(2);
+      expect(entries[1].kind).toBe('tool_result');
+      expect(entries[1].toolName).toBe('Grep');
+    });
+
+    it('leaves content byte-identical — only toolName is new', async () => {
+      // The markdown exporter and the classic chat renderer both consume
+      // `content`; correlation must never touch it.
+      const entries = await parseTranscript(writeJsonl([
+        toolUse('toolu_b1', 'Bash', { command: 'ls' }),
+        toolResult('toolu_b1', 'file-list output'),
+      ]));
+      expect(entries[1].content).toBe('> **Tool result** (toolu_b1...): file-list output');
+    });
+
+    it('names results of PARALLEL tool_use blocks (every block registered, not just the first)', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'assistant',
+          timestamp: '',
+          message: {
+            content: [
+              { type: 'tool_use', name: 'Read', id: 'toolu_p1', input: { file_path: '/a.ts' } },
+              { type: 'tool_use', name: 'Grep', id: 'toolu_p2', input: { pattern: 'x' } },
+            ],
+          },
+        },
+        toolResult('toolu_p1', 'contents of a.ts'),
+        toolResult('toolu_p2', '3 matches'),
+      ]));
+      expect(entries[1].toolName).toBe('Read');
+      expect(entries[2].toolName).toBe('Grep');
+    });
+
+    it('a result whose tool_use id is unknown stays unnamed (correlation miss)', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        toolUse('toolu_known', 'Bash'),
+        toolResult('toolu_UNKNOWN', 'orphan output'),
+      ]));
+      expect(entries[1].toolName).toBeUndefined();
+    });
+
+    it('entryFromRecord without a map keeps the pre-2.1 shape (param is optional)', async () => {
+      const { entryFromRecord } = await import('./transcriptRenderer.js');
+      const { validateRecord } = await import('./jsonlValidator.js');
+      const rec = validateRecord({
+        type: 'user',
+        timestamp: '',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'ok' }] },
+      })!;
+      const entry = entryFromRecord(rec)!;
+      expect(entry.kind).toBe('tool_result');
+      expect(entry.toolName).toBeUndefined();
     });
   });
 });
