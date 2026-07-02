@@ -91,12 +91,12 @@ body {
   border-radius: 5px;
   cursor: pointer;
   color: var(--vscode-foreground);
-  border: 1px solid rgba(128, 128, 128, 0.32);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.32));
   background: var(--vscode-editor-background);
   white-space: nowrap;
 }
 .wf-switch-chip:hover { background: var(--vscode-list-hoverBackground); }
-.wf-switch-chip:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
+.wf-switch-chip:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 .wf-switch-chip.active { cursor: default; font-weight: 600; }
 /* Selected tint keyed to status — same palette as the status dots. */
 .wf-switch-chip.active.status-done { border-color: var(--sm-teal-bright); background: rgba(var(--sm-teal-bright-rgb), 0.16); }
@@ -129,18 +129,18 @@ body {
   font-size: 10px;
   cursor: pointer;
   color: var(--vscode-descriptionForeground);
-  border: 1px solid rgba(128, 128, 128, 0.3);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
   padding: 3px 9px;
   border-radius: 4px;
   white-space: nowrap;
 }
 .wf-openconv:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
-.wf-openconv:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
+.wf-openconv:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 
 /* ── Two-pane ── */
 .wf-2pane { display: flex; align-items: stretch; flex: 1; min-height: 0; }
 .wf-nav {
-  width: 250px;
+  width: clamp(200px, 20%, 280px);
   flex-shrink: 0;
   border-right: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   overflow-x: hidden;
@@ -194,7 +194,7 @@ body {
   letter-spacing: 0.4px;
 }
 .wf-nav-toggle:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
-.wf-nav-toggle:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
+.wf-nav-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 /* The toggle glyph is CSS-driven so flipping #wf-root.nav-collapsed swaps it
  * without the JS having to rewrite the button (which would force a re-render). */
 .wf-nav-toggle-icon::before { content: '\2039'; } /* ‹ */
@@ -305,12 +305,12 @@ body {
 .wf-reader-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .wf-reader-meta { font-size: 10px; color: var(--vscode-descriptionForeground); margin-top: 4px; }
 /* A reading measure (max-width) keeps prose comfortable in a wide editor column;
- * it's a no-op in a narrow side panel where the column is already < the cap.
- * Collapsing the nav is an explicit ask for width — drop the measure and let
- * the transcript use essentially the full pane. */
+ * it's a no-op in a narrow side panel where the column is already below the cap.
+ * clamp(60ch, 92%, 130ch) scales with the pane instead of pinning a fixed 80ch,
+ * so a wide, nav-collapsed reader still gets a generous measure without the
+ * hard truncation the old fixed cap produced. */
 .wf-reader-body { padding: 16px 20px; }
-.wf-reader-body > * { max-width: 80ch; }
-#wf-root.nav-collapsed .wf-reader-body > * { max-width: none; }
+.wf-reader-body > * { max-width: clamp(60ch, 92%, 130ch); }
 
 /* ── Inception brief (pinned at top of the reader) ── */
 .wf-brief {
@@ -333,7 +333,7 @@ body {
   user-select: none;
 }
 .wf-brief-head:hover { color: var(--vscode-foreground); }
-.wf-brief-head:focus-visible { outline: 1px solid var(--sm-blizzard-blue); outline-offset: 1px; }
+.wf-brief-head:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 .wf-brief-caret { font-size: 9px; width: 9px; }
 .wf-brief.collapsed { background: none; }
 .wf-brief-body {
@@ -549,3 +549,20 @@ body {
 .wf-composer-status.ok { color: var(--sm-teal-bright); }
 .wf-composer-status.error { color: var(--sm-salmon-red); }
 .wf-composer-count { font-size: 10.5px; color: var(--vscode-descriptionForeground); opacity: 0.8; }
+
+/* ============ LIGHT THEME ============
+ * The Snowmelt brand accents (--sm-blizzard-blue, --sm-team-violet,
+ * --sm-teal-bright, --sm-salmon-red) are tuned for a dark editor background.
+ * Used as TEXT on white they fail WCAG 1.4.3 (need >=4.5:1): blue 3.38:1,
+ * violet 2.60:1, teal 1.83:1, salmon 3.04:1. Darker variants below restore
+ * legibility; ratios computed against #ffffff via the WCAG relative-
+ * luminance formula (same method as panel.css's body.vscode-light .team-badge
+ * override). Non-text uses of these vars (dots, borders, tinted backgrounds)
+ * are unaffected: they only need 3:1 (non-text) or are decorative. */
+body.vscode-light .wf-turn.prompt .wf-who { color: #3a5fd9; } /* 5.50:1 */
+body.vscode-light .wf-teammate-badge { color: #895ed6; } /* 4.53:1 */
+body.vscode-light .wf-composer-status.ok { color: #0e7a80; } /* 5.10:1 */
+body.vscode-light .wf-composer-status.error { color: #c93634; } /* 5.17:1 */
+body.vscode-light .wf-nav-count-failed { color: #c93634; } /* 5.17:1, same salmon override as composer-status.error */
+body.vscode-light #wf-root.nav-collapsed .wf-nav-toggle,
+body.vscode-light #wf-root.nav-collapsed .wf-nav-toggle:hover { color: #3a5fd9; } /* 5.50:1, same blue override as wf-who */
