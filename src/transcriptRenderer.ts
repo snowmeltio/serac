@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { validateRecord, getContentBlocks } from './jsonlValidator.js';
+import { validateRecord, getContentBlocks, getToolUseBlocks, getToolResultBlocks } from './jsonlValidator.js';
 import type { JsonlRecord, JsonlContentBlock } from './types.js';
 
 import type { TranscriptEntry } from './detailShared.js';
@@ -72,10 +72,28 @@ export async function parseTranscript(filePath: string): Promise<TranscriptEntry
   return entries;
 }
 
+/** Sanity cap for the new Phase-1 raw fields (rawInput/rawOutput): 64KB,
+ *  measured in UTF-16 code units (not a byte-exact limit). Guards against a
+ *  pathological single tool input/output blob bloating the transcript
+ *  payload sent to the webview; ordinary tool calls are far below this. */
+const MAX_RAW_FIELD_CHARS = 65536;
+
+function capRawField(s: string): string {
+  return s.length > MAX_RAW_FIELD_CHARS ? s.slice(0, MAX_RAW_FIELD_CHARS) : s;
+}
+
 /** Map one validated JSONL record to a renderable entry (or null for record
  *  types the transcript doesn't show). Shared by the whole-file parser above
  *  and the incremental live-viewer path (detailPanel + JsonlTailer), so the
- *  two can never drift on what a turn looks like. */
+ *  two can never drift on what a turn looks like.
+ *
+ *  Populates the Phase-1 log-view fields (kind/toolName/rawInput/rawOutput/
+ *  isError, see detailShared.ts) alongside the untouched `content`/`role`
+ *  the v1 chat renderer and markdown exporter depend on. This stays a
+ *  one-entry-per-record function exactly as before; a record carrying more
+ *  than one tool_use/tool_result block (rare, parallel tool calls) has its
+ *  raw fields populated from the first such block only, documented on the
+ *  type itself. */
 export function entryFromRecord(record: JsonlRecord): TranscriptEntry | null {
   const timestamp = (record.timestamp as string) || '';
 
@@ -86,12 +104,39 @@ export function entryFromRecord(record: JsonlRecord): TranscriptEntry | null {
       // tool_result blocks ride back to the assistant inside a user-role
       // record. Labelling those "prompt" misreads the conversation — they are
       // responses TO the assistant, so they get their own role.
-      return { timestamp, role: hasPromptText ? 'user' : 'tool', content };
+      const entry: TranscriptEntry = { timestamp, role: hasPromptText ? 'user' : 'tool', content };
+      if (hasPromptText) {
+        entry.kind = 'text';
+      } else {
+        entry.kind = 'tool_result';
+        const resultBlocks = getToolResultBlocks(record);
+        const block = resultBlocks[0];
+        if (block) {
+          const raw = rawToolResultText(block);
+          if (raw) { entry.rawOutput = capRawField(raw); }
+          if (typeof block.is_error === 'boolean') { entry.isError = block.is_error; }
+        }
+      }
+      return entry;
     }
   } else if (record.type === 'assistant') {
     const content = extractAssistantContent(record);
     if (content) {
-      return { timestamp, role: 'assistant', content };
+      const entry: TranscriptEntry = { timestamp, role: 'assistant', content };
+      const toolBlocks = getToolUseBlocks(record);
+      const primary = toolBlocks[0];
+      if (primary) {
+        const name = primary.name || '';
+        entry.kind = (name === 'Task' || name === 'Agent') ? 'task' : 'tool_use';
+        entry.toolName = name;
+        if (primary.input !== undefined) {
+          const raw = safeStringify(primary.input);
+          if (raw) { entry.rawInput = capRawField(raw); }
+        }
+      } else if (getTextBlocksPresent(record)) {
+        entry.kind = 'text';
+      }
+      return entry;
     }
   } else if (record.type === 'system' && record.subtype === 'turn_duration') {
     const duration = record.duration as number | undefined;
@@ -100,6 +145,37 @@ export function entryFromRecord(record: JsonlRecord): TranscriptEntry | null {
     }
   }
   return null;
+}
+
+/** Untruncated raw text of one tool_result block, preserving original
+ *  formatting (unlike the collapsed single-line summary in `content`).
+ *  Mirrors the string/array-of-text-blocks shapes handled in
+ *  extractUserContent below. */
+function rawToolResultText(block: JsonlContentBlock): string {
+  const resultContent = block.content;
+  if (typeof resultContent === 'string') {
+    return resultContent;
+  }
+  if (Array.isArray(resultContent)) {
+    for (const rb of resultContent as JsonlContentBlock[]) {
+      if (rb.type === 'text' && rb.text) {
+        return rb.text;
+      }
+    }
+  }
+  return '';
+}
+
+function getTextBlocksPresent(record: JsonlRecord): boolean {
+  return getContentBlocks(record).some(b => b.type === 'text' && !!b.text);
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) || '';
+  } catch {
+    return '';
+  }
 }
 
 function extractUserContent(record: JsonlRecord): { content: string; hasPromptText: boolean } {

@@ -562,4 +562,194 @@ describe('renderTranscript', async () => {
       expect(md).toContain('Find all tests');
     });
   });
+
+  // Phase 1 of the detail-pane v2 rework (DESIGN-DETAIL-PANE-V2.md): additive
+  // structured fields on TranscriptEntry, invisible to the chat renderer above
+  // (its `content`/`role` assertions are all unmodified). These exercise
+  // entryFromRecord() directly via parseTranscript() so the new fields are
+  // easy to assert on without scraping markdown.
+  describe('Phase 1: structured fields (kind/toolName/rawInput/rawOutput/isError)', async () => {
+    it('tags a genuine user prompt as kind text', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'user',
+          timestamp: '2026-07-01T10:00:00Z',
+          message: { content: [{ type: 'text', text: 'Please refactor this.' }] },
+        },
+      ]));
+      expect(entries).toHaveLength(1);
+      expect(entries[0].kind).toBe('text');
+      expect(entries[0].toolName).toBeUndefined();
+    });
+
+    it('tags a tool_result-only user record as kind tool_result and populates rawOutput/isError', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'user',
+          timestamp: '2026-07-01T10:00:01Z',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_ok1', content: 'build succeeded', is_error: false },
+            ],
+          },
+        },
+      ]));
+      expect(entries).toHaveLength(1);
+      expect(entries[0].kind).toBe('tool_result');
+      expect(entries[0].rawOutput).toBe('build succeeded');
+      expect(entries[0].isError).toBe(false);
+      // No cross-record correlation is performed here, so the tool name that
+      // produced this result is not recoverable from a lone record.
+      expect(entries[0].toolName).toBeUndefined();
+    });
+
+    it('sets isError true for a failing tool_result', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'user',
+          timestamp: '',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_fail1', content: 'Exit code 1\nboom', is_error: true },
+            ],
+          },
+        },
+      ]));
+      expect(entries[0].isError).toBe(true);
+      expect(entries[0].rawOutput).toBe('Exit code 1\nboom');
+    });
+
+    it('leaves isError unset when the tool_result carries no is_error field', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'user',
+          timestamp: '',
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'toolu_noflag', content: 'ok' }],
+          },
+        },
+      ]));
+      expect(entries[0].isError).toBeUndefined();
+    });
+
+    it('extracts rawOutput from an array-shaped tool_result content, untruncated (unlike the 200-char content summary)', async () => {
+      const longText = 'y'.repeat(500);
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'user',
+          timestamp: '',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_long1',
+                content: [{ type: 'text', text: longText }],
+              },
+            ],
+          },
+        },
+      ]));
+      expect(entries[0].rawOutput).toBe(longText);
+      expect(entries[0].rawOutput!.length).toBe(500);
+      // The display `content` field is still truncated to 200 chars, unchanged.
+      expect(entries[0].content).toContain('...');
+    });
+
+    it('tags an assistant tool_use record as kind tool_use with toolName and rawInput', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'assistant',
+          timestamp: '',
+          message: {
+            content: [
+              { type: 'tool_use', name: 'Bash', id: 'toolu_bash1', input: { command: 'npm test' } },
+            ],
+          },
+        },
+      ]));
+      expect(entries[0].kind).toBe('tool_use');
+      expect(entries[0].toolName).toBe('Bash');
+      expect(entries[0].rawInput).toBe(JSON.stringify({ command: 'npm test' }));
+    });
+
+    it('tags a Task/Agent tool_use record as kind task', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'assistant',
+          timestamp: '',
+          message: {
+            content: [
+              { type: 'tool_use', name: 'Task', id: 'toolu_task1', input: { description: 'Audit code' } },
+            ],
+          },
+        },
+      ]));
+      expect(entries[0].kind).toBe('task');
+      expect(entries[0].toolName).toBe('Task');
+    });
+
+    it('tags an assistant text-only record as kind text with no toolName', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'assistant',
+          timestamp: '',
+          message: { content: [{ type: 'text', text: 'Done.' }] },
+        },
+      ]));
+      expect(entries[0].kind).toBe('text');
+      expect(entries[0].toolName).toBeUndefined();
+      expect(entries[0].rawInput).toBeUndefined();
+    });
+
+    it('leaves rawInput unset for a tool_use with no input', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'assistant',
+          timestamp: '',
+          message: { content: [{ type: 'tool_use', name: 'Read', id: 'toolu_r1' }] },
+        },
+      ]));
+      expect(entries[0].kind).toBe('tool_use');
+      expect(entries[0].toolName).toBe('Read');
+      expect(entries[0].rawInput).toBeUndefined();
+    });
+
+    it('caps rawInput at 64KB (65536 chars)', async () => {
+      const hugeCommand = 'z'.repeat(70000);
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'assistant',
+          timestamp: '',
+          message: {
+            content: [
+              { type: 'tool_use', name: 'Bash', id: 'toolu_huge1', input: { command: hugeCommand } },
+            ],
+          },
+        },
+      ]));
+      expect(entries[0].rawInput!.length).toBe(65536);
+    });
+
+    it('caps rawOutput at 64KB (65536 chars)', async () => {
+      const hugeOutput = 'w'.repeat(70000);
+      const entries = await parseTranscript(writeJsonl([
+        {
+          type: 'user',
+          timestamp: '',
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'toolu_huge2', content: hugeOutput }],
+          },
+        },
+      ]));
+      expect(entries[0].rawOutput!.length).toBe(65536);
+    });
+
+    it('leaves kind unset for a turn_duration system record', async () => {
+      const entries = await parseTranscript(writeJsonl([
+        { type: 'system', subtype: 'turn_duration', timestamp: '', duration: 1200 },
+      ]));
+      expect(entries).toHaveLength(1);
+      expect(entries[0].kind).toBeUndefined();
+    });
+  });
 });

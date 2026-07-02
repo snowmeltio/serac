@@ -91,11 +91,43 @@ export interface DetailModel {
   team?: string;
 }
 
-/** One rendered transcript record (host-parsed JSONL → webview reader). */
+/** One rendered transcript record (host-parsed JSONL → webview reader).
+ *
+ *  `content` is the v1 chat renderer's truncated, human-readable display
+ *  string, populated exactly as before and consumed by both the chat
+ *  webview and the markdown exporter. The fields below are additive
+ *  (Phase 1 of the detail-pane v2 rework, DESIGN-DETAIL-PANE-V2.md): they
+ *  carry the same record's data in untruncated, structured form for the
+ *  future log view, and are optional so today's renderer keeps working
+ *  untouched. */
 export interface TranscriptEntry {
   timestamp: string;
   role: string;
   content: string;
+  /** Event kind for the future log view's kind glyph/filter. Left unset for
+   *  record shapes that don't map cleanly onto one of these (e.g. the
+   *  `turn_duration` system marker); `content`/`role` still describe them. */
+  kind?: 'text' | 'tool_use' | 'tool_result' | 'task' | 'result';
+  /** Tool name for a `tool_use` (or `task`, i.e. Task/Agent) entry. NOT
+   *  populated for `tool_result` entries: a lone JSONL record only carries
+   *  `tool_use_id`, not the originating tool's name; recovering that needs
+   *  cross-record correlation, which this per-record function doesn't do
+   *  (see evidenceExtractor.ts's Bash pairing for that kind of matching). */
+  toolName?: string;
+  /** Tool_use input, JSON-stringified, untruncated (the future log view
+   *  expands it in place). Capped at 64KB (65536 UTF-16 code units) per
+   *  entry as a sanity bound against a pathological single input blob,
+   *  not a byte-exact limit. When a record carries more than one tool_use
+   *  block (rare, parallel tool calls), this reflects the first block only;
+   *  `content` above still summarises all of them. */
+  rawInput?: string;
+  /** Tool_result content, untruncated (same 64KB sanity cap as rawInput,
+   *  same first-block-only caveat for a record with more than one
+   *  tool_result block). Unlike `content`'s collapsed single-line summary,
+   *  this preserves original formatting/newlines for in-place expansion. */
+  rawOutput?: string;
+  /** True when the paired tool_result block carries `is_error: true`. */
+  isError?: boolean;
 }
 
 /** Derive a display label like "Opus 4.8" / "Sonnet 5" from a model id or
