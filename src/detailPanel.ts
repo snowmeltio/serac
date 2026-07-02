@@ -4,12 +4,14 @@ import { randomBytes } from 'crypto';
 import { fmtTokens, fmtDuration, transcriptKey } from './detailShared.js';
 import type {
   DetailAgentView, DetailGroupView, DetailModel, DetailViewChoice, DetailSource,
-  SessionSnapshot, TeamSnapshot, WorkflowSnapshot,
+  SessionSnapshot, TeamSnapshot, WorkflowSnapshot, JsonlRecord,
 } from './types.js';
 import { entryFromRecord } from './transcriptRenderer.js';
 import type { TranscriptEntry } from './detailShared.js';
 import { JsonlTailer } from './jsonlTailer.js';
 import { isValidSessionId, parseTeammateMessageCommand } from './validation.js';
+import { extractEvidence, type Evidence } from './evidenceExtractor.js';
+import { detectMismatches, type Mismatch } from './mismatch.js';
 
 /**
  * The detail view: a single editor-area webview (ViewColumn.Beside) laid out as
@@ -87,12 +89,22 @@ export class DetailPanel {
    *  `inboxSig` fingerprints the teammate inbox suffix, which is NOT
    *  append-only (drained on delivery) and therefore ships separately from
    *  the JSONL entries on every post. Selecting another agent replaces the
-   *  slot; truncation or a file swap resets it. */
+   *  slot; truncation or a file swap resets it.
+   *
+   *  `records` (Phase 3, DESIGN-DETAIL-PANE-V2.md) mirrors `entries` one for
+   *  one — the same raw JsonlRecord stream entryFromRecord already consumes
+   *  per record, kept around unparsed so extractEvidence can run its own
+   *  cross-record correlation (Bash tool_use ↔ tool_result pairing) over the
+   *  whole transcript. It grows and resets in lockstep with `entries` (same
+   *  reset-on-truncation, same absence of any extra cap): entryFromRecord is
+   *  already called once per record read here, so this is one more array
+   *  push alongside an existing loop, not a second file read. */
   private liveTranscript: {
     key: string;
     filePath: string;
     tailer: JsonlTailer;
     entries: TranscriptEntry[];
+    records: JsonlRecord[];
     inboxSig: string;
   } | null = null;
   /** Transcript requests run strictly one at a time — interleaved tailer
@@ -750,24 +762,30 @@ export class DetailPanel {
           initialOffset = stat.size - DetailPanel.TRANSCRIPT_WINDOW_BYTES;
         }
       } catch { /* missing file reads as empty below, like the old parser */ }
-      slot = { key, filePath: file, tailer: new JsonlTailer(file, initialOffset), entries: [], inboxSig: '' };
+      slot = { key, filePath: file, tailer: new JsonlTailer(file, initialOffset), entries: [], records: [], inboxSig: '' };
       reset = true;
     }
 
     // Drain appended bytes. The tailer reads ≤16MB per call, so loop until the
     // offset stops advancing; truncation resets the slot's entries (the tailer
-    // has already restarted from byte 0 within the same call).
+    // has already restarted from byte 0 within the same call). `records`
+    // accumulates in lockstep with `entries` — same records, additionally
+    // kept raw for extractEvidence's cross-record correlation below.
     const appended: TranscriptEntry[] = [];
+    const appendedRecords: JsonlRecord[] = [];
     try {
       for (;;) {
         const before = slot.tailer.getOffset();
         const records = await slot.tailer.readNewRecords();
         if (slot.tailer.truncated) {
           slot.entries = [];
+          slot.records = [];
           appended.length = 0;
+          appendedRecords.length = 0;
           reset = true;
         }
         for (const r of records) {
+          appendedRecords.push(r);
           const entry = entryFromRecord(r);
           if (entry) { appended.push(entry); }
         }
@@ -779,6 +797,7 @@ export class DetailPanel {
       return;
     }
     slot.entries.push(...appended);
+    slot.records.push(...appendedRecords);
     if (this.panel !== panel) { return; } // disposed or replaced mid-read
 
     // Inbox read-side: messages sent to this teammate that it has not yet
@@ -813,12 +832,28 @@ export class DetailPanel {
     slot.inboxSig = inboxSig;
     this.liveTranscript = slot;
 
+    // Evidence + mismatches (Phase 3, DESIGN-DETAIL-PANE-V2.md): recomputed
+    // from the WHOLE accumulated record set on every post, not incrementally.
+    // Chosen deliberately over incremental Bash tool_use/tool_result pairing:
+    // a bash call and its result can straddle an append boundary (the
+    // tool_use arrives on one tick, the tool_result on the next), so a truly
+    // incremental extractor would need to carry half-paired state across
+    // calls — real complexity for a cost that stays small in practice
+    // (slot.records is bounded the same way slot.entries already is: no
+    // extra cap beyond the existing tail-window/truncation-reset discipline,
+    // and a refresh tick only re-extracts while the SELECTED agent is live,
+    // never for idle agents). The webview never computes this itself — see
+    // mismatch.ts's docstring on why that would defeat the anti-fabrication
+    // point.
+    const evidence: Evidence = extractEvidence(slot.records);
+    const mismatches: Mismatch[] = detectMismatches(evidence);
+
     if (wantFull || reset) {
       // Full snapshot: first load for a webview that holds nothing, or a
       // truncation/file-swap reset. Authoritative — may legitimately shrink.
-      void panel.webview.postMessage({ type: 'agentTranscript', key, entries: slot.entries, suffix });
+      void panel.webview.postMessage({ type: 'agentTranscript', key, entries: slot.entries, suffix, evidence, mismatches });
     } else if (appended.length > 0 || inboxChanged) {
-      void panel.webview.postMessage({ type: 'agentTranscriptAppend', key, entries: appended, suffix });
+      void panel.webview.postMessage({ type: 'agentTranscriptAppend', key, entries: appended, suffix, evidence, mismatches });
     }
     // else: nothing changed — post nothing; the webview keeps its cache.
   }

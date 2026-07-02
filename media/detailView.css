@@ -671,6 +671,83 @@ body {
 .wf-permrow-cmd { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
 .wf-permrow-extra { color: var(--vscode-descriptionForeground); font-size: 10px; margin-left: auto; }
 
+/* ── 3b. Result strip (Phase 3, mockup §2, DESIGN-DETAIL-PANE-V2.md) ──────
+ * The verification anchor for the SELECTED agent — host-computed brief/
+ * final/chips/mismatch, log mode only. Sits between the header/permission
+ * rows and the agent strip. */
+.wf-rstrip {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  background: var(--vscode-editor-background);
+}
+.wf-rstrip-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+.wf-rstrip-head:hover { color: var(--vscode-foreground); }
+.wf-rstrip-head:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+.wf-rstrip-caret { width: 8px; }
+.wf-rstrip:not(.collapsed) .wf-rstrip-head { margin-bottom: 6px; }
+.wf-rstrip-summary {
+  text-transform: none;
+  font-weight: 400;
+  letter-spacing: normal;
+  color: var(--vscode-descriptionForeground);
+}
+.wf-rstrip-brief { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
+.wf-rstrip-brief b { color: var(--vscode-foreground); font-weight: 500; }
+.wf-rstrip-final {
+  font-size: 12px;
+  color: var(--vscode-editor-foreground, var(--vscode-foreground));
+  border-left: 2px solid var(--sm-teal-bright);
+  padding: 2px 0 2px 10px;
+  margin-bottom: 9px;
+  white-space: pre-wrap;
+}
+.wf-rstrip-empty { font-size: 11px; color: var(--vscode-descriptionForeground); font-style: italic; }
+.wf-rstrip-chiprow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 10px; }
+.wf-rstrip-cat { color: var(--vscode-descriptionForeground); margin-right: 2px; }
+.wf-rstrip-cat:not(:first-child) { margin-left: 10px; }
+.wf-rstrip-chip {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  color: var(--vscode-foreground);
+}
+.wf-rstrip-chip.wf-rstrip-more { color: var(--vscode-descriptionForeground); border-style: dashed; }
+.wf-rstrip-add { color: var(--sm-teal-bright); }
+.wf-rstrip-del { color: var(--sm-salmon-red); }
+.wf-rstrip-ok { color: var(--sm-teal-bright); }
+.wf-rstrip-bad { color: var(--sm-salmon-red); }
+/* The mismatch box (mockup's bordered salmon box): the border/background are
+ * self-contained (low-alpha fills, fine against either theme), but
+ * .wf-rstrip-mismatch-flag is salmon PLAIN TEXT on that near-transparent
+ * background — same contrast problem as .wf-rstrip-del/-bad above, so it
+ * gets the same light-theme override below. */
+.wf-rstrip-mismatch {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(var(--sm-salmon-red-rgb), 0.5);
+  border-radius: 4px;
+  background: rgba(var(--sm-salmon-red-rgb), 0.08);
+  font-size: 11px;
+  color: var(--vscode-foreground);
+}
+.wf-rstrip-mismatch-flag { color: var(--sm-salmon-red); font-weight: 600; white-space: nowrap; }
+.wf-rstrip-mismatch-why { color: var(--vscode-descriptionForeground); }
+
 /* ── 4. Agent strip ── */
 .wf-agentstrip {
   display: flex;
@@ -855,3 +932,11 @@ body.vscode-light .wf-log-row.err .wf-log-body { color: #c93634; } /* 5.17:1, sa
 body.vscode-light .wf-view-tag.wf { color: #3a5fd9; } /* 5.50:1, same blue override */
 body.vscode-light .wf-view-tag.team { color: #895ed6; } /* 4.53:1, same violet override */
 body.vscode-light .wf-view-tag.sub { color: #0e7a80; } /* 5.10:1, same teal override */
+
+/* Phase 3 Result strip — same two accents (teal/salmon) as plain text
+ * again, same corrected values reused. */
+body.vscode-light .wf-rstrip-add { color: #0e7a80; } /* 5.10:1, same teal override */
+body.vscode-light .wf-rstrip-ok { color: #0e7a80; } /* 5.10:1, same teal override */
+body.vscode-light .wf-rstrip-del { color: #c93634; } /* 5.17:1, same salmon override */
+body.vscode-light .wf-rstrip-bad { color: #c93634; } /* 5.17:1, same salmon override */
+body.vscode-light .wf-rstrip-mismatch-flag { color: #c93634; } /* 5.17:1, same salmon override */

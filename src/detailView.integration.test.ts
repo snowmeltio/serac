@@ -38,12 +38,33 @@ interface RawEntry {
   kind?: string; toolName?: string; rawInput?: string; rawOutput?: string; isError?: boolean;
 }
 
-function sendTranscript(key: string, entries: RawEntry[], suffix: RawEntry[] = []): void {
-  window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscript', key, entries, suffix } }));
+/** Phase 3's host-computed Result-strip payload (detailShared.ts's Evidence/
+ *  Mismatch wire shapes). Optional on both send helpers so every pre-existing
+ *  call site (which never set these) keeps compiling and rendering exactly
+ *  as before — the strip is absent whenever evidence is omitted, matching
+ *  detailPanel.ts's own default of `null`/`[]` for a message with none. */
+interface RawFileTouch { path: string; kind: 'edit' | 'write' | 'notebook'; approxAdded: number | null; approxRemoved: number | null }
+interface RawCommandRun { command: string; exitOk: boolean | null }
+interface RawEvidence { filesTouched: RawFileTouch[]; commandsRun: RawCommandRun[]; testsRun: boolean; finalMessage: string | null }
+interface RawMismatch { kind: string; message: string }
+
+function sendTranscript(
+  key: string, entries: RawEntry[], suffix: RawEntry[] = [],
+  evidence?: RawEvidence, mismatches?: RawMismatch[],
+): void {
+  window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscript', key, entries, suffix, evidence, mismatches } }));
 }
 
-function sendTranscriptAppend(key: string, entries: RawEntry[], suffix: RawEntry[] = []): void {
-  window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscriptAppend', key, entries, suffix } }));
+function sendTranscriptAppend(
+  key: string, entries: RawEntry[], suffix: RawEntry[] = [],
+  evidence?: RawEvidence, mismatches?: RawMismatch[],
+): void {
+  window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscriptAppend', key, entries, suffix, evidence, mismatches } }));
+}
+
+/** An empty Evidence — the fixture for "no tool activity yet" tests. */
+function emptyEvidence(overrides: Partial<RawEvidence> = {}): RawEvidence {
+  return { filesTouched: [], commandsRun: [], testsRun: false, finalMessage: null, ...overrides };
 }
 
 const root = () => document.getElementById('wf-root')!;
@@ -982,5 +1003,114 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     q('.wf-mode-toggle')!.click();
     expect(q('.wf-log-scroll')).not.toBeNull();
     expect(q('.wf-2pane')).toBeNull();
+  });
+
+  // ── Result strip (Phase 3, DESIGN-DETAIL-PANE-V2.md) ──────────────────
+
+  function sampleEvidence(): RawEvidence {
+    return {
+      filesTouched: [
+        { path: 'src/detailView.css', kind: 'edit', approxAdded: 142, approxRemoved: 38 },
+        { path: 'proto/v2.html', kind: 'write', approxAdded: 210, approxRemoved: null },
+      ],
+      commandsRun: [
+        { command: 'npm run typecheck', exitOk: true },
+        { command: 'npm run build', exitOk: true },
+      ],
+      testsRun: false,
+      finalMessage: 'Proposes a 3-zone stack replacing chat bubbles. All checks green, ready for review.',
+    };
+  }
+
+  it('is absent entirely when the selected agent has no transcript loaded yet', () => {
+    sendRender(logModel());
+    expect(q('.wf-rstrip')).toBeNull();
+  });
+
+  it('renders the brief, final message, and file/command chips for a finished agent, open by default', () => {
+    sendRender(logModel()); // agent001 (done) auto-selected
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'Design a v2 layout treating each agent as a unit of work' },
+    ], [], sampleEvidence(), []);
+    const strip = q('.wf-rstrip')!;
+    expect(strip).not.toBeNull();
+    expect(strip.classList.contains('collapsed')).toBe(false); // finished agent → open by default
+    expect(q('.wf-rstrip-brief')!.textContent).toContain('Design a v2 layout');
+    expect(q('.wf-rstrip-final')!.textContent).toContain('ready for review');
+    const chips = qa('.wf-rstrip-chip');
+    expect(chips.some(c => c.textContent!.includes('detailView.css'))).toBe(true);
+    expect(chips.some(c => c.textContent!.includes('npm run typecheck'))).toBe(true);
+  });
+
+  it('collapses to a one-line status summary for a running agent by default', () => {
+    sendRender(logModel());
+    qa('.wf-agent-pill').find(p => p.dataset.agent === 'agent002')!.click(); // agent002 is running
+    sendTranscript('workflow:wf_run1|wf_run1|agent002', [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], sampleEvidence(), []);
+    const strip = q('.wf-rstrip')!;
+    expect(strip).not.toBeNull();
+    expect(strip.classList.contains('collapsed')).toBe(true);
+    expect(q('.wf-rstrip-summary')!.textContent).toContain('running');
+    expect(q('.wf-rstrip-final')).toBeNull(); // body hidden while collapsed
+    expect(q('.wf-rstrip-brief')).toBeNull();
+  });
+
+  it('mismatch box appears for a fabricated-claim fixture and is absent for an honest one', () => {
+    sendRender(logModel());
+    const fabricated: RawEvidence = { ...sampleEvidence(), finalMessage: 'All tests pass, ready for review.' };
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], fabricated, [{ kind: 'tests-claimed-not-run', message: 'Final message claims the tests pass; typecheck and build ran, no test command found.' }]);
+    const mismatch = q('.wf-rstrip-mismatch')!;
+    expect(mismatch).not.toBeNull();
+    expect(mismatch.textContent).toContain('MISMATCH');
+    expect(mismatch.textContent).toContain('typecheck and build ran');
+    expect(mismatch.textContent).toContain("Computed from tool calls, not the agent's prose.");
+
+    // Honest evidence (a real test command ran) → host sends no mismatches.
+    // A second, distinct entry keeps this send from being deduped as an
+    // unchanged transcript (sameTranscript compares length + last entry).
+    const honest: RawEvidence = {
+      ...sampleEvidence(),
+      commandsRun: [...sampleEvidence().commandsRun, { command: 'npm test', exitOk: true }],
+      testsRun: true,
+      finalMessage: 'All tests pass, ready for review.',
+    };
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+      { timestamp: '2026-06-10T10:00:05Z', role: 'assistant', content: 'tests confirmed green', kind: 'text' },
+    ], [], honest, []);
+    expect(q('.wf-rstrip-mismatch')).toBeNull();
+  });
+
+  it('caps file chips at 6 and command chips at 4, each with a "+n" overflow chip', () => {
+    sendRender(logModel());
+    const manyFiles: RawFileTouch[] = Array.from({ length: 8 }, (_, i) => ({ path: `src/file${i}.ts`, kind: 'edit', approxAdded: 1, approxRemoved: 1 }));
+    const manyCommands: RawCommandRun[] = Array.from({ length: 6 }, (_, i) => ({ command: `echo ${i}`, exitOk: true }));
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], { filesTouched: manyFiles, commandsRun: manyCommands, testsRun: false, finalMessage: null }, []);
+    const overflow = qa('.wf-rstrip-chip.wf-rstrip-more');
+    expect(overflow).toHaveLength(2); // one for files, one for commands
+    expect(overflow[0].textContent).toContain('+2'); // 8 files - 6 shown
+    expect(overflow[1].textContent).toContain('+2'); // 6 commands - 4 shown
+  });
+
+  it('collapse toggle persists across re-renders (tri-state, like viewRowCollapsed)', () => {
+    sendRender(logModel()); // agent001 (done) auto-selected → open by default
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], sampleEvidence(), []);
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(false);
+
+    q('.wf-rstrip-head')!.click();
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(true);
+    expect((webviewState as { resultStripCollapsed?: boolean | null }).resultStripCollapsed).toBe(true);
+
+    // Explicit false overrides the status-based default too.
+    q('.wf-rstrip-head')!.click();
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(false);
+    expect((webviewState as { resultStripCollapsed?: boolean | null }).resultStripCollapsed).toBe(false);
   });
 });

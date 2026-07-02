@@ -40,6 +40,18 @@ function writeAgentJsonl(name: string, records: Array<Record<string, unknown>>):
 function userRecord(text: string, ts = '2026-06-13T00:00:00Z'): Record<string, unknown> {
   return { type: 'user', timestamp: ts, message: { role: 'user', content: [{ type: 'text', text }] } };
 }
+/** Phase 3 evidence-wiring fixtures — a Bash tool_use/tool_result pair and a
+ *  plain assistant text turn, matching the record shapes evidenceExtractor.ts
+ *  (and its own test suite) verify against real ~/.claude/projects/ data. */
+function assistantToolUseRecord(name: string, id: string, input: Record<string, unknown>, ts = '2026-06-13T00:00:01Z'): Record<string, unknown> {
+  return { type: 'assistant', timestamp: ts, message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } };
+}
+function toolResultRecord(toolUseId: string, content: string, isError: boolean, ts = '2026-06-13T00:00:02Z'): Record<string, unknown> {
+  return { type: 'user', timestamp: ts, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseId, content, is_error: isError }] } };
+}
+function assistantTextRecord(text: string, ts = '2026-06-13T00:00:03Z'): Record<string, unknown> {
+  return { type: 'assistant', timestamp: ts, message: { role: 'assistant', content: [{ type: 'text', text }] } };
+}
 
 function makeWorkflow(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapshot {
   return {
@@ -348,6 +360,77 @@ describe('DetailPanel', () => {
       expect(msg.key).toBe('workflow:sess-1|wf_abc|a1');
       expect(msg.entries).toHaveLength(1);
       expect(msg.entries[0].content).toBe('hi');
+      // Phase 3 (DESIGN-DETAIL-PANE-V2.md): every transcript post carries
+      // host-computed evidence + mismatches alongside entries, even when
+      // (as here) the transcript is just a brief with no tool activity yet.
+      expect(msg.evidence).toEqual({ filesTouched: [], commandsRun: [], testsRun: false, finalMessage: null });
+      expect(msg.mismatches).toEqual([]);
+    });
+
+    it('posts host-computed evidence and a mismatch alongside a full transcript snapshot', async () => {
+      const file = writeAgentJsonl('evidence-full.jsonl', [
+        userRecord('brief'),
+        assistantToolUseRecord('Bash', 'toolu_1', { command: 'npm run build' }),
+        toolResultRecord('toolu_1', 'built ok', false),
+        assistantTextRecord('All done, tests pass, ready for review.'),
+      ]);
+      const h = setup({ resolveAgentFile: vi.fn(() => file) });
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      await h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
+      await settleIo();
+      const msg = h.posted().find(m => m.type === 'agentTranscript');
+      expect(msg.evidence.commandsRun).toEqual([{ command: 'npm run build', exitOk: true }]);
+      expect(msg.evidence.testsRun).toBe(false);
+      expect(msg.evidence.finalMessage).toContain('tests pass');
+      expect(msg.mismatches).toHaveLength(1);
+      expect(msg.mismatches[0].kind).toBe('tests-claimed-not-run');
+    });
+
+    it('agentTranscriptAppend also carries recomputed evidence/mismatches for the delta', async () => {
+      const file = writeAgentJsonl('evidence-append.jsonl', [userRecord('brief')]);
+      const h = setup({ resolveAgentFile: vi.fn(() => file) });
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
+      await h.webview._fireMessage(req);
+      await settleIo();
+
+      fs.appendFileSync(
+        file,
+        [assistantToolUseRecord('Bash', 'toolu_2', { command: 'npm run lint' }), toolResultRecord('toolu_2', 'lint failed', true)]
+          .map(r => JSON.stringify(r)).join('\n') + '\n',
+      );
+      await h.webview._fireMessage(req);
+      await settleIo();
+      const append = h.posted().find(m => m.type === 'agentTranscriptAppend');
+      expect(append).toBeTruthy();
+      expect(append.evidence.commandsRun).toEqual([{ command: 'npm run lint', exitOk: false }]);
+      expect(append.mismatches).toEqual([]); // no final-message claim yet — nothing to flag
+    });
+
+    it('correlates a Bash tool_use and its tool_result across separate append ticks (straddling boundary)', async () => {
+      // detailPanel.ts recomputes evidence from the WHOLE accumulated record
+      // set on every post rather than incrementally — this is the case that
+      // choice exists for: the tool_use and its tool_result can land on
+      // different reads of the tailer.
+      const file = writeAgentJsonl('evidence-straddle.jsonl', [userRecord('brief')]);
+      const h = setup({ resolveAgentFile: vi.fn(() => file) });
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
+      await h.webview._fireMessage(req);
+      await settleIo();
+
+      fs.appendFileSync(file, JSON.stringify(assistantToolUseRecord('Bash', 'toolu_3', { command: 'npm test' })) + '\n');
+      await h.webview._fireMessage(req);
+      await settleIo();
+      const firstAppend = h.posted().filter(m => m.type === 'agentTranscriptAppend').pop();
+      expect(firstAppend.evidence.commandsRun).toEqual([{ command: 'npm test', exitOk: null }]);
+      expect(firstAppend.evidence.testsRun).toBe(true); // command recognised as a test runner regardless of outcome
+
+      fs.appendFileSync(file, JSON.stringify(toolResultRecord('toolu_3', 'ok', false)) + '\n');
+      await h.webview._fireMessage(req);
+      await settleIo();
+      const secondAppend = h.posted().filter(m => m.type === 'agentTranscriptAppend').pop();
+      expect(secondAppend.evidence.commandsRun).toEqual([{ command: 'npm test', exitOk: true }]);
     });
 
     it('steady re-request posts nothing when the file is unchanged, a delta when it grows', async () => {

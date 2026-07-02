@@ -11,6 +11,7 @@ import { escapeHtml } from './panelUtils.js';
 import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey } from './detailShared.js';
 import type {
   DetailAgentView, DetailGroupView, DetailViewChoice, DetailModel, TranscriptEntry,
+  Evidence, Mismatch, FileTouch, CommandRun,
 } from './detailShared.js';
 
 type TranscriptState =
@@ -18,8 +19,13 @@ type TranscriptState =
   | { state: 'error'; message: string }
   /** `entries` is the append-only JSONL prefix; `suffix` is the teammate
    *  inbox tail, replaced wholesale on every host post (it shrinks when the
-   *  member drains its inbox, so it can never be folded into entries). */
-  | { state: 'ready'; entries: TranscriptEntry[]; suffix: TranscriptEntry[] };
+   *  member drains its inbox, so it can never be folded into entries).
+   *  `evidence`/`mismatches` (Phase 3, DESIGN-DETAIL-PANE-V2.md) are the
+   *  host-computed Result-strip inputs — display-only here, the webview
+   *  never derives or recomputes them. `evidence` is null only when the host
+   *  hasn't posted it yet (shouldn't happen once 'ready', kept optional for
+   *  defensiveness against an older/partial message shape). */
+  | { state: 'ready'; entries: TranscriptEntry[]; suffix: TranscriptEntry[]; evidence: Evidence | null; mismatches: Mismatch[] };
 
 interface VsCodeApi {
   postMessage(msg: unknown): void;
@@ -56,6 +62,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  "+N" overflow chip. Expanded (false) by default — collapse is an explicit
    *  space-saving choice, not the resting state. */
   let viewRowCollapsed = false;
+  /** Result strip (Phase 3, DESIGN-DETAIL-PANE-V2.md) collapse preference.
+   *  Tri-state, unlike viewRowCollapsed/briefCollapsed's plain booleans: null
+   *  means "no explicit user choice yet", in which case the strip follows
+   *  the selected agent's status (collapsed to a status line while running,
+   *  open once finished — the design doc's default behaviour). An explicit
+   *  true/false from the user's own toggle click overrides that default for
+   *  every agent thereafter, persisted like the other collapse flags. */
+  let resultStripCollapsed: boolean | null = null;
   /** Log-mode kind filters (facet bar). All shown by default — hiding errors
    *  by default would bury the one signal a "did it go wrong" scan needs most. */
   const kindFilters: { text: boolean; tool: boolean; error: boolean; result: boolean } = {
@@ -81,12 +95,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
     briefCollapsed?: boolean;
     mode?: 'log' | 'classic';
     viewRowCollapsed?: boolean;
+    resultStripCollapsed?: boolean | null;
   }
   const persisted = (vscode.getState() ?? {}) as PersistedState;
   navCollapsed = persisted.navCollapsed === true;
   briefCollapsed = persisted.briefCollapsed === true;
   mode = persisted.mode === 'classic' ? 'classic' : 'log';
   viewRowCollapsed = persisted.viewRowCollapsed === true;
+  resultStripCollapsed = typeof persisted.resultStripCollapsed === 'boolean' ? persisted.resultStripCollapsed : null;
   /** One-shot selection restore, consumed by the first matching render. */
   let pendingRestore: { owner: string; groupKey: string; agentId: string } | null =
     (typeof persisted.owner === 'string' && typeof persisted.groupKey === 'string'
@@ -103,6 +119,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       briefCollapsed,
       mode,
       viewRowCollapsed,
+      resultStripCollapsed,
     } satisfies PersistedState);
   }
   /** Identity of the drill-in the cache below belongs to. The cache key is only
@@ -712,7 +729,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     for (const cls of [
       'wf-nav-toggle', 'wf-brief-head', 'wf-openconv', 'wf-mode-toggle',
-      'wf-view-collapse', 'wf-facet-foldall',
+      'wf-view-collapse', 'wf-facet-foldall', 'wf-rstrip-head',
     ] as const) {
       if (active.closest('.' + cls)) {
         return () => { (root.querySelector('.' + cls) as HTMLElement | null)?.focus(); };
@@ -930,6 +947,145 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + '<span class="wf-permrow-cmd">' + toolBit + '</span>'
       + (extra > 0 ? '<span class="wf-permrow-extra">+' + extra + ' more</span>' : '')
       + '</div>';
+  }
+
+  // ── Result strip (Phase 3, mockup §2, DESIGN-DETAIL-PANE-V2.md) ────────
+  // The verification anchor for the SELECTED agent, sitting between the
+  // header/permission rows and the agent strip in log mode only. Every field
+  // here is HOST-computed (evidenceExtractor.ts/mismatch.ts via
+  // detailPanel.ts) and carried on the transcript cache entry — this module
+  // only formats it; it never derives evidence or a mismatch itself.
+
+  const RESULT_BRIEF_MAX_CHARS = 140;
+  const RESULT_FINAL_MAX_CHARS = 400;
+  const RESULT_COMMAND_LABEL_MAX_CHARS = 40;
+  const RESULT_MAX_FILE_CHIPS = 6;
+  const RESULT_MAX_COMMAND_CHIPS = 4;
+  const MISMATCH_DISCLAIMER = "Computed from tool calls, not the agent's prose.";
+
+  /** The same "first user entry" the classic reader's inception brief uses
+   *  (see renderReader), falling back to the sidecar's promptPreview before
+   *  the transcript has loaded — one line, truncated. */
+  function resultBriefText(agent: DetailAgentView): string {
+    const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
+    const entries = (st && st.state === 'ready') ? st.entries : [];
+    const briefEntry = entries.find(e => e.role === 'user');
+    const raw = briefEntry ? briefEntry.content : (agent.promptPreview || '');
+    return raw.replace(/\r?\n+/g, ' ').trim();
+  }
+
+  function truncate(text: string, max: number): string {
+    return text.length > max ? text.slice(0, max) + '…' : text;
+  }
+
+  function basename(filePath: string): string {
+    const idx = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+    return idx >= 0 ? filePath.slice(idx + 1) : filePath;
+  }
+
+  /** File chips: basename + approx +added/−removed when non-null, capped at
+   *  RESULT_MAX_FILE_CHIPS with a "+n" overflow chip (mockup §2). */
+  function renderFileChips(files: FileTouch[]): string {
+    if (files.length === 0) { return ''; }
+    const shown = files.slice(0, RESULT_MAX_FILE_CHIPS);
+    const overflow = files.length - shown.length;
+    let html = '<span class="wf-rstrip-cat">Files (' + files.length + ')</span>';
+    for (const f of shown) {
+      const deltaBits: string[] = [];
+      if (f.approxAdded !== null) { deltaBits.push('<span class="wf-rstrip-add">+' + f.approxAdded + '</span>'); }
+      if (f.approxRemoved !== null) { deltaBits.push('<span class="wf-rstrip-del">−' + f.approxRemoved + '</span>'); }
+      html += '<span class="wf-rstrip-chip" title="' + escapeHtml(f.path) + '">'
+        + escapeHtml(basename(f.path))
+        + (deltaBits.length > 0 ? ' ' + deltaBits.join(' ') : '')
+        + '</span>';
+    }
+    if (overflow > 0) { html += '<span class="wf-rstrip-chip wf-rstrip-more">+' + overflow + '</span>'; }
+    return html;
+  }
+
+  /** Command chips: first ~40 chars + ✓/✗/no-mark for exitOk true/false/null,
+   *  capped at RESULT_MAX_COMMAND_CHIPS with a "+n" overflow chip. */
+  function renderCommandChips(commands: CommandRun[]): string {
+    if (commands.length === 0) { return ''; }
+    const shown = commands.slice(0, RESULT_MAX_COMMAND_CHIPS);
+    const overflow = commands.length - shown.length;
+    let html = '<span class="wf-rstrip-cat">Commands (' + commands.length + ')</span>';
+    for (const c of shown) {
+      const mark = c.exitOk === true ? '<span class="wf-rstrip-ok">✓</span>'
+        : c.exitOk === false ? '<span class="wf-rstrip-bad">✗</span>' : '';
+      html += '<span class="wf-rstrip-chip" title="' + escapeHtml(c.command) + '">'
+        + escapeHtml(truncate(c.command, RESULT_COMMAND_LABEL_MAX_CHARS))
+        + (mark ? ' ' + mark : '')
+        + '</span>';
+    }
+    if (overflow > 0) { html += '<span class="wf-rstrip-chip wf-rstrip-more">+' + overflow + '</span>'; }
+    return html;
+  }
+
+  /** The bordered salmon mismatch box (mockup §2): "⚠ MISMATCH" + the
+   *  heuristic-specific message + the fixed disclaimer suffix. One box per
+   *  Mismatch — mismatch.ts can return more than one at once. */
+  function renderMismatches(mismatches: Mismatch[]): string {
+    let html = '';
+    for (const m of mismatches) {
+      html += '<div class="wf-rstrip-mismatch" data-kind="' + escapeHtml(m.kind) + '">'
+        + '<span class="wf-rstrip-mismatch-flag">⚠ MISMATCH</span>'
+        + '<span class="wf-rstrip-mismatch-msg">' + escapeHtml(m.message)
+        + ' <span class="wf-rstrip-mismatch-why">' + escapeHtml(MISMATCH_DISCLAIMER) + '</span></span>'
+        + '</div>';
+    }
+    return html;
+  }
+
+  /** The strip's one-line collapsed summary — status-line-only for a running
+   *  agent (design doc's required collapsed state), plus a quick roll-up of
+   *  what evidence carries so the user knows there's something to expand. */
+  function renderResultStripSummary(agent: DetailAgentView, evidence: Evidence, mismatches: Mismatch[]): string {
+    const bits: string[] = [];
+    bits.push(agent.status === 'running' ? 'running' : 'result');
+    if (evidence.filesTouched.length > 0) { bits.push(evidence.filesTouched.length + ' file' + (evidence.filesTouched.length === 1 ? '' : 's')); }
+    if (evidence.commandsRun.length > 0) { bits.push(evidence.commandsRun.length + ' command' + (evidence.commandsRun.length === 1 ? '' : 's')); }
+    if (mismatches.length > 0) { bits.push(mismatches.length + ' mismatch' + (mismatches.length === 1 ? '' : 'es')); }
+    return '<span class="wf-rstrip-summary">' + escapeHtml(bits.join(' · ')) + '</span>';
+  }
+
+  function renderResultStripBody(agent: DetailAgentView, evidence: Evidence, mismatches: Mismatch[]): string {
+    let html = '';
+    const brief = resultBriefText(agent);
+    if (brief) {
+      html += '<div class="wf-rstrip-brief"><b>Brief:</b> “' + escapeHtml(truncate(brief, RESULT_BRIEF_MAX_CHARS)) + '”</div>';
+    }
+    if (evidence.finalMessage) {
+      html += '<div class="wf-rstrip-final">' + escapeHtml(truncate(evidence.finalMessage.trim(), RESULT_FINAL_MAX_CHARS)) + '</div>';
+    }
+    const chips = renderFileChips(evidence.filesTouched) + renderCommandChips(evidence.commandsRun);
+    if (chips) { html += '<div class="wf-rstrip-chiprow">' + chips + '</div>'; }
+    html += renderMismatches(mismatches);
+    if (!brief && !evidence.finalMessage && !chips && mismatches.length === 0) {
+      html += '<div class="wf-rstrip-empty">No tool activity recorded yet.</div>';
+    }
+    return html;
+  }
+
+  /** Result strip entry point. Absent entirely when the selected agent's
+   *  transcript hasn't loaded yet (nothing to verify against); collapsed to
+   *  the one-line summary by default while the agent is running, open by
+   *  default once it's finished, overridden either way by the user's own
+   *  toggle (resultStripCollapsed). */
+  function renderResultStrip(agent: DetailAgentView): string {
+    const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
+    if (!st || st.state !== 'ready' || !st.evidence) { return ''; }
+    const evidence = st.evidence;
+    const mismatches = st.mismatches;
+    const collapsed = resultStripCollapsed ?? (agent.status === 'running');
+    let html = '<div class="wf-rstrip' + (collapsed ? ' collapsed' : '') + '">';
+    html += '<div class="wf-rstrip-head" role="button" tabindex="0" aria-expanded="' + (!collapsed) + '">'
+      + '<span class="wf-rstrip-caret">' + (collapsed ? '▸' : '▾') + '</span>'
+      + '<span class="wf-rstrip-label">Result</span>'
+      + (collapsed ? renderResultStripSummary(agent, evidence, mismatches) : '')
+      + '</div>';
+    if (!collapsed) { html += renderResultStripBody(agent, evidence, mismatches); }
+    return html + '</div>';
   }
 
   function renderAgentPill(groupKey: string, a: DetailAgentView): string {
@@ -1171,6 +1327,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     root.innerHTML = renderViewRow()
       + renderHeaderStrip()
       + renderPermRow()
+      + (agent ? renderResultStrip(agent) : '')
       + renderAgentStrip()
       + (agent ? renderFacets(agent) : '')
       + '<div class="wf-log-scroll">'
@@ -1362,6 +1519,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
       render();
       return;
     }
+    if (target.closest('.wf-rstrip-head')) {
+      // Toggle FROM the currently effective state (status default when the
+      // user hasn't chosen yet — see resultStripCollapsed's doc comment), not
+      // from a raw negation of the persisted flag, so the first click always
+      // does what it visually looks like it will do.
+      const agent = findAgent(selectedGroupKey, selectedAgentId);
+      const effective = resultStripCollapsed ?? (agent?.status === 'running');
+      resultStripCollapsed = !effective;
+      saveState();
+      render();
+      return;
+    }
     // Order matters: the overflow chip carries BOTH .wf-view-chip and .more —
     // it must be checked before the generic .wf-view-chip switch-view branch.
     if (target.closest('.wf-view-chip.more')) {
@@ -1465,7 +1634,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const activatable = target.closest(
       '.wf-nav-row, .wf-openconv, .wf-switch-chip, .wf-nav-toggle, .wf-brief-head, '
       + '.wf-view-chip, .wf-view-collapse, .wf-mode-toggle, .wf-agent-pill, '
-      + '.wf-facet-kind, .wf-facet-foldall, .wf-log-row',
+      + '.wf-facet-kind, .wf-facet-foldall, .wf-log-row, .wf-rstrip-head',
     );
     if (activatable) {
       e.preventDefault();
@@ -1522,6 +1691,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
       const key = String(msg.key);
       const incoming = (msg.entries as TranscriptEntry[]) || [];
       const suffix = (msg.suffix as TranscriptEntry[]) || [];
+      const evidence = (msg.evidence as Evidence | undefined) ?? null;
+      const mismatches = (msg.mismatches as Mismatch[] | undefined) ?? [];
       const existing = transcripts.get(key);
       // Dedup: an unchanged transcript must NOT re-render — the innerHTML
       // swap would destroy any text selection the user is holding mid-copy.
@@ -1531,7 +1702,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       }
       // Copy at the message boundary: the cache arrays are mutated by the
       // append path, and message data must never be aliased into owned state.
-      transcripts.set(key, { state: 'ready', entries: incoming.slice(), suffix: suffix.slice() });
+      transcripts.set(key, { state: 'ready', entries: incoming.slice(), suffix: suffix.slice(), evidence, mismatches: mismatches.slice() });
       if (key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
     } else if (msg.type === 'agentTranscriptAppend') {
       // Delta post (audit perf-render-4): new JSONL entries since the last
@@ -1541,6 +1712,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
       const key = String(msg.key);
       const delta = (msg.entries as TranscriptEntry[]) || [];
       const suffix = (msg.suffix as TranscriptEntry[]) || [];
+      const evidence = (msg.evidence as Evidence | undefined) ?? null;
+      const mismatches = (msg.mismatches as Mismatch[] | undefined) ?? [];
       const existing = transcripts.get(key);
       if (!existing || existing.state !== 'ready') {
         // No anchor to append to (webview reloaded mid-stream, or an error
@@ -1568,6 +1741,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
         && root.querySelector('.wf-reader-body') !== null;
       existing.entries.push(...delta);
       existing.suffix = suffix.slice();
+      existing.evidence = evidence;
+      existing.mismatches = mismatches.slice();
       if (!canFastAppend) {
         if (key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
         return;

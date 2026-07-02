@@ -175,6 +175,54 @@ export function fmtDuration(ms: number | null): string {
   return r > 0 ? m + 'm ' + r + 's' : m + 'm';
 }
 
+/** One file touched by an Edit/Write/NotebookEdit tool call — the wire shape
+ *  of evidenceExtractor.ts's FileTouch, posted alongside a transcript for
+ *  Phase 3's Result strip (DESIGN-DETAIL-PANE-V2.md). Declared literally
+ *  here rather than imported: evidenceExtractor.ts pulls in jsonlValidator.ts
+ *  -> types.ts, whose SubagentInfo etc. carry extension-side lazy tracker
+ *  imports (see TranscriptEntry's own doc comment on the same constraint,
+ *  and types.ts's note on why DetailAgentStatus is declared literally too)
+ *  that the webview bundle must never resolve. */
+export interface FileTouch {
+  path: string;
+  kind: 'edit' | 'write' | 'notebook';
+  approxAdded: number | null;
+  approxRemoved: number | null;
+}
+
+/** One Bash invocation paired with its result — the wire shape of
+ *  evidenceExtractor.ts's CommandRun. See FileTouch above for why this is a
+ *  literal duplicate rather than an import. */
+export interface CommandRun {
+  command: string;
+  exitOk: boolean | null;
+}
+
+/** Host-computed verification evidence for one agent's transcript — the wire
+ *  shape of evidenceExtractor.ts's Evidence, posted by detailPanel.ts
+ *  alongside `agentTranscript`/`agentTranscriptAppend` so the webview never
+ *  re-derives it (or, worse, fabricates it) from `content` strings. See
+ *  evidenceExtractor.ts for the full extraction rules and FileTouch above
+ *  for why this is a literal duplicate rather than an import. */
+export interface Evidence {
+  filesTouched: FileTouch[];
+  commandsRun: CommandRun[];
+  testsRun: boolean;
+  finalMessage: string | null;
+}
+
+/** One host-computed mismatch between an agent's prose and its own tool
+ *  evidence — the wire shape of mismatch.ts's Mismatch. Declared literally
+ *  here for the same webview-purity reason as Evidence above (mismatch.ts
+ *  itself imports Evidence from evidenceExtractor.ts, which is fine there —
+ *  mismatch.ts is host/test-only and never bundled into the webview). The
+ *  webview renders `message` plus a fixed disclaimer suffix; it never
+ *  computes a Mismatch itself. */
+export interface Mismatch {
+  kind: string;
+  message: string;
+}
+
 /** Cache key for one agent's transcript, owner-prefixed so an in-flight
  *  response from a previous drill-in can never collide with the current
  *  container's keys (e.g. the same member name across two teams). THE single
