@@ -550,6 +550,285 @@ body {
 .wf-composer-status.error { color: var(--sm-salmon-red); }
 .wf-composer-count { font-size: 10.5px; color: var(--vscode-descriptionForeground); opacity: 0.8; }
 
+/* ============================================================
+ * Phase 2 — log view (default mode). DESIGN-DETAIL-PANE-V2.md §4a
+ * forensic-log skeleton: view row → header strip → pinned permission row →
+ * agent strip → facet bar → the log. Classic classes above are untouched
+ * (kept for the temporary "classic view" fallback toggle). Only `.wf-log-
+ * scroll` scrolls — everything above it is a static flow sibling, so it
+ * reads as "pinned" without needing position:sticky (the panel itself never
+ * scrolls; #wf-root is display:flex column exactly as the classic layout).
+ * ============================================================ */
+
+/* ── 1. View row (session-scoped switcher, mockup 4/4b) ── */
+.wf-view-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  font-size: 10.5px;
+}
+.wf-view-row.collapsed { flex-wrap: nowrap; overflow: hidden; }
+.wf-view-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 10px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.32));
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.wf-view-chip:hover { color: var(--vscode-foreground); border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.5)); }
+.wf-view-chip:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+.wf-view-chip.active { color: var(--vscode-foreground); border-color: var(--sm-blizzard-blue); background: rgba(var(--sm-blizzard-blue-rgb), 0.12); cursor: default; font-weight: 600; }
+.wf-view-chip.more { border-style: dashed; }
+.wf-view-tag { font-size: 8px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; opacity: 0.85; }
+.wf-view-tag.wf { color: var(--sm-blizzard-blue); }
+.wf-view-tag.team { color: var(--sm-team-violet); }
+.wf-view-tag.sub { color: var(--sm-teal-bright); }
+.wf-view-label { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+.wf-view-count { color: var(--vscode-descriptionForeground); opacity: 0.75; }
+.wf-view-collapse {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.wf-view-collapse:hover { color: var(--vscode-foreground); }
+.wf-view-collapse:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+
+/* ── 2. Header strip ── */
+.wf-hstrip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  font-size: 12px;
+}
+.wf-hstrip-badge {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
+  color: var(--vscode-descriptionForeground);
+}
+.wf-hstrip-name { font-weight: 600; color: var(--vscode-editor-foreground, var(--vscode-foreground)); }
+/* Self-contained fill+text pills — contrast is against the pill's OWN
+ * background, not the page, so no separate light-theme override is needed
+ * (unlike the plain-text accent colours corrected below). */
+.wf-hstrip-pill { font-size: 9px; font-weight: 600; padding: 2px 7px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+.wf-hstrip-pill.status-running { color: #fff; background: var(--sm-blizzard-blue); }
+.wf-hstrip-pill.status-done { color: #0c1b1b; background: var(--sm-teal-bright); }
+.wf-hstrip-pill.status-waiting { color: #4a2e12; background: var(--sm-frozen-peach); }
+.wf-hstrip-pill.status-failed { color: #fff; background: var(--sm-salmon-red); }
+.wf-hstrip-counts { color: var(--vscode-descriptionForeground); font-size: 11px; }
+.wf-hstrip-meta { color: var(--vscode-descriptionForeground); font-size: 11px; display: flex; gap: 10px; }
+.wf-hstrip-openconv { margin-left: auto; }
+.wf-mode-toggle {
+  flex-shrink: 0;
+  font-size: 10px;
+  cursor: pointer;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  padding: 3px 9px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.wf-mode-toggle:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
+.wf-mode-toggle:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+/* Classic mode's own toggle lives inline with the "open parent session"
+ * action, not in a strip of its own. */
+.wf-head-top-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* ── 3. Pinned permission row — filter/scroll-immune (§ design doc mockup) ── */
+.wf-permrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: rgba(var(--sm-frozen-peach-rgb), 0.12);
+  border-bottom: 1px solid rgba(var(--sm-frozen-peach-rgb), 0.4);
+  font-size: 12px;
+  color: var(--vscode-foreground);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.wf-permrow-icon { color: var(--sm-orange, #d9a23a); }
+.wf-permrow-who { font-weight: 600; }
+.wf-permrow-cmd { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+.wf-permrow-extra { color: var(--vscode-descriptionForeground); font-size: 10px; margin-left: auto; }
+
+/* ── 4. Agent strip ── */
+.wf-agentstrip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+.wf-agentstrip-phase {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--vscode-descriptionForeground);
+  margin: 0 2px 0 6px;
+}
+.wf-agentstrip-phase:first-child { margin-left: 0; }
+.wf-agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 10px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.32));
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+}
+.wf-agent-pill:hover { background: var(--vscode-list-hoverBackground); }
+.wf-agent-pill:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+.wf-agent-pill.active {
+  background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.18));
+  border-color: var(--vscode-focusBorder, rgba(128, 128, 128, 0.6));
+  color: var(--vscode-list-activeSelectionForeground, inherit);
+  font-weight: 600;
+}
+.wf-agent-pill-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── 5. Facet bar ── */
+.wf-facets {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+  font-size: 10.5px;
+}
+.wf-facet-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+.wf-facet-kind.off { opacity: 0.45; text-decoration: line-through; }
+.wf-facet-kind:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+.wf-facet-count { opacity: 0.7; }
+.wf-facet-foldall {
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+.wf-facet-foldall:hover { color: var(--vscode-foreground); }
+.wf-facet-foldall:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+.wf-facet-search {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--vscode-descriptionForeground);
+}
+.wf-facet-search-input {
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.4));
+  border-radius: 3px;
+  padding: 2px 6px;
+  min-width: 140px;
+}
+.wf-facet-search-input:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+
+/* ── 6. The log ── */
+.wf-log-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+.wf-log { font-family: var(--vscode-editor-font-family, monospace); font-size: 11.5px; }
+.wf-log-empty { padding: 16px; color: var(--vscode-descriptionForeground); font-size: 11.5px; font-family: var(--vscode-font-family); }
+.wf-log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 2.5px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.wf-log-row:hover { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
+.wf-log-row:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: -1px; }
+.wf-log-row.brief { background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.06)); white-space: normal; }
+.wf-log-row.result { background: rgba(var(--sm-teal-bright-rgb), 0.08); }
+.wf-log-row.err .wf-log-body { color: var(--sm-salmon-red); }
+.wf-log-row.expanded { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
+.wf-log-t { color: var(--vscode-descriptionForeground); font-size: 10px; width: 56px; flex-shrink: 0; text-align: right; opacity: 0.8; }
+.wf-log-glyph { width: 12px; flex-shrink: 0; text-align: center; }
+.wf-log-glyph.k-tool { color: var(--vscode-descriptionForeground); }
+.wf-log-glyph.k-text { color: var(--vscode-foreground); }
+.wf-log-glyph.k-err { color: var(--sm-salmon-red); }
+.wf-log-glyph.k-res { color: var(--sm-teal-bright); }
+.wf-log-glyph.k-task { color: var(--sm-blizzard-blue); }
+.wf-log-body { overflow: hidden; text-overflow: ellipsis; color: var(--vscode-foreground); }
+.wf-log-row.brief .wf-log-body { white-space: normal; overflow-wrap: anywhere; }
+.wf-log-tag {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-right: 3px;
+  background: var(--vscode-badge-background, rgba(128, 128, 128, 0.2));
+  color: var(--vscode-badge-foreground, var(--vscode-foreground));
+}
+.wf-hl { background: rgba(var(--sm-blizzard-blue-rgb), 0.28); border-radius: 2px; }
+
+/* Expanded row (forensics): full content in place, no truncation. A flow
+ * sibling of the row (not nested inside it), so clicking inside it never
+ * re-toggles the row via event bubbling. */
+.wf-log-expand {
+  margin: 2px 14px 8px 79px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.08));
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+}
+.wf-log-expand-h {
+  padding: 4px 10px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+.wf-log-expand-pre {
+  padding: 8px 10px;
+  margin: 0;
+  color: var(--vscode-foreground);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 /* ============ LIGHT THEME ============
  * The Snowmelt brand accents (--sm-blizzard-blue, --sm-team-violet,
  * --sm-teal-bright, --sm-salmon-red) are tuned for a dark editor background.
@@ -566,3 +845,13 @@ body.vscode-light .wf-composer-status.error { color: #c93634; } /* 5.17:1 */
 body.vscode-light .wf-nav-count-failed { color: #c93634; } /* 5.17:1, same salmon override as composer-status.error */
 body.vscode-light #wf-root.nav-collapsed .wf-nav-toggle,
 body.vscode-light #wf-root.nav-collapsed .wf-nav-toggle:hover { color: #3a5fd9; } /* 5.50:1, same blue override as wf-who */
+
+/* Phase 2 log-view glyphs — same three accents, same corrected values as
+ * above, reused here rather than recomputed (the ratios don't change). */
+body.vscode-light .wf-log-glyph.k-err { color: #c93634; } /* 5.17:1, same salmon override */
+body.vscode-light .wf-log-glyph.k-res { color: #0e7a80; } /* 5.10:1, same teal override */
+body.vscode-light .wf-log-glyph.k-task { color: #3a5fd9; } /* 5.50:1, same blue override */
+body.vscode-light .wf-log-row.err .wf-log-body { color: #c93634; } /* 5.17:1, same salmon override */
+body.vscode-light .wf-view-tag.wf { color: #3a5fd9; } /* 5.50:1, same blue override */
+body.vscode-light .wf-view-tag.team { color: #895ed6; } /* 4.53:1, same violet override */
+body.vscode-light .wf-view-tag.sub { color: #0e7a80; } /* 5.10:1, same teal override */

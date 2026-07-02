@@ -29,11 +29,20 @@ function sendRender(model: Record<string, unknown>, select?: { groupKey: string;
   window.dispatchEvent(new MessageEvent('message', { data: { type: 'render', model, select } }));
 }
 
-function sendTranscript(key: string, entries: { timestamp: string; role: string; content: string }[], suffix: { timestamp: string; role: string; content: string }[] = []): void {
+/** Phase 1's additive TranscriptEntry fields (kind/toolName/rawInput/
+ *  rawOutput/isError) are optional so every pre-existing call site (plain
+ *  {timestamp,role,content}) keeps compiling unchanged; the log-view tests
+ *  below opt into them. */
+interface RawEntry {
+  timestamp: string; role: string; content: string;
+  kind?: string; toolName?: string; rawInput?: string; rawOutput?: string; isError?: boolean;
+}
+
+function sendTranscript(key: string, entries: RawEntry[], suffix: RawEntry[] = []): void {
   window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscript', key, entries, suffix } }));
 }
 
-function sendTranscriptAppend(key: string, entries: { timestamp: string; role: string; content: string }[], suffix: { timestamp: string; role: string; content: string }[] = []): void {
+function sendTranscriptAppend(key: string, entries: RawEntry[], suffix: RawEntry[] = []): void {
   window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscriptAppend', key, entries, suffix } }));
 }
 
@@ -71,7 +80,10 @@ function twoSourceModel() {
 describe('detailView.ts — collapse + grouped switcher', () => {
   beforeEach(async () => {
     postedMessages = [];
-    webviewState = undefined;
+    // Existing assertions below target the CLASSIC DOM; the log view (Phase
+    // 2, DESIGN-DETAIL-PANE-V2.md) is the new default, so seed persisted state
+    // to keep every pre-existing test exercising the classic renderer.
+    webviewState = { mode: 'classic' };
     document.body.innerHTML = '<div id="wf-root"></div>';
     vi.resetModules();
     (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
@@ -407,7 +419,10 @@ describe('detailView.ts — collapse + grouped switcher', () => {
 describe('detailView.ts — live transcript refresh', () => {
   beforeEach(async () => {
     postedMessages = [];
-    webviewState = undefined;
+    // Existing assertions below target the CLASSIC DOM; the log view (Phase
+    // 2, DESIGN-DETAIL-PANE-V2.md) is the new default, so seed persisted state
+    // to keep every pre-existing test exercising the classic renderer.
+    webviewState = { mode: 'classic' };
     vi.useFakeTimers();              // fake before the IIFE import so its setInterval is faked
     document.body.innerHTML = '<div id="wf-root"></div>';
     vi.resetModules();
@@ -512,7 +527,10 @@ describe('detailView.ts — teammate composer (experimental)', () => {
 
   beforeEach(async () => {
     postedMessages = [];
-    webviewState = undefined;
+    // Existing assertions below target the CLASSIC DOM; the log view (Phase
+    // 2, DESIGN-DETAIL-PANE-V2.md) is the new default, so seed persisted state
+    // to keep every pre-existing test exercising the classic renderer.
+    webviewState = { mode: 'classic' };
     document.body.innerHTML = '<div id="wf-root"></div>' + COMPOSER_HTML;
     vi.resetModules();
     (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
@@ -664,7 +682,10 @@ describe('detailView.ts — teammate composer (experimental)', () => {
 describe('detailView.ts — UX batch (dedup, persistence, time tick, chip summary)', () => {
   beforeEach(async () => {
     postedMessages = [];
-    webviewState = undefined;
+    // Existing assertions below target the CLASSIC DOM; the log view (Phase
+    // 2, DESIGN-DETAIL-PANE-V2.md) is the new default, so seed persisted state
+    // to keep every pre-existing test exercising the classic renderer.
+    webviewState = { mode: 'classic' };
     document.body.innerHTML = '<div id="wf-root"></div>';
     vi.resetModules();
     (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
@@ -754,5 +775,212 @@ describe('detailView.ts — UX batch (dedup, persistence, time tick, chip summar
     sendRender(model);
     const chip = qa('.wf-switch-chip').find(c => c.dataset.viewId === 'wf_run1')!;
     expect(chip.getAttribute('title')).toContain('2 agents · 1 running · 1 done');
+  });
+});
+
+describe('detailView.ts — log view (Phase 2, default mode)', () => {
+  // No mode override here (unlike the classic-DOM blocks above): log is the
+  // DEFAULT, so these tests exercise it with a fresh, unpersisted webview.
+  beforeEach(async () => {
+    postedMessages = [];
+    webviewState = undefined;
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
+    await import('./detailView.js');
+  });
+
+  /** A workflow drill-in with three switchable views (for the view-row
+   *  collapse test) and two phase agents (for the agent strip). */
+  function logModel() {
+    return {
+      source: 'workflow',
+      containerId: 'wf_run1',
+      sessionId: 'sess1',
+      title: 'audit-run',
+      metrics: '2 agents',
+      groups: [
+        {
+          key: 'wf_run1',
+          title: 'Audit',
+          agents: [
+            agent({ agentId: 'agent001', label: 'audit:privacy', phaseTitle: 'Audit' }),
+            agent({ agentId: 'agent002', label: 'audit:security', status: 'running', phaseTitle: 'Audit' }),
+          ],
+        },
+      ],
+      views: [
+        { id: 'wf_run1', kind: 'workflow', label: 'audit-run', status: 'running', active: true, summary: '2 agents · 1 running · 1 done' },
+        { id: 'subs', kind: 'subagents', label: 'Subagents', status: 'done', active: false, summary: '3 subagents' },
+        { id: 'wf_run2', kind: 'workflow', label: 'earlier-run', status: 'waiting', active: false, summary: '1 agent · 1 waiting' },
+      ],
+    };
+  }
+
+  /** One agent, status 'waiting', carrying the live-tool fields the pinned
+   *  permission row reads. Built as a raw literal (not via the `agent()`
+   *  helper, whose local `Agent` type omits lastToolName/lastToolSummary —
+   *  same pattern the composer describe block above uses). */
+  function waitingModel() {
+    return {
+      source: 'workflow', containerId: 'wf_run1', sessionId: 'sess1', title: 'audit-run', metrics: '',
+      groups: [{
+        key: 'wf_run1', title: null,
+        agents: [{
+          agentId: 'agent001', label: 'research-agent', status: 'waiting',
+          tokens: 0, toolCalls: 0, durationMs: null, model: '',
+          lastToolName: 'Bash', lastToolSummary: 'rm -rf build/',
+        }],
+      }],
+    };
+  }
+
+  const KEY1 = 'workflow:wf_run1|wf_run1|agent001';
+
+  it('view row renders chips with counts and collapse/overflow behaviour', () => {
+    sendRender(logModel());
+    const chips = qa('.wf-view-chip');
+    expect(chips.length).toBe(3); // expanded by default — nothing folded yet
+    const active = chips.find(c => c.classList.contains('active'))!;
+    expect(active.querySelector('.wf-view-count')!.textContent).toBe('2');
+
+    // Collapse: the active chip and the WAITING one are kept; the DONE,
+    // non-active one folds into a "+1" overflow chip.
+    q('.wf-view-collapse')!.click();
+    const collapsedIds = qa('.wf-view-chip').map(c => c.dataset.viewId);
+    expect(collapsedIds).toContain('wf_run1');
+    expect(collapsedIds).toContain('wf_run2');
+    expect(collapsedIds).not.toContain('subs');
+    const more = q('.wf-view-chip.more')!;
+    expect(more.textContent).toContain('+1');
+
+    // The overflow chip re-expands the row.
+    more.click();
+    expect(qa('.wf-view-chip').length).toBe(3);
+  });
+
+  it('permission row appears for a waiting agent, survives kind filters, and is absent otherwise', () => {
+    sendRender(waitingModel());
+    const perm = q('.wf-permrow')!;
+    expect(perm).not.toBeNull();
+    expect(perm.textContent).toContain('research-agent');
+    expect(perm.textContent).toContain('Bash');
+
+    // Toggling a facet kind filter off must not touch the pinned row — it
+    // isn't part of the filtered .wf-log region at all.
+    q('.wf-facet-kind[data-kind="text"]')!.click();
+    expect(q('.wf-permrow')).not.toBeNull();
+
+    // No waiting agent anywhere in the model → no row.
+    sendRender(logModel());
+    expect(q('.wf-permrow')).toBeNull();
+  });
+
+  it('agent strip selection posts viewAgent and renders the selected agent\'s entries', () => {
+    sendRender(logModel()); // agent001 auto-selected
+    postedMessages.length = 0;
+    qa('.wf-agent-pill').find(p => p.dataset.agent === 'agent002')!.click();
+    const req = (postedMessages as any[]).find(m => m.type === 'viewAgent' && m.agentId === 'agent002');
+    expect(req).toBeTruthy();
+    expect(q('.wf-agent-pill.active')!.dataset.agent).toBe('agent002');
+
+    sendTranscript('workflow:wf_run1|wf_run1|agent002', [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:05Z', role: 'assistant', content: 'reply text here', kind: 'text' },
+    ]);
+    expect(q('.wf-log')!.textContent).toContain('reply text here');
+  });
+
+  it('kind filters hide/show rows', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: 'some prose here', kind: 'text' },
+      { timestamp: '2026-06-10T10:00:02Z', role: 'assistant', content: '> **Bash** rm -rf build/', kind: 'tool_use', toolName: 'Bash' },
+    ]);
+    expect(q('.wf-log')!.textContent).toContain('some prose here');
+    expect(q('.wf-log')!.textContent).toContain('Bash');
+
+    q('.wf-facet-kind[data-kind="text"]')!.click();
+    expect(q('.wf-log')!.textContent).not.toContain('some prose here');
+    expect(q('.wf-log')!.textContent).toContain('Bash'); // the tool row is a different bucket
+  });
+
+  it('search filters rows and highlights matches', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: 'alpha content line', kind: 'text' },
+      { timestamp: '2026-06-10T10:00:02Z', role: 'assistant', content: 'beta content line', kind: 'text' },
+    ]);
+    const input = q('.wf-facet-search-input') as HTMLInputElement;
+    input.value = 'alpha';
+    // Delegated on #wf-root (like the click/keydown listeners) — a REAL
+    // browser 'input' event bubbles by default; jsdom's Event constructor
+    // does not unless told to.
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(q('.wf-log')!.textContent).toContain('alpha');
+    expect(q('.wf-log')!.textContent).not.toContain('beta content line');
+    const hl = q('.wf-hl');
+    expect(hl).not.toBeNull();
+    expect(hl!.textContent!.toLowerCase()).toBe('alpha');
+  });
+
+  it('row expansion reveals rawInput/rawOutput in place and sets aria-expanded', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Edit** detailView.css',
+        kind: 'tool_use', toolName: 'Edit', rawInput: '{"old_string":"a"}', rawOutput: 'Error: not unique',
+      },
+    ]);
+    const row = qa('.wf-log-row').find(r => r.textContent!.includes('Edit'))!;
+    expect(row.getAttribute('aria-expanded')).toBe('false');
+    expect(q('.wf-log-expand')).toBeNull();
+
+    row.click();
+    // The click rebuilds the DOM (render() → innerHTML) — re-query, don't
+    // reuse the (now detached) `row` reference.
+    const rowAfter = qa('.wf-log-row').find(r => r.textContent!.includes('Edit'))!;
+    expect(rowAfter.getAttribute('aria-expanded')).toBe('true');
+    const expand = q('.wf-log-expand')!;
+    expect(expand.textContent).toContain('old_string');
+    expect(expand.textContent).toContain('not unique');
+  });
+
+  it('error rows get the err class', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:01Z', role: 'tool', content: '> **Tool result**: boom', kind: 'tool_result', isError: true },
+    ]);
+    expect(qa('.wf-log-row.err')).toHaveLength(1);
+  });
+
+  it('renders mm:ss.s offsets relative to the first entry', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00.000Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:41.200Z', role: 'assistant', content: 'later', kind: 'text' },
+    ]);
+    const times = qa('.wf-log-t').map(t => t.textContent);
+    expect(times).toContain('00:00.0');
+    expect(times).toContain('00:41.2');
+  });
+
+  it('the classic-view toggle switches back to the old two-pane DOM (and back again)', () => {
+    sendRender(logModel());
+    expect(q('.wf-log-scroll')).not.toBeNull();
+    expect(q('.wf-2pane')).toBeNull();
+
+    q('.wf-mode-toggle')!.click();
+    expect(q('.wf-2pane')).not.toBeNull();
+    expect(q('.wf-nav-row')).not.toBeNull();
+    expect(q('.wf-log-scroll')).toBeNull();
+
+    q('.wf-mode-toggle')!.click();
+    expect(q('.wf-log-scroll')).not.toBeNull();
+    expect(q('.wf-2pane')).toBeNull();
   });
 });

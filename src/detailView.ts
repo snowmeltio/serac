@@ -44,6 +44,30 @@ declare function acquireVsCodeApi(): VsCodeApi;
   /** Inception-brief block collapsed in the reader. Default expanded (shown). */
   let briefCollapsed = false;
 
+  // ── Phase 2: log view (default) vs classic (temporary fallback) ─────
+  // DESIGN-DETAIL-PANE-V2.md forensic-log skeleton: a single-pane log replaces
+  // the two-pane navigator. Classic stays reachable for one release via the
+  // header-strip toggle while confidence builds; both render functions read the
+  // SAME selection/transcript-cache state below, so switching modes mid-session
+  // keeps the current agent selected.
+  let mode: 'log' | 'classic' = 'log';
+  /** View row (session-scoped switcher, mockup view 4/4b) collapsed to one line
+   *  with only the active + running/waiting chips shown, the rest folded into a
+   *  "+N" overflow chip. Expanded (false) by default — collapse is an explicit
+   *  space-saving choice, not the resting state. */
+  let viewRowCollapsed = false;
+  /** Log-mode kind filters (facet bar). All shown by default — hiding errors
+   *  by default would bury the one signal a "did it go wrong" scan needs most. */
+  const kindFilters: { text: boolean; tool: boolean; error: boolean; result: boolean } = {
+    text: true, tool: true, error: true, result: true,
+  };
+  let logSearch = '';
+  /** Row indices (within the selected agent's combined entries+suffix list)
+   *  expanded in place. Keyed by index, not identity, so it must be cleared on
+   *  every agent change (see renderLogMode) — index 3 means nothing once the
+   *  selection moves to a different agent's entry list. */
+  const expandedRows = new Set<number>();
+
   // ── Webview state persistence ──────────────────────────────────────
   // The panel webview is rebuilt whenever its tab is re-opened; vscode.setState
   // survives that (same pattern as the sidebar). Selection is restored only if
@@ -55,10 +79,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
     agentId?: string;
     navCollapsed?: boolean;
     briefCollapsed?: boolean;
+    mode?: 'log' | 'classic';
+    viewRowCollapsed?: boolean;
   }
   const persisted = (vscode.getState() ?? {}) as PersistedState;
   navCollapsed = persisted.navCollapsed === true;
   briefCollapsed = persisted.briefCollapsed === true;
+  mode = persisted.mode === 'classic' ? 'classic' : 'log';
+  viewRowCollapsed = persisted.viewRowCollapsed === true;
   /** One-shot selection restore, consumed by the first matching render. */
   let pendingRestore: { owner: string; groupKey: string; agentId: string } | null =
     (typeof persisted.owner === 'string' && typeof persisted.groupKey === 'string'
@@ -73,6 +101,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
       agentId: selectedAgentId ?? undefined,
       navCollapsed,
       briefCollapsed,
+      mode,
+      viewRowCollapsed,
     } satisfies PersistedState);
   }
   /** Identity of the drill-in the cache below belongs to. The cache key is only
@@ -613,7 +643,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return '<div class="wf-head">'
       + '<div class="wf-head-top">'
       + '<div class="wf-head-heading">' + escapeHtml(switcherHeading()) + '</div>'
+      + '<div class="wf-head-top-actions">'
+      + '<span class="wf-mode-toggle" role="button" tabindex="0" title="Switch to the log view">log view</span>'
       + '<div class="wf-openconv" role="button" tabindex="0" title="Open the parent agent session">↗ open parent session</div>'
+      + '</div>'
       + '</div>'
       + renderSwitcher(viewChips())
       + metrics
@@ -643,22 +676,44 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function captureFocus(): (() => void) | null {
     const active = document.activeElement as HTMLElement | null;
     if (!active || !root.contains(active)) { return null; }
+    // The search box IS the focused element (not a wrapper) — restore both
+    // focus and caret position, or every keystroke's re-render would bounce
+    // the cursor to the end of the field.
+    if (active.classList.contains('wf-facet-search-input')) {
+      const pos = (active as HTMLInputElement).selectionStart;
+      return () => {
+        const el = root.querySelector('.wf-facet-search-input') as HTMLInputElement | null;
+        if (!el) { return; }
+        el.focus();
+        if (pos !== null) { el.setSelectionRange(pos, pos); }
+      };
+    }
     const row = active.closest<HTMLElement>('.wf-nav-row');
     if (row) {
       const g = row.dataset.group ?? '';
       const a = row.dataset.agent ?? '';
       return () => focusNavRow(g, a);
     }
-    const chip = active.closest<HTMLElement>('.wf-switch-chip');
+    const pill = active.closest<HTMLElement>('.wf-agent-pill');
+    if (pill) {
+      const g = pill.dataset.group ?? '';
+      const a = pill.dataset.agent ?? '';
+      return () => focusAgentPill(g, a);
+    }
+    const chip = active.closest<HTMLElement>('.wf-switch-chip, .wf-view-chip');
     if (chip) {
       const id = chip.dataset.viewId;
+      const cls = chip.classList.contains('wf-view-chip') ? 'wf-view-chip' : 'wf-switch-chip';
       return () => {
-        for (const el of Array.from(root.querySelectorAll<HTMLElement>('.wf-switch-chip'))) {
+        for (const el of Array.from(root.querySelectorAll<HTMLElement>('.' + cls))) {
           if (el.dataset.viewId === id) { el.focus(); return; }
         }
       };
     }
-    for (const cls of ['wf-nav-toggle', 'wf-brief-head', 'wf-openconv'] as const) {
+    for (const cls of [
+      'wf-nav-toggle', 'wf-brief-head', 'wf-openconv', 'wf-mode-toggle',
+      'wf-view-collapse', 'wf-facet-foldall',
+    ] as const) {
       if (active.closest('.' + cls)) {
         return () => { (root.querySelector('.' + cls) as HTMLElement | null)?.focus(); };
       }
@@ -666,7 +721,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return null;
   }
 
+  /** Mode dispatcher — the single entry point every message handler and event
+   *  listener calls. Both modes share selection state, the transcript cache,
+   *  and the refresh loop; only the markup and scroll-container differ. */
   function render(): void {
+    if (mode === 'classic') { renderClassicMode(); } else { renderLogMode(); }
+  }
+
+  function renderClassicMode(): void {
     const refocus = captureFocus();
     const prevReader = root.querySelector('.wf-reader') as HTMLElement | null;
     const prevNav = root.querySelector('.wf-nav') as HTMLElement | null;
@@ -724,6 +786,401 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (newNav && navTop) { newNav.scrollTop = navTop; }
     // The owed top-reset is consumed only once the selected transcript has
     // settled (ready or error); a loading placeholder keeps it pending.
+    const st = selKey ? transcripts.get(selKey) : undefined;
+    if (!st || st.state !== 'loading') { pendingTopOnSettle = false; }
+    lastRenderedKey = selKey;
+    refocus?.();
+    updateComposer();
+  }
+
+  // ── Log view (Phase 2, default mode) ─────────────────────────────────
+  // Single-pane forensic log: view row → header strip → pinned permission row
+  // → agent strip → facet bar → the log. DESIGN-DETAIL-PANE-V2.md §4a. Shares
+  // selection, the transcript cache, and the refresh loop with classic mode
+  // (above) — only the markup and the scroll container differ.
+
+  /** Leading integer off a host-computed roll-up summary ("12 agents · 9
+   *  done · 1 failed", `rollupSummary()` in detailPanel.ts) — the view row's
+   *  agent-count badge. Blank when the view carries no summary (e.g. a
+   *  same-session synthesised chip). */
+  function viewCount(summary?: string): string {
+    if (!summary) { return ''; }
+    const m = /^(\d+)/.exec(summary);
+    return m ? m[1] : '';
+  }
+
+  function renderViewChip(v: DetailViewChoice): string {
+    const dot = dotClass(v.status);
+    const tag = v.kind === 'workflow' ? 'wf' : v.kind === 'team' ? 'team' : 'sub';
+    const count = viewCount(v.summary);
+    return '<span class="wf-view-chip' + (v.active ? ' active' : '') + '"'
+      + ' data-view-id="' + escapeHtml(v.id) + '" data-view-kind="' + escapeHtml(v.kind) + '"'
+      + ' role="button" tabindex="0"'
+      + ' title="' + escapeHtml(v.label) + ' · ' + escapeHtml(v.status)
+      + (v.summary ? '\n' + escapeHtml(v.summary) : '') + '">'
+      + '<span class="wf-view-tag ' + tag + '">' + tag + '</span>'
+      + '<span class="wf-dot ' + dot + '"></span>'
+      + '<span class="wf-view-label">' + escapeHtml(v.label) + '</span>'
+      + (count ? '<span class="wf-view-count">' + escapeHtml(count) + '</span>' : '')
+      + '</span>';
+  }
+
+  /** The view row (mockup 4/4b): every view this session owns — workflow runs,
+   *  the subagents view, the team roster — as one row of chips, ABOVE the
+   *  header strip (Murray, 2026-07-02: "1. what am I in, 2. its summary, 3.
+   *  everything else"). Collapsed keeps the active chip plus anything
+   *  running/waiting, folding the rest behind a "+N" overflow chip. Renders
+   *  nothing when the model carries no `views` (a plain team drill-in, which
+   *  has no cross-source switcher — same gate the classic switcher uses via
+   *  viewChips(), but the log view intentionally does NOT synthesise a
+   *  single-chip fallback for team: with only one thing to show, a one-chip
+   *  row is pure chrome the header strip already covers). */
+  function renderViewRow(): string {
+    if (!model || !model.views || model.views.length === 0) { return ''; }
+    const views = model.views;
+    let shown = views;
+    let overflow = 0;
+    if (viewRowCollapsed) {
+      shown = views.filter(v => v.active || v.status === 'running' || v.status === 'waiting');
+      overflow = views.length - shown.length;
+    }
+    let html = '<div class="wf-view-row' + (viewRowCollapsed ? ' collapsed' : '') + '" role="tablist" aria-label="Views in this session">';
+    for (const v of shown) { html += renderViewChip(v); }
+    if (viewRowCollapsed && overflow > 0) {
+      html += '<span class="wf-view-chip more" role="button" tabindex="0"'
+        + ' title="Show ' + overflow + ' more view' + (overflow === 1 ? '' : 's') + '">+' + overflow + '</span>';
+    }
+    html += '<span class="wf-view-collapse" role="button" tabindex="0"'
+      + ' title="' + (viewRowCollapsed ? 'Expand view row' : 'Collapse view row') + '">'
+      + (viewRowCollapsed ? '⌄ expand' : '⌃ collapse') + '</span>';
+    return html + '</div>';
+  }
+
+  /** Roll-up across every agent in every group (workflow phases included) —
+   *  the header strip's live counts and totals are session-view-wide, not
+   *  scoped to the selected agent (that's the agent strip's job). */
+  function headerAgg(): {
+    running: number; waiting: number; done: number; failed: number;
+    tokens: number; durationMs: number | null; model: string; pillStatus: string;
+  } {
+    const agents = allAgents();
+    let running = 0, waiting = 0, done = 0, failed = 0, tokens = 0;
+    let maxDur: number | null = null;
+    const models = new Set<string>();
+    for (const a of agents) {
+      if (a.status === 'running') { running++; }
+      else if (a.status === 'waiting') { waiting++; }
+      else if (a.status === 'failed') { failed++; }
+      else { done++; } // done/stale roll up to "done" in the glance count
+      tokens += a.tokens;
+      if (a.durationMs !== null) { maxDur = maxDur === null ? a.durationMs : Math.max(maxDur, a.durationMs); }
+      if (a.model) { models.add(a.model); }
+    }
+    // A shared model across every agent is worth naming; a mixed run isn't
+    // attributable to one label, so it's omitted rather than picking one.
+    const modelLabel = models.size === 1 ? formatModelLabel([...models][0]) : '';
+    const pillStatus = running > 0 ? 'running' : waiting > 0 ? 'waiting' : failed > 0 ? 'failed' : 'done';
+    return { running, waiting, done, failed, tokens, durationMs: maxDur, model: modelLabel, pillStatus };
+  }
+
+  /** Header strip (mockup §2): source badge, container name, status pill, live
+   *  counts, duration/tokens/model. Replaces the classic `.wf-head` heading +
+   *  metrics block in log mode. */
+  function renderHeaderStrip(): string {
+    if (!model) { return ''; }
+    const agg = headerAgg();
+    const badge = model.source === 'workflow' ? 'workflow' : model.source === 'team' ? 'team' : 'subagent';
+    const metaBits: string[] = [];
+    const dur = fmtDuration(agg.durationMs);
+    if (dur) { metaBits.push(dur); }
+    if (agg.tokens > 0) { metaBits.push(fmtTokens(agg.tokens) + ' tokens'); }
+    if (agg.model) { metaBits.push(escapeHtml(agg.model)); }
+    return '<div class="wf-hstrip">'
+      + '<span class="wf-hstrip-badge">' + escapeHtml(badge) + '</span>'
+      + '<span class="wf-hstrip-name">' + escapeHtml(model.title) + '</span>'
+      + '<span class="wf-hstrip-pill status-' + agg.pillStatus + '">' + escapeHtml(agg.pillStatus) + '</span>'
+      + '<span class="wf-hstrip-counts">' + agg.running + ' running · ' + agg.waiting + ' waiting · ' + agg.done + ' done</span>'
+      + '<span class="wf-hstrip-meta">' + metaBits.join(' · ') + '</span>'
+      + '<span class="wf-openconv wf-hstrip-openconv" role="button" tabindex="0" title="Open the parent agent session">↗ session</span>'
+      + '<span class="wf-mode-toggle" role="button" tabindex="0" title="Switch to the classic view">classic view</span>'
+      + '</div>';
+  }
+
+  /** Pinned permission row (mockup §1/§2): shown whenever ANY agent, in ANY
+   *  group, is `waiting` — independent of the selected agent, and never
+   *  affected by the facet-bar filters or the log's scroll position (it isn't
+   *  part of the scrolling `.wf-log-scroll` region at all). Multiple waiting
+   *  agents show the first encountered (groups render oldest-run-first) with
+   *  a "+n more" suffix — there is no waiting-since timestamp on
+   *  DetailAgentView to sort by or age against, so elapsed-since is omitted
+   *  rather than fabricated (deviation from the mockup's "18s ago", noted in
+   *  the Phase 2 report). */
+  function renderPermRow(): string {
+    const waiting = allAgents().filter(a => a.status === 'waiting');
+    if (waiting.length === 0) { return ''; }
+    const first = waiting[0];
+    const extra = waiting.length - 1;
+    const toolBit = first.lastToolName
+      ? escapeHtml(first.lastToolName) + (first.lastToolSummary ? ' ' + escapeHtml(first.lastToolSummary) : '')
+      : 'a tool';
+    return '<div class="wf-permrow" role="status">'
+      + '<span class="wf-permrow-icon" aria-hidden="true">⚠</span>'
+      + '<span class="wf-permrow-who">' + escapeHtml(first.label) + '</span>'
+      + '<span>waiting on permission:</span>'
+      + '<span class="wf-permrow-cmd">' + toolBit + '</span>'
+      + (extra > 0 ? '<span class="wf-permrow-extra">+' + extra + ' more</span>' : '')
+      + '</div>';
+  }
+
+  function renderAgentPill(groupKey: string, a: DetailAgentView): string {
+    const active = groupKey === selectedGroupKey && a.agentId === selectedAgentId;
+    const badge = a.teammate ? '<span class="wf-teammate-badge" title="Agent Team member">team</span>' : '';
+    const nameWithStatus = a.label + ' · ' + a.status;
+    return '<span class="wf-agent-pill' + (active ? ' active' : '') + '"'
+      + ' data-group="' + escapeHtml(groupKey) + '" data-agent="' + escapeHtml(a.agentId) + '"'
+      + ' role="button" tabindex="' + (active ? '0' : '-1') + '"'
+      + ' title="' + escapeHtml(nameWithStatus) + '" aria-label="' + escapeHtml(nameWithStatus) + '"'
+      + (active ? ' aria-current="true"' : '') + '>'
+      + statusDot(a.status)
+      + '<span class="wf-agent-pill-label">' + escapeHtml(a.label) + '</span>'
+      + badge + '</span>';
+  }
+
+  /** Agent strip: the old left-nav's job in one row. Grouped by phase for a
+   *  workflow (group.title set), flat for subagents/team. Roving tabindex —
+   *  ArrowLeft/ArrowRight (see the keydown handler), mirroring the classic
+   *  nav's Up/Down (UX-3). */
+  function renderAgentStrip(): string {
+    if (!model) { return ''; }
+    let html = '<div class="wf-agentstrip" role="tablist" aria-label="Agents">';
+    for (const g of model.groups) {
+      if (g.title !== null) { html += '<span class="wf-agentstrip-phase">' + escapeHtml(g.title) + '</span>'; }
+      for (const a of g.agents) { html += renderAgentPill(g.key, a); }
+    }
+    return html + '</div>';
+  }
+
+  /** Focus an agent-strip pill by identity (mirrors focusNavRow). */
+  function focusAgentPill(groupKey: string, agentId: string): void {
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('.wf-agent-pill'))) {
+      if (el.dataset.group === groupKey && el.dataset.agent === agentId) { el.focus(); return; }
+    }
+  }
+
+  interface LogRow { entry: TranscriptEntry; idx: number; isBrief: boolean; isResult: boolean }
+
+  /** The selected agent's entries + inbox suffix as flat, index-stable rows,
+   *  with the inception brief and the terminal result flagged for distinct
+   *  styling (mockup §2's brief/RESULT treatment) — NOT filtered yet; facet
+   *  filtering happens in renderLogRows so the counts in the facet bar can be
+   *  computed over the same set. `idx` is the position in the combined
+   *  entries+suffix array — stable across a streaming append (which only ever
+   *  grows the array), which is what makes expandedRows (keyed by idx) safe to
+   *  keep across a live re-render. */
+  function buildLogRows(agent: DetailAgentView): LogRow[] {
+    const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
+    const entries = (st && st.state === 'ready') ? st.entries : [];
+    const suffix = (st && st.state === 'ready') ? st.suffix : [];
+    const all = [...entries, ...suffix];
+    // Same rule as the classic reader's inception brief: the first genuine
+    // prompt turn (tool_result plumbing rides in as role 'tool', never 'user').
+    const briefIdx = all.findIndex(e => e.role === 'user');
+    const rows: LogRow[] = all.map((e, i) => ({ entry: e, idx: i, isBrief: i === briefIdx, isResult: false }));
+    // Terminal result treatment (mockup §2's ✔ RESULT row): the last entry of
+    // a finished agent, or a synthesised row from the sidecar's resultPreview
+    // when the transcript hasn't produced one (no JSONL record type maps to
+    // TranscriptEntry.kind 'result' today — see detailShared.ts).
+    const terminal = agent.status === 'done' || agent.status === 'failed' || agent.status === 'stale';
+    if (terminal && rows.length > 0) {
+      const last = rows[rows.length - 1];
+      if (!last.isBrief) { last.isResult = true; }
+    } else if (terminal && rows.length === 0 && agent.resultPreview) {
+      rows.push({ entry: { timestamp: '', role: 'assistant', content: agent.resultPreview, kind: 'result' }, idx: -1, isBrief: false, isResult: true });
+    }
+    return rows;
+  }
+
+  /** Which facet-bar bucket a row counts under. Mutually exclusive so the
+   *  bar's per-bucket counts sum to the row total: an error pre-empts its
+   *  underlying tool/text kind (the mockup's Error(1) is a SUBSET call-out,
+   *  but the checkbox model here is a partition, not an overlay — simpler to
+   *  reason about and to keep counts additive). */
+  function facetBucket(e: TranscriptEntry): 'text' | 'tool' | 'error' | 'result' {
+    if (e.isError) { return 'error'; }
+    if (e.kind === 'result') { return 'result'; }
+    if (e.kind === 'tool_use' || e.kind === 'tool_result' || e.kind === 'task') { return 'tool'; }
+    if (e.kind === 'text') { return 'text'; }
+    return e.role === 'tool' ? 'tool' : 'text'; // fallback for kind-less legacy entries
+  }
+
+  function rowVisible(e: TranscriptEntry): boolean {
+    if (!kindFilters[facetBucket(e)]) { return false; }
+    const q = logSearch.trim().toLowerCase();
+    if (!q) { return true; }
+    return (e.content + ' ' + (e.toolName || '')).toLowerCase().includes(q);
+  }
+
+  /** Facet bar: kind filters (with live counts over the unfiltered row set),
+   *  fold-all/expand-all, and the search box. Absent when no agent is
+   *  selected — there is nothing to filter. */
+  function renderFacets(agent: DetailAgentView): string {
+    const rows = buildLogRows(agent);
+    const counts = { text: 0, tool: 0, error: 0, result: 0 };
+    for (const r of rows) { counts[facetBucket(r.entry)]++; }
+    const kindToggle = (k: 'text' | 'tool' | 'error' | 'result', label: string): string =>
+      '<span class="wf-facet-kind' + (kindFilters[k] ? ' on' : ' off') + '" data-kind="' + k + '"'
+      + ' role="checkbox" aria-checked="' + kindFilters[k] + '" tabindex="0">'
+      + (kindFilters[k] ? '☑' : '☐') + ' ' + label
+      + ' <span class="wf-facet-count">' + counts[k] + '</span></span>';
+    const anyExpanded = expandedRows.size > 0;
+    return '<div class="wf-facets">'
+      + kindToggle('text', 'Text') + kindToggle('tool', 'Tool') + kindToggle('error', 'Error') + kindToggle('result', 'Result')
+      + '<span class="wf-facet-foldall" role="button" tabindex="0" title="' + (anyExpanded ? 'Fold all expanded rows' : 'Expand all rows') + '">'
+      + (anyExpanded ? 'fold ▸' : 'expand ▾') + '</span>'
+      + '<span class="wf-facet-search">⌕ <input type="text" class="wf-facet-search-input" placeholder="search…" value="' + escapeHtml(logSearch) + '" /></span>'
+      + '</div>';
+  }
+
+  const RE_SPECIAL = /[.*+?^${}()|[\]\\]/g;
+  /** Wrap every case-insensitive match of `q` in `text` with a `.wf-hl` span.
+   *  Escapes both the display text and the search needle for HTML first, then
+   *  matches on the already-escaped strings — so a needle containing `&`/`<`
+   *  can neither break the match nor inject markup. */
+  function highlightSearch(text: string, q: string): string {
+    const esc = escapeHtml(text);
+    const query = q.trim();
+    if (!query) { return esc; }
+    const needle = escapeHtml(query).replace(RE_SPECIAL, '\\$&');
+    return esc.replace(new RegExp(needle, 'gi'), m => '<span class="wf-hl">' + m + '</span>');
+  }
+
+  /** mm:ss.s offset from `baseMs` (mockup's relative-timestamp column). Empty
+   *  string when either side is unparseable — the row just shows no time
+   *  rather than a misleading 00:00.0. */
+  function fmtOffset(ms: number): string {
+    if (!isFinite(ms) || ms < 0) { ms = 0; }
+    const tenths = Math.round(ms / 100);
+    const m = Math.floor(tenths / 600);
+    const rem = tenths - m * 600;
+    const s = Math.floor(rem / 10);
+    const t = rem % 10;
+    return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') + '.' + t;
+  }
+
+  /** Row glyph + its kind class — the primary channel (mockup §4a), colour is
+   *  reinforcement only: an error and a tool call are different SYMBOLS
+   *  (✗ vs ⚙), not just different colours (WCAG 1.4.1). */
+  function logGlyph(e: TranscriptEntry, isResult: boolean): { glyph: string; cls: string } {
+    if (e.isError) { return { glyph: '✗', cls: 'k-err' }; }
+    if (isResult || e.kind === 'result') { return { glyph: '✔', cls: 'k-res' }; }
+    if (e.kind === 'task') { return { glyph: '▶', cls: 'k-task' }; }
+    if (e.kind === 'tool_use' || e.kind === 'tool_result' || e.role === 'tool') { return { glyph: '⚙', cls: 'k-tool' }; }
+    return { glyph: '💬', cls: 'k-text' };
+  }
+
+  /** `content` already carries the transcript renderer's "> **Name** summary"
+   *  / "> **Tool result** (id): summary" convention (transcriptRenderer.ts) —
+   *  the row's own glyph + bold toolName already say WHAT this is, so strip
+   *  that marker rather than showing it twice. Collapsed to one line: the log
+   *  row is a single line, ellipsis-truncated by CSS. */
+  function logRowLabel(e: TranscriptEntry): string {
+    const oneLine = e.content.replace(/\r?\n+/g, ' ').trim();
+    return oneLine.replace(/^>\s*\*\*[^*]+\*\*\s*/, '').replace(/^>\s*/, '');
+  }
+
+  function renderExpandedBlock(e: TranscriptEntry): string {
+    let html = '<div class="wf-log-expand">';
+    if (e.rawInput) { html += '<div class="wf-log-expand-h">input</div><pre class="wf-log-expand-pre">' + escapeHtml(e.rawInput) + '</pre>'; }
+    if (e.rawOutput) {
+      html += '<div class="wf-log-expand-h">' + (e.isError ? 'tool_result (error)' : 'tool_result') + '</div>'
+        + '<pre class="wf-log-expand-pre">' + escapeHtml(e.rawOutput) + '</pre>';
+    }
+    return html + '</div>';
+  }
+
+  function renderLogRow(r: LogRow, baseTs: number): string {
+    const e = r.entry;
+    const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
+    const timeLabel = (!isNaN(t) && !isNaN(baseTs)) ? fmtOffset(t - baseTs) : '';
+    const glyph = logGlyph(e, r.isResult);
+    const hasExpand = !!(e.rawInput || e.rawOutput);
+    const expanded = hasExpand && expandedRows.has(r.idx);
+    const toolBit = e.toolName ? '<b>' + escapeHtml(e.toolName) + '</b> ' : '';
+    const label = highlightSearch(logRowLabel(e), logSearch);
+    const classes = ['wf-log-row'];
+    if (e.isError) { classes.push('err'); }
+    if (r.isBrief) { classes.push('brief'); }
+    if (r.isResult) { classes.push('result'); }
+    if (expanded) { classes.push('expanded'); }
+    let html = '<div class="' + classes.join(' ') + '" data-idx="' + r.idx + '"'
+      + ' role="button" tabindex="0" aria-expanded="' + (hasExpand ? String(expanded) : 'false') + '">'
+      + '<span class="wf-log-t">' + escapeHtml(timeLabel) + '</span>'
+      + '<span class="wf-log-glyph ' + glyph.cls + '">' + glyph.glyph + '</span>'
+      + '<span class="wf-log-body">'
+      + (r.isBrief ? '<span class="wf-log-tag">BRIEF</span> ' : '')
+      + (r.isResult ? '<span class="wf-log-tag">RESULT</span> ' : '')
+      + toolBit + label + '</span></div>';
+    if (expanded) { html += renderExpandedBlock(e); }
+    return html;
+  }
+
+  /** The log itself (mockup §4a's rest-of-pane): one row per entry, the brief
+   *  always shown (it isn't one of the four filterable kinds), everything
+   *  else subject to the facet bar's kind filters + search. */
+  function renderLogRows(agent: DetailAgentView): string {
+    const rows = buildLogRows(agent);
+    const baseTs = rows.length > 0 ? Date.parse(rows[0].entry.timestamp || '') : NaN;
+    let html = '<div class="wf-log">';
+    let shown = 0;
+    for (const r of rows) {
+      if (!r.isBrief && !rowVisible(r.entry)) { continue; }
+      shown++;
+      html += renderLogRow(r, baseTs);
+    }
+    if (shown === 0) { html += '<div class="wf-log-empty">No matching entries.</div>'; }
+    return html + '</div>';
+  }
+
+  function renderLogMode(): void {
+    const refocus = captureFocus();
+    const prevScroll = root.querySelector('.wf-log-scroll') as HTMLElement | null;
+    const prevTop = prevScroll ? prevScroll.scrollTop : 0;
+    const wasAtBottom = prevScroll
+      ? isNearBottom(prevScroll.scrollTop, prevScroll.clientHeight, prevScroll.scrollHeight, STICK_THRESHOLD_PX)
+      : false;
+    const selKey = (selectedGroupKey !== null && selectedAgentId !== null) ? tkey(selectedGroupKey, selectedAgentId) : null;
+    if (selKey !== lastRenderedKey) {
+      pendingTopOnSettle = true;
+      // Row indices are only stable WITHIN one agent's entry list (see
+      // buildLogRows) — carrying them across a selection change would expand
+      // the wrong rows (or none) once the new agent renders.
+      expandedRows.clear();
+    }
+    const isAgentChange = pendingTopOnSettle;
+
+    if (!model || model.groups.every(g => g.agents.length === 0)) {
+      root.innerHTML = renderViewRow() + renderHeaderStrip()
+        + '<div class="wf-empty">No agents to show for this view.</div>';
+      lastRenderedKey = null;
+      refocus?.();
+      updateComposer();
+      return;
+    }
+
+    const agent = findAgent(selectedGroupKey, selectedAgentId);
+    root.innerHTML = renderViewRow()
+      + renderHeaderStrip()
+      + renderPermRow()
+      + renderAgentStrip()
+      + (agent ? renderFacets(agent) : '')
+      + '<div class="wf-log-scroll">'
+      + (agent ? renderLogRows(agent) : '<div class="wf-log-empty">Select an agent to view its transcript.</div>')
+      + '</div>';
+
+    const newScroll = root.querySelector('.wf-log-scroll') as HTMLElement | null;
+    if (newScroll) {
+      newScroll.scrollTop = chooseReaderScrollTop({ isAgentChange, wasAtBottom, prevTop, scrollHeight: newScroll.scrollHeight });
+    }
     const st = selKey ? transcripts.get(selKey) : undefined;
     if (!st || st.state !== 'loading') { pendingTopOnSettle = false; }
     lastRenderedKey = selKey;
@@ -892,6 +1349,79 @@ declare function acquireVsCodeApi(): VsCodeApi;
       if (model) { vscode.postMessage({ type: 'openConversation', sessionId: model.sessionId }); }
       return;
     }
+    // ── Log view (Phase 2) ──────────────────────────────────────────
+    if (target.closest('.wf-mode-toggle')) {
+      mode = mode === 'log' ? 'classic' : 'log';
+      saveState();
+      render();
+      return;
+    }
+    if (target.closest('.wf-view-collapse')) {
+      viewRowCollapsed = !viewRowCollapsed;
+      saveState();
+      render();
+      return;
+    }
+    // Order matters: the overflow chip carries BOTH .wf-view-chip and .more —
+    // it must be checked before the generic .wf-view-chip switch-view branch.
+    if (target.closest('.wf-view-chip.more')) {
+      viewRowCollapsed = false;
+      saveState();
+      render();
+      return;
+    }
+    const viewChip2 = target.closest<HTMLElement>('.wf-view-chip');
+    if (viewChip2) {
+      if (!viewChip2.classList.contains('active')) {
+        vscode.postMessage({ type: 'selectDetailView', id: viewChip2.dataset.viewId!, kind: viewChip2.dataset.viewKind! });
+      }
+      return;
+    }
+    const agentPill = target.closest<HTMLElement>('.wf-agent-pill');
+    if (agentPill) {
+      selectAgent(agentPill.dataset.group!, agentPill.dataset.agent!);
+      return;
+    }
+    const facetKind = target.closest<HTMLElement>('.wf-facet-kind');
+    if (facetKind) {
+      const k = facetKind.dataset.kind as keyof typeof kindFilters;
+      kindFilters[k] = !kindFilters[k];
+      render();
+      return;
+    }
+    if (target.closest('.wf-facet-foldall')) {
+      const agent = findAgent(selectedGroupKey, selectedAgentId);
+      if (agent) {
+        if (expandedRows.size > 0) {
+          expandedRows.clear();
+        } else {
+          for (const r of buildLogRows(agent)) { if (r.entry.rawInput || r.entry.rawOutput) { expandedRows.add(r.idx); } }
+        }
+      }
+      render();
+      return;
+    }
+    const logRow = target.closest<HTMLElement>('.wf-log-row');
+    if (logRow) {
+      const idx = Number(logRow.dataset.idx);
+      if (!Number.isNaN(idx)) {
+        if (expandedRows.has(idx)) { expandedRows.delete(idx); } else { expandedRows.add(idx); }
+        render();
+      }
+      return;
+    }
+  });
+
+  // The search box re-renders on every keystroke (filtering is cheap at the
+  // sizes this view targets — Phase 5 in DESIGN-DETAIL-PANE-V2.md defers
+  // virtualisation until a real transcript demonstrates the need); caret
+  // position is restored by captureFocus/refocus in renderLogMode.
+  root.addEventListener('input', (e: Event) => {
+    const target = e.target as HTMLElement;
+    if (target.classList && target.classList.contains('wf-facet-search-input')) {
+      logSearch = (target as HTMLInputElement).value;
+      render();
+    }
   });
 
   root.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -914,8 +1444,29 @@ declare function acquireVsCodeApi(): VsCodeApi;
       }
       return;
     }
+    // Agent strip (log view): ArrowLeft/ArrowRight, same idiom as the classic
+    // nav's Up/Down — a horizontal strip walks horizontally.
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      const pill = target.closest<HTMLElement>('.wf-agent-pill');
+      if (pill && model) {
+        e.preventDefault();
+        const flat: Array<{ groupKey: string; agentId: string }> = [];
+        for (const g of model.groups) { for (const a of g.agents) { flat.push({ groupKey: g.key, agentId: a.agentId }); } }
+        const idx = flat.findIndex(x => x.groupKey === pill.dataset.group && x.agentId === pill.dataset.agent);
+        const next = idx === -1 ? undefined : flat[idx + (e.key === 'ArrowRight' ? 1 : -1)];
+        if (next) {
+          selectAgent(next.groupKey, next.agentId);
+          focusAgentPill(next.groupKey, next.agentId);
+        }
+      }
+      return;
+    }
     if (e.key !== 'Enter' && e.key !== ' ') { return; }
-    const activatable = target.closest('.wf-nav-row, .wf-openconv, .wf-switch-chip, .wf-nav-toggle, .wf-brief-head');
+    const activatable = target.closest(
+      '.wf-nav-row, .wf-openconv, .wf-switch-chip, .wf-nav-toggle, .wf-brief-head, '
+      + '.wf-view-chip, .wf-view-collapse, .wf-mode-toggle, .wf-agent-pill, '
+      + '.wf-facet-kind, .wf-facet-foldall, .wf-log-row',
+    );
     if (activatable) {
       e.preventDefault();
       (activatable as HTMLElement).click();
@@ -1006,7 +1557,12 @@ declare function acquireVsCodeApi(): VsCodeApi;
       // structure when no user entry existed yet (promptPreview fallback) and
       // one arrives now — pin-out then needs a full render.
       const briefStable = existing.entries.some(e => e.role === 'user') || !delta.some(e => e.role === 'user');
-      const canFastAppend = key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')
+      // Classic-only optimisation: the log view's rows (timestamps, facet
+      // counts, the terminal RESULT row) are cheap enough to fully rebuild —
+      // see the `render()` call below, which dispatches to renderLogMode() —
+      // and .wf-reader-body only ever exists in classic mode anyway.
+      const canFastAppend = mode === 'classic'
+        && key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')
         && existing.entries.length > 0
         && briefStable
         && root.querySelector('.wf-reader-body') !== null;

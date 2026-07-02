@@ -401,7 +401,12 @@ export class DetailPanel {
     const agents: DetailAgentView[] = tracked.map(s => ({
       agentId: s.agentId as string,
       label: s.description || (s.agentId as string).slice(0, 10),
-      status: s.running ? 'running' : 'done',
+      // 'waiting' (not just running/done): the Phase 2 log view's pinned
+      // permission row (DESIGN-DETAIL-PANE-V2.md) is driven purely off
+      // DetailAgentView.status, so a plain subagent blocked on a permission
+      // prompt must surface it — same mapping panelRender.ts already uses
+      // for the sidebar's subagent rows.
+      status: s.running ? (s.waitingOnPermission ? 'waiting' : 'running') : 'done',
       tokens: 0,
       toolCalls: s.toolsCompleted,
       durationMs: null,

@@ -678,6 +678,22 @@ describe('DetailPanel', () => {
       expect(m.metrics).toContain('3 subagents');
       expect(m.metrics).toContain('1 running'); // running count from tracked only
     });
+
+    it('maps a running-but-waiting-on-permission subagent to status "waiting" (Phase 2 permission row)', () => {
+      // The log view's pinned permission row (DESIGN-DETAIL-PANE-V2.md) is
+      // driven purely off DetailAgentView.status — a plain subagent blocked
+      // on a permission prompt must surface as 'waiting', not 'running',
+      // same mapping panelRender.ts already uses for the sidebar.
+      const session = makeSession({
+        subagents: [
+          { parentToolUseId: 't2', agentId: 'sa2', description: 'explore db', running: true, waitingOnPermission: true, startedAt: 1000, resultPreview: null, toolsCompleted: 2, blocking: false },
+        ] as any,
+      });
+      const h = setup({ getSession: vi.fn(() => session) });
+      h.panel.show('subagents', 'sess-1', 'sess-1');
+      const m = h.lastModel();
+      expect(m.groups[0].agents.find((a: any) => a.agentId === 'sa2')).toMatchObject({ status: 'waiting' });
+    });
   });
 
   describe('teammate framing + liveness (composer gate inputs)', () => {
