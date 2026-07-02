@@ -1602,6 +1602,147 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(css).toMatch(/\.wf-log-row\.prose\.expanded\s*{/);
     expect(css).not.toMatch(/\.wf-log-row\.expanded\s*{/);
   });
+
+  // ── Narrow-width hardening (Phase 2.5) ───────────────────────────────
+
+  it('header counts drop zero segments: a finished run reads "N done", a live run only what IS, failed surfaces', () => {
+    // Finished: 6 done, nothing else — no "0 running · 0 waiting" noise.
+    const m = logModel() as any;
+    m.groups = [{
+      key: 'wf_run1', title: null,
+      agents: Array.from({ length: 6 }, (_, i) => agent({ agentId: 'a' + i, label: 'agent-' + i, status: 'done' })),
+    }];
+    sendRender(m);
+    expect(q('.wf-hstrip-counts')!.textContent).toBe('6 done');
+
+    // Live: running + done only.
+    const m2 = logModel() as any;
+    m2.groups = [{
+      key: 'wf_run1', title: null,
+      agents: [
+        agent({ agentId: 'r1', label: 'one', status: 'running' }),
+        agent({ agentId: 'r2', label: 'two', status: 'running' }),
+        agent({ agentId: 'r3', label: 'three', status: 'running' }),
+        agent({ agentId: 'd1', label: 'four', status: 'done' }),
+        agent({ agentId: 'd2', label: 'five', status: 'done' }),
+      ],
+    }];
+    sendRender(m2);
+    expect(q('.wf-hstrip-counts')!.textContent).toBe('3 running · 2 done');
+
+    // Failed finally shows in the counts (headerAgg always tracked it).
+    const m3 = logModel() as any;
+    m3.groups = [{
+      key: 'wf_run1', title: null,
+      agents: [
+        agent({ agentId: 'f1', label: 'boom', status: 'failed' }),
+        agent({ agentId: 'd1', label: 'fine', status: 'done' }),
+      ],
+    }];
+    sendRender(m3);
+    expect(q('.wf-hstrip-counts')!.textContent).toBe('1 failed · 1 done');
+
+    // Degenerate all-zero roster reads "0 done", never an empty span.
+    const m4 = logModel() as any;
+    m4.groups = [{ key: 'wf_run1', title: null, agents: [] }];
+    sendRender(m4);
+    expect(q('.wf-hstrip-counts')!.textContent).toBe('0 done');
+  });
+
+  it('header strip is atomic: body wrapper, ellipsis title with tooltip, meta bits as separate nowrap spans', () => {
+    const m = logModel() as any;
+    m.groups[0].agents = [
+      agent({ agentId: 'agent001', label: 'audit:privacy', tokens: 1500, durationMs: 65000, model: 'claude-opus-4-5' }),
+      agent({ agentId: 'agent002', label: 'audit:security', status: 'running', tokens: 1500, durationMs: 5000, model: 'claude-opus-4-5' }),
+    ];
+    sendRender(m);
+    // Everything after the rail label sits in the wrapping body — that is
+    // what keeps continuation lines indented to the rail at narrow widths.
+    const name = q('.wf-hstrip-name')!;
+    expect(name.parentElement!.classList.contains('wf-hstrip-body')).toBe(true);
+    expect(name.getAttribute('title')).toBe('audit-run'); // full name rides the tooltip
+    expect(q('.wf-hstrip-body .wf-mode-toggle')).not.toBeNull();
+    // Meta: duration + tokens + shared model = three atomic items; the
+    // separator dot rides INSIDE each non-first span, never orphaned.
+    const items = qa('.wf-hstrip-meta-item');
+    expect(items).toHaveLength(3);
+    expect(items[0].textContent).toBe('1m 5s');
+    expect(items[1].textContent).toBe('· 3.0k tokens');
+    for (const item of items.slice(1)) { expect(item.textContent).toMatch(/^· /); }
+    // The session button's word is hideable at narrow width; glyph + title remain.
+    const openconv = q('.wf-hstrip-openconv')!;
+    expect(openconv.querySelector('.wf-openconv-text')!.textContent).toBe('session');
+    // CSS contract: the title is the one unit that gives way (ellipsis).
+    const css = fs.readFileSync(path.join(process.cwd(), 'media', 'detailView.css'), 'utf-8');
+    expect(css).toMatch(/\.wf-hstrip-name\s*{[^}]*text-overflow:\s*ellipsis/);
+    expect(css).toMatch(/\.wf-hstrip-meta-item\s*{[^}]*white-space:\s*nowrap/);
+    expect(css).toMatch(/\.wf-hstrip-body\s*{[^}]*flex-wrap:\s*wrap/);
+  });
+
+  it('display-bar controls sit in their own wrapping body after the rail label', () => {
+    sendRender(logModel());
+    expect(q('.wf-facets > .wf-zone-label')).not.toBeNull(); // label outside the wrapper
+    const body = q('.wf-facets > .wf-facets-body')!;
+    expect(body).not.toBeNull();
+    expect(body.querySelectorAll('.wf-facet-kind')).toHaveLength(4);
+    expect(body.querySelector('.wf-facet-time')).not.toBeNull();
+    expect(body.querySelector('.wf-facet-foldall')).not.toBeNull();
+    expect(body.querySelector('.wf-facet-search')).not.toBeNull();
+    const css = fs.readFileSync(path.join(process.cwd(), 'media', 'detailView.css'), 'utf-8');
+    expect(css).toMatch(/\.wf-facets-body\s*{[^}]*flex-wrap:\s*wrap/);
+  });
+
+  it('narrow register: view row + agent strip collapse by default, explicit choices win, toggle writes explicit', async () => {
+    // Re-import with matchMedia stubbed NARROW (jsdom has none; the module
+    // guard treats its absence as wide, which is why every other test in
+    // this file exercises the wide register untouched).
+    const stubMatchMedia = (matches: boolean) => {
+      (window as any).matchMedia = (query: string) => ({
+        matches, media: query,
+        addEventListener: () => {}, removeEventListener: () => {},
+      });
+    };
+    try {
+      document.body.innerHTML = '<div id="wf-root"></div>';
+      vi.resetModules();
+      stubMatchMedia(true);
+      await import('./detailView.js');
+      sendRender(logModel());
+      // No explicit choice stored → the narrow default is collapsed.
+      expect(q('.wf-view-row')!.classList.contains('collapsed')).toBe(true);
+      expect(q('.wf-agentstrip')!.classList.contains('collapsed')).toBe(true);
+
+      // The collapse control toggles FROM the effective (collapsed) state
+      // and writes the explicit value.
+      q('.wf-zone-collapse[data-zone="views"]')!.click();
+      expect(q('.wf-view-row')!.classList.contains('collapsed')).toBe(false);
+      expect((webviewState as { viewRowCollapsed?: boolean | null }).viewRowCollapsed).toBe(false);
+      q('.wf-zone-collapse[data-zone="agents"]')!.click();
+      expect(q('.wf-agentstrip')!.classList.contains('collapsed')).toBe(false);
+      expect((webviewState as { agentStripCollapsed?: boolean | null }).agentStripCollapsed).toBe(false);
+
+      // A 1.16.0 user's persisted explicit false stays expanded at narrow —
+      // the stored boolean loads as an explicit choice.
+      document.body.innerHTML = '<div id="wf-root"></div>';
+      vi.resetModules();
+      webviewState = { viewRowCollapsed: false, agentStripCollapsed: false };
+      await import('./detailView.js');
+      sendRender(logModel());
+      expect(q('.wf-view-row')!.classList.contains('collapsed')).toBe(false);
+      expect(q('.wf-agentstrip')!.classList.contains('collapsed')).toBe(false);
+    } finally {
+      delete (window as any).matchMedia; // never leak narrow into later imports
+    }
+  });
+
+  it('CSS contract: the 720px narrow register exists — slimmer gutter, icon-only session, relaxed search', () => {
+    const css = fs.readFileSync(path.join(process.cwd(), 'media', 'detailView.css'), 'utf-8');
+    const media = css.match(/@media\s*\(max-width:\s*720px\)\s*{([\s\S]*?)\n}/);
+    expect(media).not.toBeNull();
+    expect(media![1]).toMatch(/--wf-gutter:\s*56px/);
+    expect(media![1]).toMatch(/\.wf-openconv-text\s*{\s*display:\s*none/);
+    expect(media![1]).toMatch(/\.wf-facet-search-input\s*{\s*min-width:\s*90px/);
+  });
 });
 
 describe('detailView.ts — native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V2.md)', () => {

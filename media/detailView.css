@@ -582,12 +582,15 @@ body {
   letter-spacing: 0.5px;
   color: var(--vscode-descriptionForeground);
 }
-/* In chip rows (top-aligned so wrap lines hang below the label) the 9px
- * label gets a nudge to optically centre against the first chip line; the
- * single-line facet bar and phase headers centre natively and need none. */
+/* In top-aligned rows (wrap lines hang below the label) the 9px label gets
+ * a nudge to optically centre against the first content line; phase headers
+ * centre natively and need none. Phase 2.5 made the header strip and
+ * display bar top-aligned wrappers too, so they join the list. */
 .wf-view-row > .wf-zone-label,
 .wf-agentstrip > .wf-zone-label,
-.wf-agentstrip-pills > .wf-zone-label { padding-top: 4px; }
+.wf-agentstrip-pills > .wf-zone-label,
+.wf-hstrip > .wf-zone-label,
+.wf-facets > .wf-zone-label { padding-top: 4px; }
 /* ── Shared zone collapse control (Phase 2.3) ──
  * The views row's bordered collapse/expand button, generalised — one visual
  * class for views, agents, and result. Font styles are self-contained so it
@@ -648,28 +651,45 @@ body {
 
 /* ── 2. Header strip ──
  * Leads with a .wf-zone-label gutter cell (Phase 2.3, the old bordered
- * source badge) so the strip sits on the same rail as views/agents/result;
- * single-line and centre-aligned, so no padding-top nudge is needed. */
+ * source badge) so the strip sits on the same rail as views/agents/result.
+ * Phase 2.5: everything after the label sits in a wrapping body (the view
+ * row's label + content-wrapper pattern), so at narrow widths WHOLE units
+ * flow onto continuation lines that indent to the rail — nothing shrinks
+ * into skinny internal columns. Every unit is atomic (nowrap); only the
+ * title gives way, by truncating. */
 .wf-hstrip {
   display: flex;
-  align-items: center;
+  align-items: flex-start; /* wrap lines hang below the label, like the view row */
   gap: 9px; /* rail gap, same as the other zone rows */
   padding: 7px 14px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   font-size: 12px;
 }
-.wf-hstrip-name { font-weight: 600; color: var(--vscode-editor-foreground, var(--vscode-foreground)); }
+.wf-hstrip-body { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; flex: 1; min-width: 0; }
+.wf-hstrip-name {
+  font-weight: 600;
+  color: var(--vscode-editor-foreground, var(--vscode-foreground));
+  flex: 0 1 auto; /* the one unit that gives way: truncates, never wraps */
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* Self-contained fill+text pills — contrast is against the pill's OWN
  * background, not the page, so no separate light-theme override is needed
  * (unlike the plain-text accent colours corrected below). */
-.wf-hstrip-pill { font-size: 9px; font-weight: 600; padding: 2px 7px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+.wf-hstrip-pill { font-size: 9px; font-weight: 600; padding: 2px 7px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap; flex-shrink: 0; }
 .wf-hstrip-pill.status-running { color: #fff; background: var(--sm-blizzard-blue); }
 .wf-hstrip-pill.status-done { color: #0c1b1b; background: var(--sm-teal-bright); }
 .wf-hstrip-pill.status-waiting { color: #4a2e12; background: var(--sm-frozen-peach); }
 .wf-hstrip-pill.status-failed { color: #fff; background: var(--sm-salmon-red); }
-.wf-hstrip-counts { color: var(--vscode-descriptionForeground); font-size: 11px; }
-.wf-hstrip-meta { color: var(--vscode-descriptionForeground); font-size: 11px; display: flex; gap: 10px; }
-.wf-hstrip-openconv { margin-left: auto; }
+.wf-hstrip-counts { color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+/* Meta bits are individually atomic (each item carries its own leading
+ * separator dot inside the nowrap unit) so they wrap BETWEEN facts, never
+ * inside one. */
+.wf-hstrip-meta { color: var(--vscode-descriptionForeground); font-size: 11px; display: flex; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.wf-hstrip-meta-item { white-space: nowrap; flex-shrink: 0; }
+.wf-hstrip-openconv { margin-left: auto; white-space: nowrap; flex-shrink: 0; }
 .wf-mode-toggle {
   flex-shrink: 0;
   font-size: 10px;
@@ -701,9 +721,11 @@ body {
   z-index: 1;
 }
 .wf-permrow-icon { color: var(--sm-orange, #d9a23a); }
-.wf-permrow-who { font-weight: 600; }
-.wf-permrow-cmd { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
-.wf-permrow-extra { color: var(--vscode-descriptionForeground); font-size: 10px; margin-left: auto; }
+.wf-permrow-who { font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+/* The command is the one permrow unit that gives way — truncated, never
+ * wrapped into a column (Phase 2.5 atomic sweep). */
+.wf-permrow-cmd { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+.wf-permrow-extra { color: var(--vscode-descriptionForeground); font-size: 10px; margin-left: auto; white-space: nowrap; flex-shrink: 0; }
 
 /* ── 3b. Result strip (Phase 3, mockup §2, DESIGN-DETAIL-PANE-V2.md) ──────
  * The verification anchor for the SELECTED agent — host-computed brief/
@@ -736,11 +758,19 @@ body {
  * 14px pane padding is already on .wf-rstrip) — same arithmetic as
  * .wf-log-expand. */
 .wf-rstrip-body { margin-left: calc(var(--wf-gutter) + 9px); }
+/* One atomic line (Phase 2.5): the summary soaks up the head's slack and
+ * truncates, so the inline mismatch and the collapse control can never be
+ * pushed out of the row at narrow widths. */
 .wf-rstrip-summary {
   text-transform: none;
   font-weight: 400;
   letter-spacing: normal;
   color: var(--vscode-descriptionForeground);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .wf-rstrip-brief { font-size: 11px; color: var(--vscode-descriptionForeground); margin-bottom: 6px; }
 .wf-rstrip-brief b { color: var(--vscode-foreground); font-weight: 500; }
@@ -804,6 +834,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 45%;
+  flex-shrink: 0; /* the summary gives way instead (Phase 2.5) */
 }
 
 /* ── 4. Agent strip ──
@@ -842,7 +873,10 @@ body {
   letter-spacing: 0.4px;
   color: var(--vscode-descriptionForeground);
 }
-.wf-agentstrip-count { opacity: 0.7; margin-left: auto; }
+/* The title truncates before the done/total count or collapse control ever
+ * leave the line (Phase 2.5 atomic sweep). */
+.wf-agentstrip-phasetitle { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wf-agentstrip-count { opacity: 0.7; margin-left: auto; white-space: nowrap; flex-shrink: 0; }
 .wf-agentstrip-pills { display: flex; align-items: flex-start; gap: 9px; }
 /* Pills wrap inside their own container so wrapped lines keep the rail. */
 .wf-agentstrip-pillwrap { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; flex: 1; min-width: 0; }
@@ -871,15 +905,19 @@ body {
  * row's "+N" chip. */
 .wf-agent-pill.more { border-style: dashed; color: var(--vscode-descriptionForeground); }
 
-/* ── 5. Facet bar ── */
+/* ── 5. Facet bar ──
+ * Phase 2.5: controls live in a wrapping body after the rail label (same
+ * pattern as the header strip) — whole toggles flow to continuation lines,
+ * a ☑ never splits from its label. */
 .wf-facets {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 9px; /* rail gap, same as the other zone rows (Phase 2.3) */
   padding: 5px 14px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
   font-size: 10.5px;
 }
+.wf-facets-body { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; flex: 1; min-width: 0; }
 .wf-facet-kind {
   display: inline-flex;
   align-items: center;
@@ -888,6 +926,8 @@ body {
   cursor: pointer;
   border-radius: 3px;
   padding: 1px 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .wf-facet-kind.off { opacity: 0.45; text-decoration: line-through; }
 .wf-facet-kind:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
@@ -906,6 +946,7 @@ body {
   border-radius: 3px;
   padding: 1px 4px;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .wf-facet-time:hover { color: var(--vscode-foreground); }
 .wf-facet-time:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
@@ -915,15 +956,23 @@ body {
   border-radius: 3px;
   padding: 1px 6px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .wf-facet-foldall:hover { color: var(--vscode-foreground); }
 .wf-facet-foldall:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+/* Grows into whatever the toggles leave (they are all flex-shrink: 0, no
+ * grow), input capped so a wrap line of its own stays sensible; content
+ * clusters right, preserving the old margin-left:auto placement. */
 .wf-facet-search {
   margin-left: auto;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 5px;
   color: var(--vscode-descriptionForeground);
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .wf-facet-search-input {
   font-family: var(--vscode-font-family);
@@ -933,7 +982,9 @@ body {
   border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.4));
   border-radius: 3px;
   padding: 2px 6px;
+  flex: 1 1 auto;
   min-width: 140px;
+  max-width: 220px;
 }
 .wf-facet-search-input:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 
@@ -1146,3 +1197,18 @@ body.vscode-light .wf-rstrip-del { color: #c93634; } /* 5.17:1, same salmon over
 body.vscode-light .wf-rstrip-bad { color: #c93634; } /* 5.17:1, same salmon override */
 body.vscode-light .wf-rstrip-mismatch-flag { color: #c93634; } /* 5.17:1, same salmon override */
 body.vscode-light .wf-rstrip-mismatch-inline { color: #c93634; } /* 5.17:1, same salmon override (Phase 2.2 collapsed form) */
+
+/* ── Narrow register (Phase 2.5) ─────────────────────────────────────────
+ * The webview is its own viewport, so a plain media query is the whole
+ * mechanism. One breakpoint: below ~720px the shared rail slims (WORKFLOW,
+ * the widest label, needs ~48px at 9px/600/0.5ls; "16:40:29", the widest
+ * time, ~48px at 10px — both clear 56px), the session button goes
+ * icon-only (its title still names it), and the search input relaxes.
+ * The view row and agent strip also COLLAPSE by default at this width —
+ * that lives in detailView.ts via matchMedia('(max-width: 720px)'), the
+ * same breakpoint, because collapse is state, not styling. */
+@media (max-width: 720px) {
+  :root { --wf-gutter: 56px; }
+  .wf-openconv-text { display: none; }
+  .wf-facet-search-input { min-width: 90px; }
+}

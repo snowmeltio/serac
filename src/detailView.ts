@@ -59,16 +59,20 @@ declare function acquireVsCodeApi(): VsCodeApi;
   let mode: 'log' | 'classic' = 'log';
   /** View row (session-scoped switcher, mockup view 4/4b) collapsed to one line
    *  with only the active + running/waiting chips shown, the rest folded into a
-   *  "+N" overflow chip. Expanded (false) by default — collapse is an explicit
-   *  space-saving choice, not the resting state. */
-  let viewRowCollapsed = false;
+   *  "+N" overflow chip. Tri-state since Phase 2.5 (same pattern as
+   *  resultStripCollapsed): null means "no explicit user choice", in which
+   *  case the row is expanded on a wide pane and collapsed on a narrow one
+   *  (isNarrow) — collapse-by-hand remains an explicit choice that then wins
+   *  at every width. A plain boolean persisted by 1.16.0 loads as that
+   *  explicit choice, which is exactly what the user meant by it. */
+  let viewRowCollapsed: boolean | null = null;
   /** Agent strip collapsed to one line (Phase 2.3), same semantics as the
    *  views row: only the active + running/waiting pills shown, the rest
    *  folded into a "+N" overflow chip. For a phased strip, collapsing folds
-   *  ALL phase lines into that single pill row — no phase headers. Expanded
-   *  (false) by default; fresh key name so it can't collide with any older
-   *  persisted shape. */
-  let agentStripCollapsed = false;
+   *  ALL phase lines into that single pill row — no phase headers. Tri-state
+   *  like viewRowCollapsed above (null → expanded wide, collapsed narrow);
+   *  fresh key name so it can't collide with any older persisted shape. */
+  let agentStripCollapsed: boolean | null = null;
   /** Result strip (Phase 3, DESIGN-DETAIL-PANE-V2.md) collapse preference.
    *  Tri-state, unlike viewRowCollapsed/briefCollapsed's plain booleans: null
    *  means "no explicit user choice yet", in which case the strip is
@@ -101,6 +105,22 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  selection moves to a different agent's entry list. */
   const expandedRows = new Set<number>();
 
+  // ── Narrow register (Phase 2.5) ─────────────────────────────────────
+  // The webview is its own viewport, so a plain media query drives the CSS
+  // side; this is the TS side — the same breakpoint decides the DEFAULT
+  // collapse state of the view row and agent strip (collapse is state, not
+  // styling, so CSS can't do it). Registered ONCE at module init; jsdom has
+  // no matchMedia, so the guard defaults to wide and tests only see the
+  // narrow register when they stub it.
+  const narrowQuery: MediaQueryList | null =
+    typeof window.matchMedia === 'function' ? window.matchMedia('(max-width: 720px)') : null;
+  function isNarrow(): boolean { return narrowQuery !== null && narrowQuery.matches; }
+  if (narrowQuery && typeof narrowQuery.addEventListener === 'function') {
+    // Crossing the breakpoint re-renders so null-preference zones snap to
+    // the width's default; explicit choices are untouched by design.
+    narrowQuery.addEventListener('change', () => render());
+  }
+
   // ── Webview state persistence ──────────────────────────────────────
   // The panel webview is rebuilt whenever its tab is re-opened; vscode.setState
   // survives that (same pattern as the sidebar). Selection is restored only if
@@ -113,8 +133,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
     navCollapsed?: boolean;
     briefCollapsed?: boolean;
     mode?: 'log' | 'classic';
-    viewRowCollapsed?: boolean;
-    agentStripCollapsed?: boolean;
+    viewRowCollapsed?: boolean | null;
+    agentStripCollapsed?: boolean | null;
     resultStripCollapsed?: boolean | null;
     kindFilters?: Partial<Record<'text' | 'tool' | 'error' | 'result', boolean>>;
     timeMode?: 'clock' | 'offset';
@@ -123,8 +143,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
   navCollapsed = persisted.navCollapsed === true;
   briefCollapsed = persisted.briefCollapsed === true;
   mode = persisted.mode === 'classic' ? 'classic' : 'log';
-  viewRowCollapsed = persisted.viewRowCollapsed === true;
-  agentStripCollapsed = persisted.agentStripCollapsed === true;
+  // A stored boolean (including one written by 1.16.0's two-state model)
+  // loads as an EXPLICIT choice; anything else means no choice yet.
+  viewRowCollapsed = typeof persisted.viewRowCollapsed === 'boolean' ? persisted.viewRowCollapsed : null;
+  agentStripCollapsed = typeof persisted.agentStripCollapsed === 'boolean' ? persisted.agentStripCollapsed : null;
   resultStripCollapsed = typeof persisted.resultStripCollapsed === 'boolean' ? persisted.resultStripCollapsed : null;
   timeMode = persisted.timeMode === 'offset' ? 'offset' : 'clock';
   // Per-key restore over the defaults, so adding a future kind can't be
@@ -921,23 +943,26 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function renderViewRow(): string {
     if (!model || !model.views || model.views.length === 0) { return ''; }
     const views = model.views;
+    // Effective state (Phase 2.5): the user's explicit choice, else the
+    // width's default — collapsed on a narrow pane, expanded on a wide one.
+    const collapsed = viewRowCollapsed ?? isNarrow();
     let shown = views;
     let overflow = 0;
-    if (viewRowCollapsed) {
+    if (collapsed) {
       shown = views.filter(v => v.active || v.status === 'running' || v.status === 'waiting');
       overflow = views.length - shown.length;
     }
     // Label cell + a separate wrapping chip container: wrapped chip lines
     // then indent to the rail instead of sliding under the label.
-    let html = '<div class="wf-view-row' + (viewRowCollapsed ? ' collapsed' : '') + '" role="tablist" aria-label="Views in this session">'
+    let html = '<div class="wf-view-row' + (collapsed ? ' collapsed' : '') + '" role="tablist" aria-label="Views in this session">'
       + zoneLabel('views')
       + '<div class="wf-view-chipwrap">';
     for (const v of shown) { html += renderViewChip(v); }
-    if (viewRowCollapsed && overflow > 0) {
+    if (collapsed && overflow > 0) {
       html += '<span class="wf-view-chip more" role="button" tabindex="0"'
         + ' title="Show ' + overflow + ' more view' + (overflow === 1 ? '' : 's') + '">+' + overflow + '</span>';
     }
-    return html + '</div>' + zoneCollapse('views', viewRowCollapsed) + '</div>';
+    return html + '</div>' + zoneCollapse('views', collapsed) + '</div>';
   }
 
   /** Roll-up across every agent in every group (workflow phases included) —
@@ -969,27 +994,50 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   /** Header strip (mockup §2): source badge, container name, status pill, live
    *  counts, duration/tokens/model. Replaces the classic `.wf-head` heading +
-   *  metrics block in log mode. */
+   *  metrics block in log mode. Phase 2.5: everything after the rail label
+   *  sits in a wrapping body (whole units flow to continuation lines that
+   *  indent to the rail — the view row's pattern), counts drop their zero
+   *  segments, and each meta bit is its own atomic nowrap span. */
   function renderHeaderStrip(): string {
     if (!model) { return ''; }
     const agg = headerAgg();
     const badge = model.source === 'workflow' ? 'workflow' : model.source === 'team' ? 'team' : 'subagent';
+    // Zero-drop counts: only what IS. A finished 6-agent run reads "6 done";
+    // a live one "3 running · 2 done". Failed finally surfaces here too
+    // (headerAgg always counted it; the old string never showed it). All
+    // zero — an empty roster — degrades to "0 done".
+    const countBits: string[] = [];
+    if (agg.running > 0) { countBits.push(agg.running + ' running'); }
+    if (agg.waiting > 0) { countBits.push(agg.waiting + ' waiting'); }
+    if (agg.failed > 0) { countBits.push(agg.failed + ' failed'); }
+    if (agg.done > 0) { countBits.push(agg.done + ' done'); }
+    if (countBits.length === 0) { countBits.push('0 done'); }
     const metaBits: string[] = [];
     const dur = fmtDuration(agg.durationMs);
     if (dur) { metaBits.push(dur); }
     if (agg.tokens > 0) { metaBits.push(fmtTokens(agg.tokens) + ' tokens'); }
     if (agg.model) { metaBits.push(escapeHtml(agg.model)); }
+    // Each meta bit is one unbreakable unit; the separator dot rides INSIDE
+    // the non-first spans so a wrapped line keeps the register's dots
+    // without ever orphaning one.
+    let metaHtml = '';
+    for (let i = 0; i < metaBits.length; i++) {
+      metaHtml += '<span class="wf-hstrip-meta-item">' + (i > 0 ? '· ' : '') + metaBits[i] + '</span>';
+    }
     // The source badge lives in the shared label rail (Phase 2.3) — same
     // gutter cell as views/agents/result/filter, not a bordered one-off box.
     return '<div class="wf-hstrip">'
       + zoneLabel(badge)
-      + '<span class="wf-hstrip-name">' + escapeHtml(model.title) + '</span>'
+      + '<div class="wf-hstrip-body">'
+      + '<span class="wf-hstrip-name" title="' + escapeHtml(model.title) + '">' + escapeHtml(model.title) + '</span>'
       + '<span class="wf-hstrip-pill status-' + agg.pillStatus + '">' + escapeHtml(agg.pillStatus) + '</span>'
-      + '<span class="wf-hstrip-counts">' + agg.running + ' running · ' + agg.waiting + ' waiting · ' + agg.done + ' done</span>'
-      + '<span class="wf-hstrip-meta">' + metaBits.join(' · ') + '</span>'
-      + '<span class="wf-openconv wf-hstrip-openconv" role="button" tabindex="0" title="Open the parent agent session">↗ session</span>'
+      + '<span class="wf-hstrip-counts">' + countBits.join(' · ') + '</span>'
+      + '<span class="wf-hstrip-meta">' + metaHtml + '</span>'
+      // The word hides at narrow width (CSS .wf-openconv-text); the glyph
+      // plus the title attribute keep the affordance legible icon-only.
+      + '<span class="wf-openconv wf-hstrip-openconv" role="button" tabindex="0" title="Open the parent agent session">↗ <span class="wf-openconv-text">session</span></span>'
       + '<span class="wf-mode-toggle" role="button" tabindex="0" title="Switch to the classic view">classic view</span>'
-      + '</div>';
+      + '</div></div>';
   }
 
   /** Pinned permission row (mockup §1/§2): shown whenever ANY agent, in ANY
@@ -1233,7 +1281,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
     // the rest folded into a "+N" chip. A phased strip folds ALL its phase
     // lines into this single row (no phase headers); phase grouping is an
     // expanded-only affordance.
-    if (agentStripCollapsed) {
+    // Effective state (Phase 2.5): explicit choice, else the width default.
+    const collapsed = agentStripCollapsed ?? isNarrow();
+    if (collapsed) {
       const all: Array<{ key: string; a: DetailAgentView }> = [];
       for (const g of model.groups) { for (const a of g.agents) { all.push({ key: g.key, a }); } }
       const shown = all.filter(({ key, a }) =>
@@ -1387,12 +1437,16 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const anyExpanded = expandedRows.size > 0;
     return '<div class="wf-facets">'
       + zoneLabel('display')
+      // Controls live in their own wrapping body (Phase 2.5): at narrow
+      // widths whole toggles flow to continuation lines that indent to the
+      // rail, instead of a ☑ splitting from its label.
+      + '<div class="wf-facets-body">'
       + kindToggle('text', 'Text') + kindToggle('tool', 'Tool') + kindToggle('error', 'Error') + kindToggle('result', 'Result')
       + timeChip
       + '<span class="wf-facet-foldall" role="button" tabindex="0" title="' + (anyExpanded ? 'Fold all expanded rows' : 'Expand all rows') + '">'
       + (anyExpanded ? 'fold ▸' : 'expand ▾') + '</span>'
       + '<span class="wf-facet-search">⌕ <input type="text" class="wf-facet-search-input" placeholder="search…" value="' + escapeHtml(logSearch) + '" /></span>'
-      + '</div>';
+      + '</div></div>';
   }
 
   const RE_SPECIAL = /[.*+?^${}()|[\]\\]/g;
@@ -1842,12 +1896,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const zc = target.closest<HTMLElement>('.wf-zone-collapse');
     if (zc) {
       const zone = zc.dataset.zone;
+      // All three zones toggle FROM the effective state (explicit choice ??
+      // width/zone default) and WRITE an explicit boolean — so the first
+      // click always does what it visually looks like it will do, and the
+      // choice then holds at every width.
       if (zone === 'views') {
-        viewRowCollapsed = !viewRowCollapsed;
+        viewRowCollapsed = !(viewRowCollapsed ?? isNarrow());
       } else if (zone === 'agents') {
-        agentStripCollapsed = !agentStripCollapsed;
+        agentStripCollapsed = !(agentStripCollapsed ?? isNarrow());
       } else {
-        // Same effective-state rule as the head click below.
         resultStripCollapsed = !(resultStripCollapsed ?? true);
       }
       saveState();
