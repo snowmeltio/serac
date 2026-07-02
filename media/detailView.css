@@ -1,6 +1,11 @@
 /* Workflow detail panel — two-pane navigator (runs → phases → agents | reader).
  * Theme-aware via vscode-* vars; Snowmelt accent for active/running state. */
 :root {
+  /* Shared left rail (Phase 2.2): the log's timestamp gutter width, reused
+   * by every top zone's label cell so labels and times read as one column.
+   * Sized for the wider of the two time formats (HH:MM:SS, 8 chars of 10px
+   * editor mono) plus breathing room; the old 56px fitted only mm:ss.s. */
+  --wf-gutter: 64px;
   --sm-blizzard-blue: #6185f7;
   --sm-blizzard-blue-rgb: 97, 133, 247;
   --sm-teal-bright: #7acdd0;
@@ -553,24 +558,50 @@ body {
 /* ============================================================
  * Phase 2 — log view (default mode). DESIGN-DETAIL-PANE-V2.md §4a
  * forensic-log skeleton: view row → header strip → pinned permission row →
- * agent strip → facet bar → the log. Classic classes above are untouched
+ * agent strip → facet bar → the log (zone ORDER as of Phase 2.2: view row →
+ * agent strip → header strip → permission row → Result strip → facet bar →
+ * log — pickers stack at the top). Classic classes above are untouched
  * (kept for the temporary "classic view" fallback toggle). Only `.wf-log-
  * scroll` scrolls — everything above it is a static flow sibling, so it
  * reads as "pinned" without needing position:sticky (the panel itself never
  * scrolls; #wf-root is display:flex column exactly as the classic layout).
  * ============================================================ */
 
+/* ── Shared zone label cell (Phase 2.2) ──
+ * Every top zone row leads with a --wf-gutter-wide, right-aligned label
+ * (VIEWS / AGENTS / FILTER) styled to sit in the same visual column as the
+ * log's timestamps: the pane aligns on one vertical rail. Empty instances
+ * (phased-strip continuation lines) still reserve the width. */
+.wf-zone-label {
+  width: var(--wf-gutter);
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--vscode-descriptionForeground);
+}
+/* In chip rows (top-aligned so wrap lines hang below the label) the 9px
+ * label gets a nudge to optically centre against the first chip line; the
+ * single-line facet bar and phase headers centre natively and need none. */
+.wf-view-row > .wf-zone-label,
+.wf-agentstrip > .wf-zone-label,
+.wf-agentstrip-pills > .wf-zone-label { padding-top: 4px; }
+
 /* ── 1. View row (session-scoped switcher, mockup 4/4b) ── */
 .wf-view-row {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 9px; /* matches the log row's gutter gap so the rail lines up */
   padding: 6px 14px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   font-size: 10.5px;
 }
-.wf-view-row.collapsed { flex-wrap: nowrap; overflow: hidden; }
+/* The chips wrap INSIDE their own container, to the right of the label cell,
+ * so wrapped lines indent to the rail instead of sliding under the label. */
+.wf-view-chipwrap { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.wf-view-row.collapsed .wf-view-chipwrap { flex-wrap: nowrap; overflow: hidden; }
 .wf-view-chip {
   display: inline-flex;
   align-items: center;
@@ -747,39 +778,58 @@ body {
 }
 .wf-rstrip-mismatch-flag { color: var(--sm-salmon-red); font-weight: 600; white-space: nowrap; }
 .wf-rstrip-mismatch-why { color: var(--vscode-descriptionForeground); }
+/* Compact mismatch on the COLLAPSED head line (Phase 2.2): the flag must
+ * never hide behind the fold. Bordered + tinted (shape + colour, not
+ * colour-alone) so it reads as a warning even at one line. */
+.wf-rstrip-mismatch-inline {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--sm-salmon-red);
+  border: 1px solid rgba(var(--sm-salmon-red-rgb), 0.5);
+  border-radius: 3px;
+  background: rgba(var(--sm-salmon-red-rgb), 0.08);
+  padding: 0 6px;
+  margin-left: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
 
 /* ── 4. Agent strip ──
- * Flat sources: one wrapping pill row. A phased workflow (Phase 2.1) stacks
- * one line per phase — a header (title + done/total + failed) over that
- * phase's own wrapping pill row — replacing the old single-row interleave of
- * titles and pills (.wf-agentstrip-phase, removed with its generator). */
+ * Flat sources: label cell + one wrapping pill row. A phased workflow
+ * (Phase 2.1) stacks one line per phase — a header (title + done/total +
+ * failed) over that phase's own wrapping pill row. Phase 2.2: every line
+ * leads with a --wf-gutter cell (the AGENTS label on the first line, empty
+ * on the rest) so phase content indents to the shared rail. */
 .wf-agentstrip {
   display: flex;
-  align-items: center;
-  gap: 5px;
-  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 9px; /* rail gap, same as the log row */
   padding: 6px 14px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
 }
 .wf-agentstrip.phased {
   flex-direction: column;
   align-items: stretch;
-  flex-wrap: nowrap;
   gap: 6px;
 }
 .wf-agentstrip-phaserow { display: flex; flex-direction: column; gap: 4px; }
 /* Mirrors the classic nav's .wf-nav-phase register (same job, new surface). */
 .wf-agentstrip-phasehead {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 9px;
   font-size: 9px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.4px;
   color: var(--vscode-descriptionForeground);
 }
-.wf-agentstrip-count { opacity: 0.7; }
-.wf-agentstrip-pills { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.wf-agentstrip-count { opacity: 0.7; margin-left: auto; }
+.wf-agentstrip-pills { display: flex; align-items: flex-start; gap: 9px; }
+/* Pills wrap inside their own container so wrapped lines keep the rail. */
+.wf-agentstrip-pillwrap { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; flex: 1; min-width: 0; }
 .wf-agent-pill {
   display: inline-flex;
   align-items: center;
@@ -873,7 +923,10 @@ body {
 .wf-log-row.result { background: rgba(var(--sm-teal-bright-rgb), 0.08); }
 .wf-log-row.err .wf-log-body { color: var(--sm-salmon-red); }
 .wf-log-row.expanded { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
-.wf-log-t { color: var(--vscode-descriptionForeground); font-size: 10px; width: 56px; flex-shrink: 0; text-align: right; opacity: 0.8; }
+/* The time gutter doubles as the whole-column format toggle (wall clock ↔
+ * run offset, Phase 2.2) — hence the pointer even on non-expandable rows. */
+.wf-log-t { color: var(--vscode-descriptionForeground); font-size: 10px; width: var(--wf-gutter); flex-shrink: 0; text-align: right; opacity: 0.8; cursor: pointer; }
+.wf-log-row:hover .wf-log-t { opacity: 1; }
 .wf-log-glyph { width: 12px; flex-shrink: 0; text-align: center; }
 .wf-log-glyph.k-tool { color: var(--vscode-descriptionForeground); }
 .wf-log-glyph.k-text { color: var(--vscode-foreground); }
@@ -944,7 +997,9 @@ body {
  * sibling of the row (not nested inside it), so clicking inside it never
  * re-toggles the row via event bubbling. */
 .wf-log-expand {
-  margin: 2px 14px 8px 79px;
+  /* Left margin = container padding + gutter + gap: the block starts at the
+   * rail, under the row body it expands. */
+  margin: 2px 14px 8px calc(14px + var(--wf-gutter) + 9px);
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
   border-radius: 4px;
   background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.08));
@@ -1030,3 +1085,4 @@ body.vscode-light .wf-rstrip-ok { color: #0e7a80; } /* 5.10:1, same teal overrid
 body.vscode-light .wf-rstrip-del { color: #c93634; } /* 5.17:1, same salmon override */
 body.vscode-light .wf-rstrip-bad { color: #c93634; } /* 5.17:1, same salmon override */
 body.vscode-light .wf-rstrip-mismatch-flag { color: #c93634; } /* 5.17:1, same salmon override */
+body.vscode-light .wf-rstrip-mismatch-inline { color: #c93634; } /* 5.17:1, same salmon override (Phase 2.2 collapsed form) */

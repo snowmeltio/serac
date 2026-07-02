@@ -8,6 +8,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
 
 let postedMessages: unknown[] = [];
 /** Webview state store backing getState/setState — survives vi.resetModules()
@@ -1007,15 +1009,76 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(qa('.wf-log-row.err')).toHaveLength(1);
   });
 
-  it('renders mm:ss.s offsets relative to the first entry', () => {
+  // Phase 2.2 (D): wall clock is now the DEFAULT gutter; the mm:ss.s offset
+  // became the click-to-toggle alternate. The old test here asserted offsets
+  // as the default — replaced by the block below (default + toggle/persist).
+  /** Local HH:MM:SS as fmtClock renders it (fixtures are UTC ISO strings;
+   *  the gutter is local time, so compute the expectation the same way
+   *  rather than hard-coding a timezone). */
+  const clockOf = (iso: string): string => {
+    const d = new Date(iso);
+    const p = (n: number) => String(n).padStart(2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  };
+
+  it('renders wall-clock HH:MM:SS by default, with the offset in the tooltip', () => {
     sendRender(logModel());
     sendTranscript(KEY1, [
       { timestamp: '2026-06-10T10:00:00.000Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:00:41.200Z', role: 'assistant', content: 'later', kind: 'text' },
     ]);
+    const cells = qa('.wf-log-t');
+    expect(cells.map(t => t.textContent)).toContain(clockOf('2026-06-10T10:00:41.200Z'));
+    for (const c of cells) { expect(c.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/); }
+    // The alternate representation rides the tooltip.
+    expect(cells.some(c => c.getAttribute('title') === '00:41.2')).toBe(true);
+  });
+
+  it('clicking a timestamp toggles the whole column to offsets and persists the mode', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00.000Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:41.200Z', role: 'assistant', content: 'later', kind: 'text' },
+    ]);
+    qa('.wf-log-t')[0].click();
     const times = qa('.wf-log-t').map(t => t.textContent);
     expect(times).toContain('00:00.0');
     expect(times).toContain('00:41.2');
+    // Tooltip now carries the wall clock; the choice is persisted globally.
+    expect(qa('.wf-log-t')[1].getAttribute('title')).toBe(clockOf('2026-06-10T10:00:41.200Z'));
+    expect((webviewState as { timeMode?: string }).timeMode).toBe('offset');
+    // Clicking again returns to wall clock.
+    qa('.wf-log-t')[0].click();
+    expect(qa('.wf-log-t')[0].textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    expect((webviewState as { timeMode?: string }).timeMode).toBe('clock');
+  });
+
+  it('a time-cell click never expands/collapses the row it sits in', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Edit** x.css',
+        kind: 'tool_use', toolName: 'Edit', rawInput: '{"a":1}',
+      },
+    ]);
+    q('.wf-facet-kind[data-kind="tool"]')!.click(); // tool rows are opt-in (E)
+    const row = qa('.wf-log-row').find(r => r.textContent!.includes('Edit'))!;
+    (row.querySelector('.wf-log-t') as HTMLElement).click();
+    const after = qa('.wf-log-row').find(r => r.textContent!.includes('Edit'))!;
+    expect(after.getAttribute('aria-expanded')).toBe('false'); // toggled time, not the row
+  });
+
+  it('rows with unparseable timestamps render an empty cell in both modes', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '', role: 'assistant', content: 'no stamp', kind: 'text' },
+    ]);
+    const cellOf = () => qa('.wf-log-row.prose').find(r => r.textContent!.includes('no stamp'))!.querySelector('.wf-log-t')!;
+    expect(cellOf().textContent).toBe('');
+    qa('.wf-log-t')[0].click(); // → offset mode
+    expect(cellOf().textContent).toBe('');
   });
 
   it('the classic-view toggle switches back to the old two-pane DOM (and back again)', () => {
@@ -1055,14 +1118,28 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(q('.wf-rstrip')).toBeNull();
   });
 
-  it('renders the brief, final message, and file/command chips for a finished agent, open by default', () => {
+  // Phase 2.2 (C): the strip is collapsed to ONE line by default for every
+  // agent, running or done — Murray: results are so lengthy that the open
+  // strip wasn't helpful; the mismatch flag is the part that must never
+  // hide. The four tests below replaced their open-by-default originals.
+  it('collapses to a one-line finalMessage summary by default; expanding reveals brief, final, and chips', () => {
     sendRender(logModel()); // agent001 (done) auto-selected
     sendTranscript(KEY1, [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'Design a v2 layout treating each agent as a unit of work' },
     ], [], sampleEvidence(), []);
     const strip = q('.wf-rstrip')!;
     expect(strip).not.toBeNull();
-    expect(strip.classList.contains('collapsed')).toBe(false); // finished agent → open by default
+    expect(strip.classList.contains('collapsed')).toBe(true); // collapsed for ALL agents now
+    // Collapsed line = first ~100 chars of the final message, not a count roll-up.
+    expect(q('.wf-rstrip-summary')!.textContent).toContain('Proposes a 3-zone stack');
+    expect(q('.wf-rstrip-summary')!.textContent!.length).toBeLessThanOrEqual(101); // 100 + ellipsis
+    // Everything else lives behind the expand.
+    expect(q('.wf-rstrip-brief')).toBeNull();
+    expect(q('.wf-rstrip-final')).toBeNull();
+    expect(q('.wf-rstrip-chip')).toBeNull();
+
+    q('.wf-rstrip-head')!.click();
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(false);
     expect(q('.wf-rstrip-brief')!.textContent).toContain('Design a v2 layout');
     expect(q('.wf-rstrip-final')!.textContent).toContain('ready for review');
     const chips = qa('.wf-rstrip-chip');
@@ -1070,35 +1147,41 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(chips.some(c => c.textContent!.includes('npm run typecheck'))).toBe(true);
   });
 
-  it('collapses to a one-line status summary for a running agent by default', () => {
+  it('falls back to the running status line when there is no final message', () => {
     sendRender(logModel());
     qa('.wf-agent-pill').find(p => p.dataset.agent === 'agent002')!.click(); // agent002 is running
     sendTranscript('workflow:wf_run1|wf_run1|agent002', [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
-    ], [], sampleEvidence(), []);
+    ], [], { ...sampleEvidence(), finalMessage: null }, []);
     const strip = q('.wf-rstrip')!;
-    expect(strip).not.toBeNull();
     expect(strip.classList.contains('collapsed')).toBe(true);
     expect(q('.wf-rstrip-summary')!.textContent).toContain('running');
     expect(q('.wf-rstrip-final')).toBeNull(); // body hidden while collapsed
     expect(q('.wf-rstrip-brief')).toBeNull();
   });
 
-  it('mismatch box appears for a fabricated-claim fixture and is absent for an honest one', () => {
+  it('a mismatch stays VISIBLE on the collapsed line (inline), full box when expanded, absent when honest', () => {
     sendRender(logModel());
     const fabricated: RawEvidence = { ...sampleEvidence(), finalMessage: 'All tests pass, ready for review.' };
     sendTranscript(KEY1, [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
     ], [], fabricated, [{ kind: 'tests-claimed-not-run', message: 'Final message claims the tests pass; typecheck and build ran, no test command found.' }]);
+    // Collapsed by default — the flag must render regardless (non-negotiable).
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(true);
+    const inline = q('.wf-rstrip-mismatch-inline')!;
+    expect(inline).not.toBeNull();
+    expect(inline.textContent).toContain('MISMATCH');
+    expect(q('.wf-rstrip-mismatch')).toBeNull(); // full box only when expanded
+
+    q('.wf-rstrip-head')!.click();
     const mismatch = q('.wf-rstrip-mismatch')!;
     expect(mismatch).not.toBeNull();
-    expect(mismatch.textContent).toContain('MISMATCH');
     expect(mismatch.textContent).toContain('typecheck and build ran');
     expect(mismatch.textContent).toContain("Computed from tool calls, not the agent's prose.");
 
-    // Honest evidence (a real test command ran) → host sends no mismatches.
-    // A second, distinct entry keeps this send from being deduped as an
-    // unchanged transcript (sameTranscript compares length + last entry).
+    // Honest evidence (a real test command ran) → host sends no mismatches:
+    // neither form renders. Collapse back first (the toggle persisted open).
+    q('.wf-rstrip-head')!.click();
     const honest: RawEvidence = {
       ...sampleEvidence(),
       commandsRun: [...sampleEvidence().commandsRun, { command: 'npm test', exitOk: true }],
@@ -1109,6 +1192,7 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
       { timestamp: '2026-06-10T10:00:05Z', role: 'assistant', content: 'tests confirmed green', kind: 'text' },
     ], [], honest, []);
+    expect(q('.wf-rstrip-mismatch-inline')).toBeNull();
     expect(q('.wf-rstrip-mismatch')).toBeNull();
   });
 
@@ -1119,6 +1203,7 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     sendTranscript(KEY1, [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
     ], [], { filesTouched: manyFiles, commandsRun: manyCommands, testsRun: false, finalMessage: null }, []);
+    q('.wf-rstrip-head')!.click(); // chips live behind the expand now (C)
     const overflow = qa('.wf-rstrip-chip.wf-rstrip-more');
     expect(overflow).toHaveLength(2); // one for files, one for commands
     expect(overflow[0].textContent).toContain('+2'); // 8 files - 6 shown
@@ -1126,20 +1211,21 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
   });
 
   it('collapse toggle persists across re-renders (tri-state, like viewRowCollapsed)', () => {
-    sendRender(logModel()); // agent001 (done) auto-selected → open by default
+    sendRender(logModel());
     sendTranscript(KEY1, [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
     ], [], sampleEvidence(), []);
-    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(false);
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(true); // C: collapsed default
 
-    q('.wf-rstrip-head')!.click();
-    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(true);
-    expect((webviewState as { resultStripCollapsed?: boolean | null }).resultStripCollapsed).toBe(true);
-
-    // Explicit false overrides the status-based default too.
+    // First click expands and persists the explicit choice.
     q('.wf-rstrip-head')!.click();
     expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(false);
     expect((webviewState as { resultStripCollapsed?: boolean | null }).resultStripCollapsed).toBe(false);
+
+    // Second click collapses again — explicit true, not just the default.
+    q('.wf-rstrip-head')!.click();
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(true);
+    expect((webviewState as { resultStripCollapsed?: boolean | null }).resultStripCollapsed).toBe(true);
   });
 
   // ── Prose rows (Phase 2.1) — hybrid register ─────────────────────────
@@ -1291,6 +1377,57 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     // Selection AND focus crossed the phase-line boundary.
     expect(q('.wf-agent-pill.active')!.dataset.agent).toBe('p2');
     expect((document.activeElement as HTMLElement).dataset.agent).toBe('p2');
+  });
+
+  // ── Zone order + label rail (Phase 2.2, A/B) ─────────────────────────
+
+  it('zones stack pickers-first: view row, then agent strip, then header strip, then the rest', () => {
+    const m = logModel() as any;
+    m.groups[0].agents[1].status = 'waiting'; // → permission row present too
+    sendRender(m);
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], emptyEvidence(), []);
+    const classes = Array.from(root().children).map(c => (c as HTMLElement).className.split(' ')[0]);
+    const order = ['wf-view-row', 'wf-agentstrip', 'wf-hstrip', 'wf-permrow', 'wf-rstrip', 'wf-facets', 'wf-log-scroll'];
+    // Every zone present, in exactly this order (view row and agent strip are
+    // SIBLINGS at the top, both before the header strip).
+    expect(classes).toEqual(order);
+  });
+
+  it('view row, agent strip, and facet bar each lead with a rail label cell', () => {
+    sendRender(logModel());
+    expect(q('.wf-view-row .wf-zone-label')!.textContent).toBe('views');
+    // logModel's groups are phased — the label sits on the strip's FIRST
+    // line only; every other line reserves an EMPTY gutter cell.
+    const stripLabels = qa('.wf-agentstrip .wf-zone-label');
+    expect(stripLabels[0].textContent).toBe('agents');
+    expect(stripLabels.length).toBeGreaterThan(1);
+    for (const l of stripLabels.slice(1)) { expect(l.textContent).toBe(''); }
+    expect(q('.wf-facets .wf-zone-label')!.textContent).toBe('filter');
+  });
+
+  it('a flat agent strip carries the label on its single line', () => {
+    sendRender({
+      source: 'subagents', containerId: 'sess1', sessionId: 'sess1', title: 'Subagents', metrics: '',
+      groups: [{ key: '', title: null, agents: [agent({ agentId: 's1', label: 'explore' })] }],
+    });
+    const labels = qa('.wf-agentstrip .wf-zone-label');
+    expect(labels).toHaveLength(1);
+    expect(labels[0].textContent).toBe('agents');
+  });
+
+  it('the rail width is one shared CSS var: --wf-gutter sizes both timestamps and zone labels', () => {
+    // jsdom does not apply the stylesheet, so assert the contract at its
+    // source: the CSS file must size .wf-log-t and .wf-zone-label off the
+    // SAME variable (this is what keeps the rail aligned; a hardcoded width
+    // in either place would silently drift).
+    // (import.meta.url is an http: URL under the jsdom environment, so
+    // resolve from the repo root — vitest's cwd — instead.)
+    const css = fs.readFileSync(path.join(process.cwd(), 'media', 'detailView.css'), 'utf-8');
+    expect(css).toMatch(/--wf-gutter:\s*\d+px/);
+    expect(css).toMatch(/\.wf-log-t\s*{[^}]*width:\s*var\(--wf-gutter\)/);
+    expect(css).toMatch(/\.wf-zone-label\s*{[^}]*width:\s*var\(--wf-gutter\)/);
   });
 });
 
@@ -1488,6 +1625,8 @@ describe('detailView.ts — native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V
   });
 
   // ── Result-strip file chip (Phase 4's third wiring point) ─────────────
+  // Phase 2.2 (C): the strip collapses to one line by default, so each of
+  // these expands it first — the chips live behind the expand now.
 
   it('only an "edit"-kind file chip is clickable; write/notebook chips stay inert', () => {
     sendRender(logModel());
@@ -1500,6 +1639,7 @@ describe('detailView.ts — native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V
       ],
       commandsRun: [], testsRun: false, finalMessage: null,
     } as any, []);
+    q('.wf-rstrip-head')!.click();
     const chips = qa('.wf-rstrip-chip').filter(c => !c.classList.contains('wf-rstrip-more') && !c.classList.contains('wf-rstrip-cat'));
     const editChip = chips.find(c => c.textContent!.includes('foo.ts'))!;
     const writeChip = chips.find(c => c.textContent!.includes('new.ts'))!;
@@ -1515,6 +1655,7 @@ describe('detailView.ts — native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V
       filesTouched: [{ path: 'src/foo.ts', kind: 'edit', approxAdded: 1, approxRemoved: 1 }],
       commandsRun: [], testsRun: false, finalMessage: null,
     } as any, []);
+    q('.wf-rstrip-head')!.click();
     postedMessages.length = 0;
     q('.wf-rstrip-chip.clickable')!.click();
     const msg = (postedMessages as any[]).find(m => m.type === 'showFileChanges');
@@ -1534,6 +1675,7 @@ describe('detailView.ts — native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V
       filesTouched: [{ path: 'src/foo.ts', kind: 'edit', approxAdded: 1, approxRemoved: 1 }],
       commandsRun: [], testsRun: false, finalMessage: null,
     } as any, []);
+    q('.wf-rstrip-head')!.click();
     postedMessages.length = 0;
     const chip = q('.wf-rstrip-chip.clickable')!;
     chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));

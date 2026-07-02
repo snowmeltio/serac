@@ -64,11 +64,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
   let viewRowCollapsed = false;
   /** Result strip (Phase 3, DESIGN-DETAIL-PANE-V2.md) collapse preference.
    *  Tri-state, unlike viewRowCollapsed/briefCollapsed's plain booleans: null
-   *  means "no explicit user choice yet", in which case the strip follows
-   *  the selected agent's status (collapsed to a status line while running,
-   *  open once finished — the design doc's default behaviour). An explicit
-   *  true/false from the user's own toggle click overrides that default for
-   *  every agent thereafter, persisted like the other collapse flags. */
+   *  means "no explicit user choice yet", in which case the strip is
+   *  COLLAPSED to its one-line summary for every agent, running or done
+   *  (Phase 2.2, Murray 2026-07-02: results are so lengthy that the open
+   *  strip isn't helpful — the mismatch flag is the part that must never
+   *  hide, and it renders inline even collapsed). An explicit true/false
+   *  from the user's own toggle click overrides the default for every agent
+   *  thereafter, persisted like the other collapse flags. */
   let resultStripCollapsed: boolean | null = null;
   /** Log-mode kind filters (facet bar). Default: Text + Error + Result on,
    *  Tool OFF (Phase 2.1, Murray 2026-07-02) — for design/research agents the
@@ -80,6 +82,12 @@ declare function acquireVsCodeApi(): VsCodeApi;
     text: true, tool: false, error: true, result: true,
   };
   let logSearch = '';
+  /** Time gutter representation (Phase 2.2). Wall clock by default — the
+   *  mm:ss.s offset "anchors to the epoch of inception" and reads oddly on a
+   *  long session (Murray, 2026-07-02). Clicking any timestamp toggles the
+   *  WHOLE column; persisted globally like kindFilters. Each cell's tooltip
+   *  carries the other representation. */
+  let timeMode: 'clock' | 'offset' = 'clock';
   /** Row indices (within the selected agent's combined entries+suffix list)
    *  expanded in place. Keyed by index, not identity, so it must be cleared on
    *  every agent change (see renderLogMode) — index 3 means nothing once the
@@ -101,6 +109,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     viewRowCollapsed?: boolean;
     resultStripCollapsed?: boolean | null;
     kindFilters?: Partial<Record<'text' | 'tool' | 'error' | 'result', boolean>>;
+    timeMode?: 'clock' | 'offset';
   }
   const persisted = (vscode.getState() ?? {}) as PersistedState;
   navCollapsed = persisted.navCollapsed === true;
@@ -108,6 +117,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
   mode = persisted.mode === 'classic' ? 'classic' : 'log';
   viewRowCollapsed = persisted.viewRowCollapsed === true;
   resultStripCollapsed = typeof persisted.resultStripCollapsed === 'boolean' ? persisted.resultStripCollapsed : null;
+  timeMode = persisted.timeMode === 'offset' ? 'offset' : 'clock';
   // Per-key restore over the defaults, so adding a future kind can't be
   // silently forced off by an older persisted state that never knew it.
   if (persisted.kindFilters && typeof persisted.kindFilters === 'object') {
@@ -134,6 +144,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       viewRowCollapsed,
       resultStripCollapsed,
       kindFilters: { ...kindFilters },
+      timeMode,
     } satisfies PersistedState);
   }
   /** Identity of the drill-in the cache below belongs to. The cache key is only
@@ -825,8 +836,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
   }
 
   // ── Log view (Phase 2, default mode) ─────────────────────────────────
-  // Single-pane forensic log: view row → header strip → pinned permission row
-  // → agent strip → facet bar → the log. DESIGN-DETAIL-PANE-V2.md §4a. Shares
+  // Single-pane forensic log. Zone order (Phase 2.2 — pickers stack first):
+  // view row → agent strip → header strip → pinned permission row → Result
+  // strip → facet bar → the log. DESIGN-DETAIL-PANE-V2.md §4a. Shares
   // selection, the transcript cache, and the refresh loop with classic mode
   // (above) — only the markup and the scroll container differ.
 
@@ -866,6 +878,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  viewChips(), but the log view intentionally does NOT synthesise a
    *  single-chip fallback for team: with only one thing to show, a one-chip
    *  row is pure chrome the header strip already covers). */
+  /** The shared left label cell (Phase 2.2): every top zone row leads with a
+   *  --wf-gutter-wide, right-aligned cell so the zone labels and the log's
+   *  timestamps read as ONE column — the pane aligns on a single vertical
+   *  rail. Text is lowercase here; CSS uppercases (same pattern as the other
+   *  small-caps labels). Empty for continuation lines (phased strip). */
+  function zoneLabel(text: string): string {
+    return '<span class="wf-zone-label">' + escapeHtml(text) + '</span>';
+  }
+
   function renderViewRow(): string {
     if (!model || !model.views || model.views.length === 0) { return ''; }
     const views = model.views;
@@ -875,7 +896,11 @@ declare function acquireVsCodeApi(): VsCodeApi;
       shown = views.filter(v => v.active || v.status === 'running' || v.status === 'waiting');
       overflow = views.length - shown.length;
     }
-    let html = '<div class="wf-view-row' + (viewRowCollapsed ? ' collapsed' : '') + '" role="tablist" aria-label="Views in this session">';
+    // Label cell + a separate wrapping chip container: wrapped chip lines
+    // then indent to the rail instead of sliding under the label.
+    let html = '<div class="wf-view-row' + (viewRowCollapsed ? ' collapsed' : '') + '" role="tablist" aria-label="Views in this session">'
+      + zoneLabel('views')
+      + '<div class="wf-view-chipwrap">';
     for (const v of shown) { html += renderViewChip(v); }
     if (viewRowCollapsed && overflow > 0) {
       html += '<span class="wf-view-chip more" role="button" tabindex="0"'
@@ -884,7 +909,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     html += '<span class="wf-view-collapse" role="button" tabindex="0"'
       + ' title="' + (viewRowCollapsed ? 'Expand view row' : 'Collapse view row') + '">'
       + (viewRowCollapsed ? '⌄ expand' : '⌃ collapse') + '</span>';
-    return html + '</div>';
+    return html + '</div></div>';
   }
 
   /** Roll-up across every agent in every group (workflow phases included) —
@@ -1063,16 +1088,37 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return html;
   }
 
-  /** The strip's one-line collapsed summary — status-line-only for a running
-   *  agent (design doc's required collapsed state), plus a quick roll-up of
-   *  what evidence carries so the user knows there's something to expand. */
-  function renderResultStripSummary(agent: DetailAgentView, evidence: Evidence, mismatches: Mismatch[]): string {
+  /** The strip's one-line collapsed summary (Phase 2.2): the first ~100
+   *  chars of the final message when there is one — the actual answer, not
+   *  a count roll-up — else the status line + evidence roll-up it always
+   *  showed. Mismatches are NOT summarised here: they render inline on the
+   *  collapsed head via renderInlineMismatch, never reduced to a count. */
+  const RESULT_SUMMARY_MAX_CHARS = 100;
+  function renderResultStripSummary(agent: DetailAgentView, evidence: Evidence): string {
+    if (evidence.finalMessage) {
+      const oneLine = evidence.finalMessage.replace(/\s+/g, ' ').trim();
+      return '<span class="wf-rstrip-summary">' + escapeHtml(truncate(oneLine, RESULT_SUMMARY_MAX_CHARS)) + '</span>';
+    }
     const bits: string[] = [];
     bits.push(agent.status === 'running' ? 'running' : 'result');
     if (evidence.filesTouched.length > 0) { bits.push(evidence.filesTouched.length + ' file' + (evidence.filesTouched.length === 1 ? '' : 's')); }
     if (evidence.commandsRun.length > 0) { bits.push(evidence.commandsRun.length + ' command' + (evidence.commandsRun.length === 1 ? '' : 's')); }
-    if (mismatches.length > 0) { bits.push(mismatches.length + ' mismatch' + (mismatches.length === 1 ? '' : 'es')); }
     return '<span class="wf-rstrip-summary">' + escapeHtml(bits.join(' · ')) + '</span>';
+  }
+
+  /** Compact mismatch form for the COLLAPSED head line (Phase 2.2,
+   *  non-negotiable: the flag renders visibly even when everything else is
+   *  folded away — it is the anti-fabrication signal the strip exists for).
+   *  First mismatch's message, truncated; a "+n" marks any further ones.
+   *  The full bordered box (with the methodology disclaimer) is the
+   *  expanded form. */
+  const INLINE_MISMATCH_MAX_CHARS = 90;
+  function renderInlineMismatch(mismatches: Mismatch[]): string {
+    if (mismatches.length === 0) { return ''; }
+    const extra = mismatches.length - 1;
+    return '<span class="wf-rstrip-mismatch-inline">⚠ MISMATCH '
+      + escapeHtml(truncate(mismatches[0].message, INLINE_MISMATCH_MAX_CHARS))
+      + (extra > 0 ? ' +' + extra : '') + '</span>';
   }
 
   function renderResultStripBody(agent: DetailAgentView, evidence: Evidence, mismatches: Mismatch[]): string {
@@ -1095,20 +1141,21 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   /** Result strip entry point. Absent entirely when the selected agent's
    *  transcript hasn't loaded yet (nothing to verify against); collapsed to
-   *  the one-line summary by default while the agent is running, open by
-   *  default once it's finished, overridden either way by the user's own
-   *  toggle (resultStripCollapsed). */
+   *  the one-line summary by default for EVERY agent (Phase 2.2 — see
+   *  resultStripCollapsed's doc comment), overridden by the user's own
+   *  toggle. A mismatch always shows: compact inline form on the collapsed
+   *  head, full box when expanded. */
   function renderResultStrip(agent: DetailAgentView): string {
     const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
     if (!st || st.state !== 'ready' || !st.evidence) { return ''; }
     const evidence = st.evidence;
     const mismatches = st.mismatches;
-    const collapsed = resultStripCollapsed ?? (agent.status === 'running');
+    const collapsed = resultStripCollapsed ?? true;
     let html = '<div class="wf-rstrip' + (collapsed ? ' collapsed' : '') + '">';
     html += '<div class="wf-rstrip-head" role="button" tabindex="0" aria-expanded="' + (!collapsed) + '">'
       + '<span class="wf-rstrip-caret">' + (collapsed ? '▸' : '▾') + '</span>'
       + '<span class="wf-rstrip-label">Result</span>'
-      + (collapsed ? renderResultStripSummary(agent, evidence, mismatches) : '')
+      + (collapsed ? renderResultStripSummary(agent, evidence) + renderInlineMismatch(mismatches) : '')
       + '</div>';
     if (!collapsed) { html += renderResultStripBody(agent, evidence, mismatches); }
     return html + '</div>';
@@ -1142,13 +1189,19 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (!model) { return ''; }
     const phased = model.groups.some(g => g.title !== null);
     if (!phased) {
-      let html = '<div class="wf-agentstrip" role="tablist" aria-label="Agents">';
+      let html = '<div class="wf-agentstrip" role="tablist" aria-label="Agents">'
+        + zoneLabel('agents')
+        + '<div class="wf-agentstrip-pillwrap">';
       for (const g of model.groups) {
         for (const a of g.agents) { html += renderAgentPill(g.key, a); }
       }
-      return html + '</div>';
+      return html + '</div></div>';
     }
+    // Phased: the AGENTS label sits on the strip's FIRST line only; every
+    // other line (later phase headers, all pill rows) carries an empty
+    // gutter cell so the phase content indents to the shared rail.
     let html = '<div class="wf-agentstrip phased" role="tablist" aria-label="Agents">';
+    let first = true;
     for (const g of model.groups) {
       html += '<div class="wf-agentstrip-phaserow">';
       if (g.title !== null) {
@@ -1161,12 +1214,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
         const failedHtml = failed > 0
           ? ' · <span class="wf-nav-count-failed">' + failed + ' failed</span>'
           : '';
-        html += '<div class="wf-agentstrip-phasehead"><span>' + escapeHtml(g.title) + '</span>'
+        html += '<div class="wf-agentstrip-phasehead">'
+          + zoneLabel(first ? 'agents' : '')
+          + '<span class="wf-agentstrip-phasetitle">' + escapeHtml(g.title) + '</span>'
           + '<span class="wf-agentstrip-count">' + done + '/' + count + failedHtml + '</span></div>';
+        first = false;
       }
-      html += '<div class="wf-agentstrip-pills">';
+      html += '<div class="wf-agentstrip-pills">'
+        + zoneLabel(first ? 'agents' : '') // an untitled leading group still anchors the label
+        + '<div class="wf-agentstrip-pillwrap">';
+      first = false;
       for (const a of g.agents) { html += renderAgentPill(g.key, a); }
-      html += '</div></div>';
+      html += '</div></div></div>';
     }
     return html + '</div>';
   }
@@ -1245,6 +1304,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + ' <span class="wf-facet-count">' + counts[k] + '</span></span>';
     const anyExpanded = expandedRows.size > 0;
     return '<div class="wf-facets">'
+      + zoneLabel('filter')
       + kindToggle('text', 'Text') + kindToggle('tool', 'Tool') + kindToggle('error', 'Error') + kindToggle('result', 'Result')
       + '<span class="wf-facet-foldall" role="button" tabindex="0" title="' + (anyExpanded ? 'Fold all expanded rows' : 'Expand all rows') + '">'
       + (anyExpanded ? 'fold ▸' : 'expand ▾') + '</span>'
@@ -1263,6 +1323,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (!query) { return esc; }
     const needle = escapeHtml(query).replace(RE_SPECIAL, '\\$&');
     return esc.replace(new RegExp(needle, 'gi'), m => '<span class="wf-hl">' + m + '</span>');
+  }
+
+  /** Local wall-clock HH:MM:SS (Phase 2.2's default gutter). Manual padding,
+   *  not toLocaleTimeString — the gutter must be a FIXED 8 chars in every
+   *  locale or the label rail wobbles. */
+  function fmtClock(t: number): string {
+    const d = new Date(t);
+    const p = (n: number) => String(n).padStart(2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
   }
 
   /** mm:ss.s offset from `baseMs` (mockup's relative-timestamp column). Empty
@@ -1389,7 +1458,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function renderLogRow(r: LogRow, baseTs: number): string {
     const e = r.entry;
     const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
-    const timeLabel = (!isNaN(t) && !isNaN(baseTs)) ? fmtOffset(t - baseTs) : '';
+    // Two representations (Phase 2.2): wall clock (default) needs only this
+    // entry's timestamp; the run offset also needs a parseable first entry.
+    // The active mode fills the cell, the other rides the tooltip; a row
+    // with no parseable timestamp stays an empty cell in both modes.
+    const clock = !isNaN(t) ? fmtClock(t) : '';
+    const offset = (!isNaN(t) && !isNaN(baseTs)) ? fmtOffset(t - baseTs) : '';
+    const timeLabel = timeMode === 'clock' ? clock : offset;
+    const timeAlt = timeMode === 'clock' ? offset : clock;
+    const timeTitle = timeAlt ? ' title="' + escapeHtml(timeAlt) + '"' : '';
     const glyph = logGlyph(e, r.isResult);
     const prose = isProseEntry(e);
     const hasExpand = rowExpandable(r);
@@ -1423,7 +1500,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     let html = '<div class="' + classes.join(' ') + '" data-idx="' + r.idx + '"'
       + ' role="button" tabindex="0" aria-expanded="' + (hasExpand ? String(expanded) : 'false') + '">'
-      + '<span class="wf-log-t">' + escapeHtml(timeLabel) + '</span>'
+      + '<span class="wf-log-t"' + timeTitle + '>' + escapeHtml(timeLabel) + '</span>'
       + '<span class="wf-log-glyph ' + glyph.cls + '">' + glyph.glyph + '</span>'
       + body + '</div>';
     // The expand-below block is for raw tool payloads only — an expanded
@@ -1476,11 +1553,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
 
     const agent = findAgent(selectedGroupKey, selectedAgentId);
+    // Zone order (Phase 2.2): pickers stack at the top — pick what you're
+    // looking at (view, then agent) BEFORE its summary (header strip), then
+    // the banners (permission, Result), then the log's own controls.
     root.innerHTML = renderViewRow()
+      + renderAgentStrip()
       + renderHeaderStrip()
       + renderPermRow()
       + (agent ? renderResultStrip(agent) : '')
-      + renderAgentStrip()
       + (agent ? renderFacets(agent) : '')
       + '<div class="wf-log-scroll">'
       + (agent ? renderLogRows(agent) : '<div class="wf-log-empty">Select an agent to view its transcript.</div>')
@@ -1687,12 +1767,11 @@ declare function acquireVsCodeApi(): VsCodeApi;
       return;
     }
     if (target.closest('.wf-rstrip-head')) {
-      // Toggle FROM the currently effective state (status default when the
-      // user hasn't chosen yet — see resultStripCollapsed's doc comment), not
-      // from a raw negation of the persisted flag, so the first click always
-      // does what it visually looks like it will do.
-      const agent = findAgent(selectedGroupKey, selectedAgentId);
-      const effective = resultStripCollapsed ?? (agent?.status === 'running');
+      // Toggle FROM the currently effective state (collapsed default when
+      // the user hasn't chosen yet — see resultStripCollapsed's doc
+      // comment), not from a raw negation of the persisted flag, so the
+      // first click always does what it visually looks like it will do.
+      const effective = resultStripCollapsed ?? true;
       resultStripCollapsed = !effective;
       saveState();
       render();
@@ -1759,6 +1838,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
           vscode.postMessage({ type: 'openTranscriptDoc', ...base });
         }
       }
+      return;
+    }
+    // A click anywhere in the time column flips the WHOLE gutter between
+    // wall clock and run offset (Phase 2.2) — checked before the row branch
+    // so it never doubles as a row expand/collapse.
+    if (target.closest('.wf-log-t')) {
+      timeMode = timeMode === 'clock' ? 'offset' : 'clock';
+      saveState();
+      render();
       return;
     }
     const logRow = target.closest<HTMLElement>('.wf-log-row');
