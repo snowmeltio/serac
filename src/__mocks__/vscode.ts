@@ -8,9 +8,19 @@ import { vi } from 'vitest';
 export class Uri {
   readonly scheme: string;
   readonly fsPath: string;
-  constructor(scheme: string, fsPath: string) {
+  /** Non-`file` schemes (nativeDocs.ts's `serac-detail:`) have no filesystem
+   *  path — `path`/`query` are the real carriers there. Defaults to `fsPath`
+   *  for the `file`-scheme constructors below, matching real vscode's own
+   *  near-equivalence of `.path`/`.fsPath` for that scheme. */
+  readonly path: string;
+  readonly query: string;
+  readonly fragment: string;
+  constructor(scheme: string, fsPath: string, path?: string, query = '', fragment = '') {
     this.scheme = scheme;
     this.fsPath = fsPath;
+    this.path = path ?? fsPath;
+    this.query = query;
+    this.fragment = fragment;
   }
   static file(path: string): Uri {
     return new Uri('file', path);
@@ -18,9 +28,40 @@ export class Uri {
   static joinPath(base: Uri, ...segments: string[]): Uri {
     return new Uri(base.scheme, [base.fsPath, ...segments].join('/'));
   }
+  /** Minimal `scheme:[//authority]path[?query][#fragment]` parse — covers
+   *  exactly the shapes this codebase constructs (`serac-detail:/name.ext?token`
+   *  and plain `file://` paths elsewhere), not a general-purpose URI parser. */
+  static parse(value: string): Uri {
+    const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):(?:\/\/[^/?#]*)?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/.exec(value);
+    const scheme = m?.[1] ?? '';
+    const path = m?.[2] ?? '';
+    const query = m?.[3] ?? '';
+    const fragment = m?.[4] ?? '';
+    return new Uri(scheme, path, path, query, fragment);
+  }
   toString(): string {
     return `${this.scheme}://${this.fsPath}`;
   }
+}
+
+// --- EventEmitter ---
+/** Minimal stand-in for `vscode.EventEmitter`. nativeDocs.ts's provider
+ *  declares (but never fires) `onDidChange` — see its docstring for why a
+ *  snapshot-only virtual doc deliberately never emits — so tests mostly need
+ *  this to exist and be subscribable/disposable, not to exercise firing. */
+export class EventEmitter<T> {
+  private listeners: Array<(e: T) => void> = [];
+  event = (listener: (e: T) => void): { dispose: () => void } => {
+    this.listeners.push(listener);
+    return {
+      dispose: () => {
+        const i = this.listeners.indexOf(listener);
+        if (i >= 0) { this.listeners.splice(i, 1); }
+      },
+    };
+  };
+  fire(e: T): void { for (const l of this.listeners) { l(e); } }
+  dispose(): void { this.listeners = []; }
 }
 
 // --- Webview ---
@@ -137,6 +178,7 @@ export function _fireConfigChange(...sections: string[]): void {
 export const workspace = {
   workspaceFolders: [{ uri: Uri.file('/test/workspace'), name: 'workspace', index: 0 }],
   openTextDocument: vi.fn().mockResolvedValue({ uri: Uri.file('/test/doc') }),
+  registerTextDocumentContentProvider: vi.fn(() => ({ dispose: vi.fn() })),
   getConfiguration: vi.fn((section?: string) => ({
     get<T>(key: string, defaultValue?: T): T | undefined {
       const fullKey = section ? `${section}.${key}` : key;

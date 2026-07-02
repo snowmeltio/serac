@@ -223,6 +223,36 @@ export interface Mismatch {
   message: string;
 }
 
+/** One Edit tool call's file/old/new strings, parsed from a TranscriptEntry's
+ *  JSON-stringified `rawInput` (see `entryFromRecord` in transcriptRenderer.ts).
+ *  Shared by the webview (Phase 4, DESIGN-DETAIL-PANE-V2.md: gates the "Show
+ *  file changes" button — an inert display decision, it never drives what
+ *  actually opens) and nativeDocs.ts (the host's own authoritative re-parse
+ *  before building the diff — the webview's parse is display-only, never
+ *  trusted for the write). */
+export interface EditInput {
+  filePath: string;
+  oldString: string;
+  newString: string;
+}
+
+/** Null for anything that isn't a two-sided Edit: malformed JSON, a
+ *  non-object shape, a missing/empty file_path, or a non-string
+ *  old_string/new_string (including a Write/NotebookEdit input, which never
+ *  carries both). */
+export function parseEditInput(rawInput: string): EditInput | null {
+  let parsed: unknown;
+  try { parsed = JSON.parse(rawInput); } catch { return null; }
+  if (!parsed || typeof parsed !== 'object') { return null; }
+  const obj = parsed as Record<string, unknown>;
+  const filePath = obj.file_path;
+  const oldString = obj.old_string;
+  const newString = obj.new_string;
+  if (typeof filePath !== 'string' || !filePath) { return null; }
+  if (typeof oldString !== 'string' || typeof newString !== 'string') { return null; }
+  return { filePath, oldString, newString };
+}
+
 /** Cache key for one agent's transcript, owner-prefixed so an in-flight
  *  response from a previous drill-in can never collide with the current
  *  container's keys (e.g. the same member name across two teams). THE single

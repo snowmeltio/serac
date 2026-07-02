@@ -18,6 +18,10 @@ import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } 
 import { wireHookIngress } from './hookWiring.js';
 import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
 import { appendInboxMessage, peekInboxMessages } from './teammateInbox.js';
+import {
+  NativeDocsProvider, NATIVE_DOCS_SCHEME,
+  makeShowRawRecordCommand, makeOpenTranscriptDocCommand, makeShowFileChangesCommand,
+} from './nativeDocs.js';
 
 /** Open (or reveal) a Claude Code editor tab via the companion extension's
  *  command. `sessionId` undefined opens a new chat. Failure usually means the
@@ -81,6 +85,29 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     ),
   );
 
+  // Native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V2.md): raw-JSON
+  // record, whole-transcript markdown pop-out, and an Edit's before/after
+  // diff — each a real, independently-registered vscode command (see
+  // nativeDocs.ts's module docstring), invoked by DetailPanel via
+  // `vscode.commands.executeCommand` after it validates the webview's
+  // request. Deliberately NOT declared in package.json's contributes.commands:
+  // all three act on a specific transcript row/chip the panel resolves
+  // server-side (a file path + record index/target), so a bare palette
+  // invocation would have nothing to act on — unlike e.g.
+  // agentActivity.focusSession, which is in the palette despite also taking
+  // an argument (a minor existing inconsistency, not a pattern to repeat
+  // here: that command's argument is a plain session id a caller could
+  // reasonably supply by hand; these three need a live transcript-row
+  // resolution the palette has no way to provide).
+  const nativeDocsProvider = new NativeDocsProvider();
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(NATIVE_DOCS_SCHEME, nativeDocsProvider),
+    { dispose: () => nativeDocsProvider.dispose() },
+    vscode.commands.registerCommand('serac.detail.showRawRecord', makeShowRawRecordCommand(nativeDocsProvider)),
+    vscode.commands.registerCommand('serac.detail.openTranscriptDoc', makeOpenTranscriptDocCommand(nativeDocsProvider, wsPath)),
+    vscode.commands.registerCommand('serac.detail.showFileChanges', makeShowFileChangesCommand(nativeDocsProvider)),
+  );
+
   // Detail panel: an editor-area webview opened beside the conversation by a
   // card's "view workflow/team/subagents" affordance. Source-keyed — reads live
   // snapshots + resolves agent transcripts per source from discovery; "open
@@ -112,6 +139,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     peekTeammateInbox: (teamDir: string, member: string) =>
       peekInboxMessages({ teamsDir: discovery.getTeamsDir(), teamDir, member }),
     logMessaging: (line: string) => log.info(line),
+    clearNativeDocsCache: () => nativeDocsProvider.clear(),
   });
   context.subscriptions.push({ dispose: () => detailPanel.dispose() });
   panelProvider.setOpenDetailHandler(

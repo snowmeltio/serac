@@ -21,6 +21,7 @@ import {
   createMockWebview,
   createMockWebviewPanel,
   window,
+  commands,
   type MockWebview,
   type MockWebviewPanel,
 } from './__mocks__/vscode.js';
@@ -591,6 +592,166 @@ describe('DetailPanel', () => {
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'openConversation', sessionId: '../../etc/passwd' });
       expect(h.deps.openConversation).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('native doc messages (Phase 4, DESIGN-DETAIL-PANE-V2.md)', () => {
+    const VALID_RAW: Record<string, unknown> = {
+      type: 'showRawRecord', source: 'workflow', containerId: 'sess-1',
+      groupKey: 'wf_abc', agentId: 'a1', entryIndex: 2, label: 'audit:bugs',
+    };
+    const VALID_TRANSCRIPT: Record<string, unknown> = {
+      type: 'openTranscriptDoc', source: 'workflow', containerId: 'sess-1',
+      groupKey: 'wf_abc', agentId: 'a1', label: 'audit:bugs',
+    };
+    const VALID_FILE_CHANGES_INDEX: Record<string, unknown> = {
+      type: 'showFileChanges', source: 'workflow', containerId: 'sess-1',
+      groupKey: 'wf_abc', agentId: 'a1', entryIndex: 1, label: 'audit:bugs',
+    };
+    const VALID_FILE_CHANGES_PATH: Record<string, unknown> = {
+      type: 'showFileChanges', source: 'workflow', containerId: 'sess-1',
+      groupKey: 'wf_abc', agentId: 'a1', filePath: '/repo/src/foo.ts', label: 'audit:bugs',
+    };
+
+    describe('showRawRecord', () => {
+      it('resolves the file and invokes the registered command with the resolved path', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage(VALID_RAW);
+        expect(h.deps.resolveAgentFile).toHaveBeenCalledWith('workflow', 'sess-1', 'wf_abc', 'a1');
+        expect(commands.executeCommand).toHaveBeenCalledWith(
+          'serac.detail.showRawRecord',
+          { filePath: '/path/agent.jsonl', entryIndex: 2, label: 'audit:bugs' },
+        );
+      });
+
+      it('refuses a message naming a DIFFERENT container than the panel is showing', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage({ ...VALID_RAW, containerId: 'sess-OTHER' });
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
+
+      it('refuses a message naming a DIFFERENT source than the panel is showing', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage({ ...VALID_RAW, source: 'subagents' });
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
+
+      it('refuses a negative entryIndex', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage({ ...VALID_RAW, entryIndex: -1 });
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
+
+      it('refuses a non-integer entryIndex', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage({ ...VALID_RAW, entryIndex: 1.5 });
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
+
+      it('refuses a non-numeric entryIndex', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage({ ...VALID_RAW, entryIndex: '2' });
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
+
+      it('refuses a path-traversal agentId', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage({ ...VALID_RAW, agentId: '../../etc/passwd' });
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
+
+      it('shows a warning and never invokes the command when the file cannot be resolved', async () => {
+        const h = setup({ resolveAgentFile: vi.fn(() => null) });
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage(VALID_RAW);
+        expect(window.showWarningMessage).toHaveBeenCalled();
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
+
+      it('swallows a rejection from an unregistered command (feature cut) without throwing', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        vi.mocked(commands.executeCommand).mockRejectedValueOnce(new Error('command not found'));
+        // _fireMessage itself is synchronous/void — reaching the assertion below
+        // (rather than an uncaught rejection failing the test run) IS the proof
+        // the rejection was swallowed inside runNativeDocCommand's try/catch.
+        await h.webview._fireMessage(VALID_RAW);
+        expect(commands.executeCommand).toHaveBeenCalledTimes(1);
+      });
+
+      it('falls back to agentId as the label when none is supplied', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        const { label: _drop, ...noLabel } = VALID_RAW;
+        await h.webview._fireMessage(noLabel);
+        expect(commands.executeCommand).toHaveBeenCalledWith(
+          'serac.detail.showRawRecord',
+          { filePath: '/path/agent.jsonl', entryIndex: 2, label: 'a1' },
+        );
+      });
+    });
+
+    describe('openTranscriptDoc', () => {
+      it('invokes the registered command with the resolved path and agentId', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage(VALID_TRANSCRIPT);
+        expect(commands.executeCommand).toHaveBeenCalledWith(
+          'serac.detail.openTranscriptDoc',
+          { filePath: '/path/agent.jsonl', agentId: 'a1', label: 'audit:bugs' },
+        );
+      });
+
+      it('refuses a message naming a different container', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage({ ...VALID_TRANSCRIPT, containerId: 'sess-OTHER' });
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('showFileChanges', () => {
+      it('invokes the command with an entryIndex target', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage(VALID_FILE_CHANGES_INDEX);
+        expect(commands.executeCommand).toHaveBeenCalledWith(
+          'serac.detail.showFileChanges',
+          { filePath: '/path/agent.jsonl', target: { entryIndex: 1 }, label: 'audit:bugs' },
+        );
+      });
+
+      it('invokes the command with a targetPath, for the Result-strip file-chip flow', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage(VALID_FILE_CHANGES_PATH);
+        expect(commands.executeCommand).toHaveBeenCalledWith(
+          'serac.detail.showFileChanges',
+          { filePath: '/path/agent.jsonl', target: { targetPath: '/repo/src/foo.ts' }, label: 'audit:bugs' },
+        );
+      });
+
+      it('refuses when NEITHER entryIndex nor filePath is present', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        const { entryIndex: _drop, ...noIndex } = VALID_FILE_CHANGES_INDEX;
+        await h.webview._fireMessage(noIndex);
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
+
+      it('refuses an overlong filePath', async () => {
+        const h = setup();
+        h.panel.show('workflow', 'sess-1', 'sess-1');
+        await h.webview._fireMessage({ ...VALID_FILE_CHANGES_PATH, filePath: 'x'.repeat(4097) });
+        expect(commands.executeCommand).not.toHaveBeenCalled();
+      });
     });
   });
 

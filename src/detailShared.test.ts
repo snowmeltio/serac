@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey } from './detailShared.js';
+import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey, parseEditInput } from './detailShared.js';
 
 describe('formatModelLabel', () => {
   it('derives tier + version from modern ids, stripping [1m] and date stamps', () => {
@@ -45,5 +45,36 @@ describe('transcriptKey', () => {
     const b = transcriptKey('team', 'at:beta', '', 'defender');
     expect(a).not.toBe(b);
     expect(a).toBe('team:at:alpha||defender');
+  });
+});
+
+describe('parseEditInput', () => {
+  it('parses a valid two-sided Edit input', () => {
+    const raw = JSON.stringify({ file_path: '/a/b.ts', old_string: 'foo', new_string: 'bar' });
+    expect(parseEditInput(raw)).toEqual({ filePath: '/a/b.ts', oldString: 'foo', newString: 'bar' });
+  });
+
+  it('rejects malformed JSON', () => {
+    expect(parseEditInput('{not json')).toBeNull();
+  });
+
+  it('rejects a non-object JSON value', () => {
+    expect(parseEditInput('"just a string"')).toBeNull();
+    expect(parseEditInput('42')).toBeNull();
+  });
+
+  it('rejects a Write-shaped input (no old_string)', () => {
+    const raw = JSON.stringify({ file_path: '/a/b.ts', content: 'whole file' });
+    expect(parseEditInput(raw)).toBeNull();
+  });
+
+  it('rejects an empty file_path', () => {
+    const raw = JSON.stringify({ file_path: '', old_string: 'a', new_string: 'b' });
+    expect(parseEditInput(raw)).toBeNull();
+  });
+
+  it('rejects non-string old_string/new_string', () => {
+    const raw = JSON.stringify({ file_path: '/a/b.ts', old_string: 1, new_string: 'b' });
+    expect(parseEditInput(raw)).toBeNull();
   });
 });

@@ -1114,3 +1114,247 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect((webviewState as { resultStripCollapsed?: boolean | null }).resultStripCollapsed).toBe(false);
   });
 });
+
+describe('detailView.ts — native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V2.md)', () => {
+  beforeEach(async () => {
+    postedMessages = [];
+    webviewState = undefined;
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
+    await import('./detailView.js');
+  });
+
+  function logModel() {
+    return {
+      source: 'workflow',
+      containerId: 'wf_run1',
+      sessionId: 'sess1',
+      title: 'audit-run',
+      metrics: '2 agents',
+      groups: [
+        {
+          key: 'wf_run1',
+          title: 'Audit',
+          agents: [
+            agent({ agentId: 'agent001', label: 'audit:privacy', phaseTitle: 'Audit' }),
+          ],
+        },
+      ],
+    };
+  }
+
+  const KEY1 = 'workflow:wf_run1|wf_run1|agent001';
+  const EDIT_INPUT = JSON.stringify({ file_path: '/repo/src/foo.ts', old_string: 'before', new_string: 'after' });
+
+  /** Click the (non-brief) row whose text contains `textMatch` to expand it,
+   *  then re-query it (the click re-renders the whole tree via innerHTML —
+   *  see the existing "row expansion reveals rawInput/rawOutput" test for
+   *  the same re-query pattern). */
+  function expandRow(textMatch: string): HTMLElement {
+    const before = qa('.wf-log-row').find(r => r.textContent!.includes(textMatch))!;
+    before.click();
+    return qa('.wf-log-row').find(r => r.textContent!.includes(textMatch))!;
+  }
+
+  it('the two base actions (raw JSON, open transcript) appear on any expanded row', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Bash** ls',
+        kind: 'tool_use', toolName: 'Bash', rawInput: JSON.stringify({ command: 'ls' }),
+      },
+    ]);
+    expect(q('.wf-log-actions')).toBeNull(); // nothing expanded yet
+    expandRow('Bash');
+    const actions = qa('.wf-log-action');
+    expect(actions.map(a => a.dataset.action)).toEqual(['raw-json', 'open-transcript']);
+  });
+
+  it('"Show file changes" is a THIRD action only when rawInput parses as a two-sided Edit', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Edit** foo.ts',
+        kind: 'tool_use', toolName: 'Edit', rawInput: EDIT_INPUT,
+      },
+    ]);
+    expandRow('Edit');
+    const actions = qa('.wf-log-action').map(a => a.dataset.action);
+    expect(actions).toEqual(['raw-json', 'open-transcript', 'file-changes']);
+  });
+
+  it('does NOT show "Show file changes" for a Write call (no old_string/new_string)', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Write** foo.ts',
+        kind: 'tool_use', toolName: 'Write', rawInput: JSON.stringify({ file_path: '/a.ts', content: 'x' }),
+      },
+    ]);
+    expandRow('Write');
+    expect(qa('.wf-log-action').map(a => a.dataset.action)).toEqual(['raw-json', 'open-transcript']);
+  });
+
+  it('does NOT show "Show file changes" for an Edit whose rawInput is malformed JSON', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Edit** foo.ts',
+        kind: 'tool_use', toolName: 'Edit', rawInput: '{not json',
+      },
+    ]);
+    expandRow('Edit');
+    expect(qa('.wf-log-action').map(a => a.dataset.action)).toEqual(['raw-json', 'open-transcript']);
+  });
+
+  it('clicking "View raw JSON" posts showRawRecord with the row\'s entry index', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Bash** ls',
+        kind: 'tool_use', toolName: 'Bash', rawInput: JSON.stringify({ command: 'ls' }),
+      },
+    ]);
+    const row = expandRow('Bash');
+    postedMessages.length = 0;
+    qa('.wf-log-action').find(a => a.dataset.action === 'raw-json')!.click();
+    const msg = (postedMessages as any[]).find(m => m.type === 'showRawRecord');
+    expect(msg).toEqual({
+      type: 'showRawRecord', source: 'workflow', containerId: 'wf_run1',
+      groupKey: 'wf_run1', agentId: 'agent001', label: 'audit:privacy',
+      entryIndex: Number(row.dataset.idx),
+    });
+  });
+
+  it('clicking "Open transcript in editor" posts openTranscriptDoc with no entryIndex', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Bash** ls',
+        kind: 'tool_use', toolName: 'Bash', rawInput: JSON.stringify({ command: 'ls' }),
+      },
+    ]);
+    expandRow('Bash');
+    postedMessages.length = 0;
+    qa('.wf-log-action').find(a => a.dataset.action === 'open-transcript')!.click();
+    const msg = (postedMessages as any[]).find(m => m.type === 'openTranscriptDoc');
+    expect(msg).toEqual({
+      type: 'openTranscriptDoc', source: 'workflow', containerId: 'wf_run1',
+      groupKey: 'wf_run1', agentId: 'agent001', label: 'audit:privacy',
+    });
+    expect('entryIndex' in msg).toBe(false);
+  });
+
+  it('clicking "Show file changes" on a row posts showFileChanges with an entryIndex', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Edit** foo.ts',
+        kind: 'tool_use', toolName: 'Edit', rawInput: EDIT_INPUT,
+      },
+    ]);
+    const row = expandRow('Edit');
+    postedMessages.length = 0;
+    qa('.wf-log-action').find(a => a.dataset.action === 'file-changes')!.click();
+    const msg = (postedMessages as any[]).find(m => m.type === 'showFileChanges');
+    expect(msg).toEqual({
+      type: 'showFileChanges', source: 'workflow', containerId: 'wf_run1',
+      groupKey: 'wf_run1', agentId: 'agent001', label: 'audit:privacy',
+      entryIndex: Number(row.dataset.idx),
+    });
+  });
+
+  it('a click inside the expanded block never re-toggles (re-collapses) the row', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Bash** ls',
+        kind: 'tool_use', toolName: 'Bash', rawInput: JSON.stringify({ command: 'ls' }),
+      },
+    ]);
+    expandRow('Bash');
+    qa('.wf-log-action').find(a => a.dataset.action === 'raw-json')!.click();
+    // Still expanded — the click posted a message but did not toggle expandedRows.
+    const row = qa('.wf-log-row').find(r => r.textContent!.includes('Bash'))!;
+    expect(row.getAttribute('aria-expanded')).toBe('true');
+    expect(q('.wf-log-expand')).not.toBeNull();
+  });
+
+  it('keyboard Enter on a native action activates it', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Bash** ls',
+        kind: 'tool_use', toolName: 'Bash', rawInput: JSON.stringify({ command: 'ls' }),
+      },
+    ]);
+    expandRow('Bash');
+    postedMessages.length = 0;
+    const btn = qa('.wf-log-action').find(a => a.dataset.action === 'raw-json')!;
+    btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect((postedMessages as any[]).some(m => m.type === 'showRawRecord')).toBe(true);
+  });
+
+  // ── Result-strip file chip (Phase 4's third wiring point) ─────────────
+
+  it('only an "edit"-kind file chip is clickable; write/notebook chips stay inert', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], {
+      filesTouched: [
+        { path: 'src/foo.ts', kind: 'edit', approxAdded: 1, approxRemoved: 1 },
+        { path: 'src/new.ts', kind: 'write', approxAdded: 5, approxRemoved: null },
+      ],
+      commandsRun: [], testsRun: false, finalMessage: null,
+    } as any, []);
+    const chips = qa('.wf-rstrip-chip').filter(c => !c.classList.contains('wf-rstrip-more') && !c.classList.contains('wf-rstrip-cat'));
+    const editChip = chips.find(c => c.textContent!.includes('foo.ts'))!;
+    const writeChip = chips.find(c => c.textContent!.includes('new.ts'))!;
+    expect(editChip.classList.contains('clickable')).toBe(true);
+    expect(writeChip.classList.contains('clickable')).toBe(false);
+  });
+
+  it('clicking an edit file chip posts showFileChanges with the file PATH, not an entryIndex', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], {
+      filesTouched: [{ path: 'src/foo.ts', kind: 'edit', approxAdded: 1, approxRemoved: 1 }],
+      commandsRun: [], testsRun: false, finalMessage: null,
+    } as any, []);
+    postedMessages.length = 0;
+    q('.wf-rstrip-chip.clickable')!.click();
+    const msg = (postedMessages as any[]).find(m => m.type === 'showFileChanges');
+    expect(msg).toEqual({
+      type: 'showFileChanges', source: 'workflow', containerId: 'wf_run1',
+      groupKey: 'wf_run1', agentId: 'agent001', label: 'audit:privacy',
+      filePath: 'src/foo.ts',
+    });
+    expect('entryIndex' in msg).toBe(false);
+  });
+
+  it('keyboard Enter on a clickable file chip activates it', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], {
+      filesTouched: [{ path: 'src/foo.ts', kind: 'edit', approxAdded: 1, approxRemoved: 1 }],
+      commandsRun: [], testsRun: false, finalMessage: null,
+    } as any, []);
+    postedMessages.length = 0;
+    const chip = q('.wf-rstrip-chip.clickable')!;
+    chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect((postedMessages as any[]).some(m => m.type === 'showFileChanges')).toBe(true);
+  });
+});

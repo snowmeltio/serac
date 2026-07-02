@@ -8,7 +8,7 @@
 
 import { isNearBottom, chooseReaderScrollTop, STICK_THRESHOLD_PX } from './detailViewScroll.js';
 import { escapeHtml } from './panelUtils.js';
-import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey } from './detailShared.js';
+import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey, parseEditInput } from './detailShared.js';
 import type {
   DetailAgentView, DetailGroupView, DetailViewChoice, DetailModel, TranscriptEntry,
   Evidence, Mismatch, FileTouch, CommandRun,
@@ -984,7 +984,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
   }
 
   /** File chips: basename + approx +added/−removed when non-null, capped at
-   *  RESULT_MAX_FILE_CHIPS with a "+n" overflow chip (mockup §2). */
+   *  RESULT_MAX_FILE_CHIPS with a "+n" overflow chip (mockup §2). An `edit`
+   *  chip is also a native escape hatch (Phase 4, DESIGN-DETAIL-PANE-V2.md):
+   *  clicking it posts `showFileChanges` with the file's PATH (not an
+   *  entryIndex — the strip has no single row to point at), and the host
+   *  resolves that to the file's FIRST Edit in the transcript. `write`/
+   *  `notebook` chips have no equivalent before/after to diff (Write's tool
+   *  input carries no prior content — see evidenceExtractor.ts), so they
+   *  stay inert. */
   function renderFileChips(files: FileTouch[]): string {
     if (files.length === 0) { return ''; }
     const shown = files.slice(0, RESULT_MAX_FILE_CHIPS);
@@ -994,7 +1001,12 @@ declare function acquireVsCodeApi(): VsCodeApi;
       const deltaBits: string[] = [];
       if (f.approxAdded !== null) { deltaBits.push('<span class="wf-rstrip-add">+' + f.approxAdded + '</span>'); }
       if (f.approxRemoved !== null) { deltaBits.push('<span class="wf-rstrip-del">−' + f.approxRemoved + '</span>'); }
-      html += '<span class="wf-rstrip-chip" title="' + escapeHtml(f.path) + '">'
+      const clickable = f.kind === 'edit';
+      const attrs = clickable
+        ? ' class="wf-rstrip-chip clickable" data-file-path="' + escapeHtml(f.path) + '"'
+          + ' role="button" tabindex="0" title="' + escapeHtml(f.path) + ' — view as edited by this agent"'
+        : ' class="wf-rstrip-chip" title="' + escapeHtml(f.path) + '"';
+      html += '<span' + attrs + '>'
         + escapeHtml(basename(f.path))
         + (deltaBits.length > 0 ? ' ' + deltaBits.join(' ') : '')
         + '</span>';
@@ -1244,13 +1256,34 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return oneLine.replace(/^>\s*\*\*[^*]+\*\*\s*/, '').replace(/^>\s*/, '');
   }
 
-  function renderExpandedBlock(e: TranscriptEntry): string {
+  /** Phase 4 native escape hatches (DESIGN-DETAIL-PANE-V2.md): small action
+   *  buttons on an expanded row. Every button only POSTS a message — the host
+   *  (detailPanel.ts + nativeDocs.ts) resolves the transcript file and builds
+   *  every URI; nothing here ever constructs one, and no file content round-
+   *  trips through this untrusted context. "Show file changes" appears only
+   *  when this row's rawInput parses as a two-sided Edit — `parseEditInput`
+   *  is the SAME function nativeDocs.ts re-parses with host-side before
+   *  actually opening the diff, so the two sides can't disagree on what
+   *  counts as a valid Edit (this webview check is purely a display decision,
+   *  never trusted for the write). */
+  function renderNativeDocActions(e: TranscriptEntry, idx: number): string {
+    let html = '<div class="wf-log-actions">'
+      + '<span class="wf-log-action" data-action="raw-json" data-idx="' + idx + '" role="button" tabindex="0">View raw JSON</span>'
+      + '<span class="wf-log-action" data-action="open-transcript" role="button" tabindex="0">Open transcript in editor</span>';
+    if (e.toolName === 'Edit' && e.rawInput && parseEditInput(e.rawInput)) {
+      html += '<span class="wf-log-action" data-action="file-changes" data-idx="' + idx + '" role="button" tabindex="0">Show file changes</span>';
+    }
+    return html + '</div>';
+  }
+
+  function renderExpandedBlock(e: TranscriptEntry, idx: number): string {
     let html = '<div class="wf-log-expand">';
     if (e.rawInput) { html += '<div class="wf-log-expand-h">input</div><pre class="wf-log-expand-pre">' + escapeHtml(e.rawInput) + '</pre>'; }
     if (e.rawOutput) {
       html += '<div class="wf-log-expand-h">' + (e.isError ? 'tool_result (error)' : 'tool_result') + '</div>'
         + '<pre class="wf-log-expand-pre">' + escapeHtml(e.rawOutput) + '</pre>';
     }
+    html += renderNativeDocActions(e, idx);
     return html + '</div>';
   }
 
@@ -1276,7 +1309,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + (r.isBrief ? '<span class="wf-log-tag">BRIEF</span> ' : '')
       + (r.isResult ? '<span class="wf-log-tag">RESULT</span> ' : '')
       + toolBit + label + '</span></div>';
-    if (expanded) { html += renderExpandedBlock(e); }
+    if (expanded) { html += renderExpandedBlock(e, r.idx); }
     return html;
   }
 
@@ -1519,6 +1552,21 @@ declare function acquireVsCodeApi(): VsCodeApi;
       render();
       return;
     }
+    // Result-strip file chip (Phase 4): kind==='edit' chips only (see
+    // renderFileChips) — clicking posts the file's PATH, not an entryIndex,
+    // so the host resolves the file's FIRST Edit in the transcript.
+    const fileChip = target.closest<HTMLElement>('.wf-rstrip-chip.clickable');
+    if (fileChip) {
+      const agent = findAgent(selectedGroupKey, selectedAgentId);
+      if (model && agent && selectedGroupKey !== null && fileChip.dataset.filePath) {
+        vscode.postMessage({
+          type: 'showFileChanges', source: model.source, containerId: model.containerId,
+          groupKey: selectedGroupKey, agentId: agent.agentId, label: agent.label,
+          filePath: fileChip.dataset.filePath,
+        });
+      }
+      return;
+    }
     if (target.closest('.wf-rstrip-head')) {
       // Toggle FROM the currently effective state (status default when the
       // user hasn't chosen yet — see resultStripCollapsed's doc comment), not
@@ -1568,6 +1616,28 @@ declare function acquireVsCodeApi(): VsCodeApi;
         }
       }
       render();
+      return;
+    }
+    // Native escape hatches (Phase 4): the expanded block (and these buttons)
+    // is a flow SIBLING of .wf-log-row, not nested inside it (see the CSS
+    // comment on .wf-log-expand — deliberate, so a click here never bubbles
+    // into the row's own expand/collapse toggle below).
+    const nativeAction = target.closest<HTMLElement>('.wf-log-action');
+    if (nativeAction) {
+      const agent = findAgent(selectedGroupKey, selectedAgentId);
+      if (model && agent && selectedGroupKey !== null) {
+        const action = nativeAction.dataset.action;
+        const base = { source: model.source, containerId: model.containerId, groupKey: selectedGroupKey, agentId: agent.agentId, label: agent.label };
+        if (action === 'raw-json' || action === 'file-changes') {
+          const idx = Number(nativeAction.dataset.idx);
+          if (!Number.isNaN(idx)) {
+            const type = action === 'raw-json' ? 'showRawRecord' : 'showFileChanges';
+            vscode.postMessage({ type, ...base, entryIndex: idx });
+          }
+        } else if (action === 'open-transcript') {
+          vscode.postMessage({ type: 'openTranscriptDoc', ...base });
+        }
+      }
       return;
     }
     const logRow = target.closest<HTMLElement>('.wf-log-row');
@@ -1634,7 +1704,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const activatable = target.closest(
       '.wf-nav-row, .wf-openconv, .wf-switch-chip, .wf-nav-toggle, .wf-brief-head, '
       + '.wf-view-chip, .wf-view-collapse, .wf-mode-toggle, .wf-agent-pill, '
-      + '.wf-facet-kind, .wf-facet-foldall, .wf-log-row, .wf-rstrip-head',
+      + '.wf-facet-kind, .wf-facet-foldall, .wf-log-row, .wf-rstrip-head, '
+      + '.wf-log-action, .wf-rstrip-chip.clickable',
     );
     if (activatable) {
       e.preventDefault();

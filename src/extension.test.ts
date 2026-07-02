@@ -17,6 +17,18 @@ vi.mock('vscode', () => {
     },
     ViewColumn: { One: 1, Active: -1 },
     RelativePattern: class { constructor(public base: unknown, public pattern: string) {} },
+    // nativeDocs.ts's NativeDocsProvider (Phase 4, DESIGN-DETAIL-PANE-V2.md)
+    // constructs one of these at activation — declared, never fired (see its
+    // own docstring on why a snapshot-only virtual doc never emits).
+    EventEmitter: class {
+      private listeners: Array<(e: unknown) => void> = [];
+      event = (listener: (e: unknown) => void) => {
+        this.listeners.push(listener);
+        return { dispose: vi.fn() };
+      };
+      fire(e: unknown) { for (const l of this.listeners) { l(e); } }
+      dispose() { this.listeners = []; }
+    },
     workspace: {
       workspaceFolders: [{ uri: { scheme: 'file', fsPath: '/test/ws' }, name: 'ws', index: 0 }],
       openTextDocument: vi.fn().mockResolvedValue({}),
@@ -32,6 +44,7 @@ vi.mock('vscode', () => {
         get: <T>(_key: string, defaultValue?: T): T | undefined => defaultValue,
       })),
       onDidChangeConfiguration: vi.fn(() => ({ dispose: vi.fn() })),
+      registerTextDocumentContentProvider: vi.fn(() => ({ dispose: vi.fn() })),
     },
     window: {
       createOutputChannel: vi.fn(() => ({

@@ -906,6 +906,33 @@ body {
   overflow-y: auto;
 }
 
+/* Phase 4 native escape hatches (DESIGN-DETAIL-PANE-V2.md): small action
+ * buttons at the foot of an expanded row. */
+.wf-log-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
+}
+.wf-log-action {
+  font-family: var(--vscode-font-family);
+  font-size: 10px;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 3px;
+  padding: 1px 7px;
+  cursor: pointer;
+  white-space: normal;
+}
+.wf-log-action:hover { color: var(--vscode-foreground); background: var(--vscode-list-hoverBackground); }
+.wf-log-action:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+
+/* Result-strip file chip, when it's also a native escape hatch (an 'edit'
+ * kind chip — see renderFileChips). */
+.wf-rstrip-chip.clickable { cursor: pointer; }
+.wf-rstrip-chip.clickable:hover { background: var(--vscode-list-hoverBackground); }
+.wf-rstrip-chip.clickable:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
+
 /* ============ LIGHT THEME ============
  * The Snowmelt brand accents (--sm-blizzard-blue, --sm-team-violet,
  * --sm-teal-bright, --sm-salmon-red) are tuned for a dark editor background.

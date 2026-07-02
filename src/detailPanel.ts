@@ -63,6 +63,16 @@ export interface DetailPanelDeps {
   /** Read-only peek at a teammate's pending inbox (sanitised, fail-silent []).
    *  Feeds the queued-message thread under a teammate's transcript. */
   peekTeammateInbox?: (teamDir: string, member: string) => Array<{ from: string; text: string; timestamp: string }>;
+
+  /** Drop every cached native-doc snapshot (Phase 4, DESIGN-DETAIL-PANE-V2.md
+   *  — the three escape-hatch commands in nativeDocs.ts) when this panel's
+   *  drill-in closes. The token map's OTHER eviction path (an N=32 cap) bounds
+   *  steady-state growth on its own; this is the second, panel-lifecycle-driven
+   *  path the module docstring documents. Optional: absent in unit tests, and
+   *  wherever the native-docs feature isn't wired at all (cutting it is then
+   *  just "don't wire this + don't register the three commands" in
+   *  extension.ts — no DetailPanel code change needed). */
+  clearNativeDocsCache?: () => void;
 }
 
 export class DetailPanel {
@@ -154,6 +164,7 @@ export class DetailPanel {
         this.sessionId = null;
         this.lastPushed = null;
         this.liveTranscript = null;
+        this.deps.clearNativeDocsCache?.();
       });
     } else {
       // Reveal in the panel's CURRENT column, not Beside. `Beside` recomputes
@@ -197,6 +208,7 @@ export class DetailPanel {
     this.sessionId = null;
     this.lastPushed = null;
     this.liveTranscript = null;
+    this.deps.clearNativeDocsCache?.();
   }
 
   private postRender(force: boolean): void {
@@ -612,7 +624,89 @@ export class DetailPanel {
       this.deps.openConversation(msg.sessionId);
     } else if (msg.type === 'sendTeammateMessage') {
       await this.handleSendTeammateMessage(raw);
+    } else if (msg.type === 'showRawRecord') {
+      await this.handleShowRawRecord(msg);
+    } else if (msg.type === 'openTranscriptDoc') {
+      await this.handleOpenTranscriptDoc(msg);
+    } else if (msg.type === 'showFileChanges') {
+      await this.handleShowFileChanges(msg);
     }
+  }
+
+  // ── Native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V2.md) ────────
+  // Each webview message here names a row/chip in the panel's CURRENTLY
+  // DISPLAYED drill-in — validated against `this.source`/`this.containerId`,
+  // not just structurally, the same defensive posture resolveInboxTarget
+  // uses for roster resolution (a stale or forged message naming a different
+  // drill-in is refused, not just a malformed one). The actual work (file
+  // I/O, opening a native doc/diff) lives entirely in nativeDocs.ts, invoked
+  // here via `vscode.commands.executeCommand` — real, independently
+  // registered commands (see extension.ts), so cutting one is just "don't
+  // register it": the rejected promise from a missing command is swallowed
+  // below, not surfaced as an error (a cut feature is a silent no-op, not a
+  // broken button).
+
+  /** Common shape + identity validation shared by all three handlers below.
+   *  `label` is a display-only courtesy string (tab title / diff title
+   *  suffix) — it never drives file resolution, so a generous cap is enough;
+   *  nativeDocs.ts sanitises it further before using it in a URI. */
+  private validNativeDocBase(msg: Record<string, unknown>): { source: DetailSource; containerId: string; groupKey: string; agentId: string; label: string } | null {
+    if (msg.source !== 'workflow' && msg.source !== 'team' && msg.source !== 'subagents') { return null; }
+    // The transcript key must match the panel's CURRENT container — refuses a
+    // message naming a drill-in this panel isn't (or is no longer) showing.
+    if (msg.source !== this.source || msg.containerId !== this.containerId) { return null; }
+    if (typeof msg.groupKey !== 'string' || (msg.groupKey !== '' && !isValidSessionId(msg.groupKey))) { return null; }
+    if (!isValidSessionId(msg.agentId)) { return null; }
+    const label = typeof msg.label === 'string' ? msg.label.slice(0, 200) : msg.agentId;
+    return { source: msg.source, containerId: msg.containerId as string, groupKey: msg.groupKey, agentId: msg.agentId, label };
+  }
+
+  private resolveNativeDocFile(base: { source: DetailSource; containerId: string; groupKey: string; agentId: string }): string | null {
+    return this.deps.resolveAgentFile(base.source, base.containerId, base.groupKey, base.agentId);
+  }
+
+  /** Run a registered native-doc command, swallowing a rejection silently —
+   *  the ONLY way `executeCommand` rejects here is "no command with this id"
+   *  (extension.ts didn't register it, i.e. the feature was cut). A
+   *  business-logic failure (oversized transcript, record not found, not an
+   *  Edit) resolves normally; the command itself surfaces that with a toast
+   *  (see nativeDocs.ts's `make*Command` factories) — DetailPanel never
+   *  inspects the result. */
+  private async runNativeDocCommand(command: string, args: Record<string, unknown>): Promise<void> {
+    try {
+      await vscode.commands.executeCommand(command, args);
+    } catch {
+      // Not registered — the feature was cut. No-op.
+    }
+  }
+
+  private async handleShowRawRecord(msg: Record<string, unknown>): Promise<void> {
+    const base = this.validNativeDocBase(msg);
+    if (!base) { return; }
+    if (typeof msg.entryIndex !== 'number' || !Number.isInteger(msg.entryIndex) || msg.entryIndex < 0) { return; }
+    const filePath = this.resolveNativeDocFile(base);
+    if (!filePath) { void vscode.window.showWarningMessage('Transcript not available yet.'); return; }
+    await this.runNativeDocCommand('serac.detail.showRawRecord', { filePath, entryIndex: msg.entryIndex, label: base.label });
+  }
+
+  private async handleOpenTranscriptDoc(msg: Record<string, unknown>): Promise<void> {
+    const base = this.validNativeDocBase(msg);
+    if (!base) { return; }
+    const filePath = this.resolveNativeDocFile(base);
+    if (!filePath) { void vscode.window.showWarningMessage('Transcript not available yet.'); return; }
+    await this.runNativeDocCommand('serac.detail.openTranscriptDoc', { filePath, agentId: base.agentId, label: base.label });
+  }
+
+  private async handleShowFileChanges(msg: Record<string, unknown>): Promise<void> {
+    const base = this.validNativeDocBase(msg);
+    if (!base) { return; }
+    const hasIndex = typeof msg.entryIndex === 'number' && Number.isInteger(msg.entryIndex) && msg.entryIndex >= 0;
+    const hasPath = typeof msg.filePath === 'string' && msg.filePath.length > 0 && msg.filePath.length <= 4096;
+    if (!hasIndex && !hasPath) { return; }
+    const filePath = this.resolveNativeDocFile(base);
+    if (!filePath) { void vscode.window.showWarningMessage('Transcript not available yet.'); return; }
+    const target = hasIndex ? { entryIndex: msg.entryIndex as number } : { targetPath: msg.filePath as string };
+    await this.runNativeDocCommand('serac.detail.showFileChanges', { filePath, target, label: base.label });
   }
 
   /**
