@@ -588,6 +588,27 @@ body {
 .wf-view-row > .wf-zone-label,
 .wf-agentstrip > .wf-zone-label,
 .wf-agentstrip-pills > .wf-zone-label { padding-top: 4px; }
+/* ── Shared zone collapse control (Phase 2.3) ──
+ * The views row's bordered collapse/expand button, generalised — one visual
+ * class for views, agents, and result. Font styles are self-contained so it
+ * renders identically inside the uppercase result-strip head and the plain
+ * chip rows. */
+.wf-zone-collapse {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 3px;
+  padding: 1px 6px;
+  cursor: pointer;
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+}
+.wf-zone-collapse:hover { color: var(--vscode-foreground); }
+.wf-zone-collapse:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 
 /* ── 1. View row (session-scoped switcher, mockup 4/4b) ── */
 .wf-view-row {
@@ -624,36 +645,18 @@ body {
 .wf-view-tag.sub { color: var(--sm-teal-bright); }
 .wf-view-label { overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 .wf-view-count { color: var(--vscode-descriptionForeground); opacity: 0.75; }
-.wf-view-collapse {
-  margin-left: auto;
-  flex-shrink: 0;
-  color: var(--vscode-descriptionForeground);
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
-  border-radius: 3px;
-  padding: 1px 6px;
-  cursor: pointer;
-}
-.wf-view-collapse:hover { color: var(--vscode-foreground); }
-.wf-view-collapse:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 
-/* ── 2. Header strip ── */
+/* ── 2. Header strip ──
+ * Leads with a .wf-zone-label gutter cell (Phase 2.3, the old bordered
+ * source badge) so the strip sits on the same rail as views/agents/result;
+ * single-line and centre-aligned, so no padding-top nudge is needed. */
 .wf-hstrip {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px; /* rail gap, same as the other zone rows */
   padding: 7px 14px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   font-size: 12px;
-}
-.wf-hstrip-badge {
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
-  padding: 1px 6px;
-  border-radius: 3px;
-  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
-  color: var(--vscode-descriptionForeground);
 }
 .wf-hstrip-name { font-weight: 600; color: var(--vscode-editor-foreground, var(--vscode-foreground)); }
 /* Self-contained fill+text pills — contrast is against the pill's OWN
@@ -711,10 +714,14 @@ body {
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
   background: var(--vscode-editor-background);
 }
+/* Head leads with the shared .wf-zone-label rail cell and ends with the
+ * shared .wf-zone-collapse control (Phase 2.3); the old caret span is gone.
+ * The uppercase 9px register stays on the head so the collapsed summary
+ * keeps its established size. */
 .wf-rstrip-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 9px; /* rail gap, same as the other zone rows */
   cursor: pointer;
   font-size: 9px;
   font-weight: 600;
@@ -724,8 +731,11 @@ body {
 }
 .wf-rstrip-head:hover { color: var(--vscode-foreground); }
 .wf-rstrip-head:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
-.wf-rstrip-caret { width: 8px; }
 .wf-rstrip:not(.collapsed) .wf-rstrip-head { margin-bottom: 6px; }
+/* Expanded body indents to the rail: label width + the 9px rail gap (the
+ * 14px pane padding is already on .wf-rstrip) — same arithmetic as
+ * .wf-log-expand. */
+.wf-rstrip-body { margin-left: calc(var(--wf-gutter) + 9px); }
 .wf-rstrip-summary {
   text-transform: none;
   font-weight: 400;
@@ -814,6 +824,12 @@ body {
   align-items: stretch;
   gap: 6px;
 }
+/* Collapsed strip (Phase 2.3): one line, same clip rule as the views row. */
+.wf-agentstrip.collapsed .wf-agentstrip-pillwrap { flex-wrap: nowrap; overflow: hidden; }
+/* In a phase header the count already owns margin-left:auto — a second auto
+ * margin would split the free space and strand the count mid-row, so the
+ * collapse control falls back to a plain rail gap there. */
+.wf-agentstrip-phasehead > .wf-zone-collapse { margin-left: 9px; }
 .wf-agentstrip-phaserow { display: flex; flex-direction: column; gap: 4px; }
 /* Mirrors the classic nav's .wf-nav-phase register (same job, new surface). */
 .wf-agentstrip-phasehead {
@@ -851,12 +867,15 @@ body {
   font-weight: 600;
 }
 .wf-agent-pill-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+/* The collapsed strip's overflow chip — same dashed register as the views
+ * row's "+N" chip. */
+.wf-agent-pill.more { border-style: dashed; color: var(--vscode-descriptionForeground); }
 
 /* ── 5. Facet bar ── */
 .wf-facets {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px; /* rail gap, same as the other zone rows (Phase 2.3) */
   padding: 5px 14px;
   border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.2));
   font-size: 10.5px;

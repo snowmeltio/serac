@@ -869,7 +869,7 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
 
     // Collapse: the active chip and the WAITING one are kept; the DONE,
     // non-active one folds into a "+1" overflow chip.
-    q('.wf-view-collapse')!.click();
+    q('.wf-zone-collapse[data-zone="views"]')!.click();
     const collapsedIds = qa('.wf-view-chip').map(c => c.dataset.viewId);
     expect(collapsedIds).toContain('wf_run1');
     expect(collapsedIds).toContain('wf_run2');
@@ -1428,6 +1428,107 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(css).toMatch(/--wf-gutter:\s*\d+px/);
     expect(css).toMatch(/\.wf-log-t\s*{[^}]*width:\s*var\(--wf-gutter\)/);
     expect(css).toMatch(/\.wf-zone-label\s*{[^}]*width:\s*var\(--wf-gutter\)/);
+  });
+
+  // ── Rail labels + shared collapse control (Phase 2.3) ────────────────
+
+  it('header strip and result strip head lead with the shared rail label cell (badge box gone)', () => {
+    sendRender(logModel());
+    // The bordered one-off source badge is retired: the source name now sits
+    // in the same gutter cell as views/agents/filter.
+    expect(q('.wf-hstrip-badge')).toBeNull();
+    expect(q('.wf-hstrip .wf-zone-label')!.textContent).toBe('workflow');
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], sampleEvidence(), []);
+    expect(q('.wf-rstrip-head .wf-zone-label')!.textContent).toBe('result');
+    expect(q('.wf-rstrip-caret')).toBeNull(); // old tiny caret retired too
+    // ONE control, identical wording, on all three collapsible zones.
+    const buttons = qa('.wf-zone-collapse');
+    expect(buttons.map(b => b.dataset.zone).sort()).toEqual(['agents', 'result', 'views']);
+    for (const b of buttons.filter(x => x.dataset.zone !== 'result')) {
+      expect(b.textContent).toBe('⌃ collapse'); // views/agents expanded by default
+    }
+    expect(buttons.find(b => b.dataset.zone === 'result')!.textContent).toBe('⌄ expand'); // result collapsed by default
+  });
+
+  it('the shared collapse control folds a phased agent strip into one line: active + running/waiting + "+N"', () => {
+    const m = logModel() as any;
+    m.groups = [
+      {
+        key: 'wf_run1', title: 'Phase 1', agents: [
+          agent({ agentId: 'a1', label: 'one', status: 'done' }), // auto-selected → active, so kept
+          agent({ agentId: 'a2', label: 'two', status: 'done' }), // folds
+          agent({ agentId: 'a3', label: 'three', status: 'failed' }), // folds
+        ],
+      },
+      {
+        key: 'wf_run1', title: 'Phase 2', agents: [
+          agent({ agentId: 'a4', label: 'four', status: 'running' }), // kept
+          agent({ agentId: 'a5', label: 'five', status: 'waiting' }), // kept
+        ],
+      },
+    ];
+    sendRender(m);
+    expect(q('.wf-agentstrip')!.classList.contains('phased')).toBe(true);
+
+    q('.wf-zone-collapse[data-zone="agents"]')!.click();
+    const strip = q('.wf-agentstrip')!;
+    expect(strip.classList.contains('collapsed')).toBe(true);
+    // ALL phase lines fold into one row: no phase headers, one leading label.
+    expect(strip.classList.contains('phased')).toBe(false);
+    expect(qa('.wf-agentstrip-phasehead')).toHaveLength(0);
+    const labels = qa('.wf-agentstrip .wf-zone-label');
+    expect(labels).toHaveLength(1);
+    expect(labels[0].textContent).toBe('agents');
+    // Active + running + waiting across all groups, document order; the rest
+    // behind a "+N" chip.
+    const ids = qa('.wf-agent-pill').filter(p => !p.classList.contains('more')).map(p => p.dataset.agent);
+    expect(ids).toEqual(['a1', 'a4', 'a5']);
+    expect(q('.wf-agent-pill.more')!.textContent).toContain('+2');
+    expect((webviewState as { agentStripCollapsed?: boolean }).agentStripCollapsed).toBe(true);
+
+    // The "+N" chip expands the strip back to its phased form.
+    q('.wf-agent-pill.more')!.click();
+    expect(q('.wf-agentstrip')!.classList.contains('phased')).toBe(true);
+    expect(qa('.wf-agent-pill')).toHaveLength(5);
+    expect((webviewState as { agentStripCollapsed?: boolean }).agentStripCollapsed).toBe(false);
+  });
+
+  it('agentStripCollapsed persists across a webview rebuild', async () => {
+    sendRender(logModel());
+    q('.wf-zone-collapse[data-zone="agents"]')!.click();
+    expect(q('.wf-agentstrip')!.classList.contains('collapsed')).toBe(true);
+
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    await import('./detailView.js');
+    sendRender(logModel());
+    expect(q('.wf-agentstrip')!.classList.contains('collapsed')).toBe(true);
+    q('.wf-zone-collapse[data-zone="agents"]')!.click();
+    expect(q('.wf-agentstrip')!.classList.contains('collapsed')).toBe(false);
+  });
+
+  it('result strip: the collapse button inside the head and the head itself both toggle, never double-fire', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
+    ], [], sampleEvidence(), []);
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(true);
+
+    // The button sits INSIDE the clickable head — its click bubbles through
+    // the head, so a double-toggle would leave the strip visibly unchanged.
+    // Exactly one toggle per click is what these flips prove.
+    q('.wf-rstrip-head .wf-zone-collapse')!.click();
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(false);
+    expect((webviewState as { resultStripCollapsed?: boolean | null }).resultStripCollapsed).toBe(false);
+    q('.wf-rstrip-head .wf-zone-collapse')!.click();
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(true);
+    expect((webviewState as { resultStripCollapsed?: boolean | null }).resultStripCollapsed).toBe(true);
+
+    // The whole head stays clickable, same as before.
+    q('.wf-rstrip-head')!.click();
+    expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(false);
   });
 });
 

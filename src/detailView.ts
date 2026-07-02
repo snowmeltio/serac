@@ -62,6 +62,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  "+N" overflow chip. Expanded (false) by default — collapse is an explicit
    *  space-saving choice, not the resting state. */
   let viewRowCollapsed = false;
+  /** Agent strip collapsed to one line (Phase 2.3), same semantics as the
+   *  views row: only the active + running/waiting pills shown, the rest
+   *  folded into a "+N" overflow chip. For a phased strip, collapsing folds
+   *  ALL phase lines into that single pill row — no phase headers. Expanded
+   *  (false) by default; fresh key name so it can't collide with any older
+   *  persisted shape. */
+  let agentStripCollapsed = false;
   /** Result strip (Phase 3, DESIGN-DETAIL-PANE-V2.md) collapse preference.
    *  Tri-state, unlike viewRowCollapsed/briefCollapsed's plain booleans: null
    *  means "no explicit user choice yet", in which case the strip is
@@ -107,6 +114,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     briefCollapsed?: boolean;
     mode?: 'log' | 'classic';
     viewRowCollapsed?: boolean;
+    agentStripCollapsed?: boolean;
     resultStripCollapsed?: boolean | null;
     kindFilters?: Partial<Record<'text' | 'tool' | 'error' | 'result', boolean>>;
     timeMode?: 'clock' | 'offset';
@@ -116,6 +124,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
   briefCollapsed = persisted.briefCollapsed === true;
   mode = persisted.mode === 'classic' ? 'classic' : 'log';
   viewRowCollapsed = persisted.viewRowCollapsed === true;
+  agentStripCollapsed = persisted.agentStripCollapsed === true;
   resultStripCollapsed = typeof persisted.resultStripCollapsed === 'boolean' ? persisted.resultStripCollapsed : null;
   timeMode = persisted.timeMode === 'offset' ? 'offset' : 'clock';
   // Per-key restore over the defaults, so adding a future kind can't be
@@ -142,6 +151,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       briefCollapsed,
       mode,
       viewRowCollapsed,
+      agentStripCollapsed,
       resultStripCollapsed,
       kindFilters: { ...kindFilters },
       timeMode,
@@ -752,9 +762,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
         }
       };
     }
+    // Up to three zone-collapse controls can coexist (views/agents/result) —
+    // restore to the SAME zone's button, not merely the first in the DOM.
+    const zc = active.closest<HTMLElement>('.wf-zone-collapse');
+    if (zc) {
+      const zone = zc.dataset.zone ?? '';
+      return () => {
+        (root.querySelector('.wf-zone-collapse[data-zone="' + zone + '"]') as HTMLElement | null)?.focus();
+      };
+    }
     for (const cls of [
       'wf-nav-toggle', 'wf-brief-head', 'wf-openconv', 'wf-mode-toggle',
-      'wf-view-collapse', 'wf-facet-foldall', 'wf-rstrip-head',
+      'wf-facet-foldall', 'wf-rstrip-head',
     ] as const) {
       if (active.closest('.' + cls)) {
         return () => { (root.querySelector('.' + cls) as HTMLElement | null)?.focus(); };
@@ -887,6 +906,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return '<span class="wf-zone-label">' + escapeHtml(text) + '</span>';
   }
 
+  /** The shared zone collapse/expand affordance (Phase 2.3): the views row's
+   *  bordered button, generalised — Murray preferred it over the Result
+   *  strip's tiny caret, so ONE control (identical glyphs and wording)
+   *  serves views, agents, and result. `data-zone` routes the click; sits at
+   *  the right end of each zone's first line, outside any clipped wrap
+   *  container so a collapsed overflow can never hide it. */
+  function zoneCollapse(zone: 'views' | 'agents' | 'result', collapsed: boolean): string {
+    return '<span class="wf-zone-collapse" data-zone="' + zone + '" role="button" tabindex="0"'
+      + ' title="' + (collapsed ? 'Expand ' : 'Collapse ') + zone + '">'
+      + (collapsed ? '⌄ expand' : '⌃ collapse') + '</span>';
+  }
+
   function renderViewRow(): string {
     if (!model || !model.views || model.views.length === 0) { return ''; }
     const views = model.views;
@@ -906,10 +937,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       html += '<span class="wf-view-chip more" role="button" tabindex="0"'
         + ' title="Show ' + overflow + ' more view' + (overflow === 1 ? '' : 's') + '">+' + overflow + '</span>';
     }
-    html += '<span class="wf-view-collapse" role="button" tabindex="0"'
-      + ' title="' + (viewRowCollapsed ? 'Expand view row' : 'Collapse view row') + '">'
-      + (viewRowCollapsed ? '⌄ expand' : '⌃ collapse') + '</span>';
-    return html + '</div></div>';
+    return html + '</div>' + zoneCollapse('views', viewRowCollapsed) + '</div>';
   }
 
   /** Roll-up across every agent in every group (workflow phases included) —
@@ -951,8 +979,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (dur) { metaBits.push(dur); }
     if (agg.tokens > 0) { metaBits.push(fmtTokens(agg.tokens) + ' tokens'); }
     if (agg.model) { metaBits.push(escapeHtml(agg.model)); }
+    // The source badge lives in the shared label rail (Phase 2.3) — same
+    // gutter cell as views/agents/result/filter, not a bordered one-off box.
     return '<div class="wf-hstrip">'
-      + '<span class="wf-hstrip-badge">' + escapeHtml(badge) + '</span>'
+      + zoneLabel(badge)
       + '<span class="wf-hstrip-name">' + escapeHtml(model.title) + '</span>'
       + '<span class="wf-hstrip-pill status-' + agg.pillStatus + '">' + escapeHtml(agg.pillStatus) + '</span>'
       + '<span class="wf-hstrip-counts">' + agg.running + ' running · ' + agg.waiting + ' waiting · ' + agg.done + ' done</span>'
@@ -1151,13 +1181,23 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const evidence = st.evidence;
     const mismatches = st.mismatches;
     const collapsed = resultStripCollapsed ?? true;
+    // Phase 2.3: the head leads with the shared rail label (no more one-off
+    // caret + label pair) and ends with the shared collapse control. The
+    // whole head stays clickable; the button inside it is the visible
+    // affordance — the click handler checks .wf-zone-collapse BEFORE
+    // .wf-rstrip-head, so the two never double-toggle.
     let html = '<div class="wf-rstrip' + (collapsed ? ' collapsed' : '') + '">';
     html += '<div class="wf-rstrip-head" role="button" tabindex="0" aria-expanded="' + (!collapsed) + '">'
-      + '<span class="wf-rstrip-caret">' + (collapsed ? '▸' : '▾') + '</span>'
-      + '<span class="wf-rstrip-label">Result</span>'
+      + zoneLabel('result')
       + (collapsed ? renderResultStripSummary(agent, evidence) + renderInlineMismatch(mismatches) : '')
+      + zoneCollapse('result', collapsed)
       + '</div>';
-    if (!collapsed) { html += renderResultStripBody(agent, evidence, mismatches); }
+    if (!collapsed) {
+      // Body indents to the rail (label width + the 9px rail gap), matching
+      // .wf-log-expand's arithmetic — the 14px strip padding is already on
+      // the container.
+      html += '<div class="wf-rstrip-body">' + renderResultStripBody(agent, evidence, mismatches) + '</div>';
+    }
     return html + '</div>';
   }
 
@@ -1188,6 +1228,28 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function renderAgentStrip(): string {
     if (!model) { return ''; }
     const phased = model.groups.some(g => g.title !== null);
+    // Collapsed (Phase 2.3, same semantics as the views row): one line
+    // whatever the shape — the active pill plus any running/waiting pills,
+    // the rest folded into a "+N" chip. A phased strip folds ALL its phase
+    // lines into this single row (no phase headers); phase grouping is an
+    // expanded-only affordance.
+    if (agentStripCollapsed) {
+      const all: Array<{ key: string; a: DetailAgentView }> = [];
+      for (const g of model.groups) { for (const a of g.agents) { all.push({ key: g.key, a }); } }
+      const shown = all.filter(({ key, a }) =>
+        (key === selectedGroupKey && a.agentId === selectedAgentId)
+        || a.status === 'running' || a.status === 'waiting');
+      const overflow = all.length - shown.length;
+      let html = '<div class="wf-agentstrip collapsed" role="tablist" aria-label="Agents">'
+        + zoneLabel('agents')
+        + '<div class="wf-agentstrip-pillwrap">';
+      for (const { key, a } of shown) { html += renderAgentPill(key, a); }
+      if (overflow > 0) {
+        html += '<span class="wf-agent-pill more" role="button" tabindex="0"'
+          + ' title="Show ' + overflow + ' more agent' + (overflow === 1 ? '' : 's') + '">+' + overflow + '</span>';
+      }
+      return html + '</div>' + zoneCollapse('agents', true) + '</div>';
+    }
     if (!phased) {
       let html = '<div class="wf-agentstrip" role="tablist" aria-label="Agents">'
         + zoneLabel('agents')
@@ -1195,11 +1257,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
       for (const g of model.groups) {
         for (const a of g.agents) { html += renderAgentPill(g.key, a); }
       }
-      return html + '</div></div>';
+      return html + '</div>' + zoneCollapse('agents', false) + '</div>';
     }
     // Phased: the AGENTS label sits on the strip's FIRST line only; every
     // other line (later phase headers, all pill rows) carries an empty
-    // gutter cell so the phase content indents to the shared rail.
+    // gutter cell so the phase content indents to the shared rail. The
+    // shared collapse control rides the first line too, whatever kind of
+    // line that is.
     let html = '<div class="wf-agentstrip phased" role="tablist" aria-label="Agents">';
     let first = true;
     for (const g of model.groups) {
@@ -1217,24 +1281,30 @@ declare function acquireVsCodeApi(): VsCodeApi;
         html += '<div class="wf-agentstrip-phasehead">'
           + zoneLabel(first ? 'agents' : '')
           + '<span class="wf-agentstrip-phasetitle">' + escapeHtml(g.title) + '</span>'
-          + '<span class="wf-agentstrip-count">' + done + '/' + count + failedHtml + '</span></div>';
+          + '<span class="wf-agentstrip-count">' + done + '/' + count + failedHtml + '</span>'
+          + (first ? zoneCollapse('agents', false) : '') + '</div>';
         first = false;
       }
+      const leadLine = first; // an untitled leading group still anchors the label
       html += '<div class="wf-agentstrip-pills">'
-        + zoneLabel(first ? 'agents' : '') // an untitled leading group still anchors the label
+        + zoneLabel(leadLine ? 'agents' : '')
         + '<div class="wf-agentstrip-pillwrap">';
       first = false;
       for (const a of g.agents) { html += renderAgentPill(g.key, a); }
-      html += '</div></div></div>';
+      html += '</div>' + (leadLine ? zoneCollapse('agents', false) : '') + '</div></div>';
     }
     return html + '</div>';
   }
 
-  /** Focus an agent-strip pill by identity (mirrors focusNavRow). */
+  /** Focus an agent-strip pill by identity (mirrors focusNavRow). Phase 2.3:
+   *  the pill may now be hidden behind the collapsed strip's "+N" fold — fall
+   *  back to the active pill so keyboard focus survives instead of dropping
+   *  to <body>. */
   function focusAgentPill(groupKey: string, agentId: string): void {
     for (const el of Array.from(root.querySelectorAll<HTMLElement>('.wf-agent-pill'))) {
       if (el.dataset.group === groupKey && el.dataset.agent === agentId) { el.focus(); return; }
     }
+    (root.querySelector('.wf-agent-pill.active') as HTMLElement | null)?.focus();
   }
 
   interface LogRow { entry: TranscriptEntry; idx: number; isBrief: boolean; isResult: boolean }
@@ -1745,8 +1815,21 @@ declare function acquireVsCodeApi(): VsCodeApi;
       render();
       return;
     }
-    if (target.closest('.wf-view-collapse')) {
-      viewRowCollapsed = !viewRowCollapsed;
+    // Shared zone collapse control (Phase 2.3). Checked BEFORE the
+    // .wf-rstrip-head branch below: the result zone's button sits INSIDE the
+    // clickable head, so this branch returning first is what prevents a
+    // double toggle.
+    const zc = target.closest<HTMLElement>('.wf-zone-collapse');
+    if (zc) {
+      const zone = zc.dataset.zone;
+      if (zone === 'views') {
+        viewRowCollapsed = !viewRowCollapsed;
+      } else if (zone === 'agents') {
+        agentStripCollapsed = !agentStripCollapsed;
+      } else {
+        // Same effective-state rule as the head click below.
+        resultStripCollapsed = !(resultStripCollapsed ?? true);
+      }
       saveState();
       render();
       return;
@@ -1790,6 +1873,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
       if (!viewChip2.classList.contains('active')) {
         vscode.postMessage({ type: 'selectDetailView', id: viewChip2.dataset.viewId!, kind: viewChip2.dataset.viewKind! });
       }
+      return;
+    }
+    // Order matters, same as the view chips: the agents overflow chip carries
+    // BOTH .wf-agent-pill and .more (no data attrs), so it must be checked
+    // before the generic select-agent branch.
+    if (target.closest('.wf-agent-pill.more')) {
+      agentStripCollapsed = false;
+      saveState();
+      render();
       return;
     }
     const agentPill = target.closest<HTMLElement>('.wf-agent-pill');
@@ -1919,7 +2011,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (e.key !== 'Enter' && e.key !== ' ') { return; }
     const activatable = target.closest(
       '.wf-nav-row, .wf-openconv, .wf-switch-chip, .wf-nav-toggle, .wf-brief-head, '
-      + '.wf-view-chip, .wf-view-collapse, .wf-mode-toggle, .wf-agent-pill, '
+      + '.wf-view-chip, .wf-zone-collapse, .wf-mode-toggle, .wf-agent-pill, '
       + '.wf-facet-kind, .wf-facet-foldall, .wf-log-row, .wf-rstrip-head, '
       + '.wf-log-action, .wf-rstrip-chip.clickable',
     );
