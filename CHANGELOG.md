@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.16.1 (2026-07-02) — Fix: detail pane holds together at narrow widths
+
+### Fixed
+- **Zone rows no longer crumple in a narrow pane.** The header strip and display bar were no-wrap flex rows with shrinkable items, so at ~600px the title broke mid-word across three lines, the counts stacked into a skinny column, and a filter toggle's ☑ split from its label. Both now use the label-cell + wrapping-body pattern: whole units flow onto continuation lines that indent to the shared rail, and the title truncates with the full name on hover. The Result summary, permission row, and phase titles got the same atomic/ellipsis sweep.
+
+### Changed
+- **Header counts drop zero segments at every width** — a finished run reads "6 done", not "0 running · 0 waiting · 6 done" — and a non-zero failed count now surfaces (it was counted but never displayed).
+- **Narrow register (≤720px).** The label/timestamp rail slims to 56px, "↗ session" goes icon-only, the search input relaxes, and the views row + agents strip default to their collapsed "+N" forms. Explicit expand/collapse choices — including ones persisted by v1.16.0 — win at every width.
+
 ## v1.16.0 (2026-07-02) — Detail pane v2: the forensic log view
 
 A first-principles redesign of the drill-in detail panel, built from a judge-panel design workflow and five rounds of live-usage iteration. The old reader remains available behind a "classic view" toggle for one release.
