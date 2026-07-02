@@ -2,7 +2,7 @@
   "name": "serac-claude-code",
   "displayName": "Serac Agent Manager",
   "description": "Manage your Claude Code agents, workflows, and teams from the VS Code sidebar: status cards, drill-in detail panel, usage quotas, and transcripts.",
-  "version": "1.15.6",
+  "version": "1.16.0",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",

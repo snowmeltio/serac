@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.16.0 (2026-07-02) — Detail pane v2: the forensic log view
+
+A first-principles redesign of the drill-in detail panel, built from a judge-panel design workflow and five rounds of live-usage iteration. The old reader remains available behind a "classic view" toggle for one release.
+
+### Added
+- **Log view is the new default.** One row per transcript entry on a shared 64px rail: wall-clock timestamps (click any timestamp — or the `◷ absolute`/`◷ session` chip in the display bar — to switch the column to session-relative offsets), kind glyphs (💬 ⚙ ✗ ✔ ▶), and kind filters with live counts. Prose renders as flowing UI-font blocks at a reading measure (clamped at ~28 lines with "show all"); tool and error rows are dense one-liners, hidden by default (Text/Error/Result on), greyed in every state — tool chatter a step fainter than errors — so the agent's reasoning reads as the primary layer. A search box filters rows with match highlighting.
+- **Result strip.** A host-computed verification anchor for the selected agent: inception brief, final message, files-touched chips (with approx +/− line deltas), and commands-run chips with exit marks. A **claims-vs-evidence mismatch flag** calls out "says tests passed but no test command ran" and "claims success but the last command failed" — computed from tool calls, never from the agent's prose, with benign non-zero exits (grep no-match, diff differ) exempted. Collapsed to one line by default; a mismatch stays visible inline.
+- **Session-scoped view row.** Every view the session owns (workflow runs, subagent sets, team roster) as one chip row above the header — status dot, agent count, collapsible to a single line that keeps the active view plus anything running or waiting behind a "+N" chip. The pane stays a deep dive within one session; no cross-session navigation.
+- **Unified zone chrome.** Every zone leads with a right-aligned rail label (views / agents / workflow / result / display) in the same gutter column as the timestamps, and views, agents, and Result share one bordered collapse control. The agent strip folds phased workflows to a single active+running line.
+- **Pinned permission row.** Whenever any agent in the session is waiting on permission, a filter-immune row names the agent and the tool it is waiting on.
+- **Native escape hatches.** From any expanded row: view the raw JSONL record in a virtual document, open the full transcript snapshot in an editor tab (for side-by-side agents), and open an Edit's before/after in the native diff viewer. Token-addressed URIs — no file paths cross the webview boundary.
+- **Subagent model display.** Nav rows and the reader meta show each subagent's model ("Sonnet 5", "Opus 4.8"), recovered from the first assistant record's `message.model` via bounded 64KB head-reads, memoised.
+
+### Fixed
+- **Reading measure and light theme (pre-existing).** Transcript prose no longer stretches the full editor width (`clamp(60ch, 92%, 130ch)`); the nav rail clamps instead of consuming 20% of a wide panel; light-theme accent text lifted to WCAG AA (all computed ratios ≥ 4.5:1); focus outlines gained `--vscode-focusBorder` fallbacks.
+
+## v1.15.6 (2026-07-01) — Self-heal stale "Waiting for permission" cards + model-guess pill
+
+*(Backfilled: released without a changelog entry.)*
+
+### Fixed
+- **Stale-'waiting' reconciliation.** The one reachable stale path (a background subagent bubbles the parent to 'waiting', then the dormant sweep force-completes it without reopening the parent) is now reconciled: `demoteIfStale` asserts a permission-typed 'waiting' has a live backing (a non-exempt active tool or a running waiting subagent) and reopens to 'running' otherwise, preserving turn state so the next poll settles it. `needs_user_input` (AskUserQuestion) is exempt. A `[status]` from→to trace with active-tool counts now logs the waiting lifecycle.
+
+### Added
+- **Default-model-guess pill.** A session's model pill seeds from the configured default before the first assistant record confirms it; a trailing `*` marks the guess, and the family hue ignores the marker so "Opus\*" and "Opus 4.8" share one colour.
+
 ## v1.15.5 (2026-07-01) — Model pills show the version, not just the family
 
 ### Changed
