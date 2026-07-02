@@ -1558,9 +1558,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (prose) { classes.push('prose'); }
     if (e.isError) { classes.push('err'); }
     // Tool-flavoured rows (facetBucket's own 'tool' predicate, so the class
-    // can never drift from the filter) get a hook for the compact-grey
-    // treatment (Phase 2.4): unexpanded tool chatter reads as secondary to
-    // the prose. Errors take the same grey via .err; result/brief rows are
+    // can never drift from the filter) get a hook for the grey-text
+    // treatment (Phase 2.4/2.4b): tool chatter reads as secondary to the
+    // prose in EVERY state — expanded included — and a step lighter than
+    // errors. Errors take their grey via .err; result/brief rows are
     // excluded in the CSS — they are core content.
     if (facetBucket(e) === 'tool') { classes.push('tool'); }
     if (r.isBrief) { classes.push('brief'); }

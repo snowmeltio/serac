@@ -957,17 +957,28 @@ body {
 .wf-log-row:not(.expandable) { cursor: default; }
 .wf-log-row.brief { background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.06)); white-space: normal; }
 .wf-log-row.result { background: rgba(var(--sm-teal-bright-rgb), 0.08); }
+/* Effectively reaches only err rows ALSO tagged .result or .brief (a failed
+ * terminal RESULT stays red): every other err row is out-specified by the
+ * grey rule below (Phase 2.4b — error text is grey in every state). */
 .wf-log-row.err .wf-log-body { color: var(--sm-salmon-red); }
-/* Compact-grey (Phase 2.4): an UNEXPANDED tool or error row's body reads as
- * secondary chatter, so the flowing prose — the core chat activity — is the
- * visually primary layer. The glyph keeps its kind colour (the red ✗ stays
- * the scannable error signal on a greyed line); RESULT and brief rows are
- * core content, excluded via :not(). Specificity: six classes here beat the
- * three-class err red rule above AND the light-theme override below
- * (body + four classes), so grey wins compact and red returns on expand. */
-.wf-log-row.tool:not(.expanded):not(.result):not(.brief) .wf-log-body,
-.wf-log-row.err:not(.expanded):not(.result):not(.brief) .wf-log-body { color: var(--vscode-descriptionForeground); }
-.wf-log-row.expanded { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
+/* Grey tool/error text (Phase 2.4, 2.4b): a tool or error row's body reads
+ * as secondary chatter IN EVERY STATE — expanding reveals the payload box,
+ * it doesn't promote the summary line back to full colour (Murray: "I wanted
+ * the text to be grey, rather than highlighted grey"). Tool rows recede a
+ * second step (opacity over descriptionForeground — theme-agnostic, no
+ * light-theme override needed); error rows stay at full grey, one step above
+ * the chatter. The glyph is untouched either way (the red ✗ / ⚙ spine stays
+ * scannable over faded text); RESULT and brief rows are core content,
+ * excluded via :not() — a failed terminal RESULT keeps the err red rule
+ * above. Specificity: five classes in each rule beat the three-class err red
+ * rule AND the light-theme override below (body + four classes), so grey
+ * wins in both themes. */
+.wf-log-row.tool:not(.result):not(.brief) .wf-log-body { color: var(--vscode-descriptionForeground); opacity: 0.7; }
+.wf-log-row.err:not(.result):not(.brief) .wf-log-body { color: var(--vscode-descriptionForeground); }
+/* The expanded band is a PROSE affordance only (Phase 2.4b): nothing else
+ * marks an un-clamped prose row, whereas an expanded tool row already grows
+ * its payload box below the line — banding it too read as a highlight. */
+.wf-log-row.prose.expanded { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
 /* The time gutter doubles as the whole-column format toggle (wall clock ↔
  * run offset, Phase 2.2) — hence the pointer even on non-expandable rows. */
 .wf-log-t { color: var(--vscode-descriptionForeground); font-size: 10px; width: var(--wf-gutter); flex-shrink: 0; text-align: right; opacity: 0.8; cursor: pointer; }
@@ -1118,10 +1129,10 @@ body.vscode-light #wf-root.nav-collapsed .wf-nav-toggle:hover { color: #3a5fd9; 
 body.vscode-light .wf-log-glyph.k-err { color: #c93634; } /* 5.17:1, same salmon override */
 body.vscode-light .wf-log-glyph.k-res { color: #0e7a80; } /* 5.10:1, same teal override */
 body.vscode-light .wf-log-glyph.k-task { color: #3a5fd9; } /* 5.50:1, same blue override */
-/* Applies to EXPANDED (and result/brief) error rows only: the Phase 2.4
- * compact-grey rule carries six classes to this rule's four-plus-element, so
- * an unexpanded error body stays grey in light theme too (grey uses the
- * theme's own descriptionForeground — no override needed). */
+/* Reaches only err rows ALSO tagged .result or .brief, same as the dark base
+ * rule: the Phase 2.4b grey rule carries five classes to this rule's
+ * four-plus-element, so every other error body stays grey in light theme too
+ * (grey uses the theme's own descriptionForeground — no override needed). */
 body.vscode-light .wf-log-row.err .wf-log-body { color: #c93634; } /* 5.17:1, same salmon override */
 body.vscode-light .wf-view-tag.wf { color: #3a5fd9; } /* 5.50:1, same blue override */
 body.vscode-light .wf-view-tag.team { color: #895ed6; } /* 4.53:1, same violet override */

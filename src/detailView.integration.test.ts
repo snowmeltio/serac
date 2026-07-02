@@ -1561,7 +1561,7 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect((webviewState as { timeMode?: string }).timeMode).toBe('clock');
   });
 
-  it('compact tool rows carry the grey hook class, result/brief rows never do, and the CSS greys only unexpanded', () => {
+  it('tool rows carry the grey hook class in every state, result/brief rows never do, tool text a step lighter than err', () => {
     sendRender(logModel());
     sendTranscript(KEY1, [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
@@ -1578,15 +1578,29 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     // Result and brief rows are core content — never tool-greyed.
     expect(qa('.wf-log-row').find(r => r.classList.contains('result'))!.classList.contains('tool')).toBe(false);
     expect(qa('.wf-log-row').find(r => r.classList.contains('brief'))!.classList.contains('tool')).toBe(false);
-    // Expanding drops the row out of the compact :not(.expanded) selector.
+    // Expanding keeps the grey (2.4b): the row carries BOTH classes and the
+    // grey selectors no longer key off :not(.expanded).
     toolRow().click();
     expect(toolRow().classList.contains('expanded')).toBe(true);
+    expect(toolRow().classList.contains('tool')).toBe(true);
 
     // jsdom cannot compute the cascade — assert the greying contract at its
-    // source, same pattern as the rail-width CSS test above.
+    // source, same pattern as the rail-width CSS test above. Phase 2.4b:
+    // grey in ALL states (no :not(.expanded) in the grey rules — its absence
+    // is asserted to lock the regression out), tool text a step lighter than
+    // err (opacity on the tool rule only), and the expanded band scoped to
+    // prose rows.
     const css = fs.readFileSync(path.join(process.cwd(), 'media', 'detailView.css'), 'utf-8');
-    expect(css).toMatch(/\.wf-log-row\.tool:not\(\.expanded\):not\(\.result\):not\(\.brief\)\s+\.wf-log-body/);
-    expect(css).toMatch(/\.wf-log-row\.err:not\(\.expanded\):not\(\.result\):not\(\.brief\)\s+\.wf-log-body/);
+    const toolRule = css.match(/\.wf-log-row\.tool:not\(\.result\):not\(\.brief\)\s+\.wf-log-body\s*{[^}]*}/);
+    const errRule = css.match(/\.wf-log-row\.err:not\(\.result\):not\(\.brief\)\s+\.wf-log-body\s*{[^}]*}/);
+    expect(toolRule).not.toBeNull();
+    expect(errRule).not.toBeNull();
+    expect(toolRule![0]).toContain('opacity: 0.7');
+    expect(errRule![0]).not.toContain('opacity');
+    expect(css).not.toMatch(/\.tool:not\(\.expanded\)|\.err:not\(\.expanded\)/);
+    // The expanded background band is a prose-only affordance now.
+    expect(css).toMatch(/\.wf-log-row\.prose\.expanded\s*{/);
+    expect(css).not.toMatch(/\.wf-log-row\.expanded\s*{/);
   });
 });
 
