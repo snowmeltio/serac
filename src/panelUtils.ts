@@ -73,8 +73,10 @@ export interface UsageData {
   platformSupported?: boolean;
   quotaPct5h?: number;
   quotaPctWeekly?: number;
+  quotaPctWeeklyFable?: number;
   resetTime?: number;
   weeklyResetTime?: number;
+  weeklyResetTimeFable?: number;
   extraUsageEnabled?: boolean;
   lastPoll?: number;
 }

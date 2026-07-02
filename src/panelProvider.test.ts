@@ -54,6 +54,8 @@ function makeUsage(overrides: Partial<UsageSnapshot> = {}): UsageSnapshot {
     weeklyResetTime: Date.now() + 86_400_000,
     quotaPctWeeklySonnet: null,
     weeklyResetTimeSonnet: null,
+    quotaPctWeeklyFable: null,
+    weeklyResetTimeFable: null,
     extraUsageEnabled: false,
     extraUsageCredits: null,
     apiConnected: true,

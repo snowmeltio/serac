@@ -7,18 +7,42 @@ import type { UsageSnapshot } from './types.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { claudeStateDir, claudeKeychainService, claudeAccountId } from './paths.js';
 
+/** One entry in the API's generic `limits[]` array — the server's current
+ *  mechanism for per-model weekly quotas (e.g. Fable), superseding the flat
+ *  `seven_day_sonnet`/`seven_day_opus` fields below, which are now always
+ *  null. */
+interface UsageApiLimit {
+  kind: string;
+  group: string;
+  percent: number;
+  resets_at: string | null;
+  scope: { model?: { id: string | null; display_name: string } | null } | null;
+}
+
 /** Shape of the Anthropic OAuth usage API response */
 interface UsageApiResponse {
   five_hour?: { utilization: number; resets_at: string } | null;
   seven_day?: { utilization: number; resets_at: string } | null;
   seven_day_sonnet?: { utilization: number; resets_at: string } | null;
   seven_day_opus?: { utilization: number; resets_at: string } | null;
+  limits?: UsageApiLimit[] | null;
   extra_usage?: {
     is_enabled: boolean;
     monthly_limit: number | null;
     used_credits: number;
     utilization: number | null;
   } | null;
+}
+
+/** Find a weekly quota scoped to a specific model (e.g. "Fable") in the
+ *  generic `limits[]` array. */
+function findWeeklyModelLimit(
+  limits: UsageApiLimit[] | null | undefined,
+  modelDisplayName: string,
+): UsageApiLimit | undefined {
+  return limits?.find(
+    (l) => l.group === 'weekly' && l.scope?.model?.display_name === modelDisplayName,
+  );
 }
 
 /**
@@ -116,6 +140,7 @@ export class UsageProvider {
       const apiData = this.lastApiData;
 
       const now = Date.now();
+      const fableLimit = findWeeklyModelLimit(apiData?.limits, 'Fable');
 
       this.snapshot = {
         // API-sourced quota data (server truth, cached across transient failures)
@@ -128,6 +153,9 @@ export class UsageProvider {
         quotaPctWeeklySonnet: apiData?.seven_day_sonnet?.utilization ?? null,
         weeklyResetTimeSonnet: apiData?.seven_day_sonnet?.resets_at
           ? new Date(apiData.seven_day_sonnet.resets_at).getTime() : null,
+        quotaPctWeeklyFable: fableLimit?.percent ?? null,
+        weeklyResetTimeFable: fableLimit?.resets_at
+          ? new Date(fableLimit.resets_at).getTime() : null,
         extraUsageEnabled: apiData?.extra_usage?.is_enabled ?? false,
         extraUsageCredits: apiData?.extra_usage?.used_credits ?? null,
         apiConnected: apiData !== null,
@@ -341,6 +369,8 @@ function emptySnapshot(): UsageSnapshot {
     weeklyResetTime: null,
     quotaPctWeeklySonnet: null,
     weeklyResetTimeSonnet: null,
+    quotaPctWeeklyFable: null,
+    weeklyResetTimeFable: null,
     extraUsageEnabled: false,
     extraUsageCredits: null,
     apiConnected: false,

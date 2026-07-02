@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.2 (2026-07-02) — Weekly Fable usage quota
+
+### Added
+- **Weekly Fable usage bar.** Surfaces the new model-scoped weekly quota the Anthropic usage API now reports (a `weekly` entry in the API's generic `limits[]` array, scoped to the Fable model) alongside the existing session and weekly bars. Only appears for accounts with this quota tier.
+
 ## v1.16.1 (2026-07-02) — Fix: detail pane holds together at narrow widths
 
 ### Fixed

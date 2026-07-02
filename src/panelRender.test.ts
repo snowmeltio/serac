@@ -542,6 +542,38 @@ describe('renderUsageHtml', () => {
     expect(html).not.toContain('Weekly session usage');
     expect(html).toContain('Updated <1m ago');
   });
+
+  it('omits the Weekly Fable row when no model-scoped quota is present', () => {
+    const html = renderUsageHtml(makeCtx(), liveUsage, [], NOW);
+    expect(html).not.toContain('Weekly Fable');
+  });
+
+  it('renders the Weekly Fable bar when present', () => {
+    const html = renderUsageHtml(makeCtx(), {
+      ...liveUsage, quotaPctWeeklyFable: 74, weeklyResetTimeFable: NOW + 3 * 86_400_000,
+    }, [], NOW);
+    expect(html).toContain('Weekly Fable usage');
+    expect(html).toContain('74%');
+  });
+
+  it('an expired Weekly Fable window renders the ghost row', () => {
+    const html = renderUsageHtml(makeCtx(), {
+      ...liveUsage, quotaPctWeeklyFable: 74, weeklyResetTimeFable: NOW - 1,
+    }, [], NOW);
+    expect(html).toContain('Weekly Fable usage');
+    expect(html).toContain('no active window');
+  });
+
+  it('showWeekly=false also suppresses the Weekly Fable block', () => {
+    const settings = {
+      ...DEFAULT_PANEL_SETTINGS,
+      usage: { ...DEFAULT_PANEL_SETTINGS.usage, showWeekly: false },
+    };
+    const html = renderUsageHtml(makeCtx({ settings }), {
+      ...liveUsage, quotaPctWeeklyFable: 74, weeklyResetTimeFable: NOW + 3 * 86_400_000,
+    }, [], NOW);
+    expect(html).not.toContain('Weekly Fable');
+  });
 });
 
 describe('renderFooterSlots', () => {

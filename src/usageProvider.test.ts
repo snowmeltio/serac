@@ -317,6 +317,14 @@ describe('snapshot mapping from API response', () => {
       seven_day: { utilization: 30, resets_at: '2026-06-07T00:00:00Z' },
       seven_day_sonnet: { utilization: 20, resets_at: '2026-06-07T12:00:00Z' },
       extra_usage: { is_enabled: true, monthly_limit: 100, used_credits: 42, utilization: 0.42 },
+      limits: [
+        { kind: 'session', group: 'session', percent: 45, resets_at: '2026-06-01T10:00:00Z', scope: null },
+        { kind: 'weekly_all', group: 'weekly', percent: 30, resets_at: '2026-06-07T00:00:00Z', scope: null },
+        {
+          kind: 'weekly_scoped', group: 'weekly', percent: 74, resets_at: '2026-06-07T18:00:00Z',
+          scope: { model: { id: null, display_name: 'Fable' } },
+        },
+      ],
     };
     setupApiMock(JSON.stringify(apiResponse));
     const p = makeProvider('/my/workspace');
@@ -329,6 +337,8 @@ describe('snapshot mapping from API response', () => {
     expect(s.weeklyResetTime).toBe(new Date('2026-06-07T00:00:00Z').getTime());
     expect(s.quotaPctWeeklySonnet).toBe(20);
     expect(s.weeklyResetTimeSonnet).toBe(new Date('2026-06-07T12:00:00Z').getTime());
+    expect(s.quotaPctWeeklyFable).toBe(74);
+    expect(s.weeklyResetTimeFable).toBe(new Date('2026-06-07T18:00:00Z').getTime());
     expect(s.extraUsageEnabled).toBe(true);
     expect(s.extraUsageCredits).toBe(42);
     expect(s.apiConnected).toBe(true);
@@ -347,10 +357,36 @@ describe('snapshot mapping from API response', () => {
     expect(s.resetTime).toBeNull();
     expect(s.quotaPctWeekly).toBe(0);
     expect(s.quotaPctWeeklySonnet).toBeNull();
+    expect(s.quotaPctWeeklyFable).toBeNull();
+    expect(s.weeklyResetTimeFable).toBeNull();
     expect(s.extraUsageEnabled).toBe(false);
     expect(s.extraUsageCredits).toBeNull();
     expect(s.apiConnected).toBe(true);
     expect(s.loaded).toBe(true);
+  });
+
+  it('ignores limits entries that are not a weekly model-scoped Fable quota', async () => {
+    const apiResponse = {
+      five_hour: { utilization: 10, resets_at: '2026-06-01T10:00:00Z' },
+      limits: [
+        // Session-scoped, not weekly — ignored
+        { kind: 'session', group: 'session', percent: 10, resets_at: '2026-06-01T10:00:00Z', scope: null },
+        // Weekly but unscoped (the all-models bucket) — ignored, has its own field
+        { kind: 'weekly_all', group: 'weekly', percent: 30, resets_at: '2026-06-07T00:00:00Z', scope: null },
+        // Weekly and scoped, but to a different model — must not leak into Fable
+        {
+          kind: 'weekly_scoped', group: 'weekly', percent: 55, resets_at: '2026-06-07T00:00:00Z',
+          scope: { model: { id: null, display_name: 'Opus' } },
+        },
+      ],
+    };
+    setupApiMock(JSON.stringify(apiResponse));
+    const p = makeProvider();
+    await p.refresh();
+    const s = p.getSnapshot();
+
+    expect(s.quotaPctWeeklyFable).toBeNull();
+    expect(s.weeklyResetTimeFable).toBeNull();
   });
 
   it('sets apiConnected false when no API data available', async () => {

@@ -419,7 +419,7 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     const wakeTitle = 'Wakes at ' + new Date(s.pendingWakeupAt).toLocaleTimeString()
       + (s.pendingWakeupReason ? ' — ' + s.pendingWakeupReason : '');
     metaHtml += '<span class="bg-shell-badge" title="' + escapeHtml(wakeTitle) + '">'
-      + 'sleeping · ' + formatAge(s.pendingWakeupAt - now) + '</span>';
+      + '\u{1F4A4} ' + formatAge(s.pendingWakeupAt - now) + '</span>';
   }
   const cronN = s.sessionCronCount ?? 0;
   if (cronN > 0) {
@@ -946,6 +946,40 @@ export function renderUsageHtml(
     if (weeklyTickPct > 0) html += '<div class="usage-bar-tick" style="left:' + weeklyTickPct + '%" title="' + Math.round(weeklyTickPct) + '% of window elapsed"></div>';
     html += '</div>';
     html += '<span class="usage-bar-pct ' + weeklyCls + '">' + Math.round(u.quotaPctWeekly || 0) + '%<span class="usage-bar-elapsed"> / ' + Math.round(weeklyTickPct) + '%</span></span>';
+    html += '</div>';
+    html += '</div>';
+  }
+
+  // --- Weekly Fable (model-scoped weekly quota) ---
+  const fableExpired = u.weeklyResetTimeFable && u.weeklyResetTimeFable <= now;
+  if (fableExpired) {
+    html += '<div class="usage-weekly-sep">';
+    html += '<div class="usage-row ghost">';
+    html += '<div class="usage-row-label">Weekly Fable usage</div>';
+    html += '<div class="usage-row-reset" style="color:#555555">no active window</div>';
+    html += '</div>';
+    html += '<div class="usage-bar-row">';
+    html += '<div class="usage-bar-wrap ghost"></div>';
+    html += '<span class="usage-bar-pct ghost">—</span>';
+    html += '</div>';
+    html += '</div>';
+  } else if ((u.quotaPctWeeklyFable || 0) > 0 || u.weeklyResetTimeFable) {
+    const fableTickPct = getElapsedPct(u.weeklyResetTimeFable, 7 * 24 * 60 * 60 * 1000);
+    const fableCls = quotaClass(u.quotaPctWeeklyFable || 0, fableTickPct, ctx.settings.usage.warnAtPercent, ctx.settings.usage.criticalAtPercent);
+
+    html += '<div class="usage-weekly-sep">';
+    html += '<div class="usage-row">';
+    html += '<div class="usage-row-label">Weekly Fable usage</div>';
+    if (u.weeklyResetTimeFable) {
+      html += '<div class="usage-row-reset">Resets in ' + formatResetTime(u.weeklyResetTimeFable) + '</div>';
+    }
+    html += '</div>';
+    html += '<div class="usage-bar-row">';
+    html += '<div class="usage-bar-wrap">';
+    html += '<div class="usage-bar-fill ' + fableCls + '" style="width:' + Math.min(100, u.quotaPctWeeklyFable || 0) + '%"></div>';
+    if (fableTickPct > 0) html += '<div class="usage-bar-tick" style="left:' + fableTickPct + '%" title="' + Math.round(fableTickPct) + '% of window elapsed"></div>';
+    html += '</div>';
+    html += '<span class="usage-bar-pct ' + fableCls + '">' + Math.round(u.quotaPctWeeklyFable || 0) + '%<span class="usage-bar-elapsed"> / ' + Math.round(fableTickPct) + '%</span></span>';
     html += '</div>';
     html += '</div>';
   }
