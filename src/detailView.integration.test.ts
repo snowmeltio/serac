@@ -1404,7 +1404,9 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(stripLabels[0].textContent).toBe('agents');
     expect(stripLabels.length).toBeGreaterThan(1);
     for (const l of stripLabels.slice(1)) { expect(l.textContent).toBe(''); }
-    expect(q('.wf-facets .wf-zone-label')!.textContent).toBe('filter');
+    // Phase 2.4: "display" — the bar holds kind filters + time mode +
+    // fold-all + search, so "filter" undersold it.
+    expect(q('.wf-facets .wf-zone-label')!.textContent).toBe('display');
   });
 
   it('a flat agent strip carries the label on its single line', () => {
@@ -1529,6 +1531,62 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     // The whole head stays clickable, same as before.
     q('.wf-rstrip-head')!.click();
     expect(q('.wf-rstrip')!.classList.contains('collapsed')).toBe(false);
+  });
+
+  // ── Time-mode chip + compact grey (Phase 2.4) ────────────────────────
+
+  it('facet bar shows a time-mode chip: absolute by default, session after a click, both toggle routes stay in sync', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00.000Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:00:41.200Z', role: 'assistant', content: 'later', kind: 'text' },
+    ]);
+    const chip = () => q('.wf-facet-time')!;
+    expect(chip().textContent).toBe('◷ absolute');
+    expect(chip().dataset.mode).toBe('clock');
+    expect(qa('.wf-log-t')[0].textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/); // wall clock
+
+    // Chip click → session offsets, persisted, column actually switches.
+    chip().click();
+    expect(chip().textContent).toBe('◷ session');
+    expect(chip().dataset.mode).toBe('offset');
+    expect(qa('.wf-log-t').map(t => t.textContent)).toContain('00:41.2');
+    expect((webviewState as { timeMode?: string }).timeMode).toBe('offset');
+
+    // The timestamp-column route (Phase 2.2) still toggles, and the chip
+    // label follows — two routes, one state.
+    qa('.wf-log-t')[0].click();
+    expect(chip().textContent).toBe('◷ absolute');
+    expect(qa('.wf-log-t')[0].textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    expect((webviewState as { timeMode?: string }).timeMode).toBe('clock');
+  });
+
+  it('compact tool rows carry the grey hook class, result/brief rows never do, and the CSS greys only unexpanded', () => {
+    sendRender(logModel());
+    sendTranscript(KEY1, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      {
+        timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: '> **Edit** x.css',
+        kind: 'tool_use', toolName: 'Edit', rawInput: '{"a":1}',
+      },
+      { timestamp: '2026-06-10T10:00:02Z', role: 'assistant', content: 'done, all green', kind: 'result' },
+    ]);
+    q('.wf-facet-kind[data-kind="tool"]')!.click(); // tool rows are opt-in (E)
+    const toolRow = () => qa('.wf-log-row').find(r => r.textContent!.includes('Edit'))!;
+    expect(toolRow().classList.contains('tool')).toBe(true);
+    expect(toolRow().classList.contains('expanded')).toBe(false);
+    // Result and brief rows are core content — never tool-greyed.
+    expect(qa('.wf-log-row').find(r => r.classList.contains('result'))!.classList.contains('tool')).toBe(false);
+    expect(qa('.wf-log-row').find(r => r.classList.contains('brief'))!.classList.contains('tool')).toBe(false);
+    // Expanding drops the row out of the compact :not(.expanded) selector.
+    toolRow().click();
+    expect(toolRow().classList.contains('expanded')).toBe(true);
+
+    // jsdom cannot compute the cascade — assert the greying contract at its
+    // source, same pattern as the rail-width CSS test above.
+    const css = fs.readFileSync(path.join(process.cwd(), 'media', 'detailView.css'), 'utf-8');
+    expect(css).toMatch(/\.wf-log-row\.tool:not\(\.expanded\):not\(\.result\):not\(\.brief\)\s+\.wf-log-body/);
+    expect(css).toMatch(/\.wf-log-row\.err:not\(\.expanded\):not\(\.result\):not\(\.brief\)\s+\.wf-log-body/);
   });
 });
 

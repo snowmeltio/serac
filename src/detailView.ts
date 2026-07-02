@@ -773,7 +773,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     for (const cls of [
       'wf-nav-toggle', 'wf-brief-head', 'wf-openconv', 'wf-mode-toggle',
-      'wf-facet-foldall', 'wf-rstrip-head',
+      'wf-facet-time', 'wf-facet-foldall', 'wf-rstrip-head',
     ] as const) {
       if (active.closest('.' + cls)) {
         return () => { (root.querySelector('.' + cls) as HTMLElement | null)?.focus(); };
@@ -1361,8 +1361,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
   }
 
   /** Facet bar: kind filters (with live counts over the unfiltered row set),
-   *  fold-all/expand-all, and the search box. Absent when no agent is
-   *  selected — there is nothing to filter. */
+   *  the time-mode indicator chip, fold-all/expand-all, and the search box.
+   *  Rail label reads "display" (Phase 2.4) — the bar governs more than
+   *  filtering now. Absent when no agent is selected — nothing to display. */
   function renderFacets(agent: DetailAgentView): string {
     const rows = buildLogRows(agent);
     const counts = { text: 0, tool: 0, error: 0, result: 0 };
@@ -1372,10 +1373,22 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + ' role="checkbox" aria-checked="' + kindFilters[k] + '" tabindex="0">'
       + (kindFilters[k] ? '☑' : '☐') + ' ' + label
       + ' <span class="wf-facet-count">' + counts[k] + '</span></span>';
+    // Time-mode indicator (Phase 2.4): the gutter's wall-clock/offset choice
+    // finally gets a visible label — in Murray's terms, absolute vs session.
+    // Clicking it is the SAME toggle as clicking the timestamp column (both
+    // routes share one handler effect). ◷ is a text glyph, not an emoji —
+    // emoji render in colour and ignore the theme.
+    const timeChip = '<span class="wf-facet-time" role="button" tabindex="0"'
+      + ' data-mode="' + timeMode + '"'
+      + ' title="' + (timeMode === 'clock'
+        ? 'Timestamps are absolute wall-clock — click for session-relative offsets'
+        : 'Timestamps are session-relative offsets — click for absolute wall-clock') + '">'
+      + '◷ ' + (timeMode === 'clock' ? 'absolute' : 'session') + '</span>';
     const anyExpanded = expandedRows.size > 0;
     return '<div class="wf-facets">'
-      + zoneLabel('filter')
+      + zoneLabel('display')
       + kindToggle('text', 'Text') + kindToggle('tool', 'Tool') + kindToggle('error', 'Error') + kindToggle('result', 'Result')
+      + timeChip
       + '<span class="wf-facet-foldall" role="button" tabindex="0" title="' + (anyExpanded ? 'Fold all expanded rows' : 'Expand all rows') + '">'
       + (anyExpanded ? 'fold ▸' : 'expand ▾') + '</span>'
       + '<span class="wf-facet-search">⌕ <input type="text" class="wf-facet-search-input" placeholder="search…" value="' + escapeHtml(logSearch) + '" /></span>'
@@ -1544,6 +1557,12 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const classes = ['wf-log-row'];
     if (prose) { classes.push('prose'); }
     if (e.isError) { classes.push('err'); }
+    // Tool-flavoured rows (facetBucket's own 'tool' predicate, so the class
+    // can never drift from the filter) get a hook for the compact-grey
+    // treatment (Phase 2.4): unexpanded tool chatter reads as secondary to
+    // the prose. Errors take the same grey via .err; result/brief rows are
+    // excluded in the CSS — they are core content.
+    if (facetBucket(e) === 'tool') { classes.push('tool'); }
     if (r.isBrief) { classes.push('brief'); }
     if (r.isResult) { classes.push('result'); }
     if (expanded) { classes.push('expanded'); }
@@ -1897,6 +1916,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
       render();
       return;
     }
+    // Time-mode chip (Phase 2.4): the same toggle as the timestamp-column
+    // click below — two routes, one effect.
+    if (target.closest('.wf-facet-time')) {
+      timeMode = timeMode === 'clock' ? 'offset' : 'clock';
+      saveState();
+      render();
+      return;
+    }
     if (target.closest('.wf-facet-foldall')) {
       const agent = findAgent(selectedGroupKey, selectedAgentId);
       if (agent) {
@@ -2012,7 +2039,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const activatable = target.closest(
       '.wf-nav-row, .wf-openconv, .wf-switch-chip, .wf-nav-toggle, .wf-brief-head, '
       + '.wf-view-chip, .wf-zone-collapse, .wf-mode-toggle, .wf-agent-pill, '
-      + '.wf-facet-kind, .wf-facet-foldall, .wf-log-row, .wf-rstrip-head, '
+      + '.wf-facet-kind, .wf-facet-time, .wf-facet-foldall, .wf-log-row, .wf-rstrip-head, '
       + '.wf-log-action, .wf-rstrip-chip.clickable',
     );
     if (activatable) {

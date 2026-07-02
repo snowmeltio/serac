@@ -892,6 +892,23 @@ body {
 .wf-facet-kind.off { opacity: 0.45; text-decoration: line-through; }
 .wf-facet-kind:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 .wf-facet-count { opacity: 0.7; }
+/* Time-mode indicator chip (Phase 2.4): names the gutter's current
+ * representation (absolute wall-clock vs session offset) and toggles it —
+ * same effect as clicking the timestamp column. Quiet, same register as the
+ * kind toggles: an indicator that toggles, not a bordered button competing
+ * with the zone-collapse controls. */
+.wf-facet-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 1px 4px;
+  white-space: nowrap;
+}
+.wf-facet-time:hover { color: var(--vscode-foreground); }
+.wf-facet-time:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 .wf-facet-foldall {
   color: var(--vscode-descriptionForeground);
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
@@ -941,6 +958,15 @@ body {
 .wf-log-row.brief { background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.06)); white-space: normal; }
 .wf-log-row.result { background: rgba(var(--sm-teal-bright-rgb), 0.08); }
 .wf-log-row.err .wf-log-body { color: var(--sm-salmon-red); }
+/* Compact-grey (Phase 2.4): an UNEXPANDED tool or error row's body reads as
+ * secondary chatter, so the flowing prose — the core chat activity — is the
+ * visually primary layer. The glyph keeps its kind colour (the red ✗ stays
+ * the scannable error signal on a greyed line); RESULT and brief rows are
+ * core content, excluded via :not(). Specificity: six classes here beat the
+ * three-class err red rule above AND the light-theme override below
+ * (body + four classes), so grey wins compact and red returns on expand. */
+.wf-log-row.tool:not(.expanded):not(.result):not(.brief) .wf-log-body,
+.wf-log-row.err:not(.expanded):not(.result):not(.brief) .wf-log-body { color: var(--vscode-descriptionForeground); }
 .wf-log-row.expanded { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.08)); }
 /* The time gutter doubles as the whole-column format toggle (wall clock ↔
  * run offset, Phase 2.2) — hence the pointer even on non-expandable rows. */
@@ -1092,6 +1118,10 @@ body.vscode-light #wf-root.nav-collapsed .wf-nav-toggle:hover { color: #3a5fd9; 
 body.vscode-light .wf-log-glyph.k-err { color: #c93634; } /* 5.17:1, same salmon override */
 body.vscode-light .wf-log-glyph.k-res { color: #0e7a80; } /* 5.10:1, same teal override */
 body.vscode-light .wf-log-glyph.k-task { color: #3a5fd9; } /* 5.50:1, same blue override */
+/* Applies to EXPANDED (and result/brief) error rows only: the Phase 2.4
+ * compact-grey rule carries six classes to this rule's four-plus-element, so
+ * an unexpanded error body stays grey in light theme too (grey uses the
+ * theme's own descriptionForeground — no override needed). */
 body.vscode-light .wf-log-row.err .wf-log-body { color: #c93634; } /* 5.17:1, same salmon override */
 body.vscode-light .wf-view-tag.wf { color: #3a5fd9; } /* 5.50:1, same blue override */
 body.vscode-light .wf-view-tag.team { color: #895ed6; } /* 4.53:1, same violet override */
