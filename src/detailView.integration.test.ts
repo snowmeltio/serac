@@ -108,6 +108,28 @@ describe('detailView.ts — collapse + grouped switcher', () => {
     expect(q('.wf-reader-meta')!.textContent).toContain('7 tools');
   });
 
+  it('shows the model in the nav row and reader meta, formatted from the raw id', () => {
+    const model = twoSourceModel() as any;
+    model.groups[0].agents[0] = agent({ agentId: 'agent001', label: 'audit:privacy', phaseTitle: 'Audit', model: 'claude-sonnet-5' });
+    model.groups[0].agents[1] = agent({ agentId: 'agent002', label: 'audit:security', status: 'running', phaseTitle: 'Audit', model: 'claude-opus-4-8[1m]' });
+    sendRender(model);
+    const row1 = qa('.wf-nav-row').find(r => r.dataset.agent === 'agent001')!;
+    expect(row1.querySelector('.wf-nav-model')!.textContent).toBe('Sonnet 5');
+    // The model rides in title/aria-label like status (survives truncation).
+    expect(row1.getAttribute('title')).toBe('audit:privacy · done · Sonnet 5');
+    // agent001 auto-selected: the reader meta carries the formatted label too.
+    expect(q('.wf-reader-meta')!.textContent).toContain('Sonnet 5');
+    // The [1m] context-window suffix is stripped, not shown raw.
+    const row2 = qa('.wf-nav-row').find(r => r.dataset.agent === 'agent002')!;
+    expect(row2.querySelector('.wf-nav-model')!.textContent).toBe('Opus 4.8');
+  });
+
+  it('omits the nav model span when the model is unknown', () => {
+    sendRender(twoSourceModel()); // fixture default: model ''
+    expect(q('.wf-nav-model')).toBeNull();
+    expect(q('.wf-reader-meta')!.textContent).not.toContain('Opus');
+  });
+
   it('reader head shows the live tool line for a running agent only (UX-1)', () => {
     const model = twoSourceModel() as any;
     model.groups[0].agents[1] = {

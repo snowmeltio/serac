@@ -33,7 +33,7 @@ export interface DetailPanelDeps {
   /** List a session's subagent transcripts on disk (`subagents/agent-*.jsonl`).
    *  Fallback for the subagents source when live tracking never resolved an
    *  agentId (e.g. Agent-tool subagents that don't relay `agent_progress`). */
-  listSubagents: (sessionId: string) => { agentId: string; agentType: string | null; description: string | null }[];
+  listSubagents: (sessionId: string) => { agentId: string; agentType: string | null; description: string | null; model: string | null }[];
   /** Resolve an agent's transcript JSONL for a source, or null. */
   resolveAgentFile: (source: DetailSource, containerId: string, groupKey: string, agentId: string) => string | null;
   /** Open the invoking conversation for a session (companion editor). */
@@ -395,6 +395,9 @@ export class DetailPanel {
     // subagents that never relay `agent_progress` stay agentId-less, so the
     // tracked list alone can be empty even when transcripts exist on disk.
     const tracked = (session?.subagents ?? []).filter(s => s.agentId);
+    // Model comes from the on-disk transcript head (meta.json never carries
+    // it), so tracked rows borrow it from the same disk scan the union uses.
+    const modelById = new Map(this.subagentFilesOnce(sessionId).map(d => [d.agentId, d.model]));
     const agents: DetailAgentView[] = tracked.map(s => ({
       agentId: s.agentId as string,
       label: s.description || (s.agentId as string).slice(0, 10),
@@ -402,7 +405,7 @@ export class DetailPanel {
       tokens: 0,
       toolCalls: s.toolsCompleted,
       durationMs: null,
-      model: '',
+      model: modelById.get(s.agentId as string) ?? '',
       resultPreview: s.resultPreview,
     } satisfies DetailAgentView));
     // Union in any on-disk transcript the tracker missed, so no subagent is
@@ -418,7 +421,7 @@ export class DetailPanel {
         tokens: 0,
         toolCalls: 0,
         durationMs: null,
-        model: '',
+        model: d.model ?? '',
       } satisfies DetailAgentView);
     }
     return { agents, running: tracked.filter(s => s.running).length };
@@ -667,7 +670,12 @@ export class DetailPanel {
     if (team.inProcessMembers.length === 0) { return []; }
     const orchestratorId = team.orchestrator.sessionId;
     const orchSession = this.sessionOnce(orchestratorId);
-    const typeById = new Map(this.subagentFilesOnce(orchestratorId).map(d => [d.agentId, d.agentType]));
+    const files = this.subagentFilesOnce(orchestratorId);
+    const typeById = new Map(files.map(d => [d.agentId, d.agentType]));
+    // Newest spawn wins on a name collision (files arrive spawn-ordered), same
+    // rule teamSubagentRows uses to dedupe re-spawn rounds.
+    const modelByType = new Map<string, string>();
+    for (const d of files) { if (d.agentType && d.model) { modelByType.set(d.agentType, d.model); } }
     const tracked = orchSession?.subagents ?? [];
     const leadAlive = orchSession?.processLive !== false;
     return team.inProcessMembers.map(name => ({
@@ -677,7 +685,7 @@ export class DetailPanel {
       tokens: 0,
       toolCalls: 0,
       durationMs: null,
-      model: '',
+      model: modelByType.get(name) ?? '',
       teammate: true,
       alive: leadAlive,
     } satisfies DetailAgentView));

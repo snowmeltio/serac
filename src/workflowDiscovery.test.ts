@@ -243,9 +243,9 @@ describe('WorkflowDiscovery', () => {
     ].join('\n') + '\n', 'utf-8');
     // live01 → 100 tokens, 1 tool_use
     fs.writeFileSync(path.join(runDir, 'agent-live01.jsonl'), [
-      JSON.stringify({ message: { usage: { output_tokens: 100 }, content: [{ type: 'tool_use', name: 'Bash' }] } }),
+      JSON.stringify({ message: { model: 'claude-sonnet-5', usage: { output_tokens: 100 }, content: [{ type: 'tool_use', name: 'Bash' }] } }),
     ].join('\n') + '\n', 'utf-8');
-    // live02 → 50 tokens, 2 tool_use
+    // live02 → 50 tokens, 2 tool_use (no model on any record yet)
     fs.writeFileSync(path.join(runDir, 'agent-live02.jsonl'), [
       JSON.stringify({ message: { usage: { output_tokens: 50 }, content: [{ type: 'tool_use' }, { type: 'text', text: 'x' }, { type: 'tool_use' }] } }),
     ].join('\n') + '\n', 'utf-8');
@@ -257,6 +257,10 @@ describe('WorkflowDiscovery', () => {
     expect(snap.totalToolCalls).toBe(3);
     expect(snap.totalTokens).toBe(snap.agents.reduce((n, a) => n + a.tokens, 0));
     expect(snap.totalToolCalls).toBe(snap.agents.reduce((n, a) => n + a.toolCalls, 0));
+    // The live tier reads the model off the transcript's assistant records —
+    // previously hardcoded '' until the sidecar materialised it.
+    expect(snap.agents.find(a => a.agentId === 'live01')?.model).toBe('claude-sonnet-5');
+    expect(snap.agents.find(a => a.agentId === 'live02')?.model).toBe('');
     d.dispose();
   });
 

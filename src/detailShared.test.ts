@@ -1,5 +1,25 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, fmtDuration, transcriptKey } from './detailShared.js';
+import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey } from './detailShared.js';
+
+describe('formatModelLabel', () => {
+  it('derives tier + version from modern ids, stripping [1m] and date stamps', () => {
+    expect(formatModelLabel('claude-opus-4-8')).toBe('Opus 4.8');
+    expect(formatModelLabel('claude-opus-4-8[1m]')).toBe('Opus 4.8');
+    expect(formatModelLabel('claude-sonnet-5')).toBe('Sonnet 5');
+    expect(formatModelLabel('claude-haiku-4-5-20251001')).toBe('Haiku 4.5');
+  });
+
+  it('handles legacy version-first ids and unfamiliar tiers', () => {
+    expect(formatModelLabel('claude-3-5-haiku-20241022')).toBe('Haiku 3.5');
+    expect(formatModelLabel('claude-fable-5')).toBe('Fable 5');
+  });
+
+  it('degrades to the bare tier for aliases, empty for no input', () => {
+    expect(formatModelLabel('sonnet')).toBe('Sonnet');
+    expect(formatModelLabel('opus')).toBe('Opus');
+    expect(formatModelLabel('')).toBe('');
+  });
+});
 
 describe('fmtTokens', () => {
   it('passes small counts through and abbreviates thousands', () => {

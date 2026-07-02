@@ -498,7 +498,7 @@ export class WorkflowDiscovery {
         label,
         phaseIndex,
         phaseTitle,
-        model: '',
+        model: stats.model,
         agentType: null,
         status,
         startedAt: 0,
@@ -552,7 +552,7 @@ export class WorkflowDiscovery {
    *  hardcoded zeros ("0 tokens · 0 tools" on a run mid-flight). Cost-bounded:
    *  a full re-read happens only when the file grew AND the last scan is older
    *  than the throttle, capped at 8 MB — beyond that the last stats stick. */
-  private agentStatsCache = new Map<string, { size: number; scannedAt: number; tokens: number; toolCalls: number }>();
+  private agentStatsCache = new Map<string, { size: number; scannedAt: number; tokens: number; toolCalls: number; model: string }>();
   private static readonly STATS_RESCAN_MS = 5_000;
 
   private static readonly STATS_MAX_BYTES = 8 * 1024 * 1024;
@@ -565,7 +565,7 @@ export class WorkflowDiscovery {
   private static readonly SCRIPT_MAX_BYTES = 1024 * 1024;
   private static readonly JOURNAL_MAX_BYTES = 4 * 1024 * 1024;
 
-  private async liveAgentStats(runDir: string, agentId: string, status: string): Promise<{ tokens: number; toolCalls: number }> {
+  private async liveAgentStats(runDir: string, agentId: string, status: string): Promise<{ tokens: number; toolCalls: number; model: string }> {
     const filePath = path.join(runDir, `agent-${agentId}.jsonl`);
     const cached = this.agentStatsCache.get(filePath);
     try {
@@ -574,10 +574,11 @@ export class WorkflowDiscovery {
         || (status === 'running' && Date.now() - cached.scannedAt < WorkflowDiscovery.STATS_RESCAN_MS))) {
         return cached;
       }
-      if (stat.size > WorkflowDiscovery.STATS_MAX_BYTES) { return cached ?? { tokens: 0, toolCalls: 0 }; }
+      if (stat.size > WorkflowDiscovery.STATS_MAX_BYTES) { return cached ?? { tokens: 0, toolCalls: 0, model: '' }; }
       const raw = await fs.promises.readFile(filePath, 'utf-8');
       let tokens = 0;
       let toolCalls = 0;
+      let model = '';
       for (const line of raw.split('\n')) {
         if (!line) { continue; }
         // Cheap pre-filters before JSON.parse — most lines carry neither.
@@ -585,9 +586,12 @@ export class WorkflowDiscovery {
         const hasTool = line.includes('"tool_use"');
         if (!hasUsage && !hasTool) { continue; }
         try {
-          const rec = JSON.parse(line) as { message?: { usage?: { output_tokens?: number }; content?: unknown } };
+          const rec = JSON.parse(line) as { message?: { model?: unknown; usage?: { output_tokens?: number }; content?: unknown } };
           const u = rec.message?.usage?.output_tokens;
           if (typeof u === 'number') { tokens += u; }
+          // Assistant records carry the model alongside usage — the sidecar
+          // materialises this at completion; the live tier reads it here.
+          if (!model && typeof rec.message?.model === 'string') { model = rec.message.model; }
           const content = rec.message?.content;
           if (Array.isArray(content)) {
             for (const b of content) {
@@ -596,11 +600,11 @@ export class WorkflowDiscovery {
           }
         } catch { /* malformed line — skip */ }
       }
-      const entry = { size: stat.size, scannedAt: Date.now(), tokens, toolCalls };
+      const entry = { size: stat.size, scannedAt: Date.now(), tokens, toolCalls, model };
       this.agentStatsCache.set(filePath, entry);
       return entry;
     } catch {
-      return cached ?? { tokens: 0, toolCalls: 0 };
+      return cached ?? { tokens: 0, toolCalls: 0, model: '' };
     }
   }
 

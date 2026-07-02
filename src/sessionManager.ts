@@ -100,6 +100,7 @@ import { execFile } from 'child_process';
 import { JsonlTailer } from './jsonlTailer.js';
 import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType, getContentBlocks } from './jsonlValidator.js';
 import { computeDemotion, getToolProfile, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS } from './toolProfiles.js';
+import { formatModelLabel } from './detailShared.js';
 import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
 import { makeSubagentLifecycleTracker, type SubagentLifecycleTracker } from './trackers/subagentLifecycleTracker.js';
@@ -1799,35 +1800,12 @@ export class SessionManager {
     }
   }
 
-  /** Derive a display label like "Opus 4.8" / "Sonnet 4" / "Fable 5" from a
-   *  model id. Handles both the new (`claude-opus-4-8`) and legacy version-first
-   *  (`claude-3-5-haiku-...`) id shapes, strips the context-window suffix
-   *  (`[1m]`) and the trailing date stamp (`-20251001`), and degrades to the
-   *  bare tier when no version is present. A trailing '*' marks a label that's
-   *  still just a guess (not yet confirmed by an assistant record). */
+  /** Session-flavoured wrapper over the shared label derivation (detailShared):
+   *  a trailing '*' marks a label that's still just a guess (not yet confirmed
+   *  by an assistant record). */
   private formatModelLabel(modelId: string, confirmed: boolean): string {
-    if (!modelId) return '';
-    // Drop the context-window suffix ("[1m]") and the "claude-" prefix.
-    const clean = modelId.replace(/\[[^\]]*\]/g, '').replace(/^claude-/, '');
-    const segments = clean.split('-');
-
-    // Tier: a known family by canonical name, else the first word-bearing segment.
-    let tier: string;
-    if (clean.includes('opus')) tier = 'Opus';
-    else if (clean.includes('sonnet')) tier = 'Sonnet';
-    else if (clean.includes('haiku')) tier = 'Haiku';
-    else {
-      const word = segments.find(p => /[a-z]/i.test(p));
-      if (!word) return '';
-      tier = word.charAt(0).toUpperCase() + word.slice(1);
-    }
-
-    // Version: numeric segments, excluding the 8-digit date stamp (YYYYMMDD).
-    const version = segments
-      .filter(p => /^\d+$/.test(p) && !/^\d{8}$/.test(p))
-      .join('.');
-
-    const label = version ? `${tier} ${version}` : tier;
+    const label = formatModelLabel(modelId);
+    if (!label) return '';
     return confirmed ? label : `${label}*`;
   }
 

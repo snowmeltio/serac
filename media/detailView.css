@@ -264,9 +264,13 @@ body {
    * otherwise leave the default text low-contrast on the highlight. */
   color: var(--vscode-list-activeSelectionForeground, inherit);
 }
-.wf-nav-row.active .wf-nav-tokens { color: inherit; }
+.wf-nav-row.active .wf-nav-tokens,
+.wf-nav-row.active .wf-nav-model { color: inherit; }
 .wf-nav-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .wf-nav-tokens { font-size: 9px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+/* Model label — same muted metric styling as tokens so the row stays one
+ * visual register (label · badge · model · tokens). */
+.wf-nav-model { font-size: 9px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
 /* Teammate marker — sets Agent Team members apart from plain Task subagents in
  * the same list (violet, the team accent, vs the neutral subagent row). */
 .wf-teammate-badge {

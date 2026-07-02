@@ -146,7 +146,7 @@ function setup(over: Partial<DetailPanelDeps> = {}): Harness {
     getWorkflows: vi.fn(() => [makeWorkflow()]),
     getTeams: vi.fn(() => [makeTeam()]),
     getSession: vi.fn(() => makeSession()),
-    listSubagents: vi.fn(() => [] as { agentId: string; agentType: string | null; description: string | null }[]),
+    listSubagents: vi.fn(() => [] as { agentId: string; agentType: string | null; description: string | null; model: string | null }[]),
     resolveAgentFile: vi.fn(() => '/path/agent.jsonl'),
     openConversation: vi.fn(),
   };
@@ -283,12 +283,15 @@ describe('DetailPanel', () => {
       const h = setup({
         getTeams: vi.fn(() => [makeTeam({ teamId: 'at:aviary', agents: [], counts: {}, inProcessMembers: ['lyrebird', 'boobook'] })]),
         // sa2 is running in makeSession; map it to lyrebird via the disk meta.
-        listSubagents: vi.fn(() => [{ agentId: 'sa2', agentType: 'lyrebird', description: null }]),
+        listSubagents: vi.fn(() => [{ agentId: 'sa2', agentType: 'lyrebird', description: null, model: 'claude-sonnet-5' }]),
       });
       h.panel.show('team', 'at:aviary', 'orch-1');
       const rows = h.lastModel().groups[0].agents;
       expect(rows.find((a: any) => a.agentId === 'lyrebird').status).toBe('running');
       expect(rows.find((a: any) => a.agentId === 'boobook').status).toBe('done');
+      // The roster row also borrows the member's model from the disk scan.
+      expect(rows.find((a: any) => a.agentId === 'lyrebird').model).toBe('claude-sonnet-5');
+      expect(rows.find((a: any) => a.agentId === 'boobook').model).toBe('');
     });
 
     it('builds the model from a live-tier run with its running status', () => {
@@ -639,8 +642,8 @@ describe('DetailPanel', () => {
       const h = setup({
         getSession: vi.fn(() => session),
         listSubagents: vi.fn(() => [
-          { agentId: 'd1', agentType: 'general-purpose', description: 'review types' },
-          { agentId: 'd2', agentType: 'Explore', description: null },
+          { agentId: 'd1', agentType: 'general-purpose', description: 'review types', model: 'claude-sonnet-5' },
+          { agentId: 'd2', agentType: 'Explore', description: null, model: null },
         ]),
       });
       h.panel.show('subagents', 'sess-1', 'sess-1');
@@ -649,6 +652,9 @@ describe('DetailPanel', () => {
       // label prefers description, then agentType, then a short agentId.
       expect(m.groups[0].agents[0].label).toBe('review types');
       expect(m.groups[0].agents[1].label).toBe('Explore');
+      // model rides along from the transcript head; unknown stays ''.
+      expect(m.groups[0].agents[0].model).toBe('claude-sonnet-5');
+      expect(m.groups[0].agents[1].model).toBe('');
       expect(m.groups[0].agents.every((a: any) => a.status === 'done')).toBe(true);
       expect(m.metrics).toContain('2 subagents');
     });
@@ -657,8 +663,8 @@ describe('DetailPanel', () => {
       const h = setup({
         // makeSession default: sa1 (done), sa2 (running), and an agentless entry.
         listSubagents: vi.fn(() => [
-          { agentId: 'sa1', agentType: 'x', description: 'dup of tracked' }, // already tracked → skip
-          { agentId: 'd9', agentType: null, description: 'disk only' },       // new → appended
+          { agentId: 'sa1', agentType: 'x', description: 'dup of tracked', model: 'claude-opus-4-8' }, // already tracked → skip
+          { agentId: 'd9', agentType: null, description: 'disk only', model: null },                    // new → appended
         ]),
       });
       h.panel.show('subagents', 'sess-1', 'sess-1');
@@ -667,6 +673,8 @@ describe('DetailPanel', () => {
       expect(ids).toEqual(['sa1', 'sa2', 'd9']);
       // tracked sa1 keeps its rich label, not the disk one.
       expect(m.groups[0].agents.find((a: any) => a.agentId === 'sa1').label).toBe('explore auth');
+      // ...but borrows the disk-recovered model (live tracking never sees one).
+      expect(m.groups[0].agents.find((a: any) => a.agentId === 'sa1').model).toBe('claude-opus-4-8');
       expect(m.metrics).toContain('3 subagents');
       expect(m.metrics).toContain('1 running'); // running count from tracked only
     });
@@ -677,7 +685,7 @@ describe('DetailPanel', () => {
      *  parsed roster `agents` is empty; the name lives in inProcessMembers. */
     const inProcessTeam = () => makeTeam({ agents: [], inProcessMembers: ['lyrebird'], counts: {} });
     /** One disk-only subagent whose meta agentType is the member name. */
-    const lyrebirdOnDisk = () => vi.fn(() => [{ agentId: 'd1', agentType: 'lyrebird', description: 'lyrebird' }]);
+    const lyrebirdOnDisk = () => vi.fn(() => [{ agentId: 'd1', agentType: 'lyrebird', description: 'lyrebird', model: null }]);
 
     it('roster-matches an in-process member and marks it alive even when its status reads done', () => {
       // The aviary regression: an idle teammate is disk-only (status 'done',
@@ -696,7 +704,7 @@ describe('DetailPanel', () => {
       const h = setup({
         getTeams: vi.fn(() => [inProcessTeam()]),
         getSession: vi.fn(() => makeSession({ subagents: [] })),
-        listSubagents: vi.fn(() => [{ agentId: 'd2', agentType: 'Explore', description: 'scout' }]),
+        listSubagents: vi.fn(() => [{ agentId: 'd2', agentType: 'Explore', description: 'scout', model: null }]),
       });
       h.panel.show('subagents', 'orch-1', 'orch-1');
       const a = h.lastModel().groups[0].agents[0];
@@ -710,9 +718,9 @@ describe('DetailPanel', () => {
         getSession: vi.fn(() => makeSession({ subagents: [] })),
         // Three spawn rounds of the same bird, listed in spawn order.
         listSubagents: vi.fn(() => [
-          { agentId: 'd1', agentType: 'lyrebird', description: 'round 1' },
-          { agentId: 'd2', agentType: 'lyrebird', description: 'round 2' },
-          { agentId: 'd3', agentType: 'lyrebird', description: 'round 3' },
+          { agentId: 'd1', agentType: 'lyrebird', description: 'round 1', model: null },
+          { agentId: 'd2', agentType: 'lyrebird', description: 'round 2', model: null },
+          { agentId: 'd3', agentType: 'lyrebird', description: 'round 3', model: 'claude-sonnet-5' },
         ]),
       });
       h.panel.show('subagents', 'orch-1', 'orch-1');
@@ -728,8 +736,8 @@ describe('DetailPanel', () => {
         // sa2 is the live-tracked running row (makeSession default); d9 is a
         // newer-on-disk finished duplicate of the same member.
         listSubagents: vi.fn(() => [
-          { agentId: 'sa2', agentType: 'lyrebird', description: null },
-          { agentId: 'd9', agentType: 'lyrebird', description: null },
+          { agentId: 'sa2', agentType: 'lyrebird', description: null, model: null },
+          { agentId: 'd9', agentType: 'lyrebird', description: null, model: null },
         ]),
       });
       h.panel.show('subagents', 'orch-1', 'orch-1');
@@ -743,8 +751,8 @@ describe('DetailPanel', () => {
         getTeams: vi.fn(() => [inProcessTeam()]),
         getSession: vi.fn(() => makeSession({ subagents: [] })),
         listSubagents: vi.fn(() => [
-          { agentId: 'd1', agentType: 'lyrebird', description: null },
-          { agentId: 'd2', agentType: 'card-engine', description: 'old flashcard agent' },
+          { agentId: 'd1', agentType: 'lyrebird', description: null, model: null },
+          { agentId: 'd2', agentType: 'card-engine', description: 'old flashcard agent', model: null },
         ]),
       });
       h.panel.show('subagents', 'orch-1', 'orch-1');
@@ -772,7 +780,7 @@ describe('DetailPanel', () => {
     it('still roster-matches tmux members via the agents list', () => {
       const h = setup({
         getSession: vi.fn(() => makeSession({ subagents: [] })),
-        listSubagents: vi.fn(() => [{ agentId: 'd3', agentType: 'defender', description: 'defender' }]),
+        listSubagents: vi.fn(() => [{ agentId: 'd3', agentType: 'defender', description: 'defender', model: null }]),
       });
       h.panel.show('subagents', 'orch-1', 'orch-1');
       expect(h.lastModel().groups[0].agents[0]).toMatchObject({ teammate: true, alive: true });

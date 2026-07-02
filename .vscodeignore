@@ -34,6 +34,7 @@ CHANGELOG.md
 .claude/**
 AUDIT.md
 CLAUDE.md
+DESIGN-DETAIL-PANE-V2.md
 .local/**
 .gitignore
 .DS_Store

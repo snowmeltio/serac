@@ -837,7 +837,7 @@ export class SessionDiscovery {
    *  skipped — those agents belong to a workflow run, not this session), reading
    *  the sibling `agent-*.meta.json` for `agentType`/`description` labels. Sorted
    *  by mtime so spawn order is stable. */
-  listSubagentFiles(sessionId: string): { agentId: string; agentType: string | null; description: string | null }[] {
+  listSubagentFiles(sessionId: string): { agentId: string; agentType: string | null; description: string | null; model: string | null }[] {
     const jsonlPath = this.getSessionFilePath(sessionId);
     if (!jsonlPath) { return []; }
     const subagentsDir = path.join(jsonlPath.replace(/\.jsonl$/, ''), 'subagents');
@@ -847,7 +847,7 @@ export class SessionDiscovery {
     } catch {
       return [];
     }
-    const out: { agentId: string; agentType: string | null; description: string | null; ts: number }[] = [];
+    const out: { agentId: string; agentType: string | null; description: string | null; model: string | null; ts: number }[] = [];
     for (const f of files) {
       const match = f.match(/^agent-(.+)\.jsonl$/);
       if (!match) { continue; }
@@ -868,10 +868,49 @@ export class SessionDiscovery {
         const stat = fs.statSync(path.join(subagentsDir, f));
         ts = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
       } catch { /* keep default */ }
-      out.push({ agentId, agentType, description, ts });
+      out.push({ agentId, agentType, description, model: this.readSubagentModel(path.join(subagentsDir, f)), ts });
     }
     out.sort((a, b) => a.ts - b.ts);
-    return out.map(({ agentId, agentType, description }) => ({ agentId, agentType, description }));
+    return out.map(({ agentId, agentType, description, model }) => ({ agentId, agentType, description, model }));
+  }
+
+  /** Model ids already recovered from subagent transcripts, keyed by file path.
+   *  A subagent's model never changes mid-run, so a hit is permanent — steady
+   *  refresh ticks cost nothing after the first read. A miss (no assistant
+   *  record yet) is NOT cached, so a just-spawned agent resolves on a later scan. */
+  private readonly subagentModelCache = new Map<string, string>();
+
+  /** Head-read a subagent transcript for its model (`message.model` on the
+   *  first assistant record — meta.json never carries it). Bounded to a single
+   *  64 KB read; the first assistant record lands within the opening lines. */
+  private readSubagentModel(filePath: string): string | null {
+    const cached = this.subagentModelCache.get(filePath);
+    if (cached) { return cached; }
+    const MAX_BYTES = 64 * 1024;
+    let fd: number | undefined;
+    try {
+      fd = fs.openSync(filePath, 'r');
+      const buf = Buffer.alloc(MAX_BYTES);
+      const bytesRead = fs.readSync(fd, buf, 0, MAX_BYTES, 0);
+      const chunk = buf.toString('utf8', 0, bytesRead);
+      for (const line of chunk.split('\n')) {
+        // Cheap pre-filter before JSON.parse — user/tool records rarely match.
+        if (!line.includes('"model"')) { continue; }
+        try {
+          const rec = JSON.parse(line) as { message?: { model?: unknown } };
+          const model = rec.message?.model;
+          if (typeof model === 'string' && model) {
+            this.subagentModelCache.set(filePath, model);
+            return model;
+          }
+        } catch { /* malformed or window-truncated line — keep scanning */ }
+      }
+    } catch {
+      // Unreadable transcript — the row simply shows no model.
+    } finally {
+      if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+    }
+    return null;
   }
 
   // ── Workflow API ──────────────────────────────────────────────────

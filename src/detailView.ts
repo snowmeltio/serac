@@ -8,7 +8,7 @@
 
 import { isNearBottom, chooseReaderScrollTop, STICK_THRESHOLD_PX } from './detailViewScroll.js';
 import { escapeHtml } from './panelUtils.js';
-import { fmtTokens, fmtDuration, transcriptKey } from './detailShared.js';
+import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey } from './detailShared.js';
 import type {
   DetailAgentView, DetailGroupView, DetailViewChoice, DetailModel, TranscriptEntry,
 } from './detailShared.js';
@@ -250,9 +250,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function renderNavRow(groupKey: string, a: DetailAgentView): string {
     const active = groupKey === selectedGroupKey && a.agentId === selectedAgentId;
     const badge = a.teammate ? '<span class="wf-teammate-badge" title="Agent Team member">team</span>' : '';
+    const modelLabel = a.model ? formatModelLabel(a.model) : '';
     // Status rides in the title/aria-label so it survives ellipsis truncation
     // and is announced — the dot alone is colour-only signalling (WCAG 1.4.1).
-    const nameWithStatus = a.label + ' · ' + a.status;
+    const nameWithStatus = a.label + ' · ' + a.status + (modelLabel ? ' · ' + modelLabel : '');
     // Roving tabindex (UX-3): one Tab stop for the whole roster (the active
     // row); ArrowUp/ArrowDown walk the rest. 50 agents are otherwise 50 stops.
     return '<div class="wf-nav-row' + (active ? ' active' : '') + (a.teammate ? ' teammate' : '') + '" data-group="' + escapeHtml(groupKey)
@@ -262,6 +263,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + statusDot(a.status)
       + '<span class="wf-nav-label">' + escapeHtml(a.label) + '</span>'
       + badge
+      + (modelLabel ? '<span class="wf-nav-model">' + escapeHtml(modelLabel) + '</span>' : '')
       + (a.tokens > 0 ? '<span class="wf-nav-tokens">' + fmtTokens(a.tokens) + '</span>' : '')
       + '</div>';
   }
@@ -273,7 +275,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     const metaBits: string[] = [];
     if (agent.phaseTitle) { metaBits.push(escapeHtml(agent.phaseTitle)); }
-    if (agent.model) { metaBits.push(escapeHtml(agent.model)); }
+    const readerModel = agent.model ? formatModelLabel(agent.model) : '';
+    if (readerModel) { metaBits.push(escapeHtml(readerModel)); }
     if (agent.tokens > 0) { metaBits.push(fmtTokens(agent.tokens) + ' tokens'); }
     // Gated like tokens: team rows and disk-only subagents carry toolCalls: 0
     // because the data is genuinely untracked — "0 tools" would read as "did

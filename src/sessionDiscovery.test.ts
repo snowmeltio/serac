@@ -615,10 +615,10 @@ describe('SessionDiscovery', () => {
   });
 
   describe('listSubagentFiles()', () => {
-    function writeSubagent(sessionId: string, agentId: string, meta?: Record<string, unknown>): void {
+    function writeSubagent(sessionId: string, agentId: string, meta?: Record<string, unknown>, jsonl = ''): void {
       const subDir = path.join(projectsDir, workspaceKey, sessionId, 'subagents');
       fs.mkdirSync(subDir, { recursive: true });
-      fs.writeFileSync(path.join(subDir, `agent-${agentId}.jsonl`), '');
+      fs.writeFileSync(path.join(subDir, `agent-${agentId}.jsonl`), jsonl);
       if (meta) {
         fs.writeFileSync(path.join(subDir, `agent-${agentId}.meta.json`), JSON.stringify(meta));
       }
@@ -639,6 +639,34 @@ describe('SessionDiscovery', () => {
       expect(Object.keys(byId).sort()).toEqual(['aaa111', 'bbb222']);
       expect(byId['aaa111']).toMatchObject({ agentType: 'general-purpose', description: 'review types' });
       expect(byId['bbb222']).toMatchObject({ agentType: null, description: null });
+    });
+
+    it('recovers the model from the transcript head (meta.json never carries it)', async () => {
+      const sessionId = 'sess-model';
+      createJsonlFile(sessionId);
+      const jsonl = [
+        JSON.stringify({ type: 'user', message: { role: 'user', content: 'find the bug in model.ts' } }),
+        'not json {{{',
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [] } }),
+      ].join('\n') + '\n';
+      writeSubagent(sessionId, 'aaa111', { agentType: 'Explore' }, jsonl);
+      writeSubagent(sessionId, 'bbb222'); // empty transcript — no assistant record yet
+
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      const byId = Object.fromEntries(discovery.listSubagentFiles(sessionId).map(e => [e.agentId, e]));
+      expect(byId['aaa111'].model).toBe('claude-sonnet-5');
+      expect(byId['bbb222'].model).toBeNull();
+
+      // A hit is memoised (the model never changes mid-run) — a rewrite is not
+      // re-read. A miss is NOT cached: the just-spawned agent resolves later.
+      writeSubagent(sessionId, 'aaa111', undefined, jsonl.replace('claude-sonnet-5', 'claude-opus-4-8'));
+      writeSubagent(sessionId, 'bbb222', undefined,
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-haiku-4-5', content: [] } }) + '\n');
+      const again = Object.fromEntries(discovery.listSubagentFiles(sessionId).map(e => [e.agentId, e]));
+      expect(again['aaa111'].model).toBe('claude-sonnet-5');
+      expect(again['bbb222'].model).toBe('claude-haiku-4-5');
+      discovery.stop();
     });
 
     it('ignores the workflows/ subdir and non-agent files', async () => {
