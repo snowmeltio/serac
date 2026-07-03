@@ -32,7 +32,7 @@ function sendUpdate(data: Record<string, unknown>): void {
  *  unspecified sections fall back to the defaults. */
 function sendSettings(overrides: any = {}): void {
   const defaults = {
-    show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: true, workflows: true },
+    show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: false, workflows: true },
     archive: { defaultRange: '1d', maxDoneShown: 20 },
     refresh: { intervalSeconds: 5 },
     discovery: { ageGateDays: 7 },
@@ -188,6 +188,7 @@ describe('panel.ts integration', () => {
   });
 
   it('renders not-done subagents as inline agent rows on cards', () => {
+    sendSettings({ show: { subagents: true } });
     sendUpdate({
       sessions: [makeSession({
         subagents: [
@@ -648,6 +649,7 @@ describe('panel.ts integration', () => {
     });
 
     it('the robot chip counts live agents (workflow agents + subagents) and labels the tooltip', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({
         sessions: [makeSession({
           sessionId: 'wf-sess', status: 'running',
@@ -669,6 +671,7 @@ describe('panel.ts integration', () => {
     });
 
     it('a done card with a live background agent keeps a running-tinted chip, count, and roster row', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({
         sessions: [makeSession({
           sessionId: 'bg-sess', status: 'done',
@@ -702,6 +705,7 @@ describe('panel.ts integration', () => {
     });
 
     it('a running run lists its still-working agents inline (excludes done), no bar', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess', status: 'running' })],
         workflows: [makeWorkflow({
@@ -975,6 +979,7 @@ describe('panel.ts integration', () => {
     ];
 
     it('appends an "agents" chip (subagents source) when the session has subagents', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: subs })] });
       const chip = document.querySelector('.card-meta .detail-chip[data-detail-source="subagents"]') as HTMLElement;
       expect(chip).toBeTruthy();
@@ -986,6 +991,7 @@ describe('panel.ts integration', () => {
     });
 
     it('clicking it posts openDetail for the subagents source', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: subs })] });
       postedMessages = [];
       (document.querySelector('.detail-chip[data-detail-source="subagents"]') as HTMLElement).click();
@@ -1000,6 +1006,7 @@ describe('panel.ts integration', () => {
     });
 
     it('tints the subagents chip by state (running, or waiting when one awaits permission)', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: subs })] }); // explore db is running
       expect((document.querySelector('.detail-chip[data-detail-source="subagents"]') as HTMLElement)
         .classList.contains('wf-chip-running')).toBe(true);
@@ -1047,6 +1054,7 @@ describe('panel.ts integration', () => {
     });
 
     it('gives the orchestrator card the same "agents" chip (subagents source)', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'orch-1', subagents: teammates })], teams: [makeTeam()] });
       const card = document.querySelector('.card[data-session-id="orch-1"]')!;
       const chip = card.querySelector('.detail-chip[data-detail-source="subagents"]') as HTMLElement;
@@ -1058,6 +1066,7 @@ describe('panel.ts integration', () => {
     });
 
     it('opens the drill-in (subagents source, where teammates live) on click', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'orch-1', subagents: teammates })], teams: [makeTeam()] });
       postedMessages = [];
       (document.querySelector('.card[data-session-id="orch-1"] .detail-chip[data-detail-source="subagents"]') as HTMLElement).click();
@@ -1067,6 +1076,7 @@ describe('panel.ts integration', () => {
     });
 
     it('uses the same "agents" chip on a session that is not a team', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'plain', subagents: teammates })] });
       const chip = document.querySelector('.card[data-session-id="plain"] .detail-chip[data-detail-source="subagents"]') as HTMLElement;
       expect(chip.textContent).toContain('\u{1F916}');
@@ -1076,6 +1086,7 @@ describe('panel.ts integration', () => {
 
   describe('inline not-done agent rows', () => {
     it('lists not-done subagents inline and excludes done ones', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa', status: 'running', subagents: [
         { agentId: 'a1', description: 'running one', running: true },
         { agentId: 'a2', description: 'waiting one', running: true, waitingOnPermission: true },
@@ -1087,12 +1098,14 @@ describe('panel.ts integration', () => {
     });
 
     it('caps height for scroll (renders all not-done rows; CSS scrolls past ~6)', () => {
+      sendSettings({ show: { subagents: true } });
       const many = Array.from({ length: 9 }, (_, i) => ({ agentId: 'a' + i, description: 'agent ' + i, running: true }));
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa', status: 'running', subagents: many })] });
       expect(document.querySelectorAll('.card[data-session-id="sa"] .card-agent-list .card-agent-row').length).toBe(9);
     });
 
     it('clicking an inline subagent row deep-links openDetail to that agent', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa', status: 'running', subagents: [
         { agentId: 'a1', description: 'running one', running: true },
       ] })] });
@@ -1102,6 +1115,7 @@ describe('panel.ts integration', () => {
     });
 
     it('lists not-done workflow agents inline and deep-links with the runId as groupKey', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({
         sessions: [makeSession({ sessionId: 'wf-sess', status: 'running' })],
         workflows: [{
@@ -1123,6 +1137,7 @@ describe('panel.ts integration', () => {
     });
 
     it('Enter on an inline row activates the deep-link (not the card-body open)', () => {
+      sendSettings({ show: { subagents: true } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa', status: 'running', subagents: [
         { agentId: 'a1', description: 'running one', running: true },
       ] })] });

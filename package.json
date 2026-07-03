@@ -145,8 +145,8 @@
           },
           "serac.show.subagents": {
             "type": "boolean",
-            "default": true,
-            "description": "Show subagent rows inside session cards."
+            "default": false,
+            "description": "Show subagent rows inside session cards. Off by default — drill into the detail panel for the full subagent view."
           },
           "serac.show.fileCollisions": {
             "type": "boolean",

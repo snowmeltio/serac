@@ -284,7 +284,9 @@ describe('renderCardInner', () => {
         { agentId: 'ag-2', description: 'finished', running: false },
       ],
     });
-    const html = renderCardInner(makeCtx(), s, NOW, false);
+    const html = renderCardInner(makeCtx({
+      settings: { ...DEFAULT_PANEL_SETTINGS, show: { ...DEFAULT_PANEL_SETTINGS.show, subagents: true } },
+    }), s, NOW, false);
     expect(html).toContain('card-agent-row');
     expect(html).toContain('worker');
     expect(html).not.toContain('finished'); // only still-working agents inline

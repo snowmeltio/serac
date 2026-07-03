@@ -1,9 +1,13 @@
 # Changelog
 
-## v1.16.3 (2026-07-03) — Model pill colour reflects API cost
+## v1.16.3 (2026-07-03) — Model pill colour reflects API cost; subagent rows off by default
 
 ### Changed
 - **Model pill colour now reflects relative API cost, not family identity.** The small model badge on session cards (e.g. "Opus 4.8", "Sonnet 5") used a random per-family hash colour before; it now uses a fixed hue on a blue (cheap) → orange (expensive) scale — Haiku, Sonnet, Opus, then Fable/Mythos — based on normal per-token pricing. A model family not yet classified into a cost tier still gets a stable, distinct colour via the old hash fallback rather than defaulting into one bucket.
+- **Subagent rows on session cards are now off by default.** The detail panel's subagent view (v1.16.0) is robust enough that the inline card rows were redundant noise for most users. Toggle `serac.show.subagents` back on to restore them.
+
+### Fixed
+- **Workflow agent rows now respect `serac.show.subagents`.** The setting previously only gated Task-tool subagent rows — inline rows for still-working workflow-run agents ignored it entirely and kept showing on cards even with the setting off.
 
 ## v1.16.2 (2026-07-02) — Weekly Fable usage quota
 

@@ -9,6 +9,9 @@ export interface SeracSettings {
     foreignWorkspaces: boolean;
     worktrees: boolean;
     usage: boolean;
+    /** Inline subagent rows on session cards. Default off (Murray
+     *  2026-07-03): the detail panel's subagent view (v1.16.0) is now robust
+     *  enough that the inline rows are redundant noise for most users. */
     subagents: boolean;
     workflows: boolean;
     /** Same-file collision chip on cards. Default off (Murray 2026-06-10):
@@ -101,7 +104,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     foreignWorkspaces: true,
     worktrees: true,
     usage: true,
-    subagents: true,
+    subagents: false,
     workflows: true,
     fileCollisions: false,
   },
