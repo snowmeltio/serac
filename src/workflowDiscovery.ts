@@ -129,6 +129,13 @@ export class WorkflowDiscovery {
   /** Per-run script parse, keyed on mtime — the script is immutable per run,
    *  so the 500ms live poll must not re-read and re-parse it every cycle. */
   private readonly scriptMeta = new Map<string, { mtimeMs: number; name: string; phases: WorkflowSnapshot['phases']; agentCalls: WorkflowAgentCall[] }>();
+  /** runId -> scripts dir, once a fallback scan (see findScriptDirByRunId)
+   *  finds a run's script under a workspace key other than this one. */
+  private readonly scriptDirOverride = new Map<string, string>();
+  /** runId -> last fallback-scan attempt (ms), throttling the scan below —
+   *  it walks every project dir, so it must not run at the 500ms live cadence. */
+  private readonly scriptFallbackAttemptedAt = new Map<string, number>();
+  private static readonly SCRIPT_FALLBACK_RETRY_MS = 3000;
   /** Per-run live-tier accumulator: journal tailer + cached prompt
    *  correlations + last-emitted signature (audit perf-io-1). */
   private readonly liveRuns = new Map<string, LiveRunState>();
@@ -182,6 +189,8 @@ export class WorkflowDiscovery {
       this.mtimes.clear();
       this.scriptMeta.clear();
       this.liveRuns.clear();
+      this.scriptDirOverride.clear();
+      this.scriptFallbackAttemptedAt.clear();
       this.agentStatsCache.clear();
       this.changedSincePoll = true;
     }
@@ -240,6 +249,8 @@ export class WorkflowDiscovery {
       this.mtimes.delete(runId);
       this.scriptMeta.delete(runId);
       this.liveRuns.delete(runId);
+      this.scriptDirOverride.delete(runId);
+      this.scriptFallbackAttemptedAt.delete(runId);
       this.pruneAgentStats(snap.sessionId, runId);
       this.changedSincePoll = true;
     }
@@ -361,6 +372,53 @@ export class WorkflowDiscovery {
     }
   }
 
+  /** Resolves the directory holding a run's script file: this workspace's own
+   *  session dir first, falling back to a runId scan across every project dir
+   *  (see findScriptDirByRunId) when the Workflow tool wrote the sidecar under
+   *  a different cwd than the parent session's own workspace key. Returns null
+   *  if the script isn't found anywhere yet — phase correlation degrades to a
+   *  flat (ungrouped) roster in that case. */
+  private async resolveScriptsDir(sessionId: string, runId: string): Promise<string | null> {
+    const primary = path.join(this.wsDir, sessionId, 'workflows', 'scripts');
+    try {
+      const files = await fs.promises.readdir(primary);
+      if (files.some(f => f.endsWith(`-${runId}.js`))) { return primary; }
+    } catch { /* no scripts dir under this workspace key — try the fallback scan */ }
+    return this.findScriptDirByRunId(sessionId, runId);
+  }
+
+  /** Scans every project dir's <sessionId>/workflows/scripts/ for a run's
+   *  script, for the case where it landed under a workspace key other than
+   *  this run's own parent session (observed cause: the Workflow tool call's
+   *  cwd had drifted to a scratchpad dir when the sidecar was written). Caches
+   *  a hit for the run's lifetime and throttles retries on a miss — it walks
+   *  every project dir, so it must not run at the 500ms live-poll cadence. */
+  private async findScriptDirByRunId(sessionId: string, runId: string): Promise<string | null> {
+    const cached = this.scriptDirOverride.get(runId);
+    if (cached) { return cached; }
+    const lastAttempt = this.scriptFallbackAttemptedAt.get(runId) ?? 0;
+    if (Date.now() - lastAttempt < WorkflowDiscovery.SCRIPT_FALLBACK_RETRY_MS) { return null; }
+    this.scriptFallbackAttemptedAt.set(runId, Date.now());
+    let wsKeys: string[];
+    try {
+      wsKeys = await fs.promises.readdir(this.projectsDir);
+    } catch {
+      return null;
+    }
+    for (const wsKey of wsKeys) {
+      if (wsKey === this.workspaceKey) { continue; } // already tried by resolveScriptsDir
+      const candidate = path.join(this.projectsDir, wsKey, sessionId, 'workflows', 'scripts');
+      try {
+        const files = await fs.promises.readdir(candidate);
+        if (files.some(f => f.endsWith(`-${runId}.js`))) {
+          this.scriptDirOverride.set(runId, candidate);
+          return candidate;
+        }
+      } catch { /* no such dir under this wsKey — keep scanning */ }
+    }
+    return null;
+  }
+
   private async buildLiveSnapshot(
     sessionId: string,
     runId: string,
@@ -391,10 +449,10 @@ export class WorkflowDiscovery {
     let scriptV = -1;
     const phaseIndexByTitle = new Map<string, number>();
     try {
-      const scriptsDir = path.join(this.wsDir, sessionId, 'workflows', 'scripts');
-      const scriptFiles = await fs.promises.readdir(scriptsDir);
-      const scriptFile = scriptFiles.find(f => f.endsWith(`-${runId}.js`));
-      if (scriptFile) {
+      const scriptsDir = await this.resolveScriptsDir(sessionId, runId);
+      const scriptFiles = scriptsDir ? await fs.promises.readdir(scriptsDir) : [];
+      const scriptFile = scriptsDir ? scriptFiles.find(f => f.endsWith(`-${runId}.js`)) : undefined;
+      if (scriptFile && scriptsDir) {
         const scriptPath = path.join(scriptsDir, scriptFile);
         const sstat = await fs.promises.stat(scriptPath);
         const cached = this.scriptMeta.get(runId);
@@ -676,6 +734,8 @@ export class WorkflowDiscovery {
     this.mtimes.clear();
     this.scriptMeta.clear();
     this.liveRuns.clear();
+    this.scriptDirOverride.clear();
+    this.scriptFallbackAttemptedAt.clear();
     this.agentStatsCache.clear();
   }
 }

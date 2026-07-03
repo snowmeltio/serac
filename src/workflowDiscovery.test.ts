@@ -350,6 +350,38 @@ describe('WorkflowDiscovery', () => {
     d.dispose();
   });
 
+  it('finds a live run\'s script under a different workspace key (cwd-drift fallback)', async () => {
+    const runId = 'wf_drift-001';
+    const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+      JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'driftagt' }) + '\n', 'utf-8');
+    fs.writeFileSync(path.join(runDir, 'agent-driftagt.jsonl'),
+      JSON.stringify({ type: 'user', message: { content: 'Discover the best energy plan for this address.' } }) + '\n', 'utf-8');
+    // The script sidecar lands under a wholly different workspace key — e.g.
+    // the Workflow tool call's cwd had drifted to a scratchpad dir when it was
+    // written — instead of this run's own session dir under WS_KEY.
+    const driftedScriptsDir = path.join(projectsDir, '-private-tmp-scratchpad', SID, 'workflows', 'scripts');
+    fs.mkdirSync(driftedScriptsDir, { recursive: true });
+    const script = [
+      "export const meta = { name: 'energy-deal-discover', description: 'd', phases: [{ title: 'Discover' }] }",
+      "phase('Discover')",
+      "await agent('Discover the best energy plan for this address.', { phase: 'Discover' })",
+    ].join('\n');
+    fs.writeFileSync(path.join(driftedScriptsDir, `energy-deal-discover-${runId}.js`), script, 'utf-8');
+
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+    expect(snap.source).toBe('live');
+    expect(snap.name).toBe('energy-deal-discover');
+    expect(snap.phases).toHaveLength(1);
+    const agt = snap.agents.find(a => a.agentId === 'driftagt')!;
+    expect(agt.phaseIndex).toBe(1);
+    expect(agt.phaseTitle).toBe('Discover');
+    d.dispose();
+  });
+
   it('expands the canonical pipeline(ARR, d => agent(d.prompt)) shape into per-element phase + label', async () => {
     const runId = 'wf_expand-01';
     const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);

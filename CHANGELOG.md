@@ -8,6 +8,7 @@
 
 ### Fixed
 - **Workflow agent rows now respect `serac.show.subagents`.** The setting previously only gated Task-tool subagent rows — inline rows for still-working workflow-run agents ignored it entirely and kept showing on cards even with the setting off.
+- **Workflow phase grouping no longer silently drops out when a run's script lands under the wrong workspace key.** The detail panel has always grouped a workflow's agent roster by phase, but a live run's script sidecar can be written under a different `cwd` than its parent session (e.g. a scratchpad dir) — when that happened, phase correlation failed to find the script and quietly fell back to one flat, unphased agent list. Serac now also scans by run ID across every project dir when the script isn't where the session expects it.
 
 ## v1.16.2 (2026-07-02) — Weekly Fable usage quota
 
