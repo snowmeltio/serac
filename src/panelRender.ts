@@ -345,9 +345,28 @@ export function renderWorkflowBlock(wfs: PanelWorkflow[]): string {
     'workflow', run.sessionId, run.sessionId, run.runId);
 }
 
-/** Stable hue for a model label: djb2 hash spread by the golden angle so
- *  near-identical names land far apart. Same input → same hue, every build. */
+/** Fixed hue per model family, ordered cheapest → priciest on a blue → orange
+ *  scale so the model pill reads as relative API cost, not family identity.
+ *  Based on normal (non-introductory) per-token pricing, where same-family
+ *  versions currently share a rate (Opus 4.6/4.7/4.8 are all $5/$25; Sonnet
+ *  4.6 and 5 are both $3/$15 before Sonnet 5's temporary intro discount).
+ *  Fable and Mythos share a hue — same price, same tier. */
+const MODEL_COST_HUE: Record<string, number> = {
+  'Haiku': 208,
+  'Sonnet': 232,
+  'Opus': 38,
+  'Fable': 18,
+  'Mythos': 18,
+};
+
+/** Hue for a model pill: the fixed cost-tier hue above for a known family, or
+ *  a djb2-hash fallback (spread by the golden angle) for anything not yet
+ *  classified, so a new model family still gets a stable, distinct colour
+ *  instead of silently defaulting into one bucket. Same input → same hue,
+ *  every build. */
 export function modelHue(label: string): number {
+  const tier = MODEL_COST_HUE[label];
+  if (tier !== undefined) { return tier; }
   let h = 5381;
   for (let i = 0; i < label.length; i++) { h = ((h << 5) + h + label.charCodeAt(i)) >>> 0; }
   return Math.round((h * 137.508) % 360);
@@ -393,12 +412,12 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
   let metaHtml = '<div class="card-meta">';
   metaHtml += '<span class="session-id-pill clickable" data-copy-id="' + escapeHtml(s.sessionId) + '" title="Copy session ID">' + escapeHtml(s.sessionId.slice(0, 8)) + '</span>';
   if (s.modelLabel) {
-    // Hash-derived hue: unique and consistent per model with no hardcoded
-    // per-model class list (which silently skipped new models). A separate
-    // colour register from status colours — hue varies, sat/light are fixed
-    // per theme in CSS, so the pills read as family, not as status.
+    // Cost-tier hue: blue = cheap, orange = expensive (see MODEL_COST_HUE).
+    // A separate colour register from status colours — hue varies, sat/light
+    // are fixed per theme in CSS, so the pills read as cost, not as status.
     // Hue keys on the family word ("Opus"), not the full "Opus 4.8", so every
-    // version of a family shares one colour and the pill reads as family.
+    // version of a family shares one colour — same-family versions currently
+    // share a price too (see MODEL_COST_HUE for the one time-boxed exception).
     // Strip a trailing "*" (unconfirmed-guess marker) first — "Opus*" (no
     // version yet) must hash to the same family as "Opus" / "Opus 4.8*".
     const family = s.modelLabel.replace(/\*$/, '').split(' ')[0];

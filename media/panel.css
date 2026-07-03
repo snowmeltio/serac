@@ -464,9 +464,11 @@ body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach
   color: var(--vscode-descriptionForeground, #666666);
   flex-shrink: 0;
 }
-/* Hue comes from a per-model hash (--model-hue, set inline); sat/light fixed
- * per theme so model pills form their own colour register, distinct from the
- * status palette. Fallback hue 0 with low sat ~ the old neutral grey. */
+/* Hue reflects relative API cost — blue is cheap, orange is expensive
+ * (--model-hue, set inline from MODEL_COST_HUE in panelRender.ts); sat/light
+ * fixed per theme so model pills form their own colour register, distinct
+ * from the status palette. Fallback hue 0 with low sat ~ the old neutral
+ * grey, used only for families not yet classified into a cost tier. */
 .model-pill { color: hsl(var(--model-hue, 0) 45% 70%); }
 body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 

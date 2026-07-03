@@ -159,6 +159,23 @@ describe('modelHue', () => {
       expect(h).toBeLessThan(360);
     }
   });
+
+  it('gives known families a fixed cost-tier hue, cheapest closest to blue', () => {
+    // Pinned so a future edit to MODEL_COST_HUE is a deliberate, reviewed change.
+    expect(modelHue('Haiku')).toBe(208);
+    expect(modelHue('Sonnet')).toBe(232);
+    expect(modelHue('Opus')).toBe(38);
+    expect(modelHue('Fable')).toBe(18);
+  });
+
+  it('gives Fable and Mythos the same hue — same price, same tier', () => {
+    expect(modelHue('Mythos')).toBe(modelHue('Fable'));
+  });
+
+  it('falls back to a stable hash hue for a family not yet classified', () => {
+    expect(modelHue('Zephyr')).toBe(modelHue('Zephyr'));
+    expect(modelHue('Zephyr')).not.toBe(modelHue('Opus'));
+  });
 });
 
 describe('model pill hue with unconfirmed (*-suffixed) labels', () => {
