@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.3 (2026-07-03) — Model pill colour reflects API cost
+
+### Changed
+- **Model pill colour now reflects relative API cost, not family identity.** The small model badge on session cards (e.g. "Opus 4.8", "Sonnet 5") used a random per-family hash colour before; it now uses a fixed hue on a blue (cheap) → orange (expensive) scale — Haiku, Sonnet, Opus, then Fable/Mythos — based on normal per-token pricing. A model family not yet classified into a cost tier still gets a stable, distinct colour via the old hash fallback rather than defaulting into one bucket.
+
 ## v1.16.2 (2026-07-02) — Weekly Fable usage quota
 
 ### Added
