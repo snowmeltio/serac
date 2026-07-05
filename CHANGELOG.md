@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.4 (2026-07-05) — Agents chip stays visible with inline rows off
+
+### Fixed
+- **The agents chip no longer disappears with `serac.show.subagents` off.** Turning off inline subagent rows (the v1.16.3 default) was also hiding the 🤖 chip itself on cards with plain Task subagents and no workflow — the only click-through to the detail panel's subagent view. The setting now gates the inline rows only; the chip stays keyed on presence, same as it already worked for workflow runs.
+
 ## v1.16.3 (2026-07-03) — Model pill colour reflects API cost; subagent rows off by default
 
 ### Changed
