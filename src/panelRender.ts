@@ -468,18 +468,17 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
       + '">' + collisions.length + ' shared file' + (collisions.length === 1 ? '' : 's') + '</span>';
   }
   const hasWf = !!wfs && wfs.length > 0;
-  const showSubChip = hasSubagents && ctx.settings.show.subagents;
-  // Hidden subagents (show.subagents off) must not drive the chip's count or
-  // tint when a workflow keeps the chip visible — mirror the show.workflows
-  // gate, which zeroes its data at the ingress.
-  const subsForChip = ctx.settings.show.subagents ? s.subagents : undefined;
-  const chipState = detailChipState(wfs, subsForChip);
+  // The chip is the click-through to the detail panel, not the inline noise —
+  // show.subagents only controls the inline rows (subagentHtml / renderWorkflowBlock
+  // above). It stays keyed on presence alone, same as the workflow chip always was,
+  // so the robot button still opens the panel with show.subagents off.
+  const chipState = detailChipState(wfs, s.subagents);
   // One chip for everything beneath a card — agents (be they workflow agents,
   // subagents, or teammates), rendered as 🤖 + live count + arrow. The source
   // still routes the drill-in: prefer the workflow view when a run is present
   // (richer), else the subagents view.
-  if (hasWf || showSubChip) {
-    const live = countLiveAgents(wfs, subsForChip);
+  if (hasWf || hasSubagents) {
+    const live = countLiveAgents(wfs, s.subagents);
     const label = live > 0 ? 'agents — ' + live + ' running' : 'agents';
     metaHtml += renderDetailChip(label, hasWf ? 'workflow' : 'subagents',
       s.sessionId, s.sessionId, chipState, agentsChipHtml(live));

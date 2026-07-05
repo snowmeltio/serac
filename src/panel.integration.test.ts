@@ -1016,10 +1016,12 @@ describe('panel.ts integration', () => {
         .classList.contains('wf-chip-waiting')).toBe(true);
     });
 
-    it('omits the chip when show.subagents is false', () => {
+    it('keeps the chip when show.subagents is false — it opens the detail panel, not the inline rows', () => {
       sendSettings({ show: { subagents: false } });
       sendUpdate({ sessions: [makeSession({ sessionId: 'sa-sess', subagents: subs })] });
-      expect(document.querySelector('.detail-chip[data-detail-source="subagents"]')).toBeFalsy();
+      expect(document.querySelector('.detail-chip[data-detail-source="subagents"]')).toBeTruthy();
+      // The inline rows the setting actually controls stay hidden.
+      expect(document.querySelector('.card-agent-list')).toBeFalsy();
     });
   });
 

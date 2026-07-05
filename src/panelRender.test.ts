@@ -260,7 +260,7 @@ describe('renderCardInner', () => {
     expect(html).toContain('Running Bash');
   });
 
-  it('hidden subagents do not drive the chip count when a workflow is present (ui-consistency-6)', () => {
+  it('chip still reflects live subagents with show.subagents off — only the inline row is hidden', () => {
     const s = makeSession({
       subagents: [{ description: 'sub', running: true }],
     });
@@ -270,11 +270,25 @@ describe('renderCardInner', () => {
       show: { ...DEFAULT_PANEL_SETTINGS.show, subagents: false },
     };
     const html = renderCardInner(makeCtx({ settings, workflowsBySession: wfs }), s, NOW, false);
-    // Chip present (workflow), but no live count from the hidden subagent and
-    // no inline roster row.
+    // The chip is the click-through to the detail panel, not inline noise — it
+    // stays live even with the rows hidden. Only the roster row is gated.
     expect(html).toContain('detail-chip');
-    expect(html).not.toContain('agent-live-count');
+    expect(html).toContain('agent-live-count');
     expect(html).not.toContain('card-agent-row');
+  });
+
+  it('chip appears (and is clickable) for a subagents-only session even with show.subagents off', () => {
+    const s = makeSession({
+      subagents: [{ description: 'sub', running: true }],
+    });
+    const settings = {
+      ...DEFAULT_PANEL_SETTINGS,
+      show: { ...DEFAULT_PANEL_SETTINGS.show, subagents: false },
+    };
+    const html = renderCardInner(makeCtx({ settings }), s, NOW, false);
+    expect(html).toContain('detail-chip');
+    expect(html).toContain('data-detail-source="subagents"');
+    expect(html).toContain('agent-live-count');
   });
 
   it('subagent roster rows render for live subagents when enabled', () => {
