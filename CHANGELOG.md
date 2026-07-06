@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.16.7 (2026-07-07) — externalWriter unlocks after 10 minutes of quiet
+
+### Fixed
+- **A session blocked as "open in another window" now unlocks after 10 minutes of quiet, not just when the owning process exits.** v1.16.5's block flagged any confirmed-external live process indefinitely — a session idle at a prompt in another window stayed flagged for as long as that window stayed open, even with nothing happening. The recency check now also counts subagent and Workflow-run activity (their own separate per-agent JSONLs, not just the session's own top-level file, so an actively-orchestrating session is never mistaken for dormant), with a grace period for a process that's just resumed an old, otherwise-quiet session.
+- **The blocked-card dim now names itself.** An "Active elsewhere" badge joins the existing dim and tooltip, instead of relying on a hover-only tooltip to explain why a card looks greyed out.
+
 ## v1.16.6 (2026-07-06) — Subagent model shown in the log-view agent pills
 
 ### Fixed
