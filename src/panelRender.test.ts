@@ -320,6 +320,14 @@ describe('renderCardInner', () => {
     expect(on).toContain('2 shared files');
   });
 
+  it('external-writer badge names the state explicitly, not just via opacity', () => {
+    const off = renderCardInner(makeCtx(), makeSession(), NOW, false);
+    expect(off).not.toContain('external-writer-badge');
+    const on = renderCardInner(makeCtx(), makeSession({ externalWriter: true }), NOW, false);
+    expect(on).toContain('external-writer-badge');
+    expect(on).toContain('Active elsewhere');
+  });
+
   it('context bar renders when contextTokens > 0 and respects compactSettings', () => {
     const s = makeSession({ contextTokens: 100_000, modelLabel: 'Opus' });
     const html = renderCardInner(makeCtx({ compactSettings: { autoCompactWindow: 200_000, autoCompactPct: 95 } }), s, NOW, false);

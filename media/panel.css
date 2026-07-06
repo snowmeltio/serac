@@ -513,6 +513,21 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
   flex-shrink: 0;
 }
 
+/* Named cue for .card.external-writer — the opacity dim alone (which already
+ * fades via .card's own transition) doesn't say why, so spell it out. Same
+ * "conflict" tone as .tool-error-badge, not the running-tinted quiet chips. */
+.external-writer-badge {
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--sm-salmon-red);
+  border: 1px solid color-mix(in srgb, var(--sm-salmon-red) 45%, transparent);
+  border-radius: 7px;
+  padding: 0 5px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 /* Background-shell badge — quiet outlined chip in the meta row, tinted with the
  * running accent so a `done` card still reads "a build is still going". The
  * fixed line-height keeps the bordered chip from inflating the row (same recipe

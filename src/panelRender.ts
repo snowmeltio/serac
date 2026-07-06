@@ -423,6 +423,12 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     const family = s.modelLabel.replace(/\*$/, '').split(' ')[0];
     metaHtml += '<span class="model-pill" style="--model-hue:' + modelHue(family) + '">' + escapeHtml(s.modelLabel) + '</span>';
   }
+  // Another VS Code window is confirmed to be this session's live writer right
+  // now (see .card.external-writer in panel.css) — the dimmed card alone reads
+  // as unexplained greying, so name the state explicitly.
+  if (s.externalWriter) {
+    metaHtml += '<span class="external-writer-badge" title="Open in another VS Code window right now — not opening here to avoid a conflict">Active elsewhere</span>';
+  }
   // Background-shell badge — a detached `run_in_background` shell is still
   // going after the turn ended. Non-status (the card keeps its real status);
   // a quiet running-tinted chip so a `done` card still flags the live build.
