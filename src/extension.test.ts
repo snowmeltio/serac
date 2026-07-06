@@ -82,6 +82,7 @@ const mockDiscovery = {
   acknowledgeIfDone: vi.fn(),
   acknowledgeSubagents: vi.fn(),
   isSessionRunning: vi.fn().mockReturnValue(false),
+  isExternalWriterFresh: vi.fn().mockResolvedValue(false),
   getSessionFilePath: vi.fn().mockReturnValue(null),
   setArchiveRange: vi.fn().mockResolvedValue(true),
   getTeamSnapshots: vi.fn().mockReturnValue([]),
@@ -216,7 +217,7 @@ describe('extension', () => {
   });
 
   describe('focus handler', () => {
-    it('calls ensureSessionMetadata for non-running sessions', () => {
+    it('calls ensureSessionMetadata for non-running sessions', async () => {
       activate(context as any);
       const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
       mockDiscovery.isSessionRunning.mockReturnValue(false);
@@ -225,9 +226,13 @@ describe('extension', () => {
       focusHandler('test-session');
 
       expect(ensureSessionMetadata).toHaveBeenCalledWith('test-session', '/test/session.jsonl');
-      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
-        'claude-vscode.editor.open', 'test-session', undefined, 1,
-      );
+      // openClaudeEditor awaits the fresh external-writer check before opening —
+      // one microtask tick, even though isExternalWriterFresh resolves false.
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+          'claude-vscode.editor.open', 'test-session', undefined, 1,
+        );
+      });
     });
 
     it('skips ensureSessionMetadata for running sessions', () => {
@@ -238,6 +243,23 @@ describe('extension', () => {
       focusHandler('test-session');
 
       expect(ensureSessionMetadata).not.toHaveBeenCalled();
+    });
+
+    it('refuses to open the editor when a different VS Code window is the confirmed live writer', async () => {
+      activate(context as any);
+      const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
+      mockDiscovery.isExternalWriterFresh.mockResolvedValueOnce(true);
+
+      focusHandler('test-session');
+
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+          expect.stringContaining('another VS Code window'),
+        );
+      });
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything(),
+      );
     });
 
     it('acknowledges previous session when focus changes', () => {
@@ -383,7 +405,7 @@ describe('extension', () => {
   });
 
   describe('undismiss handler', () => {
-    it('undismisses and opens editor', () => {
+    it('undismisses and opens editor', async () => {
       activate(context as any);
       mockDiscovery.isSessionRunning.mockReturnValue(false);
       mockDiscovery.getSessionFilePath.mockReturnValue('/test/session.jsonl');
@@ -392,9 +414,11 @@ describe('extension', () => {
       handler('test-session');
 
       expect(mockDiscovery.undismissSession).toHaveBeenCalledWith('test-session');
-      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
-        'claude-vscode.editor.open', 'test-session', undefined, 1,
-      );
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+          'claude-vscode.editor.open', 'test-session', undefined, 1,
+        );
+      });
     });
   });
 
@@ -464,7 +488,7 @@ describe('extension', () => {
       expect(mockDiscovery.dismissTeam).not.toHaveBeenCalled();
     });
 
-    it('undismissTeam reopens the orchestrator session resolved from the snapshot', () => {
+    it('undismissTeam reopens the orchestrator session resolved from the snapshot', async () => {
       activate(context as any);
       // teamId is NOT the orchestrator session id (Agent Teams use `at:<name>`);
       // the lead session is resolved from the snapshot's orchestrator.sessionId.
@@ -476,9 +500,11 @@ describe('extension', () => {
       handler('at:my-team');
 
       expect(mockDiscovery.undismissTeam).toHaveBeenCalledWith('at:my-team');
-      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
-        'claude-vscode.editor.open', 'lead-session', undefined, 1,
-      );
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+          'claude-vscode.editor.open', 'lead-session', undefined, 1,
+        );
+      });
     });
 
     it('undismissTeam still undismisses when the team has no resolvable orchestrator', () => {
@@ -503,7 +529,7 @@ describe('extension', () => {
       expect(mockDiscovery.dismissWorkflow).toHaveBeenCalledWith('wf_run-001');
     });
 
-    it('undismissWorkflow reopens the invoking conversation resolved from the snapshot', () => {
+    it('undismissWorkflow reopens the invoking conversation resolved from the snapshot', async () => {
       activate(context as any);
       // The runId is NOT a sessionId — the parent session is resolved from the
       // snapshot's sessionId, then reopened.
@@ -515,9 +541,11 @@ describe('extension', () => {
       handler('wf_run-002');
 
       expect(mockDiscovery.undismissWorkflow).toHaveBeenCalledWith('wf_run-002');
-      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
-        'claude-vscode.editor.open', 'owner-session', undefined, 1,
-      );
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+          'claude-vscode.editor.open', 'owner-session', undefined, 1,
+        );
+      });
     });
 
     it('undismissWorkflow still undismisses when the run has no resolvable session', () => {

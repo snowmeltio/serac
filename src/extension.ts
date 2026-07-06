@@ -23,26 +23,6 @@ import {
   makeShowRawRecordCommand, makeOpenTranscriptDocCommand, makeShowFileChangesCommand,
 } from './nativeDocs.js';
 
-/** Open (or reveal) a Claude Code editor tab via the companion extension's
- *  command. `sessionId` undefined opens a new chat. Failure usually means the
- *  Claude Code extension isn't installed — callers choose how loudly to say
- *  so. `onSettled` fires on success AND failure (the undismiss flows re-render
- *  either way). */
-function openClaudeEditor(sessionId: string | undefined, opts: {
-  onSettled?: () => void;
-  failMessage?: string;
-  onFail?: (err: unknown) => void;
-} = {}): void {
-  vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
-    () => opts.onSettled?.(),
-    (err: unknown) => {
-      if (opts.failMessage) { void vscode.window.showInformationMessage(opts.failMessage); }
-      opts.onFail?.(err);
-      opts.onSettled?.();
-    },
-  );
-}
-
 export function activate(context: vscode.ExtensionContext): SeracExports {
   // Footer slot registry must be created up-front: companions resolve
   // Serac's exports during their own activate(), and that may run before
@@ -73,6 +53,42 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   const hookRouter = hookWiring.router;
 
   const discovery = new SessionDiscovery(wsPath, { log, hookRouter });
+
+  /** Open (or reveal) a Claude Code editor tab via the companion extension's
+   *  command. `sessionId` undefined opens a new chat. Refuses (with a warning,
+   *  no side effects) when a *different* VS Code window is confirmed to be
+   *  this session's live writer right now — opening here too would let two
+   *  processes append to the same JSONL file. Failure otherwise usually means
+   *  the Claude Code extension isn't installed — callers choose how loudly to
+   *  say so. `onSettled` fires on success AND failure (the undismiss flows
+   *  re-render either way). */
+  function openClaudeEditor(sessionId: string | undefined, opts: {
+    onSettled?: () => void;
+    failMessage?: string;
+    onFail?: (err: unknown) => void;
+  } = {}): void {
+    void (async () => {
+      // Fresh, not cached — the poll loop's registry snapshot is exactly stale
+      // during the highest-risk window (a session that just started, or just
+      // finished, elsewhere). See isExternalWriterFresh()'s own doc comment.
+      if (sessionId !== undefined && await discovery.isExternalWriterFresh(sessionId)) {
+        void vscode.window.showWarningMessage(
+          'This session is open in another VS Code window right now — not opening here to avoid a conflict.',
+        );
+        opts.onSettled?.();
+        return;
+      }
+      vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
+        () => opts.onSettled?.(),
+        (err: unknown) => {
+          if (opts.failMessage) { void vscode.window.showInformationMessage(opts.failMessage); }
+          opts.onFail?.(err);
+          opts.onSettled?.();
+        },
+      );
+    })();
+  }
+
   const usageProvider = new UsageProvider(wsPath);
   const panelProvider = new AgentPanelProvider(context.extensionUri);
 
@@ -125,6 +141,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     openConversation: (sessionId: string) => {
       openClaudeEditor(sessionId, { failMessage: 'Could not open the conversation. Is the Claude Code extension installed?' });
     },
+    isExternalWriterFresh: (sessionId: string) => discovery.isExternalWriterFresh(sessionId),
     // Teammate messaging (experimental). Re-read on every send; the webview's
     // copy is display-only. operatorName is synthesized here, never from the
     // webview. The writer is anchored to discovery's validated teams root.

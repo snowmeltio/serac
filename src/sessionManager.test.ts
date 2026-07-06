@@ -602,3 +602,22 @@ describe('SessionManager.sweepBackgroundWork (idle done-card maintenance)', () =
     expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
   });
 });
+
+describe('SessionManager.getSnapshot — externalWriter (writerOwnershipProbe)', () => {
+  it('is undefined when no writerOwnershipProbe is injected', () => {
+    const mgr = makeManager();
+    expect(mgr.getSnapshot().externalWriter).toBeUndefined();
+  });
+
+  it('reflects the probe\'s current value', () => {
+    let external: boolean | undefined = true;
+    const mgr = new SessionManager('ext-sess', '/tmp/ext.jsonl', 'ws', {
+      writerOwnershipProbe: () => external,
+    });
+    expect(mgr.getSnapshot().externalWriter).toBe(true);
+    external = false;
+    expect(mgr.getSnapshot().externalWriter).toBe(false);
+    external = undefined;
+    expect(mgr.getSnapshot().externalWriter).toBeUndefined();
+  });
+});

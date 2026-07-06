@@ -837,6 +837,62 @@ describe('DetailPanel', () => {
       expect(reply(h)).toMatchObject({ ok: false });
     });
 
+    it('refuses (and never writes) when a different VS Code window is confirmed to be driving the orchestrator — re-checked fresh, not from the webview', async () => {
+      const { h, append } = messagingSetup({
+        getSession: vi.fn(() => makeSession({ sessionId: 'lead-001', externalWriter: true })),
+      });
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(append).not.toHaveBeenCalled();
+      expect(reply(h)).toMatchObject({ ok: false });
+    });
+
+    it('prefers the wired isExternalWriterFresh dep over a stale cached flag — refuses even when the cache looks safe', async () => {
+      const isExternalWriterFresh = vi.fn(async () => true);
+      const { h, append } = messagingSetup({
+        // Cache says safe (externalWriter false/absent); the fresh dep says
+        // otherwise and must win — proving this is a genuine live re-check,
+        // not just an extra AND against the same stale snapshot.
+        getSession: vi.fn(() => makeSession({ sessionId: 'lead-001', externalWriter: false })),
+        isExternalWriterFresh,
+      });
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(isExternalWriterFresh).toHaveBeenCalledWith('lead-001');
+      expect(append).not.toHaveBeenCalled();
+      expect(reply(h)).toMatchObject({ ok: false });
+    });
+
+    it('prefers the wired isExternalWriterFresh dep over a stale cached flag — allows even when the cache looks blocked', async () => {
+      const isExternalWriterFresh = vi.fn(async () => false);
+      const { h, append } = messagingSetup({
+        // Cache says blocked; the fresh dep says it's actually clear now (e.g.
+        // the other window's process just exited) and must win.
+        getSession: vi.fn(() => makeSession({ sessionId: 'lead-001', externalWriter: true })),
+        isExternalWriterFresh,
+      });
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(isExternalWriterFresh).toHaveBeenCalledWith('lead-001');
+      expect(append).toHaveBeenCalledWith('my-team', 'defender', 'murray', 'ping');
+    });
+
+    it('fails closed (replies false, never writes) when isExternalWriterFresh itself rejects', async () => {
+      const isExternalWriterFresh = vi.fn(async () => { throw new Error('ps timed out'); });
+      const { h, append } = messagingSetup({ isExternalWriterFresh });
+      h.panel.show('subagents', 'lead-001', 'lead-001');
+      await h.webview._fireMessage(VALID);
+      await settle();
+      expect(isExternalWriterFresh).toHaveBeenCalledWith('lead-001');
+      expect(append).not.toHaveBeenCalled();
+      // The composer must always get a reply — a swallowed exception here
+      // would leave it hanging in its "sending" state forever.
+      expect(reply(h)).toMatchObject({ ok: false });
+    });
+
     it('surfaces a write error in-webview and logs metadata only (never the message text)', async () => {
       const { h, logMessaging } = messagingSetup({ appendTeammateMessage: vi.fn(async () => { throw new Error('inbox file is a symlink'); }) });
       h.panel.show('subagents', 'lead-001', 'lead-001');

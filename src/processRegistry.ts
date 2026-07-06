@@ -166,6 +166,16 @@ export class ProcessRegistry {
     return this.processes.find(p => p.sessionId === sessionId) ?? null;
   }
 
+  /** Every live process backing a session — usually one, but two live
+   *  processes can be simultaneously registered under the same session id
+   *  (e.g. a race, or the terminal-spawned-process gap noted in
+   *  writerOwnership.ts). A consumer that needs to know whether ANY of them
+   *  is a different window's writer must check all of them, not just the
+   *  first match — see SessionDiscovery.isExternalWriterFresh(). */
+  getProcessesForSession(sessionId: string): LiveProcess[] {
+    return this.processes.filter(p => p.sessionId === sessionId);
+  }
+
   /** True when any live process is rooted at this working directory. */
   isCwdLive(cwd: string): boolean {
     return this.processes.some(p => p.cwd === cwd);

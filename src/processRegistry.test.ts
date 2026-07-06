@@ -106,6 +106,16 @@ describe('ProcessRegistry', () => {
     expect(reg.getProcessForSession('shared-1111')).not.toBeNull();
   });
 
+  it('getProcessesForSession returns every live entry backing a session id', async () => {
+    writeEntry('one.json', entry({ sessionId: 'shared-3333', cwd: '/a' }));
+    writeEntry('two.json', entry({ sessionId: 'shared-3333', cwd: '/b' }));
+    const reg = new ProcessRegistry(dir, log);
+    await reg.scan();
+    expect(reg.getProcessesForSession('shared-3333')).toHaveLength(2);
+    expect(reg.getProcessesForSession('shared-3333').map(p => p.cwd).sort()).toEqual(['/a', '/b']);
+    expect(reg.getProcessesForSession('nope-0000')).toEqual([]);
+  });
+
   it('isCwdLive reflects a live process rooted at a cwd', async () => {
     writeEntry(`${LIVE_PID}.json`, entry({ cwd: '/repos/serac' }));
     const reg = new ProcessRegistry(dir, log);

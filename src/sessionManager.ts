@@ -208,6 +208,11 @@ export class SessionManager {
    *  has no entry for it, null = registry inactive/unknown. Distinct from the
    *  fuser-based isProcessAlive(); see isConfirmedDeadByRegistry(). */
   private readonly livenessProbe?: () => boolean | null;
+  /** True when this session's live registered process is confirmed to belong
+   *  to a *different* VS Code window's extension host than this one (injected
+   *  by SessionDiscovery). Undefined when there's no live process or ownership
+   *  can't be determined — never flagged in that case. See SessionSnapshot.externalWriter. */
+  private readonly writerOwnershipProbe?: () => boolean | undefined;
   /** Latch: have we ever observed this session live in the registry? Only then
    *  does a later "not live" reading mean it genuinely died (vs a session class
    *  the registry never tracked). Guards against muting a real prompt. Seeded
@@ -288,6 +293,9 @@ export class SessionManager {
       onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
       hookRouter?: HookEventRouter;
       livenessProbe?: () => boolean | null;
+      /** Reports whether a *different* VS Code window's process is confirmed
+       *  to be this session's live writer right now. See writerOwnershipProbe field. */
+      writerOwnershipProbe?: () => boolean | undefined;
       /** Seed for the seen-live-in-registry latch, persisted across window
        *  reloads via session-meta.json — without it every reload disarmed the
        *  registry death gate until the session was re-observed live. */
@@ -306,6 +314,7 @@ export class SessionManager {
     this.onTransition = opts.onTransition;
     this.hookRouter = opts.hookRouter;
     this.livenessProbe = opts.livenessProbe;
+    this.writerOwnershipProbe = opts.writerOwnershipProbe;
     this.everSeenLiveInRegistry = opts.registrySeenLive === true;
     this.onRegistrySeenLive = opts.onRegistrySeenLive;
     this.tailer = new JsonlTailer(filePath);
@@ -541,6 +550,7 @@ export class SessionManager {
       toolErrorCount: this.toolErrorCount || undefined,
       lastAssistantText: this.lastAssistantText || undefined,
       processLive: this.registryLiveness(),
+      externalWriter: this.writerOwnershipProbe?.(),
       trackedFiles: this.trackedFiles.length > 0 ? this.trackedFiles : undefined,
       ...this.loopSnapshotFields(),
     };

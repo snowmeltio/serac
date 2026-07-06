@@ -69,9 +69,17 @@ export class ForeignWorkspaceManager {
   /** Per-session registry liveness probe factory, injected by SessionDiscovery
    *  (freshness parity: foreign cards get the same death gate as primary). */
   private probeFactory?: (sessionId: string) => () => boolean | null;
+  /** Per-session writer-ownership probe factory, injected by SessionDiscovery —
+   *  reports whether a *different* VS Code window is confirmed to be a
+   *  session's live writer right now. Account-agnostic; see WriterOwnership. */
+  private writerOwnershipProbeFactory?: (sessionId: string) => () => boolean | undefined;
 
   setLivenessProbeFactory(factory: (sessionId: string) => () => boolean | null): void {
     this.probeFactory = factory;
+  }
+
+  setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => boolean | undefined): void {
+    this.writerOwnershipProbeFactory = factory;
   }
 
   /** Whether a session falls inside the visibility window. In live-only mode
@@ -128,7 +136,10 @@ export class ForeignWorkspaceManager {
             sessions: this.sessions, now,
             withinWindow: (sessionId, lastActivityMs) => this.withinWindow(sessionId, lastActivityMs, now, gate),
             makeManager: (sessionId, filePath) =>
-              new SessionManager(sessionId, filePath, dir, { livenessProbe: this.probeFactory?.(sessionId) }),
+              new SessionManager(sessionId, filePath, dir, {
+                livenessProbe: this.probeFactory?.(sessionId),
+                writerOwnershipProbe: this.writerOwnershipProbeFactory?.(sessionId),
+              }),
             warn: (compositeId, err) => this.log.warn(`Foreign session update failed (${compositeId}):`, err),
           });
         } catch { /* unreadable directory */ }

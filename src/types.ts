@@ -183,6 +183,13 @@ export interface SessionSnapshot {
    *  scan degraded, or the session was never seen live). Display-only — the
    *  status pill annotates terminal cards; never affects status itself. */
   processLive?: boolean;
+  /** True when the session's registered live process (~/.claude/sessions/<pid>.json)
+   *  is confirmed to be a child of a *different* VS Code window's extension host
+   *  than this one — i.e. another window is already driving this session right
+   *  now. Live-only; undefined when there's no live process or ownership can't be
+   *  determined. Gates the live-editor hand-off (openClaudeEditor) to prevent two
+   *  processes appending to the same JSONL. */
+  externalWriter?: boolean;
   /** Paths from the latest file-history-snapshot record — the files this
    *  session has edited. Feeds the same-file collision badge (two active
    *  sessions touching one file). Capped at 200; absent when none. */

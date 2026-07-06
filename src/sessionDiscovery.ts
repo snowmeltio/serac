@@ -10,6 +10,7 @@ import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeIn
 import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
+import { WriterOwnership, aggregateWriterOwnership } from './writerOwnership.js';
 import { claudeStateDir } from './paths.js';
 import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
@@ -94,6 +95,9 @@ export class SessionDiscovery {
   /** Reads Claude Code's live process registry (~/.claude/sessions/<pid>.json).
    *  Exposed for consumers; no behaviour is gated on it yet. */
   private processRegistry: ProcessRegistry;
+  /** Resolves whether a live registered process belongs to a *different* VS
+   *  Code window than this one. Refreshed alongside processRegistry. */
+  private writerOwnership: WriterOwnership;
   /** Extended archive: lightweight snapshots for sessions older than SCAN_AGE_GATE_MS.
    *  Only populated when archiveRangeMs > SCAN_AGE_GATE_MS. Keyed by sessionId. */
   private extendedArchive: Map<string, SessionSnapshot> = new Map();
@@ -146,6 +150,7 @@ export class SessionDiscovery {
     // Constructed before WorkflowDiscovery so the workflow live tier can use it
     // as a liveness probe (abandoned-run → 'incomplete').
     this.processRegistry = new ProcessRegistry(path.join(path.dirname(this.projectsDir), 'sessions'), this.log);
+    this.writerOwnership = new WriterOwnership();
     this.workflowDiscovery = new WorkflowDiscovery(this.projectsDir, this.workspaceKey, this.log, this.processRegistry);
     // Freshness parity: out-of-window sessions (foreign / sibling / team
     // orchestrators) get the same registry-backed death gate as primary cards.
@@ -156,6 +161,13 @@ export class SessionDiscovery {
     this.foreignManager.setLivenessProbeFactory(probeFactory);
     this.siblingManager.setLivenessProbeFactory(probeFactory);
     this.teamDiscovery.setLivenessProbeFactory(probeFactory);
+    // Parallel probe: is a *different* VS Code window the confirmed live
+    // writer of this session right now? Account-agnostic by design — see
+    // WriterOwnership's header comment.
+    const writerOwnershipProbeFactory = (sessionId: string) => () => this.resolveWriterOwnership(sessionId);
+    this.foreignManager.setWriterOwnershipProbeFactory(writerOwnershipProbeFactory);
+    this.siblingManager.setWriterOwnershipProbeFactory(writerOwnershipProbeFactory);
+    this.teamDiscovery.setWriterOwnershipProbeFactory(writerOwnershipProbeFactory);
   }
 
   // ── Meta persistence ──────────────────────────────────────────────
@@ -371,6 +383,7 @@ export class SessionDiscovery {
     await this.teamDiscovery.scan();
     await this.workflowDiscovery.scan();
     await this.processRegistry.scan();
+    await this.writerOwnership.refresh(this.processRegistry.getLiveProcesses());
 
     // Start adaptive poll loop
     this.schedulePoll();
@@ -425,6 +438,7 @@ export class SessionDiscovery {
     this.teamDiscovery.dispose();
     this.workflowDiscovery.dispose();
     this.processRegistry.dispose();
+    this.writerOwnership.dispose();
   }
 
   /** Re-enumerate worktrees of the local repo AND every foreign repo currently
@@ -957,6 +971,50 @@ export class SessionDiscovery {
     return this.processRegistry.isSessionLive(sessionId);
   }
 
+  /** Cached writer-ownership verdict for a session id, aggregated across
+   *  EVERY live process currently registered under it (usually one, but two
+   *  can coexist — see ProcessRegistry.getProcessesForSession). Any one
+   *  confirmed-external process is enough to flag the whole session (fail
+   *  toward flagging, not away from it); every process must be
+   *  confirmed-own-window to clear it; anything unresolved falls back to
+   *  "don't flag", matching WriterOwnership.getInfo()'s own tri-state
+   *  contract. This reads the last poll's cache — fine for a cosmetic
+   *  render-time signal, too stale for an actual open/send decision (see
+   *  isExternalWriterFresh()). */
+  private resolveWriterOwnership(sessionId: string): boolean | undefined {
+    const procs = this.processRegistry.getProcessesForSession(sessionId);
+    return aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid)));
+  }
+
+  /** Authoritative, UNCACHED check for the exact moment of an actual
+   *  open-editor or send-message decision — the poll loop only rescans the
+   *  process registry every REGISTRY_SCAN_INTERVAL cycles (a few seconds),
+   *  which is stale exactly during the highest-risk window (a session that
+   *  just started elsewhere, or just finished). Forces a fresh registry scan,
+   *  then resolves ownership for exactly this session's own process(es) via
+   *  `writerOwnership.resolveFor()` — deliberately NOT the full-list
+   *  `refresh()` the poll loop uses: resolving ownership means spawning a
+   *  real `ps` subprocess per unresolved pid, and this runs on every ordinary
+   *  session open, so scoping it to the session in question keeps that cost
+   *  (and the tail risk of a slow/hung `ps`) from leaking onto a click that
+   *  has nothing to do with any other live process. `resolveFor()` is
+   *  serialized against every other cache-mutating call (see
+   *  WriterOwnership's `queue`), so a concurrent poll-loop refresh() can't
+   *  race this decision — that used to be possible when both went through
+   *  plain, unserialized `refresh()` calls. Checked directly against the
+   *  process registry rather than a merged snapshot list, so it answers
+   *  correctly for any session id — including team orchestrators and
+   *  workflow-owning sessions, which don't appear in getSnapshots().
+   *  Account-agnostic: see WriterOwnership. Resolves false (never blocks)
+   *  when there's no live process or ownership can't be determined. */
+  async isExternalWriterFresh(sessionId: string): Promise<boolean> {
+    await this.processRegistry.scan();
+    const procs = this.processRegistry.getProcessesForSession(sessionId);
+    if (procs.length === 0) { return false; }
+    await this.writerOwnership.resolveFor(procs);
+    return aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === true;
+  }
+
   /** Sibling-worktree sessions waiting on input (badge parity with local). */
   getSiblingWaitingCount(): number {
     return this.siblingManager.getWaitingCount();
@@ -1049,6 +1107,7 @@ export class SessionDiscovery {
             livenessProbe: () => this.processRegistry.isScanClean()
               ? this.processRegistry.isSessionLive(sessionId)
               : null,
+            writerOwnershipProbe: () => this.resolveWriterOwnership(sessionId),
             // The latch survives reloads via session-meta.json — without the
             // seed, every reload disarmed the death gate until re-observed.
             registrySeenLive: this.sessionMeta.get(sessionId)?.seenLive === true,
@@ -1085,7 +1144,25 @@ export class SessionDiscovery {
   }
 
   /** Maximum time (ms) a single poll cycle is allowed to run before aborting.
-   *  Prevents hangs from stalled filesystem operations (e.g. network drives). */
+   *  Prevents hangs from stalled filesystem operations (e.g. network drives).
+   *  Note this only stops `poll()` from *waiting* on a stalled `pollInner()` —
+   *  `Promise.race` doesn't cancel the loser, so a stalled call keeps running
+   *  in the background and a fresh `pollInner()` can start over it once
+   *  `this.polling` resets, so `processRegistry.scan()`/`writerOwnership`
+   *  calls from two overlapping cycles CAN run concurrently. `ProcessRegistry`
+   *  itself doesn't need protecting from this (`scan()` ends in one atomic
+   *  array assignment — concurrent scans just mean "whichever finishes last
+   *  wins", never a torn read). `WriterOwnership` does: an earlier version of
+   *  this class let `isExternalWriterFresh()`'s on-demand resolution and the
+   *  poll loop's routine resolution both mutate its cache directly, and one
+   *  call's prune step could delete an entry the other had just resolved
+   *  moments before reading it back — a real, adversarially-confirmed bug,
+   *  not a hypothetical one. `WriterOwnership` now serializes every
+   *  cache-mutating call through one internal queue (see its own docstring),
+   *  so this is closed at the source: it doesn't matter how many overlapping
+   *  poll cycles or on-demand checks are in flight, at most one is ever
+   *  mutating that cache, and each one's own read reflects only its own,
+   *  fully-applied result. */
   private static readonly POLL_TIMEOUT_MS = 30_000;
 
   /** Poll all sessions for updates, discover new files */
@@ -1288,10 +1365,18 @@ export class SessionDiscovery {
       const workflowChanged = await this.workflowDiscovery.poll();
       if (workflowChanged) { changed = true; }
 
-      // Process-liveness registry: refresh on a relaxed cadence. No consumer
-      // gates a panel update on it yet, so it never sets `changed`.
+      // Process-liveness registry: refresh on a relaxed cadence. This feeds
+      // cosmetic, render-time signals only (card liveness dimming, the cached
+      // externalWriter probe) — nothing here gates a panel update, so it
+      // never sets `changed`. The one consumer where staleness would be a
+      // real (not cosmetic) problem, isExternalWriterFresh(), deliberately
+      // does NOT rely on this cadence — it forces its own scan + a scoped
+      // WriterOwnership.resolveFor() at the point of decision instead. Don't
+      // add an authoritative gate against this cached path without giving it
+      // the same treatment.
       if (this.processRegistry.shouldRescan()) {
         await this.processRegistry.scan();
+        await this.writerOwnership.refresh(this.processRegistry.getLiveProcesses());
       }
 
       // Poll performance log [v0.4]

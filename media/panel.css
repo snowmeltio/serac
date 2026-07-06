@@ -327,6 +327,17 @@ body {
 .card.stale { border-left-color: #666666; }
 .card.stale .card-name { color: #aaaaaa; }
 .card.stale .card-detail { color: #888888; }
+
+/* Another VS Code window is confirmed to be this session's live writer right
+ * now — dim and block the click-through so it never opens the editor from here
+ * (would let two processes append to the same JSONL). */
+.card.external-writer { cursor: not-allowed; opacity: 0.6; }
+.card.external-writer:hover { background: var(--vscode-editor-background, #2d2d2d); }
+/* .card.focused sets `opacity: 1 !important` (below) to keep focus reading as
+ * background-only — but that would silently defeat this card's one visual
+ * "blocked" cue if a session is both focused and flagged. Higher-specificity
+ * !important wins the tie, so the dimming survives even when focused. */
+.card.focused.external-writer { opacity: 0.6 !important; }
 .card.stale .status-pill { color: #cccccc; background: rgba(153, 153, 153, 0.3); }
 
 .card-top {

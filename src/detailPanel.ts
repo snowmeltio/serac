@@ -40,6 +40,12 @@ export interface DetailPanelDeps {
   resolveAgentFile: (source: DetailSource, containerId: string, groupKey: string, agentId: string) => string | null;
   /** Open the invoking conversation for a session (companion editor). */
   openConversation: (sessionId: string) => void;
+  /** Authoritative, uncached re-check of whether a different VS Code window
+   *  is confirmed to be a session's live writer right now — see
+   *  SessionDiscovery.isExternalWriterFresh(). Optional: absent in unit tests
+   *  that don't wire it, where handleSendTeammateMessage falls back to the
+   *  panel's last-render-cycle cached flag. */
+  isExternalWriterFresh?: (sessionId: string) => Promise<boolean>;
 
   // ── Teammate messaging (experimental; all optional) ──────────────────
   // The detail panel is the ONLY place Serac writes into ~/.claude/. These deps
@@ -484,7 +490,8 @@ export class DetailPanel {
     if (!team) { return { teammates: [], plain: subs.agents, running: subs.running }; }
     const roster = new Set([...team.agents.map(a => a.name), ...team.inProcessMembers]);
     const typeById = new Map(this.subagentFilesOnce(sessionId).map(d => [d.agentId, d.agentType]));
-    const leadGone = this.sessionOnce(sessionId)?.processLive === false;
+    const leadSnapshot = this.sessionOnce(sessionId);
+    const leadGone = leadSnapshot?.processLive === false || leadSnapshot?.externalWriter === true;
     const byName = new Map<string, DetailAgentView>();
     const plain: DetailAgentView[] = [];
     for (const a of subs.agents) {
@@ -747,6 +754,32 @@ export class DetailPanel {
       return;
     }
 
+    // 2.5. Fresh re-check: refuse if a different VS Code window is confirmed
+    //      to be driving this team's orchestrator right now — a webview-cached
+    //      flag is never trusted (see class docstring). Prefer the uncached,
+    //      live re-check when wired; it closes the same poll-cadence staleness
+    //      gap openClaudeEditor's gate does. Falls back to the panel's
+    //      last-render-cycle cached flag only where the dep isn't wired.
+    //      Wrapped: every OTHER refusal path here replies(false, ...) rather
+    //      than leaving the composer hanging, so a rejection from the dep
+    //      itself must fail closed the same way, not crash the send flow.
+    let externallyWritten: boolean;
+    try {
+      externallyWritten = this.deps.isExternalWriterFresh
+        ? await this.deps.isExternalWriterFresh(cmd.containerId)
+        : this.sessionOnce(cmd.containerId)?.externalWriter === true;
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'check failed';
+      log('[messaging] refused: external-writer check errored (' + reason + ')');
+      reply(false, 'Could not verify this session is safe to message right now.');
+      return;
+    }
+    if (externallyWritten) {
+      log('[messaging] refused: external writer (container=' + cmd.containerId.slice(0, 8) + ')');
+      reply(false, 'This team is being driven from another VS Code window right now.');
+      return;
+    }
+
     // 3. Synthesize the sender label server-side and validate it.
     const from = settings.operatorName;
     if (!/^[A-Za-z0-9_-]{1,100}$/.test(from)) {
@@ -794,7 +827,7 @@ export class DetailPanel {
     const modelByType = new Map<string, string>();
     for (const d of files) { if (d.agentType && d.model) { modelByType.set(d.agentType, d.model); } }
     const tracked = orchSession?.subagents ?? [];
-    const leadAlive = orchSession?.processLive !== false;
+    const leadAlive = orchSession?.processLive !== false && orchSession?.externalWriter !== true;
     return team.inProcessMembers.map(name => ({
       agentId: name,
       label: name,

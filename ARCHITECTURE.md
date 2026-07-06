@@ -38,6 +38,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `workflowScript.ts` | Static (never-eval) extractors. `extractWorkflowMeta()` pulls `name`/`description`/`phases` from a workflow script's `meta` literal; `extractAgentCalls()` pulls each `agent(prompt, {label, phase})` call's static prompt segments + opts, plus the prompt/label split into ordered `TemplateParts` (statics + interpolation exprs); `matchAgentCall()` correlates a running agent's record-0 prompt back to its call; `recoverInterpolatedLabel()` rebuilds an interpolated label (`audit:${d.key}`) into its real per-agent value (`audit:privacy`) by aligning the prompt template's statics against the expanded prompt. All via brace/string matching. Used for the live tier. |
 | `workflowDiscovery.ts` | Two-tier workflow discovery, parallel to `teamDiscovery`. Scans each session dir for sidecars (Tier 1) and live run dirs (Tier 2), caches by mtime, prunes, applies the 7-day age gate and dismiss overlay. |
 | `processRegistry.ts` | Reads Claude Code's live process registry (`~/.claude/sessions/<pid>.json`) and confirms each pid with `kill(pid, 0)`. The one source of *actual* process liveness in an otherwise disk-tailing monitor. Owned by `SessionDiscovery` (scanned on a relaxed cadence); exposes `getLiveProcesses()` / `isSessionLive()` / `isActive()`. Injected into each `SessionManager` as a tri-state `livenessProbe` that powers the permission-false-positive gate (a registry-confirmed-dead session can't be `waiting` — see Status inference §6). A hit is a strong positive, a miss is "unknown" (not every session class is guaranteed to register), and an inactive registry disables the gate. `isScanClean()` distinguishes a degraded scan (a non-ENOENT read error or unparseable content on a *present* file) from genuine absence, so a transient disk error on a live session's file degrades the probe to "unknown" rather than "dead" — only a clean scan's absence is trusted as death. |
+| `writerOwnership.ts` | Resolves, per live registered pid, whether it's a child of THIS VS Code window's Extension Host or a different window's — the account-agnostic `externalWriter` signal (see Status inference § Writer ownership). Async `ps`-based resolution refreshed alongside `processRegistry`'s rescan; exposes a synchronous `getInfo(pid)` for the per-session probe. |
 | `detailPanel.ts` | Source-keyed editor-area webview host (`createWebviewPanel`, `ViewColumn.Beside`). One reused instance serves three drill-ins (workflow / team / subagents); builds a normalised `DetailModel` per source (with a cross-source view switcher for session-card sources) and resolves agent transcripts on demand via injected deps. Dedups re-pushes (`lastPushed` JSON compare). |
 | `detailView.ts` | Detail-panel webview frontend. Default **log view** (v1.16.0): zone rows on a shared 64px label rail (session view row → agent strip → header strip → pinned permission row → Result strip → display bar → the log), prose as flowing clamped blocks, tool/error rows as greyed one-liners behind kind filters, wall-clock/offset time column. The pre-v2 two-pane reader remains behind a persisted "classic view" toggle. Renders any `DetailModel` generically; redeclares its own view types (separate bundle). Clears its transcript cache when the drill-in identity (source + container) changes. |
 | `detailShared.ts` | The vscode-free rendering contract compiled into BOTH bundles (extension + webview): `TranscriptEntry` (+ `kind`/`toolName`/`rawInput`/`rawOutput`/`isError`), duplicated Evidence/Mismatch wire types, `formatModelLabel`, `parseEditInput`. The webview must never transitively import `types.ts` (its extension-side imports reach `vscode`). |
@@ -222,6 +223,20 @@ seen live). Computed by `SessionManager.registryLiveness()`, the same helper
 Rendered only on terminal cards as a quiet `live`/`ended` qualifier inside the
 status pill (`panelUtils.ts:getStatusLabel`); active cards are never
 annotated, and the unknown state shows nothing rather than guessing.
+
+### Writer ownership (externalWriter)
+
+`SessionSnapshot.externalWriter` is `true` when a session's registered live
+process (`~/.claude/sessions/<pid>.json`) is confirmed to be a child of a
+*different* VS Code window's Extension Host than this one, detected by
+`writerOwnership.ts` comparing the process's parent pid against this window's
+own `process.pid`. Used to block re-opening a session's live editor
+(`openClaudeEditor` in `extension.ts`) from a window that isn't already
+driving it, and to gate the experimental teammate composer — both prevent two
+processes appending to the same JSONL file. Live-only by design: nothing on
+disk identifies a session's writer once that process has exited, and
+`undefined` (not yet resolved, or ownership couldn't be determined) is always
+treated as "don't flag".
 
 ## Hook consumption
 

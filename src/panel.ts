@@ -398,6 +398,11 @@ let FOREIGN_SLIDE_MS = 220;
     // click always opens the Claude Code companion editor for that session.
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
     if (card) {
+      // Cosmetic guard only — a different VS Code window already owns this
+      // session's live process. The authoritative refusal is server-side
+      // (extension.ts's openClaudeEditor gate); this just avoids the round
+      // trip and the flash of a warning toast on an obviously-disabled card.
+      if (card.classList.contains('external-writer')) { return; }
       const sid = card.dataset.sessionId!;
       focusedSessionId = sid;
       vscode.postMessage({ type: 'focusSession', sessionId: sid });
@@ -853,13 +858,20 @@ let FOREIGN_SLIDE_MS = 220;
       // A new element with a previous rect is a section move \u2014 FLIP it from
       // its old position below instead of playing the enter fade.
       const enters = isNew && !prevRects.has(s.sessionId);
-      const cls = 'card ' + s.status + (isFocused ? ' focused' : '') + (enters ? ' card-enter' : '');
+      const cls = 'card ' + s.status + (isFocused ? ' focused' : '') + (enters ? ' card-enter' : '')
+        + (s.externalWriter ? ' external-writer' : '');
       if (el.className !== cls) { el.className = cls; }
       el.setAttribute('role', 'listitem');
       el.setAttribute('tabindex', '0');
       // setAttribute takes a plain DOM string \u2014 do NOT HTML-escape, or a screen
       // reader announces literal entities ("A&amp;B"). s.status is a fixed enum.
-      el.setAttribute('aria-label', stripMarkdown(getDisplayName(s)) + ' \u2014 ' + s.status);
+      el.setAttribute('aria-label', stripMarkdown(getDisplayName(s)) + ' \u2014 ' + s.status
+        + (s.externalWriter ? ' \u2014 open in another VS Code window right now, not opening here to avoid a conflict' : ''));
+      if (s.externalWriter) {
+        el.title = 'Open in another VS Code window right now \u2014 not opening here to avoid a conflict.';
+      } else if (el.title) {
+        el.title = '';
+      }
       el.dataset.confidence = s.confidence || 'high';
       // Skip the innerHTML write when the rendered card is byte-identical to
       // the last pass \u2014 the string build is cheap, the DOM teardown is not.

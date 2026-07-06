@@ -38,9 +38,17 @@ export class SiblingWorktreeManager {
   /** Per-session registry liveness probe factory, injected by SessionDiscovery
    *  (freshness parity: sibling cards get the same death gate as primary). */
   private probeFactory?: (sessionId: string) => () => boolean | null;
+  /** Per-session writer-ownership probe factory, injected by SessionDiscovery —
+   *  reports whether a *different* VS Code window is confirmed to be a
+   *  session's live writer right now. Account-agnostic; see WriterOwnership. */
+  private writerOwnershipProbeFactory?: (sessionId: string) => () => boolean | undefined;
 
   setLivenessProbeFactory(factory: (sessionId: string) => () => boolean | null): void {
     this.probeFactory = factory;
+  }
+
+  setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => boolean | undefined): void {
+    this.writerOwnershipProbeFactory = factory;
   }
 
   /** Resolve and cache the local CWD's repoRoot. Until this resolves to a
@@ -146,7 +154,10 @@ export class SiblingWorktreeManager {
         sessions: this.sessions, now,
         withinWindow: (_sessionId, lastActivityMs) => now - lastActivityMs <= ageGate,
         makeManager: (sessionId, filePath) => {
-          const manager = new SessionManager(sessionId, filePath, dir, { livenessProbe: this.probeFactory?.(sessionId) });
+          const manager = new SessionManager(sessionId, filePath, dir, {
+            livenessProbe: this.probeFactory?.(sessionId),
+            writerOwnershipProbe: this.writerOwnershipProbeFactory?.(sessionId),
+          });
           manager.setWorktreeOrigin(wtRoot, wtLabel);
           return manager;
         },

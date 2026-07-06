@@ -37,6 +37,9 @@ export interface PanelSession {
   /** Registry tri-state (see SessionSnapshot.processLive): annotates terminal
    *  cards' status pill with live/ended; absent = no annotation. */
   processLive?: boolean;
+  /** True when a *different* VS Code window's process is confirmed to be the
+   *  live writer of this session right now (see SessionSnapshot.externalWriter). */
+  externalWriter?: boolean;
   /** Files this session has edited (latest file-history-snapshot). Feeds the
    *  same-file collision badge. */
   trackedFiles?: string[];

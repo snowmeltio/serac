@@ -718,4 +718,60 @@ describe('SessionDiscovery', () => {
       discovery.stop();
     });
   });
+
+  describe('isExternalWriterFresh()', () => {
+    /** Writes a live-process registry entry (~/.claude/sessions/<pid>.json
+     *  equivalent) under the test's isolated sessions dir. */
+    function writeRegistryEntry(pid: number, sessionId: string): void {
+      const sessionsDir = path.join(tmpDir, 'sessions');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      fs.writeFileSync(path.join(sessionsDir, `${pid}.json`), JSON.stringify({
+        pid, sessionId, cwd: workspacePath, startedAt: Date.now(),
+        kind: 'interactive', entrypoint: 'claude-vscode', version: 'test',
+      }));
+    }
+
+    it('is false with no live registered process for the session', async () => {
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      await expect(discovery.isExternalWriterFresh('no-such-session')).resolves.toBe(false);
+      discovery.stop();
+    });
+
+    it('is false for a real child process of this test (same window, by construction)', async () => {
+      // A spawned child's parent pid is this test process itself, exactly the
+      // "own window" condition WriterOwnership checks for — no execFile mocking
+      // needed, this exercises the real `ps` shell-out end to end.
+      const { spawn } = await import('child_process');
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']);
+      try {
+        writeRegistryEntry(child.pid!, 'own-window-sess');
+        const discovery = makeDiscovery();
+        // Deliberately does NOT wait on discovery.start()'s poll cadence —
+        // isExternalWriterFresh() must resolve correctly on demand, doing its
+        // own scan+refresh, independent of the ambient poll loop.
+        await expect(discovery.isExternalWriterFresh('own-window-sess')).resolves.toBe(false);
+      } finally {
+        child.kill();
+      }
+    });
+
+    it('resolves fresh even when called before the process was ever polled', async () => {
+      // Same real-child-process setup as above, but the registry entry is
+      // written AFTER the discovery instance is constructed and started —
+      // proving the check isn't dependent on a prior scan having already seen
+      // this pid (the exact staleness gap the adversarial review flagged).
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      const { spawn } = await import('child_process');
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']);
+      try {
+        writeRegistryEntry(child.pid!, 'just-appeared-sess');
+        await expect(discovery.isExternalWriterFresh('just-appeared-sess')).resolves.toBe(false);
+      } finally {
+        child.kill();
+        discovery.stop();
+      }
+    });
+  });
 });

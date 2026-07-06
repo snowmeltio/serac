@@ -214,6 +214,16 @@ describe('panel.ts integration', () => {
     expect((focusMsg as any).sessionId).toBe(sess.sessionId);
   });
 
+  it('does not post focusSession when a different VS Code window owns the session', () => {
+    const sess = makeSession({ externalWriter: true });
+    sendUpdate({ sessions: [sess] });
+    const card = document.querySelector('.card') as HTMLElement;
+    expect(card.classList.contains('external-writer')).toBe(true);
+    card.click();
+    const focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
+    expect(focusMsg).toBeUndefined();
+  });
+
   it('scrolls a newly auto-focused card into view (focusSession from the extension)', () => {
     const a = makeSession({ sessionId: 'sess-a', status: 'running' });
     const b = makeSession({ sessionId: 'sess-b', status: 'running' });
