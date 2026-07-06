@@ -901,6 +901,9 @@ body {
   font-weight: 600;
 }
 .wf-agent-pill-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+/* Model label — same muted metric styling as the classic nav row's .wf-nav-model. */
+.wf-agent-pill-model { font-size: 9px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
+.wf-agent-pill.active .wf-agent-pill-model { color: inherit; }
 /* The collapsed strip's overflow chip — same dashed register as the views
  * row's "+N" chip. */
 .wf-agent-pill.more { border-style: dashed; color: var(--vscode-descriptionForeground); }

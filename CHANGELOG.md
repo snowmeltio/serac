@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.6 (2026-07-06) — Subagent model shown in the log-view agent pills
+
+### Fixed
+- **Subagent model is shown again in the default (log) view.** The v1.16.0 detail-panel rework carried the per-agent model label into the classic nav rows and the reader header, but the new default agent-pill strip never picked it up — only the retired classic view showed it, and the aggregate header line only appears when every agent shares one model. Each agent pill now shows its formatted model (e.g. "Sonnet 5"), in both the visible label and the hover tooltip.
+
 ## v1.16.5 (2026-07-06) — Block a session another VS Code window owns
 
 ### Added

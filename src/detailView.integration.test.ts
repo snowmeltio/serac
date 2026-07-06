@@ -899,6 +899,18 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(q('.wf-permrow')).toBeNull();
   });
 
+  it('agent pill shows the formatted model, in title and as a visible span', () => {
+    const model = logModel() as any;
+    model.groups[0].agents[0] = agent({ agentId: 'agent001', label: 'audit:privacy', phaseTitle: 'Audit', model: 'claude-sonnet-5' });
+    sendRender(model);
+    const pill1 = qa('.wf-agent-pill').find(p => p.dataset.agent === 'agent001')!;
+    expect(pill1.querySelector('.wf-agent-pill-model')!.textContent).toBe('Sonnet 5');
+    expect(pill1.getAttribute('title')).toBe('audit:privacy · done · Sonnet 5');
+    // agent002 (fixture default: model '') omits the span entirely.
+    const pill2 = qa('.wf-agent-pill').find(p => p.dataset.agent === 'agent002')!;
+    expect(pill2.querySelector('.wf-agent-pill-model')).toBeNull();
+  });
+
   it('agent strip selection posts viewAgent and renders the selected agent\'s entries', () => {
     sendRender(logModel()); // agent001 auto-selected
     postedMessages.length = 0;

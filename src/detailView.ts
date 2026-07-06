@@ -1252,7 +1252,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function renderAgentPill(groupKey: string, a: DetailAgentView): string {
     const active = groupKey === selectedGroupKey && a.agentId === selectedAgentId;
     const badge = a.teammate ? '<span class="wf-teammate-badge" title="Agent Team member">team</span>' : '';
-    const nameWithStatus = a.label + ' · ' + a.status;
+    const modelLabel = a.model ? formatModelLabel(a.model) : '';
+    const nameWithStatus = a.label + ' · ' + a.status + (modelLabel ? ' · ' + modelLabel : '');
     return '<span class="wf-agent-pill' + (active ? ' active' : '') + '"'
       + ' data-group="' + escapeHtml(groupKey) + '" data-agent="' + escapeHtml(a.agentId) + '"'
       + ' role="button" tabindex="' + (active ? '0' : '-1') + '"'
@@ -1260,7 +1261,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + (active ? ' aria-current="true"' : '') + '>'
       + statusDot(a.status)
       + '<span class="wf-agent-pill-label">' + escapeHtml(a.label) + '</span>'
-      + badge + '</span>';
+      + badge
+      + (modelLabel ? '<span class="wf-agent-pill-model">' + escapeHtml(modelLabel) + '</span>' : '')
+      + '</span>';
   }
 
   /** Agent strip: the old left-nav's job. Phase 2.1: a workflow's phases each
