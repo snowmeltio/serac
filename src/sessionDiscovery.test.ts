@@ -11,6 +11,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { SessionDiscovery } from './sessionDiscovery.js';
 import type { SessionSnapshot } from './types.js';
+import { EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
+import { sanitiseWorkspaceKey } from './panelUtils.js';
 
 /**
  * Tests for SessionDiscovery.
@@ -38,6 +40,62 @@ function makeDiscovery(): SessionDiscovery {
   // defaultModelGuess pinned to '' — isolates this suite from the real
   // machine's ~/.claude/settings.json (see [F10] above).
   return new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '' });
+}
+
+/**
+ * Spawns a real child process, has THAT child spawn its own child in turn,
+ * and resolves with the grandchild's pid — a real, deterministic "confirmed
+ * different window" fixture for WriterOwnership's `ps`-based ppid check
+ * (a grandchild's ppid is the middle child's pid, never this test process's
+ * own pid), with no execFile mocking required. A fixed well-known pid (e.g.
+ * pid 1/launchd) would be simpler but isn't reliably inspectable via `ps`
+ * from every sandboxed test-runner environment this suite runs under; a real
+ * descendant process always is.
+ */
+async function spawnExternalProcess(): Promise<{ pid: number; cleanup: () => void }> {
+  const { spawn } = await import('child_process');
+  const outer = spawn(process.execPath, ['-e', `
+    const { spawn } = require('child_process');
+    const inner = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)']);
+    console.log('INNER_PID:' + inner.pid);
+    setTimeout(() => {}, 30000);
+  `]);
+  const pid = await new Promise<number>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timed out waiting for grandchild pid')), 5000);
+    outer.stdout.on('data', (data: Buffer) => {
+      const match = data.toString().match(/INNER_PID:(\d+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve(parseInt(match[1], 10));
+      }
+    });
+  });
+  return {
+    pid,
+    cleanup: () => {
+      outer.kill();
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    },
+  };
+}
+
+/** Writes a live-process registry entry (~/.claude/sessions/<pid>.json
+ *  equivalent) under the test's isolated sessions dir. Unlike the two
+ *  `writeRegistryEntry` helpers scoped to individual describe blocks above,
+ *  this one accepts an explicit `cwd` — needed to simulate a process rooted
+ *  at a workspace OTHER than the local one (team-lead orchestrator, foreign
+ *  workspace, sibling worktree). */
+function writeRegistryEntryWithCwd(
+  pid: number,
+  sessionId: string,
+  opts: { startedAt?: number; cwd?: string } = {},
+): void {
+  const sessionsDir = path.join(tmpDir, 'sessions');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  fs.writeFileSync(path.join(sessionsDir, `${pid}.json`), JSON.stringify({
+    pid, sessionId, cwd: opts.cwd ?? workspacePath, startedAt: opts.startedAt ?? Date.now(),
+    kind: 'interactive', entrypoint: 'claude-vscode', version: 'test',
+  }));
 }
 
 /** Build a minimal SessionSnapshot for tests that inject feed entries directly
@@ -722,11 +780,11 @@ describe('SessionDiscovery', () => {
   describe('isExternalWriterFresh()', () => {
     /** Writes a live-process registry entry (~/.claude/sessions/<pid>.json
      *  equivalent) under the test's isolated sessions dir. */
-    function writeRegistryEntry(pid: number, sessionId: string): void {
+    function writeRegistryEntry(pid: number, sessionId: string, startedAt: number = Date.now()): void {
       const sessionsDir = path.join(tmpDir, 'sessions');
       fs.mkdirSync(sessionsDir, { recursive: true });
       fs.writeFileSync(path.join(sessionsDir, `${pid}.json`), JSON.stringify({
-        pid, sessionId, cwd: workspacePath, startedAt: Date.now(),
+        pid, sessionId, cwd: workspacePath, startedAt,
         kind: 'interactive', entrypoint: 'claude-vscode', version: 'test',
       }));
     }
@@ -734,7 +792,11 @@ describe('SessionDiscovery', () => {
     it('is false with no live registered process for the session', async () => {
       const discovery = makeDiscovery();
       await discovery.start(() => {});
+      const spy = vi.spyOn(discovery as unknown as { isRecentlyActiveElsewhere: () => boolean }, 'isRecentlyActiveElsewhere');
       await expect(discovery.isExternalWriterFresh('no-such-session')).resolves.toBe(false);
+      // Unresolved (no live process at all) must short-circuit before ever
+      // touching disk for a recency check.
+      expect(spy).not.toHaveBeenCalled();
       discovery.stop();
     });
 
@@ -747,10 +809,13 @@ describe('SessionDiscovery', () => {
       try {
         writeRegistryEntry(child.pid!, 'own-window-sess');
         const discovery = makeDiscovery();
+        const spy = vi.spyOn(discovery as unknown as { isRecentlyActiveElsewhere: () => boolean }, 'isRecentlyActiveElsewhere');
         // Deliberately does NOT wait on discovery.start()'s poll cadence —
         // isExternalWriterFresh() must resolve correctly on demand, doing its
         // own scan+refresh, independent of the ambient poll loop.
         await expect(discovery.isExternalWriterFresh('own-window-sess')).resolves.toBe(false);
+        // Confirmed own-window must never pay the fs-touching recency cost.
+        expect(spy).not.toHaveBeenCalled();
       } finally {
         child.kill();
       }
@@ -771,6 +836,409 @@ describe('SessionDiscovery', () => {
       } finally {
         child.kill();
         discovery.stop();
+      }
+    });
+
+    it('is true when confirmed external AND recently active (main JSONL just written)', async () => {
+      const sessionId = 'ext-fresh-active';
+      createJsonlFile(sessionId); // fresh mtime, "now"
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntry(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(true);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('is false when confirmed external but quiet past EXTERNAL_WRITER_QUIET_MS, even though the process is still alive', async () => {
+      const sessionId = 'ext-fresh-quiet';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntry(ext.pid, sessionId, old);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('is true when the main JSONL is quiet but a subagent file under subagents/ is recent (actively orchestrating)', async () => {
+      const sessionId = 'ext-fresh-subagent-active';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+      const subagentFile = path.join(projectsDir, workspaceKey, sessionId, 'subagents', 'agent-aaa111.jsonl');
+      fs.mkdirSync(path.dirname(subagentFile), { recursive: true });
+      fs.writeFileSync(subagentFile, ''); // fresh mtime, "now"
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntry(ext.pid, sessionId, old);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(true);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+  });
+
+  describe('resolveWriterOwnership() gating on recent activity (via getSnapshots().externalWriter)', () => {
+    function writeRegistryEntry(pid: number, sessionId: string, startedAt: number = Date.now()): void {
+      const sessionsDir = path.join(tmpDir, 'sessions');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      fs.writeFileSync(path.join(sessionsDir, `${pid}.json`), JSON.stringify({
+        pid, sessionId, cwd: workspacePath, startedAt,
+        kind: 'interactive', entrypoint: 'claude-vscode', version: 'test',
+      }));
+    }
+
+    it('confirmed external + recent activity -> externalWriter is true', async () => {
+      const sessionId = 'gate-active';
+      createJsonlFile(sessionId); // fresh mtime, "now"
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntry(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+        expect(snap?.externalWriter).toBe(true);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('confirmed external + quiet past the threshold -> externalWriter flips to false', async () => {
+      const sessionId = 'gate-quiet';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntry(ext.pid, sessionId, old);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+        expect(snap?.externalWriter).toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('confirmed own-window -> unchanged (false), and the fs-touching recency check is never invoked', async () => {
+      const sessionId = 'gate-own-window';
+      createJsonlFile(sessionId);
+      const { spawn } = await import('child_process');
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']);
+      try {
+        writeRegistryEntry(child.pid!, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const spy = vi.spyOn(discovery as unknown as { isRecentlyActiveElsewhere: () => boolean }, 'isRecentlyActiveElsewhere');
+        const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+        expect(snap?.externalWriter).toBe(false);
+        expect(spy).not.toHaveBeenCalled();
+        discovery.stop();
+      } finally {
+        child.kill();
+      }
+    });
+
+    it('no live process (unresolved) -> unchanged (undefined), and the fs-touching recency check is never invoked', async () => {
+      const sessionId = 'gate-unresolved';
+      createJsonlFile(sessionId);
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      const spy = vi.spyOn(discovery as unknown as { isRecentlyActiveElsewhere: () => boolean }, 'isRecentlyActiveElsewhere');
+      const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+      expect(snap?.externalWriter).toBeUndefined();
+      expect(spy).not.toHaveBeenCalled();
+      discovery.stop();
+    });
+
+    it('caches the recency verdict briefly so a flagged session does not re-walk its subagents dir on every tick', async () => {
+      const sessionId = 'gate-cache';
+      createJsonlFile(sessionId); // fresh -> within the activity window
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntry(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const spy = vi.spyOn(discovery as unknown as { isRecentlyActiveElsewhere: () => boolean }, 'isRecentlyActiveElsewhere');
+        expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
+        expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
+        expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
+        // Three snapshot builds, one fs-touching recency resolution — the rest
+        // were served from the TTL cache.
+        expect(spy).toHaveBeenCalledTimes(1);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+  });
+
+  describe('isRecentlyActiveElsewhere() with two confirmed-external processes under one sessionId', () => {
+    // ProcessRegistry.getProcessesForSession documents (and is tested for)
+    // returning more than one live process for a single sessionId — a race,
+    // or the terminal-spawned-process gap noted in writerOwnership.ts. Pins
+    // down the any-positive-signal-is-enough posture so a future refactor
+    // that narrows `.some()` to `.every()` or `procs[0]` would fail here.
+    it('locks (true) when one of two confirmed-external processes is fresh even though the other is quiet', async () => {
+      const sessionId = 'two-external-procs-active';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+      const extA = await spawnExternalProcess();
+      const extB = await spawnExternalProcess();
+      try {
+        // A is quiet (old startedAt, and the session's only write is the old
+        // main JSONL); B has just attached (recent startedAt). Any positive
+        // signal across the set must still lock the session.
+        writeRegistryEntryWithCwd(extA.pid, sessionId, { startedAt: old });
+        writeRegistryEntryWithCwd(extB.pid, sessionId, { startedAt: Date.now() });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(true);
+        discovery.stop();
+      } finally {
+        extA.cleanup();
+        extB.cleanup();
+      }
+    });
+
+    it('unlocks (false) only when BOTH confirmed-external processes are quiet', async () => {
+      const sessionId = 'two-external-procs-quiet';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+      const extA = await spawnExternalProcess();
+      const extB = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(extA.pid, sessionId, { startedAt: old });
+        writeRegistryEntryWithCwd(extB.pid, sessionId, { startedAt: old });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
+        discovery.stop();
+      } finally {
+        extA.cleanup();
+        extB.cleanup();
+      }
+    });
+  });
+
+  describe('isRecentlyActiveElsewhere() derives paths from proc.cwd, not the local workspace', () => {
+    it('resolves activity from a DIFFERENT workspace than the local one, matching a team-lead/foreign-workspace cwd', async () => {
+      const sessionId = 'cross-cwd-sess';
+      const otherCwd = path.join(tmpDir, 'other-workspace');
+      fs.mkdirSync(otherCwd, { recursive: true });
+      const otherWorkspaceKey = sanitiseWorkspaceKey(otherCwd);
+      // The session's JSONL lives under the OTHER workspace's projects dir,
+      // fresh — nothing is created under the local workspace for this id at
+      // all.
+      const otherFilePath = path.join(projectsDir, otherWorkspaceKey, `${sessionId}.jsonl`);
+      fs.mkdirSync(path.dirname(otherFilePath), { recursive: true });
+      fs.writeFileSync(otherFilePath, '');
+
+      const ext = await spawnExternalProcess();
+      try {
+        // startedAt is deliberately OLD, so only a correct read of the fresh
+        // file under proc.cwd's own workspace dir can produce `true` — a
+        // regression back to `this.workspaceKey` would find nothing (the
+        // local workspace has no file for this session at all) and report
+        // `false`.
+        const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: old, cwd: otherCwd });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(true);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+  });
+
+  describe('isRecentlyActiveElsewhere() excludes own-window processes from the recency floor', () => {
+    it('does not let a fresh own-window process keep a session locked when the confirmed-external process is actually quiet', async () => {
+      const sessionId = 'own-window-plus-quiet-external';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+
+      const ext = await spawnExternalProcess(); // confirmed different window, quiet
+      const { spawn } = await import('child_process');
+      const ownChild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']); // confirmed own window, fresh
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: old });
+        writeRegistryEntryWithCwd(ownChild.pid!, sessionId, { startedAt: Date.now() });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        // Ownership still resolves confirmed-external (the external pid
+        // alone is enough — aggregateWriterOwnership's any-true rule), but
+        // the recency check must be scoped to the external pid only: its own
+        // activity (old file, old startedAt) is quiet, so this must unlock,
+        // NOT stay locked off the own-window process's fresh startedAt.
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+        ownChild.kill();
+      }
+    });
+  });
+
+  describe('grace period: a freshly-attached process on an old, otherwise-quiet session', () => {
+    it('is true end-to-end through isExternalWriterFresh() and getSnapshots().externalWriter', async () => {
+      const sessionId = 'grace-period-fresh-attach';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      // Old file, no subagent activity at all — only startedAt is recent.
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: Date.now() });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(true);
+        const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+        expect(snap?.externalWriter).toBe(true);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+  });
+
+  describe('externalWriter transitions from true to false purely as quiet time elapses', () => {
+    it('flips false once EXTERNAL_WRITER_QUIET_MS and the recency cache TTL have both elapsed, with ownership unchanged', async () => {
+      const sessionId = 'quiet-transition';
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        const filePath = createJsonlFile(sessionId); // real fs mtime ~ t0
+        const ext = await spawnExternalProcess();
+        try {
+          writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: t0 });
+          const discovery = makeDiscovery();
+          await discovery.start(() => {});
+
+          expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
+
+          // Jump well past both the quiet threshold and the recency cache
+          // TTL, with NO change to ownership (same registry entry, same pid
+          // still alive) — proves the cache actually re-evaluates rather
+          // than sticking on its first verdict forever.
+          vi.setSystemTime(t0 + EXTERNAL_WRITER_QUIET_MS + 60_000);
+          expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(false);
+          discovery.stop();
+        } finally {
+          ext.cleanup();
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('isExternalWriterFresh() recognises nested workflows/<runId>/ activity, not just flat subagent files', () => {
+    it('is true when the main JSONL is quiet but a nested workflow-run file is recent', async () => {
+      const sessionId = 'ext-fresh-workflow-nested';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+      const nestedFile = path.join(projectsDir, workspaceKey, sessionId, 'subagents', 'workflows', 'wf_1', 'journal.jsonl');
+      fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
+      fs.writeFileSync(nestedFile, ''); // fresh mtime, "now"
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: old });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(true);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+  });
+
+  describe('recencyCache pruning', () => {
+    it('removes the recency cache entry when a session is pruned (JSONL deleted)', async () => {
+      const sessionId = 'prune-recency-cache';
+      const filePath = createJsonlFile(sessionId);
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        // Populate the cache via a confirmed-external, fresh resolution.
+        expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
+        const cache = (discovery as unknown as { recencyCache: Map<string, unknown> }).recencyCache;
+        expect(cache.has(sessionId)).toBe(true);
+
+        // Delete the JSONL and run a poll cycle so the prune pass (which
+        // scans lastScanSessionIds from THIS cycle's readdir) evicts the
+        // session.
+        fs.rmSync(filePath);
+        await (discovery as unknown as { poll: () => Promise<void> }).poll();
+
+        expect(cache.has(sessionId)).toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('removes the recency cache entry for a foreign/sibling/team-lead id (never in this.sessions) once its process dies', async () => {
+      // This id is deliberately never created via createJsonlFile, so it can
+      // never appear in `this.sessions` / `lastScanSessionIds` — simulating
+      // a session only ever reached via the shared writerOwnershipProbeFactory
+      // (ForeignWorkspaceManager / SiblingWorktreeManager / TeamDiscovery),
+      // which is exactly the category the local-scan prune loop above cannot
+      // see. Eviction here must come from the processRegistry-driven sweep.
+      const sessionId = 'foreign-recency-prune';
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { cwd: '/some/other/foreign/workspace' });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+
+        // Populate the cache the same way the foreign/sibling/team probe
+        // factory would, without ever touching `this.sessions`.
+        const resolve = (discovery as unknown as { resolveWriterOwnership: (id: string) => boolean | undefined }).resolveWriterOwnership.bind(discovery);
+        expect(resolve(sessionId)).toBe(true);
+        const cache = (discovery as unknown as { recencyCache: Map<string, unknown> }).recencyCache;
+        expect(cache.has(sessionId)).toBe(true);
+
+        ext.cleanup();
+        // kill(pid, 0) can still report a just-SIGKILL'd pid as alive for a
+        // few ms until the OS finishes tearing it down (same allowance the
+        // other process-death tests in this file give — see the 100ms waits
+        // above); without it, isPidAlive() below races the kernel and flakes.
+        await new Promise(r => setTimeout(r, 100));
+        // processRegistry.shouldRescan() only fires every REGISTRY_SCAN_INTERVAL
+        // (4) poll cycles — drive enough cycles to force it.
+        const poll = (discovery as unknown as { poll: () => Promise<void> }).poll.bind(discovery);
+        for (let i = 0; i < 4; i++) { await poll(); }
+
+        expect(cache.has(sessionId)).toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
       }
     });
   });

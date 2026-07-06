@@ -11,6 +11,7 @@ import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
 import { WriterOwnership, aggregateWriterOwnership } from './writerOwnership.js';
+import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { claudeStateDir } from './paths.js';
 import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
@@ -98,6 +99,30 @@ export class SessionDiscovery {
   /** Resolves whether a live registered process belongs to a *different* VS
    *  Code window than this one. Refreshed alongside processRegistry. */
   private writerOwnership: WriterOwnership;
+  /** TTL cache for `isRecentlyActiveElsewhere()`'s per-session recency
+   *  verdict, used ONLY by the cosmetic `resolveWriterOwnership()` path
+   *  (never by `isExternalWriterFresh()`, which must stay fully fresh/
+   *  uncached — see its docstring). `resolveWriterOwnership()` runs on every
+   *  snapshot build on every refresh tick, and the recency check walks the
+   *  subagents/ directory tree; without amortising it, a session already
+   *  flagged as externalWriter would re-walk its own subagents tree on every
+   *  single tick.
+   *
+   *  Deliberately set ABOVE `serac.refresh.intervalSeconds`'s default (5s,
+   *  see `package.json`/`settings.ts`) — `extension.ts`'s panel refresh timer
+   *  fires unconditionally on that cadence with no upper throttle, so a TTL
+   *  shorter than (or equal to) it would be expired again by the time the
+   *  very next guaranteed tick arrives, defeating the cache entirely on the
+   *  default install (the bug this comment used to describe). 10s clears
+   *  that default cadence with margin while staying far below the 10-minute
+   *  quiet threshold it feeds into, so it never meaningfully delays the
+   *  unlock. This is a static margin, not a dynamic read of the live
+   *  setting — a user who sets `serac.refresh.intervalSeconds` above ~10s
+   *  will see reduced amortisation, but `getSessionLastWriteMtime`'s own
+   *  entry/time budget (see `writerActivity.ts`) now bounds the cost of an
+   *  uncached call regardless, so a cache miss is no longer expensive. */
+  private static readonly RECENCY_CACHE_TTL_MS = 10_000;
+  private recencyCache = new Map<string, { active: boolean; expiresAt: number }>();
   /** Extended archive: lightweight snapshots for sessions older than SCAN_AGE_GATE_MS.
    *  Only populated when archiveRangeMs > SCAN_AGE_GATE_MS. Keyed by sessionId. */
   private extendedArchive: Map<string, SessionSnapshot> = new Map();
@@ -439,6 +464,7 @@ export class SessionDiscovery {
     this.workflowDiscovery.dispose();
     this.processRegistry.dispose();
     this.writerOwnership.dispose();
+    this.recencyCache.clear();
   }
 
   /** Re-enumerate worktrees of the local repo AND every foreign repo currently
@@ -980,10 +1006,35 @@ export class SessionDiscovery {
    *  "don't flag", matching WriterOwnership.getInfo()'s own tri-state
    *  contract. This reads the last poll's cache — fine for a cosmetic
    *  render-time signal, too stale for an actual open/send decision (see
-   *  isExternalWriterFresh()). */
+   *  isExternalWriterFresh()).
+   *
+   *  A confirmed-external verdict is additionally gated on recent activity
+   *  (`isRecentlyActiveElsewhere()`, TTL-cached via `recencyCache` — see its
+   *  field doc): a session sitting idle at a prompt in another window for
+   *  the last `EXTERNAL_WRITER_QUIET_MS` clears back to not-flagged even
+   *  though the owning process is still alive. The fs-touching recency check
+   *  only ever runs once ownership itself has already resolved `true` — the
+   *  own-window and unresolved cases below are unaffected and stay pure
+   *  in-memory checks with zero fs cost, which matters because this function
+   *  runs on every session snapshot build on every refresh tick. The recency
+   *  check is scoped to only the CONFIRMED-EXTERNAL processes among `procs`
+   *  (not every process registered under the id) — see
+   *  `isRecentlyActiveElsewhere`'s docstring for why an own-window process's
+   *  recency must never be allowed to stand in for the external writer's. */
   private resolveWriterOwnership(sessionId: string): boolean | undefined {
     const procs = this.processRegistry.getProcessesForSession(sessionId);
-    return aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid)));
+    const ownership = aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid)));
+    if (ownership !== true) { return ownership; }
+
+    const now = Date.now();
+    const cached = this.recencyCache.get(sessionId);
+    if (cached && cached.expiresAt > now) {
+      return cached.active;
+    }
+    const externalProcs = procs.filter(p => this.writerOwnership.getInfo(p.pid) === true);
+    const active = this.isRecentlyActiveElsewhere(sessionId, externalProcs);
+    this.recencyCache.set(sessionId, { active, expiresAt: now + SessionDiscovery.RECENCY_CACHE_TTL_MS });
+    return active;
   }
 
   /** Authoritative, UNCACHED check for the exact moment of an actual
@@ -1006,13 +1057,83 @@ export class SessionDiscovery {
    *  correctly for any session id — including team orchestrators and
    *  workflow-owning sessions, which don't appear in getSnapshots().
    *  Account-agnostic: see WriterOwnership. Resolves false (never blocks)
-   *  when there's no live process or ownership can't be determined. */
+   *  when there's no live process or ownership can't be determined.
+   *
+   *  Once ownership resolves confirmed-external, ALSO requires recent
+   *  activity (`isRecentlyActiveElsewhere()`) before blocking — a session
+   *  quiet for `EXTERNAL_WRITER_QUIET_MS` no longer blocks even though the
+   *  external process is still alive. This recency check is always computed
+   *  fresh here (no cache, unlike `resolveWriterOwnership()`'s
+   *  `recencyCache`), consistent with this function's existing
+   *  fresh-registry-scan-and-fresh-`resolveFor()` contract — an authoritative
+   *  open/send decision must never trust a cached verdict. Scoped to only the
+   *  CONFIRMED-EXTERNAL processes among `procs` — see
+   *  `isRecentlyActiveElsewhere`'s docstring for why. */
   async isExternalWriterFresh(sessionId: string): Promise<boolean> {
     await this.processRegistry.scan();
     const procs = this.processRegistry.getProcessesForSession(sessionId);
     if (procs.length === 0) { return false; }
     await this.writerOwnership.resolveFor(procs);
-    return aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === true;
+    const ownership = aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === true;
+    if (!ownership) { return false; }
+    const externalProcs = procs.filter(p => this.writerOwnership.getInfo(p.pid) === true);
+    return this.isRecentlyActiveElsewhere(sessionId, externalProcs);
+  }
+
+  /** Filesystem-touching recency check: is ANY of the given live processes
+   *  registered under `sessionId` backed by activity within the quiet
+   *  window? "Activity" includes the session's own top-level JSONL AND
+   *  everything under its `subagents/` tree — Task-tool subagents and
+   *  Workflow-run agents write their own separate per-agent JSONLs there
+   *  (nested under `subagents/workflows/<runId>/` for Workflow runs), and the
+   *  session's own top-level JSONL can sit completely quiet for the entire
+   *  duration of a subagent/workflow run (see the comment near
+   *  `hasLiveBackgroundAgents()` above documenting the same fact for the
+   *  dormant-sweep wake path). A recency check that only looked at the main
+   *  JSONL would misjudge an actively-orchestrating session as dormant.
+   *
+   *  Derives each process's session file/subagents paths the same way
+   *  `SessionManager.backgroundAgentFileMtime()` derives its subagents dir
+   *  from a filePath (`<sessionDir>/subagents`), rooted instead at THAT
+   *  process's own `cwd` (via `sanitiseWorkspaceKey`) rather than
+   *  `this.workspaceKey` — a confirmed-external process is, by definition,
+   *  very likely NOT rooted at this window's own workspace.
+   *
+   *  CALLERS MUST pass only the CONFIRMED-EXTERNAL processes among the
+   *  session's registered processes (i.e. those for which
+   *  `writerOwnership.getInfo(pid) === true`), never the full unfiltered
+   *  list. An own-window process can legitimately coexist under the same
+   *  sessionId as a confirmed-external one (e.g. this window resuming a
+   *  session another window already holds); that own-window process's
+   *  `startedAt`/cwd carry no information about whether the EXTERNAL writer
+   *  has gone quiet, and including it here would let a fresh own-window
+   *  attach spuriously keep (or re-trigger) a lock that should have cleared
+   *  — the "own window just legitimately opened this and its own fresh
+   *  process immediately re-locks it" self-defeat case. Checks EVERY given
+   *  (already-filtered) process — usually one, but two confirmed-external
+   *  processes can coexist too (see `ProcessRegistry.getProcessesForSession`)
+   *  — and returns true if ANY is within the window: same
+   *  any-positive-signal-is-enough posture already used for ownership itself
+   *  (see `resolveWriterOwnership`'s docstring), just scoped to the set that
+   *  posture is actually meant to apply to.
+   *
+   *  CALLERS MUST ONLY invoke this once ownership has already resolved
+   *  `true` (confirmed external) — this does real disk I/O (a stat per
+   *  subagent-tree file, bounded — see `getSessionLastWriteMtime`'s own
+   *  entry/time budget) and must never run on the own-window or unresolved
+   *  hot-path cases. */
+  private isRecentlyActiveElsewhere(sessionId: string, procs: readonly LiveProcess[]): boolean {
+    const now = Date.now();
+    return procs.some(proc => {
+      const wsDir = path.join(this.projectsDir, sanitiseWorkspaceKey(proc.cwd));
+      const filePath = path.join(wsDir, `${sessionId}.jsonl`);
+      const subagentsDir = path.join(wsDir, sessionId, 'subagents');
+      const lastWrite = getSessionLastWriteMtime(filePath, subagentsDir, {
+        recentEnoughMs: EXTERNAL_WRITER_QUIET_MS,
+        nowMs: now,
+      });
+      return isWithinActivityWindow(lastWrite, proc.startedAt, now, EXTERNAL_WRITER_QUIET_MS);
+    });
   }
 
   /** Sibling-worktree sessions waiting on input (badge parity with local). */
@@ -1329,6 +1450,11 @@ export class SessionDiscovery {
             this.sessionMeta.delete(id);
             this.metaDirty = true;
           }
+          // And any stale recency verdict for this locally-scanned id. The
+          // broader sweep below (near processRegistry.shouldRescan()) also
+          // covers foreign/sibling/team-lead ids sharing this same cache;
+          // this one just fires on the tighter local-scan cadence.
+          this.recencyCache.delete(id);
           changed = true;
         }
       }
@@ -1376,7 +1502,21 @@ export class SessionDiscovery {
       // the same treatment.
       if (this.processRegistry.shouldRescan()) {
         await this.processRegistry.scan();
-        await this.writerOwnership.refresh(this.processRegistry.getLiveProcesses());
+        const liveProcesses = this.processRegistry.getLiveProcesses();
+        await this.writerOwnership.refresh(liveProcesses);
+        // Sweep recencyCache for ids no longer backed by any live process. The
+        // per-session prune loop above only walks `this.sessions` (the local
+        // workspace scan), but recencyCache is shared across local, foreign,
+        // sibling-worktree, and team-lead sessions via the one
+        // writerOwnershipProbeFactory closure (see its wiring above, near the
+        // constructor) — a
+        // confirmed-external entry only ever gets created while backed by a
+        // live process, so "no longer live" is a safe, universal eviction
+        // signal regardless of which category the id came from.
+        const liveSessionIds = new Set(liveProcesses.map(p => p.sessionId));
+        for (const id of this.recencyCache.keys()) {
+          if (!liveSessionIds.has(id)) { this.recencyCache.delete(id); }
+        }
       }
 
       // Poll performance log [v0.4]

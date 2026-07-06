@@ -39,6 +39,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `workflowDiscovery.ts` | Two-tier workflow discovery, parallel to `teamDiscovery`. Scans each session dir for sidecars (Tier 1) and live run dirs (Tier 2), caches by mtime, prunes, applies the 7-day age gate and dismiss overlay. |
 | `processRegistry.ts` | Reads Claude Code's live process registry (`~/.claude/sessions/<pid>.json`) and confirms each pid with `kill(pid, 0)`. The one source of *actual* process liveness in an otherwise disk-tailing monitor. Owned by `SessionDiscovery` (scanned on a relaxed cadence); exposes `getLiveProcesses()` / `isSessionLive()` / `isActive()`. Injected into each `SessionManager` as a tri-state `livenessProbe` that powers the permission-false-positive gate (a registry-confirmed-dead session can't be `waiting` — see Status inference §6). A hit is a strong positive, a miss is "unknown" (not every session class is guaranteed to register), and an inactive registry disables the gate. `isScanClean()` distinguishes a degraded scan (a non-ENOENT read error or unparseable content on a *present* file) from genuine absence, so a transient disk error on a live session's file degrades the probe to "unknown" rather than "dead" — only a clean scan's absence is trusted as death. |
 | `writerOwnership.ts` | Resolves, per live registered pid, whether it's a child of THIS VS Code window's Extension Host or a different window's — the account-agnostic `externalWriter` signal (see Status inference § Writer ownership). Async `ps`-based resolution refreshed alongside `processRegistry`'s rescan; exposes a synchronous `getInfo(pid)` for the per-session probe. |
+| `writerActivity.ts` | Pure recency helpers layered on top of `writerOwnership.ts`'s tri-state verdict (see Status inference § Writer ownership). `getSessionLastWriteMtime()` stats a session's own JSONL plus every file under its `subagents/` tree (recursing into nested `workflows/<runId>/` dirs, so Task subagents and Workflow-run agents both count). `isWithinActivityWindow()` compares the later of that mtime and the writer's `startedAt` against `EXTERNAL_WRITER_QUIET_MS` (10 min), failing toward "still active" when both inputs are null. |
 | `detailPanel.ts` | Source-keyed editor-area webview host (`createWebviewPanel`, `ViewColumn.Beside`). One reused instance serves three drill-ins (workflow / team / subagents); builds a normalised `DetailModel` per source (with a cross-source view switcher for session-card sources) and resolves agent transcripts on demand via injected deps. Dedups re-pushes (`lastPushed` JSON compare). |
 | `detailView.ts` | Detail-panel webview frontend. Default **log view** (v1.16.0): zone rows on a shared 64px label rail (session view row → agent strip → header strip → pinned permission row → Result strip → display bar → the log), prose as flowing clamped blocks, tool/error rows as greyed one-liners behind kind filters, wall-clock/offset time column. The pre-v2 two-pane reader remains behind a persisted "classic view" toggle. Renders any `DetailModel` generically; redeclares its own view types (separate bundle). Clears its transcript cache when the drill-in identity (source + container) changes. |
 | `detailShared.ts` | The vscode-free rendering contract compiled into BOTH bundles (extension + webview): `TranscriptEntry` (+ `kind`/`toolName`/`rawInput`/`rawOutput`/`isError`), duplicated Evidence/Mismatch wire types, `formatModelLabel`, `parseEditInput`. The webview must never transitively import `types.ts` (its extension-side imports reach `vscode`). |
@@ -237,6 +238,26 @@ processes appending to the same JSONL file. Live-only by design: nothing on
 disk identifies a session's writer once that process has exited, and
 `undefined` (not yet resolved, or ownership couldn't be determined) is always
 treated as "don't flag".
+
+A confirmed-external verdict is also gated on recent activity
+(`writerActivity.ts`), not just liveness: a session sitting idle at a prompt
+in another window for `EXTERNAL_WRITER_QUIET_MS` (10 min) clears back to
+not-flagged even though the owning process is still alive — otherwise a
+session left open for hours in another window blocks indefinitely for no
+practical reason. "Activity" is the later of the writer's `startedAt` and the
+newest mtime across the session's own JSONL *and* everything under its
+`subagents/` tree (Task subagents and Workflow-run agents write their own
+separate per-agent JSONLs there, so the top-level JSONL alone can look
+dormant for the entire duration of an orchestration run). `startedAt` is
+included as a floor so a process that just attached to an old, otherwise
+quiet session gets a grace period rather than unlocking immediately.
+`SessionDiscovery.resolveWriterOwnership()` (the cosmetic, per-snapshot path)
+TTL-caches this recency check for a few seconds so a flagged card doesn't
+re-walk its subagents tree on every poll tick; `isExternalWriterFresh()` (the
+authoritative open/send-decision path) always recomputes it fresh, matching
+its existing uncached contract. The fs-touching recency check only ever runs
+once ownership itself has resolved `true` — the own-window and unresolved
+cases stay pure in-memory lookups with zero fs cost.
 
 ## Hook consumption
 
