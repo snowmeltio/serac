@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.5 (2026-07-06) — Block a session another VS Code window owns
+
+### Added
+- **A session actively being driven by another VS Code window is now flagged and blocked, not just visible.** Serac already shows every session across a shared `~/.claude` scaffold (multiple Claude Code accounts or profiles on one machine symlink `projects/`/`sessions/` back to one place), but a card looked fully interactive even while a different VS Code window's process was live and appending to that exact session's JSONL. Serac now confirms, per live session, whether its registered process is a child of this window's own extension host or a different one, by comparing process ancestry rather than account identity, so it catches cross-account, same-account-different-profile, and even same-profile-two-windows cases with one mechanism. A flagged card dims, its cursor becomes `not-allowed`, and a tooltip explains why. Clicking it, whether from the card, the detail panel, the command palette, or the teammate composer, is refused before it can open the shared live editor, preventing two processes writing the same file at once.
+
 ## v1.16.4 (2026-07-05) — Agents chip stays visible with inline rows off
 
 ### Fixed
