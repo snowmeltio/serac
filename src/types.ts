@@ -271,9 +271,13 @@ export interface UsageSnapshot {
   quotaPctWeeklySonnet: number | null;
   /** Weekly Sonnet reset time as epoch ms */
   weeklyResetTimeSonnet: number | null;
-  /** Weekly Fable utilisation as 0-100, or null if not applicable. Sourced
-   *  from the API's generic `limits[]` array (a `weekly` entry scoped to
-   *  model "Fable"), not a flat field like the other weekly quotas above. */
+  /** Weekly Fable utilisation as 0-100, or null if this account has never
+   *  been observed with a Fable-scoped quota. Sourced from the API's generic
+   *  `limits[]` array (a `weekly` entry scoped to model "Fable"), not a flat
+   *  field like the other weekly quotas above — the entry is only present
+   *  once there's been Fable usage in the current window, so a confirmed
+   *  account falls back to 0 (not null) once that window's entry disappears,
+   *  rather than the row vanishing on zero usage. */
   quotaPctWeeklyFable: number | null;
   /** Weekly Fable reset time as epoch ms */
   weeklyResetTimeFable: number | null;

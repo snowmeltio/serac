@@ -987,7 +987,7 @@ export function renderUsageHtml(
     html += '<span class="usage-bar-pct ghost">—</span>';
     html += '</div>';
     html += '</div>';
-  } else if ((u.quotaPctWeeklyFable || 0) > 0 || u.weeklyResetTimeFable) {
+  } else if (u.quotaPctWeeklyFable != null) {
     const fableTickPct = getElapsedPct(u.weeklyResetTimeFable, 7 * 24 * 60 * 60 * 1000);
     const fableCls = quotaClass(u.quotaPctWeeklyFable || 0, fableTickPct, ctx.settings.usage.warnAtPercent, ctx.settings.usage.criticalAtPercent);
 

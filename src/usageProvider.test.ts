@@ -389,6 +389,48 @@ describe('snapshot mapping from API response', () => {
     expect(s.weeklyResetTimeFable).toBeNull();
   });
 
+  it('falls back to 0% (not null) once the Fable tier has been seen and a later poll omits it', async () => {
+    setupApiMock(JSON.stringify({
+      five_hour: { utilization: 10, resets_at: '2026-06-01T10:00:00Z' },
+      limits: [{
+        kind: 'weekly_scoped', group: 'weekly', percent: 60, resets_at: '2026-06-07T00:00:00Z',
+        scope: { model: { id: null, display_name: 'Fable' } },
+      }],
+    }));
+    const p = makeProvider();
+    await p.refresh();
+    expect(p.getSnapshot().quotaPctWeeklyFable).toBe(60);
+
+    // Next window: no Fable usage yet, so the API omits the limits[] entry
+    // entirely rather than reporting it at 0%.
+    vi.advanceTimersByTime(901_000);
+    setupApiMock(JSON.stringify({ five_hour: { utilization: 10, resets_at: '2026-06-01T10:00:00Z' } }));
+    await p.refresh();
+    const s = p.getSnapshot();
+    expect(s.quotaPctWeeklyFable).toBe(0);
+    expect(s.weeklyResetTimeFable).toBeNull();
+  });
+
+  it('remembers the Fable tier across a stale disk cache (survives an extension reload)', async () => {
+    // Cache is well past the 15-minute freshness window, so its quota figures
+    // are not adopted — only the "this account has a Fable tier" flag should be.
+    fs.writeFileSync(cachePath, JSON.stringify({
+      five_hour: { utilization: 5, resets_at: '2026-01-01T00:00:00Z' },
+      _ts: Date.now() - 20 * 60 * 1000,
+      _account: 'acct-1',
+      _fableSeen: true,
+    }));
+    mockKeychain(JSON.stringify({
+      claudeAiOauth: { accessToken: 'tok', expiresAt: Date.now() + 3600_000 },
+    }));
+    setupApiMock(JSON.stringify({ five_hour: { utilization: 10, resets_at: '2026-06-01T10:00:00Z' } }));
+    const p = makeProvider();
+    await p.refresh();
+    const s = p.getSnapshot();
+    expect(s.quotaPctWeeklyFable).toBe(0);
+    expect(s.weeklyResetTimeFable).toBeNull();
+  });
+
   it('sets apiConnected false when no API data available', async () => {
     mockKeychainError();
     vi.mocked(https.get).mockClear();
@@ -562,6 +604,46 @@ describe('account identity invalidation', () => {
 
     expect(vi.mocked(cp.execFile).mock.calls.length).toBeGreaterThan(keychainCallsBefore);
     expect(p.getSnapshot().quotaPct5h).toBe(88);
+  });
+
+  it('forgets the Fable tier when the account changes', async () => {
+    setupToken();
+    function setupApiWithFable(): void {
+      const body = JSON.stringify({
+        five_hour: { utilization: 45, resets_at: '2026-06-01T00:00:00Z' },
+        limits: [{
+          kind: 'weekly_scoped', group: 'weekly', percent: 60, resets_at: '2026-06-07T00:00:00Z',
+          scope: { model: { id: null, display_name: 'Fable' } },
+        }],
+      });
+      const mockReq = { on: vi.fn().mockReturnThis(), setTimeout: vi.fn().mockReturnThis() };
+      vi.mocked(https.get).mockImplementation((_url: unknown, _opts: unknown, cb: unknown) => {
+        const mockResponse = {
+          statusCode: 200,
+          on: vi.fn((event: string, handler: (chunk?: string) => void) => {
+            if (event === 'data') { handler(body); }
+            if (event === 'end') { handler(); }
+            return mockResponse;
+          }),
+          resume: vi.fn(),
+          destroy: vi.fn(),
+        };
+        (cb as (res: unknown) => void)(mockResponse);
+        return mockReq as unknown as ReturnType<typeof https.get>;
+      });
+    }
+    setupApiWithFable();
+    const p = makeProvider();
+    await p.refresh();
+    expect(p.getSnapshot().quotaPctWeeklyFable).toBe(60);
+
+    // New account, same session: switch to a plain response with no Fable
+    // limit — the previous account's tier must not leak across identities.
+    fs.writeFileSync(configPath, JSON.stringify({ oauthAccount: { accountUuid: 'acct-2' } }));
+    setupApi(88);
+    vi.advanceTimersByTime(60_000);
+    await p.refresh();
+    expect(p.getSnapshot().quotaPctWeeklyFable).toBeNull();
   });
 
   it('does not reset the throttle when the identity is unchanged', async () => {

@@ -597,6 +597,14 @@ describe('renderUsageHtml', () => {
     expect(html).toContain('74%');
   });
 
+  it('renders the Weekly Fable bar at 0% once the tier is known, even with no usage yet this window', () => {
+    const html = renderUsageHtml(makeCtx(), {
+      ...liveUsage, quotaPctWeeklyFable: 0, weeklyResetTimeFable: undefined,
+    }, [], NOW);
+    expect(html).toContain('Weekly Fable usage');
+    expect(html).toContain('0%');
+  });
+
   it('an expired Weekly Fable window renders the ghost row', () => {
     const html = renderUsageHtml(makeCtx(), {
       ...liveUsage, quotaPctWeeklyFable: 74, weeklyResetTimeFable: NOW - 1,

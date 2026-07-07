@@ -77,6 +77,11 @@ export class UsageProvider {
   private accountId: string | null;
   private readonly configFileOverride: string | undefined;
 
+  // Once a Fable-scoped weekly limit has been seen for this account, its
+  // absence from a later poll means "no usage yet this window", not "no
+  // such quota" — the API only emits the entry once there's a data point.
+  private fableQuotaSeen = false;
+
   constructor(workspacePath: string, opts?: { cachePath?: string; configFile?: string }) {
     const stateDir = claudeStateDir();
     this.projectsDir = path.join(stateDir, 'projects');
@@ -141,6 +146,7 @@ export class UsageProvider {
 
       const now = Date.now();
       const fableLimit = findWeeklyModelLimit(apiData?.limits, 'Fable');
+      if (fableLimit) { this.fableQuotaSeen = true; }
 
       this.snapshot = {
         // API-sourced quota data (server truth, cached across transient failures)
@@ -153,7 +159,7 @@ export class UsageProvider {
         quotaPctWeeklySonnet: apiData?.seven_day_sonnet?.utilization ?? null,
         weeklyResetTimeSonnet: apiData?.seven_day_sonnet?.resets_at
           ? new Date(apiData.seven_day_sonnet.resets_at).getTime() : null,
-        quotaPctWeeklyFable: fableLimit?.percent ?? null,
+        quotaPctWeeklyFable: fableLimit?.percent ?? (this.fableQuotaSeen ? 0 : null),
         weeklyResetTimeFable: fableLimit?.resets_at
           ? new Date(fableLimit.resets_at).getTime() : null,
         extraUsageEnabled: apiData?.extra_usage?.is_enabled ?? false,
@@ -192,6 +198,7 @@ export class UsageProvider {
     this.lastApiData = null;
     this.lastApiCallAttempt = 0;
     this.apiCooldownMs = 0;
+    this.fableQuotaSeen = false;
   }
 
   // ── Disk cache (survives extension reloads) ─────────────────────────
@@ -200,6 +207,12 @@ export class UsageProvider {
     try {
       const raw = fs.readFileSync(this.cachePath, 'utf-8');
       const cached = JSON.parse(raw);
+      // _fableSeen is read regardless of the 15-minute freshness gate below —
+      // "this account has a Fable quota tier" doesn't go stale the way a
+      // percentage snapshot does.
+      if ((cached._account ?? null) === this.accountId && cached._fableSeen) {
+        this.fableQuotaSeen = true;
+      }
       // Only use cache if less than 15 minutes old AND written for the
       // account the config is currently logged into.
       if (cached._ts && Date.now() - cached._ts < 15 * 60 * 1000
@@ -207,6 +220,7 @@ export class UsageProvider {
         const ts = cached._ts;
         delete cached._ts;
         delete cached._account;
+        delete cached._fableSeen;
         this.lastApiData = cached as UsageApiResponse;
         // Seed throttle from disk — prevents cross-window duplicate calls
         this.lastApiCallAttempt = ts;
@@ -222,6 +236,9 @@ export class UsageProvider {
     try {
       const raw = fs.readFileSync(this.cachePath, 'utf-8');
       const cached = JSON.parse(raw);
+      if ((cached._account ?? null) === this.accountId && cached._fableSeen) {
+        this.fableQuotaSeen = true;
+      }
       // Only adopt if the cached timestamp is newer than our last API call
       // and the cache was written for the current account; a foreign-account
       // cache must not advance the throttle either.
@@ -230,6 +247,7 @@ export class UsageProvider {
         const ts = cached._ts;
         delete cached._ts;
         delete cached._account;
+        delete cached._fableSeen;
         this.lastApiData = cached as UsageApiResponse;
         this.lastApiCallAttempt = ts;
         this.rollCooldown();
@@ -244,7 +262,9 @@ export class UsageProvider {
       const tmpPath = this.cachePath + `.${process.pid}.tmp`;
       await fs.promises.writeFile(
         tmpPath,
-        JSON.stringify({ ...data, _ts: Date.now(), _account: this.accountId }),
+        JSON.stringify({
+          ...data, _ts: Date.now(), _account: this.accountId, _fableSeen: this.fableQuotaSeen,
+        }),
         'utf-8',
       );
       await fs.promises.rename(tmpPath, this.cachePath);
