@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.9 (2026-07-07) — Stop false "Waiting for permission" in Auto mode
+
+### Fixed
+- **A session running in Claude Code's Auto (bypass-permissions) mode no longer flashes "Waiting for permission" on a slow tool call.** No permission prompt can ever appear in that mode, but the existing timer/poll-based wait detection couldn't tell a slow-*executing* tool (e.g. a Google Workspace API call) from one truly *blocked* — so anything slower than the 15s heuristic mislabelled the card. Serac now reads the session's reported permission mode (from the JSONL transcript, or hook enrichment when available) and skips the ambiguous timer-based wait when no prompt is structurally possible. A genuine, hook-confirmed permission prompt — Claude Code's own ground truth that a prompt is on screen — is never suppressed by this, regardless of mode, and neither is a real interactive question (AskUserQuestion).
+
 ## v1.16.8 (2026-07-07) — externalWriter is now opt-in (experimental)
 
 ### Changed
