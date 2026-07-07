@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.8 (2026-07-07) — externalWriter is now opt-in (experimental)
+
+### Changed
+- **The "session open in another window" block is now off by default, behind `serac.experimental.externalWriterBlock`.** The feature (v1.16.5, refined in v1.16.7) is still being tuned and has been reported as temperamental in daily use. With the setting off (the default), Serac never checks process ownership or subagent activity for this at all — no dimming, no badge, no blocking. Turn it on to restore the full behaviour.
+
 ## v1.16.7 (2026-07-07) — externalWriter unlocks after 10 minutes of quiet
 
 ### Fixed
