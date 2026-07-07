@@ -106,6 +106,38 @@ export function getToolProfile(name: string): ToolProfile {
  *  from pathological tool_use without matching tool_result. */
 export const MAX_ACTIVE_TOOLS = 500;
 
+// ── Permission-mode gate (FP-backlog option 2) ──────────────────────
+
+/** `permissionMode` values (from the JSONL `permissionMode` field, carried on
+ *  every `user` record and the dedicated `permission-mode` record type) under
+ *  which Claude Code auto-accepts every tool call — a permission prompt is
+ *  structurally impossible, so a permission-typed `waiting` can never be
+ *  genuine. Empirically surveyed across ~9,300 real records (2026-07-07):
+ *  observed values are `auto`, `acceptEdits`, `default`, `plan`, `dontAsk`.
+ *  Deliberately excludes:
+ *    - `acceptEdits` — only Edit/Write are auto-accepted (already exempt
+ *      tools); a Bash/MCP/etc. call can still raise a real prompt.
+ *    - `plan` — the most restrictive mode; exiting it to act is itself a
+ *      prompt.
+ *    - `dontAsk` — the one real capture of this value paired with an
+ *      explicit permission-deny-rule probe, suggesting auto-REJECT semantics,
+ *      not auto-accept. Ambiguous; excluded so a genuine denial-path block
+ *      isn't muted.
+ *  `bypassPermissions` is included defensively for the hook-derived
+ *  `permission_mode` field (PreToolUse), whose real-world value set has not
+ *  been directly captured — it is the documented Claude Code CLI flag name
+ *  for this mode and may be what that channel reports instead of `auto`.
+ *  See project_permission_false_positives memory. */
+const AUTO_ACCEPT_PERMISSION_MODES = new Set(['auto', 'bypassPermissions']);
+
+/** Whether `mode` is a known auto-accept permission mode (see
+ *  AUTO_ACCEPT_PERMISSION_MODES). Undefined/unknown modes are conservatively
+ *  treated as NOT auto-accept — the timer/poll backstop stays live unless we
+ *  have positive confirmation no prompt can occur. */
+export function isAutoAcceptPermissionMode(mode: string | undefined): boolean {
+  return mode !== undefined && AUTO_ACCEPT_PERMISSION_MODES.has(mode);
+}
+
 // ── Demotion logic ───────────────────────────────────────────────────
 
 /** Pure function: determine demotion outcome for a session.
@@ -119,6 +151,11 @@ export function computeDemotion(
   thresholdMs: number,
   turnStartMs = 0,
   seenOutputInTurn = true,
+  /** True when the session's permission mode guarantees no tool call can ever
+   *  raise a real permission prompt (see isAutoAcceptPermissionMode). Suppresses
+   *  only the permission-typed 'waiting' outcome below — every other branch
+   *  (extended-thinking defer, hard ceilings, done-when-idle) is unaffected. */
+  autoAcceptMode = false,
 ): SessionStatus | null {
   if (status !== 'running' && status !== 'waiting') return null;
 
@@ -147,7 +184,10 @@ export function computeDemotion(
 
   if (age > thresholdMs) {
     if (hasBlockingSubagents) return null;
-    if (activeToolCount > 0) return 'waiting';
+    // In an auto-accept mode this active tool cannot be blocked on a prompt —
+    // it's just slow. Stay 'running' rather than flip to a permission-typed
+    // 'waiting' that can never be genuine (FP-backlog option 2).
+    if (activeToolCount > 0) return autoAcceptMode ? null : 'waiting';
     if (activeToolCount === 0) return 'done';
   }
 

@@ -177,6 +177,87 @@ describe('SessionManager state machine', () => {
     expect(mgr.getStatus()).toBe('running'); // still running — MCP is slow
   });
 
+  // ── Permission timer: auto-accept mode gate (FP-backlog option 2) ──
+  // A slow MCP call in an auto-accept session (e.g. "Auto mode" in the native
+  // panel) can never be blocked on a real prompt — the JSONL `permissionMode`
+  // field disambiguates it from a genuine block, which a timer alone cannot.
+
+  it('does not flag waiting for a slow MCP tool when permissionMode is auto', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { permissionMode: 'auto' })]);
+    await feedRecords(mgr, [assistantToolUseRecord('mcp__google_workspace__manage_deployment', 'tool-1')]);
+    vi.advanceTimersByTime(16_000); // past the 15s slow delay
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('still flags waiting for the same slow MCP tool in default mode (regression guard)', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { permissionMode: 'default' })]);
+    await feedRecords(mgr, [assistantToolUseRecord('mcp__google_workspace__manage_deployment', 'tool-1')]);
+    vi.advanceTimersByTime(16_000);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+
+  it('still flags waiting when permissionMode is unset (no regression for un-enriched sessions)', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something')]);
+    await feedRecords(mgr, [assistantToolUseRecord('mcp__google_workspace__manage_deployment', 'tool-1')]);
+    vi.advanceTimersByTime(16_000);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+
+  it('does not suppress in acceptEdits mode — only edits are auto-accepted, other tools can still prompt', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { permissionMode: 'acceptEdits' })]);
+    await feedRecords(mgr, [assistantToolUseRecord('Bash', 'tool-1')]);
+    vi.advanceTimersByTime(16_000);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+
+  it('still transitions to waiting for AskUserQuestion in auto mode — a genuine prompt, not a permission gate', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { permissionMode: 'auto' })]);
+    await feedRecords(mgr, [assistantToolUseRecord('AskUserQuestion', 'tool-1')]);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+
+  it('an auto-accept session recovers to running once the tool_result arrives', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { permissionMode: 'auto' })]);
+    await feedRecords(mgr, [assistantToolUseRecord('mcp__google_workspace__manage_deployment', 'tool-1')]);
+    vi.advanceTimersByTime(16_000);
+    expect(mgr.getStatus()).toBe('running');
+    await feedRecords(mgr, [toolResultRecord('tool-1')]);
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  // The poll-based backstop (demoteIfStale → computeDemotion) is a second,
+  // independent path to the same permission-typed 'waiting' — isolated here
+  // from the in-process timer (a slow tool's 15s timer is still pending at
+  // the 6s mark, so calling demoteIfStale directly with a smaller threshold
+  // exercises ONLY the poll path).
+  it('demoteIfStale (poll-based backstop) does not flip to waiting in auto mode', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { permissionMode: 'auto' })]);
+    await feedRecords(mgr, [assistantToolUseRecord('Bash', 'tool-1')]);
+    vi.advanceTimersByTime(6_000); // well under the 15s in-process timer
+    expect(mgr.getStatus()).toBe('running');
+
+    expect(mgr.demoteIfStale(5_000)).toBe(false);
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('demoteIfStale still flags waiting in default mode (regression guard, poll-based backstop)', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { permissionMode: 'default' })]);
+    await feedRecords(mgr, [assistantToolUseRecord('Bash', 'tool-1')]);
+    vi.advanceTimersByTime(6_000);
+    expect(mgr.getStatus()).toBe('running');
+
+    expect(mgr.demoteIfStale(5_000)).toBe(true);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+
   // ── Idle timer ─────────────────────────────────────────────────
 
   it('transitions to done after idle timer fires (5s after output seen)', async () => {

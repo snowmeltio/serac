@@ -4,7 +4,7 @@
  * cover all branches explicitly and catch regressions faster.
  */
 import { describe, it, expect } from 'vitest';
-import { computeDemotion, getToolProfile, SessionManager } from './sessionManager.js';
+import { computeDemotion, getToolProfile, isAutoAcceptPermissionMode, SessionManager } from './sessionManager.js';
 
 describe('computeDemotion', () => {
   const NOW = 100_000;
@@ -18,6 +18,7 @@ describe('computeDemotion', () => {
     blockingSubs?: boolean;
     turnStart?: number;
     seenOutput?: boolean;
+    autoAccept?: boolean;
   } = {}) {
     const status = overrides.status ?? 'running';
     const age = overrides.age ?? 0;
@@ -31,6 +32,7 @@ describe('computeDemotion', () => {
       THRESHOLD,
       overrides.turnStart ?? 0,
       overrides.seenOutput ?? true,
+      overrides.autoAccept ?? false,
     );
   }
 
@@ -91,6 +93,26 @@ describe('computeDemotion', () => {
     expect(demote({ age: 35_000, activeTools: 2 })).toBe('waiting');
   });
 
+  // Branch 7, auto-accept gate (FP-backlog option 2): a permission-typed
+  // 'waiting' can never be genuine when no prompt can ever be raised — stay
+  // null (running) instead of flagging a false positive on a slow tool.
+  it('does not transition to waiting when tools active past threshold in auto-accept mode', () => {
+    expect(demote({ age: 35_000, activeTools: 2, autoAccept: true })).toBeNull();
+  });
+
+  // The 'done' branch (no active tools) is unaffected by auto-accept — it's
+  // an orthogonal question (session actually idle) from the permission gate.
+  it('auto-accept mode does not change the no-active-tools → done branch', () => {
+    expect(demote({ age: 35_000, activeTools: 0, autoAccept: true })).toBe('done');
+  });
+
+  // The 3-min hard ceiling still applies in auto-accept mode — a session that
+  // never resolves is still eventually swept to done, just not mislabelled
+  // 'waiting' along the way.
+  it('auto-accept mode does not suppress the hard ceiling', () => {
+    expect(demote({ age: 181_000, activeTools: 2, autoAccept: true })).toBe('done');
+  });
+
   // Branch 8: past threshold + no tools + no blocking subs → done
   it('transitions to done when no tools past threshold', () => {
     expect(demote({ age: 35_000 })).toBe('done');
@@ -140,6 +162,40 @@ describe('computeDemotion', () => {
     expect(computeDemotion(
       'running', lastActivity, 0, false, now, THRESHOLD, turnStart, false,
     )).toBe('done');
+  });
+});
+
+describe('isAutoAcceptPermissionMode', () => {
+  it('recognises the real-world auto-accept value', () => {
+    expect(isAutoAcceptPermissionMode('auto')).toBe(true);
+  });
+
+  it('recognises the hook-derived CLI flag name defensively', () => {
+    expect(isAutoAcceptPermissionMode('bypassPermissions')).toBe(true);
+  });
+
+  it('does not treat acceptEdits as auto-accept (other tools can still prompt)', () => {
+    expect(isAutoAcceptPermissionMode('acceptEdits')).toBe(false);
+  });
+
+  it('does not treat plan mode as auto-accept', () => {
+    expect(isAutoAcceptPermissionMode('plan')).toBe(false);
+  });
+
+  it('does not treat default mode as auto-accept', () => {
+    expect(isAutoAcceptPermissionMode('default')).toBe(false);
+  });
+
+  it('does not treat dontAsk as auto-accept (observed deny-rule semantics, not allow)', () => {
+    expect(isAutoAcceptPermissionMode('dontAsk')).toBe(false);
+  });
+
+  it('treats undefined conservatively as not auto-accept', () => {
+    expect(isAutoAcceptPermissionMode(undefined)).toBe(false);
+  });
+
+  it('treats an unknown mode string conservatively as not auto-accept', () => {
+    expect(isAutoAcceptPermissionMode('some-future-mode')).toBe(false);
   });
 });
 

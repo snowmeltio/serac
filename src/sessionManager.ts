@@ -26,6 +26,20 @@
  *                                hook pre-empts it when ingress is live)
  * running       → waiting       all subagents blocked                    PermissionTracker fire (subagent, bubbles)
  * running       → waiting       computeDemotion + active tools (no subs) demoteIfStale()
+ *               (permission-mode gate, FP-backlog option 2: none of the three transitions above
+ *                fire when the session's permission mode — the JSONL `permissionMode` field
+ *                (every `user` record + the `permission-mode` record type) OR the hook-derived
+ *                PreToolUse enrichment, either is enough — is a known auto-accept mode ('auto'/
+ *                'bypassPermissions'). In that mode no tool call can ever raise a real permission
+ *                prompt, so a permission-typed 'waiting' would always be a false positive.
+ *                CRITICAL: this gate applies ONLY to a 'timer'-sourced fire, never a 'hook'-sourced
+ *                one — PermissionRequest is Claude Code's own ground truth that a prompt is on
+ *                screen right now (per-rule overrides/deny-rules can still raise one even in an
+ *                auto-accept session), so it must never be muted by mode. AskUserQuestion is
+ *                unaffected either way — it's a genuine interactive prompt, not a permission gate.
+ *                See onWaitingFired's 'timer'|'hook' source param, isAutoAcceptPermissionMode() in
+ *                toolProfiles.ts, isAutoAcceptMode() below, and project_permission_false_positives
+ *                memory.)
  *
  * running       → done          idle timer (output seen, 5s idle)         resetIdleTimer() timeout
  * running       → done          idle timer (no output, process dead)     resetIdleTimer() + isProcessAlive()
@@ -99,7 +113,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { JsonlTailer } from './jsonlTailer.js';
 import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType, getContentBlocks } from './jsonlValidator.js';
-import { computeDemotion, getToolProfile, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS } from './toolProfiles.js';
+import { computeDemotion, getToolProfile, isAutoAcceptPermissionMode, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS } from './toolProfiles.js';
 import { formatModelLabel } from './detailShared.js';
 import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
@@ -112,7 +126,7 @@ import { makeBackgroundShellTracker, type BackgroundShellTracker, BACKGROUND_SHE
 import { makeSessionLoopTracker, type SessionLoopTracker } from './trackers/sessionLoopTracker.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 // Re-export for backward compatibility (tests import from sessionManager)
-export { computeDemotion, getToolProfile } from './toolProfiles.js';
+export { computeDemotion, getToolProfile, isAutoAcceptPermissionMode } from './toolProfiles.js';
 export type { ToolProfile } from './toolProfiles.js';
 
 /** Idle threshold: if no new data for 5s after a turn, mark as idle/done */
@@ -272,6 +286,12 @@ export class SessionManager {
    *  hook-accelerated 'needs_user_input' (AskUserQuestion legitimately waits with
    *  empty activeTools until its JSONL tool_use re-affirms). */
   private lastWaitingReason = '';
+  /** Session's permission mode, read from the JSONL `permissionMode` field
+   *  (every `user` record + the `permission-mode` record type). NOT display —
+   *  gates the permission-typed 'waiting' transitions above (see
+   *  isAutoAcceptPermissionMode() in toolProfiles.ts). Distinct from the
+   *  hook-derived, display-only state.permissionMode. */
+  private jsonlPermissionMode?: string;
   /** Glance-pack capture (display-only): branch, tool-error count, last reply. */
   private gitBranch = '';
   /** File paths tracked by the LATEST file-history-snapshot record — the
@@ -327,7 +347,7 @@ export class SessionManager {
     this.permissionTracker = makePermissionTracker({
       getActiveTools: () => this.state.activeTools,
       getLastToolResultAt: () => this.lastToolResultAt,
-      onWaitingFired: (toolName?: string) => {
+      onWaitingFired: (source: 'timer' | 'hook', toolName?: string) => {
         if (this.state.status !== 'running') { return; }
         // A registry-confirmed-dead process can't be blocked on a prompt — don't
         // flash 'waiting'; demoteIfStale will resolve it to done. (Permission FP.)
@@ -340,6 +360,15 @@ export class SessionManager {
         const needsUserInput = toolName
           ? getToolProfile(toolName).userInput
           : [...this.state.activeTools.values()].some(name => getToolProfile(name).userInput);
+        // Auto-accept mode: a slow-EXECUTING tool with no hook signal is always
+        // a false positive, so the ambiguous TIMER fire is suppressed. A HOOK
+        // fire is Claude Code's own PermissionRequest — ground truth that a
+        // prompt genuinely exists right now — and must never be suppressed by
+        // mode; permission-mode overrides/deny-rules can still raise a real
+        // prompt even in a broadly auto-accept session. Does NOT apply to
+        // AskUserQuestion either way — a genuine interactive prompt, not a
+        // permission gate (see isAutoAcceptMode()).
+        if (source === 'timer' && !needsUserInput && this.isAutoAcceptMode()) { return; }
         // Require an active tool, EXCEPT for direct-input tools accelerated by a
         // hook ahead of the JSONL tool_use record (activeTools still empty). The
         // JSONL path re-affirms their `waiting` state, so there is no flip risk.
@@ -435,6 +464,7 @@ export class SessionManager {
     // Glance enrichment rebuilds from the replayed records — stale values must
     // not survive a truncation they may no longer be true of.
     this.gitBranch = '';
+    this.jsonlPermissionMode = undefined;
     this.toolErrorCount = 0;
     this.lastAssistantText = '';
     this.trackedFiles = [];
@@ -687,6 +717,7 @@ export class SessionManager {
       thresholdMs,
       this.turnStartAt,
       this.seenOutputInTurn,
+      this.isAutoAcceptMode(),
     );
 
     if (result === null) {
@@ -868,6 +899,20 @@ export class SessionManager {
     return this.everSeenLiveInRegistry ? false : undefined;
   }
 
+  /** True when the session's reported permission mode guarantees no tool call
+   *  can ever raise a real permission prompt (FP-backlog option 2). Checks
+   *  BOTH independent sources — the JSONL-native field (works without hooks,
+   *  values like 'auto') and the hook-derived PreToolUse enrichment (values
+   *  like 'bypassPermissions', only populated when hook ingress is live) — so
+   *  whichever arrives first (or at all) is enough; neither alone is required.
+   *  Gates the permission-typed 'waiting' transitions ONLY for a 'timer'-
+   *  sourced fire — see the state transition table at the top of this file
+   *  and isAutoAcceptPermissionMode(). */
+  private isAutoAcceptMode(): boolean {
+    return isAutoAcceptPermissionMode(this.jsonlPermissionMode)
+      || isAutoAcceptPermissionMode(this.state.permissionMode);
+  }
+
   /** Check if the Claude Code process is still alive.
    *  Returns true if PID was never captured (conservative: assume alive). */
   private isProcessAlive(): boolean {
@@ -944,6 +989,13 @@ export class SessionManager {
     if (typeof branch === 'string' && branch && branch !== 'HEAD') { this.gitBranch = branch; }
     if (record.sessionId && record.sessionId !== this.state.sessionId) {
       return false;
+    }
+
+    // permissionMode gates real status transitions (unlike the cosmetic fields
+    // above) — captured only once a record is confirmed to belong to this
+    // session, so an unrelated/foreign record can't skew the auto-accept gate.
+    if (typeof record.permissionMode === 'string' && record.permissionMode) {
+      this.jsonlPermissionMode = record.permissionMode;
     }
 
     // Only update lastActivity for meaningful records (user/assistant turns).
@@ -1410,7 +1462,7 @@ export class SessionManager {
     const tracker = makePermissionTracker({
       getActiveTools: () => activeTools,
       getLastToolResultAt: () => this.lastToolResultAt,
-      onWaitingFired: () => this.bubbleSubagentWaitingIfAllBlocked(subagent),
+      onWaitingFired: (source, toolName) => this.bubbleSubagentWaitingIfAllBlocked(subagent, source, toolName),
     }, trackerOpts);
     subagent = {
       parentToolUseId,
@@ -1481,9 +1533,23 @@ export class SessionManager {
   /** Subagent's PermissionTracker fired. Mark this subagent as blocked, and
    *  bubble "waiting" up to the parent session only when ALL running subagents
    *  are blocked. Centralises the policy so it's discoverable from a stack
-   *  trace and testable via `sessionManager.bubble.test.ts`. */
-  private bubbleSubagentWaitingIfAllBlocked(subagent: SubagentInfo): void {
+   *  trace and testable via `sessionManager.bubble.test.ts`.
+   *  @param source  'hook' = ground-truth PermissionRequest for this subagent's
+   *    agent_id; 'timer' = the heuristic delay. See onWaitingFired's docs on
+   *    PermissionTrackerHost — a 'hook' fire must never be suppressed by mode. */
+  private bubbleSubagentWaitingIfAllBlocked(subagent: SubagentInfo, source: 'timer' | 'hook', toolName?: string): void {
     if (!subagent.running || subagent.activeTools.size === 0) { return; }
+    // Mirrors the session-level treatment: AskUserQuestion is a genuine
+    // interactive prompt, not a permission gate, so it's never suppressed.
+    const needsUserInput = toolName
+      ? getToolProfile(toolName).userInput
+      : [...subagent.activeTools.values()].some(name => getToolProfile(name).userInput);
+    // Auto-accept mode covers the whole session tree (subagents inherit the
+    // parent's permission mode) — a TIMER fire for a subagent tool call can't
+    // be blocked on a prompt either. A HOOK fire is ground truth (Claude Code
+    // confirming a real prompt for this subagent) and must never be
+    // suppressed by mode. See isAutoAcceptMode().
+    if (source === 'timer' && !needsUserInput && this.isAutoAcceptMode()) { return; }
     subagent.waitingOnPermission = true;
     if (this.state.status === 'running' && this.allRunningSubagentsBlocked()) {
       this.setStatus('waiting', 'subagent_permission_bubble');

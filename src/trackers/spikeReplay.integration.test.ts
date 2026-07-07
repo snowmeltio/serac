@@ -167,7 +167,7 @@ describe('PermissionRequest positive path — all-hook-events-2026-06-01.jsonl',
     const host = {
       getActiveTools: () => new Map([['tu-1', 'Bash']]),
       getLastToolResultAt: () => 0,
-      onWaitingFired: (toolName?: string) => { fired.push(toolName); },
+      onWaitingFired: (_source: 'timer' | 'hook', toolName?: string) => { fired.push(toolName); },
     };
     const tracker = makePermissionTracker(host, { hookRouter: router, sessionId: SID });
     // Replay the session's full event stream in capture order — only the

@@ -75,7 +75,8 @@ The table is curated, not exhaustive — see `src/` for the full list.
 
 ```
 done ──→ running          (user record arrives, dequeue, or compact_boundary)
-running ──→ waiting       (AskUserQuestion, permission timer 3s/15s, all subagents blocked)
+running ──→ waiting       (AskUserQuestion, permission timer 3s/15s, all subagents blocked — suppressed
+                            in an auto-accept permission mode, see item 9)
 running ──→ done          (idle timer 5s, all-subagents-done, hard ceiling 3min*, or Stop hook)
 waiting ──→ running       (sidechain tool_result unblocks subagents, user record)
 waiting ──→ running/done  (stale-waiting reconciliation: no live wait backs the status)
@@ -99,6 +100,7 @@ Internal statuses are `running | waiting | done`. `stale` and `idle` are display
 6. **Registry-confirmed death (permission-FP gate)** — `demoteIfStale` resolves a `running`/`waiting` session to `done` at once (ahead of the hard ceiling) when the process-liveness registry (`processRegistry.ts`) confirms the backing process has exited; the same check suppresses the permission timer firing a false `waiting`. A dead process can't be blocked on a prompt, so this kills the stale "Waiting for your response". Conservative by design: it fires only when the session was *seen live in the registry before* and is now gone (`isConfirmedDeadByRegistry()` latches `everSeenLiveInRegistry`), so a session class the registry never tracks is never wrongly silenced, and an absent/empty registry is a no-op.
 7. **`Stop` hook (when present)** — accelerates `running → done` to the instant the turn ends, ahead of the 5s idle timer. Sets the `turnEndedByStop` guard so the turn's trailing assistant record (polled 0.5–2s later) cannot re-fire `running`; the guard is released by the next genuine new-turn reopener (user record, `dequeue`, or `compact_boundary`) or on `resetState`. Pure acceleration — `done` is still reached by the idle timer when no hook arrives, so hookless sessions are unchanged. See "Hook consumption".
 8. **Stale-`waiting` reconciliation (permission-FP backstop)** — every `demoteIfStale` poll asserts the invariant *a permission-typed `waiting` must be backed by a live wait*: a **non-exempt** active tool (the pending permission/AskUserQuestion) or a running subagent blocked on permission. The host setters guarantee this at set time, but nothing else re-checks it once the backing clears without a reopening record. Two reachable ways to leave an unbacked `waiting`: a slow-**executing** tool that tripped the timer (item 2) then finished, or a **background subagent** that bubbled the parent (`subagent_permission_bubble`) and is then force-completed by the dormant sweep (`completeSubagent` does not reopen the parent). `computeDemotion` holds a `waiting` below its 10-min ceiling, so without this the card grows "Waiting · Nm" while the turn is actually live/over. The guard re-opens to `running` (preserving `turnStartAt`/`seenOutputInTurn`, so the same poll's `computeDemotion` still tells a live extended-think from an ended turn) and scrubs the stale subtitle. Excludes `needs_user_input` — a hook-accelerated `AskUserQuestion` legitimately waits with empty `activeTools` until its JSONL `tool_use` re-affirms. Diagnostics: `SessionDiscovery` wires `onTransition` to a `[status]` `OutputChannel` trace (reason + `activeTools` count), with the `waiting` lifecycle and `stale_waiting_reconciled` at `info`.
+9. **Permission-mode gate (auto-accept — FP-backlog option 2)** — the timer (item 2), the poll-path `computeDemotion` 'waiting' branch (item 8's counterpart on the way *in*), and the subagent bubble (see "Subagent permission bubbling" below) all read `isAutoAcceptMode()`/`isAutoAcceptPermissionMode()` and no-op when the session's permission mode guarantees no tool call can ever raise a real prompt. Two independent sources feed it: the JSONL-native `permissionMode` field (every `user` record + the dedicated `permission-mode` record type — works without hook ingress; real-world values surveyed 2026-07-07: `auto`, `acceptEdits`, `default`, `plan`, `dontAsk`) and the hook-derived `PreToolUse` enrichment (`bypassPermissions`) — either is sufficient, so whichever arrives first still closes the gap. Only `auto`/`bypassPermissions` count as auto-accept; `acceptEdits` only covers file edits (already-exempt tools) so other tools can still prompt, `plan` still prompts, and `dontAsk` was observed paired with a deny-rule probe (auto-*reject*, not auto-accept) so is excluded for safety. Unaffected: `AskUserQuestion` (`needs_user_input`) is a genuine interactive prompt, not a permission gate, and still transitions to `waiting` regardless of mode. **Critical invariant (caught by adversarial review before ship, 2026-07-07): the gate applies ONLY to a `'timer'`-sourced fire, never a `'hook'`-sourced one.** `PermissionRequest` is Claude Code's own ground truth that a prompt is genuinely on screen (item 2's hook-overlay); per-rule permission overrides/deny-rules can raise a real prompt even in a broadly auto-accept session, so muting a hook fire by mode would silently hide a real, unanswered prompt — worse than the false positive being fixed. `PermissionTrackerHost.onWaitingFired(source, toolName?)` threads this discriminator from both `TimerPermissionTracker` and `HookPermissionTracker` (which share one host callback) down through the session-level callback and `bubbleSubagentWaitingIfAllBlocked()`. See `isAutoAcceptPermissionMode()`/`isAutoAcceptMode()` in `toolProfiles.ts`/`sessionManager.ts` and `project_permission_false_positives` memory.
 
 ### Out-of-order tool_use/tool_result
 
@@ -115,7 +117,7 @@ These tools never trigger permission wait detection: `Agent`, `Task`, `TodoWrite
 
 ### Subagent permission bubbling
 
-Each subagent runs its own permission timer against `subagent.activeTools`. When it fires, the subagent is marked `waitingOnPermission`. The parent only transitions to `waiting` when **all** running subagents are blocked — a single-subagent block doesn't bubble if other subagents are still progressing.
+Each subagent runs its own permission timer against `subagent.activeTools`. When it fires, the subagent is marked `waitingOnPermission`. The parent only transitions to `waiting` when **all** running subagents are blocked — a single-subagent block doesn't bubble if other subagents are still progressing. Subagents inherit the parent's permission mode (all hook/JSONL permission signals for a session tree ride the parent's `sessionId`), so `bubbleSubagentWaitingIfAllBlocked` no-ops entirely — not even marking `waitingOnPermission` — when the session is in an auto-accept mode (item 9 above).
 
 Subagents are further classified for demotion:
 - **Blocking subagent** — `parentToolUseId` is still in the parent's `activeTools` (parent waiting for the Task/Agent result). Suppresses parent demotion.
@@ -309,6 +311,12 @@ all of it, which Draft 2 got wrong.
    so writing `activity` would be clobbered by a *stale* later-arriving JSONL
    `tool_use` (arrival-order, not event-order — the exact race Draft 2
    over-claimed immunity to). A dedicated field sidesteps it entirely.
+   - This `permissionMode` is the hook-derived, display-only one
+     (`SessionState.permissionMode`, requires hook ingress). It is distinct
+     from the JSONL-native `permissionMode` (every `user` record + the
+     `permission-mode` record type, works without hooks) that Status inference
+     item 9 reads to gate the permission-typed `waiting` transitions — that
+     field is *not* enrichment, by design.
    - **Exception — `PreCompact` is a status-stabiliser, not enrichment.** It
      opens the compacting grace window (below): holds `running`/high-confidence
      and suppresses demotion. It is the one lifecycle event that touches status.

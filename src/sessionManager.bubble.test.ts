@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { JsonlRecord } from './types.js';
+import { HookEventRouter } from './hookEventRouter.js';
 
 let mockRecords: JsonlRecord[] = [];
 vi.mock('./jsonlTailer.js', () => ({
@@ -28,13 +29,17 @@ function makeManager(): InstanceType<typeof SessionManager> {
   return new SessionManager('test-session-id', '/tmp/test.jsonl', 'test-workspace');
 }
 
+function makeManagerWithHooks(router: HookEventRouter, sessionId = 'test-session-id'): InstanceType<typeof SessionManager> {
+  return new SessionManager(sessionId, '/tmp/test.jsonl', 'test-workspace', { hookRouter: router });
+}
+
 async function feed(mgr: InstanceType<typeof SessionManager>, records: JsonlRecord[]): Promise<boolean> {
   mockRecords = records;
   return mgr.update();
 }
 
-function user(text: string): JsonlRecord {
-  return { type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text }] } };
+function user(text: string, extras: Partial<JsonlRecord> = {}): JsonlRecord {
+  return { type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text }] }, ...extras };
 }
 
 function spawnAgent(toolId: string, description: string = 'worker'): JsonlRecord {
@@ -191,6 +196,60 @@ describe('Bubble policy: subagent permission wait → parent session', () => {
 
     expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(false);
     expect(mgr.getStatus()).toBe('running');
+  });
+
+  // FP-backlog option 2: auto-accept mode covers the whole session tree, so a
+  // subagent's tool call can't be blocked on permission either — neither the
+  // subagent's own badge nor the parent bubble should flip to waiting.
+  it('auto-accept mode suppresses the subagent bubble entirely', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go', { permissionMode: 'auto' })]);
+    await feed(mgr, [spawnAgent('agent-1')]);
+    await feed(mgr, [sidechainToolUse('SomeTool', 'sc-1', 'agent-1')]);
+
+    vi.advanceTimersByTime(3_001);
+
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(false);
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  // Regression pin for a critical review finding: a subagent's HookPermissionTracker
+  // shares the same onWaitingFired callback for its timer AND its ground-truth
+  // PermissionRequest subscription (attached when agentId is known at spawn — a
+  // resumed subagent). Auto-accept mode must suppress only the ambiguous timer,
+  // never a hook-confirmed prompt for that specific subagent.
+  it('a ground-truth PermissionRequest hook fire for a subagent still bubbles the parent in auto-accept mode', async () => {
+    const router = new HookEventRouter();
+    const mgr = makeManagerWithHooks(router);
+    await feed(mgr, [user('go', { permissionMode: 'auto' })]);
+    // Resumed subagent: agentId ('agent-77') is known at spawn time, so
+    // createSubagent attaches the hook variant (see trackerOpts in
+    // sessionManager.ts's createSubagent()).
+    await feed(mgr, [{
+      type: 'assistant', timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'tool_use', name: 'Agent', id: 'agent-resume-1', input: { description: 'worker', resume: 'agent-77' } }] },
+    }]);
+    await feed(mgr, [sidechainToolUse('SomeTool', 'sc-1', 'agent-resume-1')]);
+
+    router.onHookEvent('test-session-id', 'PermissionRequest', { tool_name: 'SomeTool', agent_id: 'agent-77' });
+
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(true);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+
+  // Symmetry fix: bubbleSubagentWaitingIfAllBlocked() previously gated on
+  // isAutoAcceptMode() alone, with no needsUserInput exemption — unlike the
+  // session-level callback. A subagent's AskUserQuestion must still bubble.
+  it('AskUserQuestion on a subagent is not suppressed by auto-accept mode (genuine prompt, not a permission gate)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go', { permissionMode: 'auto' })]);
+    await feed(mgr, [spawnAgent('agent-1')]);
+    await feed(mgr, [sidechainToolUse('AskUserQuestion', 'sc-1', 'agent-1')]);
+
+    vi.advanceTimersByTime(3_001); // AskUserQuestion is non-exempt, non-slow
+
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(true);
+    expect(mgr.getStatus()).toBe('waiting');
   });
 
   it('completed subagent does not count toward "all blocked"', async () => {

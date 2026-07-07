@@ -76,13 +76,20 @@ PermissionTracker's invariants were implicit. They are:
   schedule → fire interval to ~0 ms. Subscribers must still apply the
   host-callback gate (session status, subagent running) because the parent
   state may have moved between the hook firing and the subscriber receiving.
-- `onWaitingFired(toolName?)`: the hook variant passes the event's `tool_name`;
-  the timer variant omits it (no single triggering tool). The host keys the
-  activity label off the tool's `userInput` profile. The active-tool gate
-  (`activeTools` non-empty) is bypassed **only** for `userInput` tools
-  (AskUserQuestion), so they accelerate to `waiting` ahead of their JSONL
-  `tool_use` record. Non-input tools keep the gate: their JSONL path runs
-  `setRunning()`, which would otherwise flip an accelerated `waiting → running`.
+- `onWaitingFired(source, toolName?)`: `source` is `'hook'` for a
+  `PermissionRequest` event (ground truth — Claude Code confirms a prompt is
+  genuinely on screen) or `'timer'` for the heuristic delay (cannot distinguish
+  slow-executing from truly blocked). A host that skips a permission-typed wait
+  in an auto-accept permission mode (see `isAutoAcceptMode()` in
+  `sessionManager.ts`) MUST gate that skip on `source === 'timer'` only — a
+  `'hook'` fire must never be suppressed, mode or no mode. `toolName` is the
+  event's `tool_name` for the hook variant; the timer variant omits it (no
+  single triggering tool). The host keys the activity label off the tool's
+  `userInput` profile. The active-tool gate (`activeTools` non-empty) is
+  bypassed **only** for `userInput` tools (AskUserQuestion), so they accelerate
+  to `waiting` ahead of their JSONL `tool_use` record. Non-input tools keep the
+  gate: their JSONL path runs `setRunning()`, which would otherwise flip an
+  accelerated `waiting → running`.
 
 ## Adding a new tracker
 

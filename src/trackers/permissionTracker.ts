@@ -54,12 +54,20 @@ export interface PermissionTrackerHost {
   /** Timer fired AND activeTools is still non-empty, OR a `PermissionRequest`
    *  hook arrived. Host applies status side effects (e.g. set status='waiting',
    *  append activity, bubble to parent).
+   *  @param source  'hook' = Claude Code's own `PermissionRequest` event fired —
+   *    ground truth that a prompt is genuinely on screen right now. 'timer' =
+   *    the heuristic delay elapsed with no tool_result — cannot distinguish a
+   *    slow-EXECUTING tool from one truly BLOCKED. Hosts that skip a permission-
+   *    typed wait in an auto-accept permission mode (no prompt is structurally
+   *    possible) MUST gate that skip on `source === 'timer'` only — a 'hook'
+   *    fire is Claude Code itself confirming a prompt exists and must never be
+   *    suppressed, mode or no mode.
    *  @param toolName  The tool the request is for, when known from a hook event.
    *    Lets the host key the label (AskUserQuestion → "Waiting for your response"
    *    vs "Waiting for permission") and accelerate direct-input tools ahead of
    *    the JSONL tool_use record. Absent for the timer variant, which has no
    *    single triggering tool — the host then reads activeTools. */
-  onWaitingFired(toolName?: string): void;
+  onWaitingFired(source: 'timer' | 'hook', toolName?: string): void;
 }
 
 export interface PermissionTracker {
@@ -107,7 +115,7 @@ class TimerPermissionTracker implements PermissionTracker {
     this.timerId = setTimeout(() => {
       if (this.disposed) { return; }
       if (this.host.getActiveTools().size === 0) { return; }
-      this.host.onWaitingFired();
+      this.host.onWaitingFired('timer');
     }, delay);
   }
 
@@ -187,7 +195,7 @@ class HookPermissionTracker implements PermissionTracker {
       // request can't move a running session to waiting.
       const userInput = toolName ? getToolProfile(toolName).userInput : false;
       if (!userInput && host.getActiveTools().size === 0) { return; }
-      host.onWaitingFired(toolName);
+      host.onWaitingFired('hook', toolName);
     });
   }
 

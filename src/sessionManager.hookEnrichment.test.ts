@@ -190,6 +190,62 @@ describe('PermissionRequest acceleration (tool_name-keyed label)', () => {
     expect(mgr.getStatus()).toBe('waiting');
     expect(mgr.getSnapshot().activity).toBe('Waiting for permission');
   });
+
+  // Regression pin for a critical review finding: the auto-accept permission-
+  // mode gate (FP-backlog option 2) must suppress ONLY the ambiguous in-process
+  // TIMER fire, never a ground-truth `PermissionRequest` hook fire — Claude Code
+  // itself confirming a prompt is genuinely on screen right now must never be
+  // muted by mode (permission-mode overrides/deny-rules can still raise a real
+  // prompt even in a broadly auto-accept session).
+  it('a ground-truth PermissionRequest hook fire still flips to waiting in auto-accept mode', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    await feed(mgr, [{ type: 'assistant', timestamp: ts(), permissionMode: 'auto', message: { content: [{ type: 'text', text: 'thinking' }] } }]);
+    await feed(mgr, [toolUse('Bash', 'bash1')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    router.onHookEvent(SID, 'PermissionRequest', { tool_name: 'Bash' });
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toBe('Waiting for permission');
+  });
+
+  it('the ambiguous in-process timer (no hook fire) stays suppressed in auto-accept mode even with hooks wired', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    await feed(mgr, [{ type: 'assistant', timestamp: ts(), permissionMode: 'auto', message: { content: [{ type: 'text', text: 'thinking' }] } }]);
+    await feed(mgr, [toolUse('mcp__google_workspace__manage_deployment', 'tool-1')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    // Past the 15s slow delay with no PermissionRequest hook ever arriving —
+    // just a slow-executing tool, not a blocked one.
+    vi.advanceTimersByTime(16_000);
+    expect(mgr.getStatus()).toBe('running');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Auto-accept gate: the hook-derived PreToolUse permission_mode channel
+// contributes too — not just the JSONL-native permissionMode field — so a
+// session that only has hook enrichment (no JSONL permissionMode yet) still
+// gets the false-positive fix.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('Auto-accept gate via the hook-derived permission_mode channel', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; mockTruncated = false; });
+
+  it('a hook-reported bypassPermissions mode suppresses the ambiguous timer fire, with no JSONL permissionMode at all', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    await feed(mgr, [assistant('thinking')]);
+    await feed(mgr, [toolUse('mcp__google_workspace__manage_deployment', 'tool-1')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    // PreToolUse enrichment only — no JSONL permissionMode field on any record.
+    router.onHookEvent(SID, 'PreToolUse', { tool_name: 'mcp__google_workspace__manage_deployment', permission_mode: 'bypassPermissions' });
+
+    vi.advanceTimersByTime(16_000);
+    expect(mgr.getStatus()).toBe('running');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────

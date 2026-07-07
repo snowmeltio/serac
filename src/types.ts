@@ -100,7 +100,11 @@ export interface SessionState {
    *  Display-only; never affects status. Undefined until a PostToolUse arrives. */
   lastTool?: ToolOutcome;
   /** Hook enrichment (PreToolUse): the session's current permission mode
-   *  (e.g. "default", "acceptEdits", "bypassPermissions"). Display-only. */
+   *  (e.g. "default", "acceptEdits", "bypassPermissions"). Display-only for the
+   *  snapshot/UI consumer, but ALSO read internally by
+   *  SessionManager.isAutoAcceptMode() (alongside the distinct JSONL-native
+   *  JsonlRecord.permissionMode, which works without hooks) to gate the
+   *  permission-typed 'waiting' transitions — see toolProfiles.ts. */
   permissionMode?: string;
   /** Hook enrichment (SessionEnd): why the session ended
    *  ("clear" | "logout" | "prompt_input_exit" | "other"). Display-only. */
@@ -156,7 +160,9 @@ export interface SessionSnapshot {
   worktreeLabel?: string;
   /** Hook enrichment — outcome of the most recently completed tool (PostToolUse). */
   lastTool?: ToolOutcome;
-  /** Hook enrichment — session's current permission mode (PreToolUse). */
+  /** Hook enrichment — session's current permission mode (PreToolUse).
+   *  Display-only here (webview never derives behaviour from it) — see
+   *  SessionState.permissionMode for the internal status-gating consumer. */
   permissionMode?: string;
   /** Hook enrichment — why the session ended (SessionEnd). */
   endReason?: string;
@@ -670,10 +676,17 @@ export type JsonlRecordType =
   | 'last-prompt'
   | 'summary'
   | 'agent-name'
-  // Permission-mode change marker: {"type":"mode","mode":"normal",...}. No state
-  // action today, but it is the signal a future auto-accept-aware permission
-  // timer would read (skip the timer when the mode allows the tool).
+  // Constant marker seen as {"type":"mode","mode":"normal",...} — surveyed
+  // 2026-07-07 across ~2,870 real occurrences, always "normal". NOT a
+  // permission-mode signal (an earlier note here assumed it was; corrected).
+  // Purpose otherwise unconfirmed.
   | 'mode'
+  // Permission-mode change marker: {"type":"permission-mode","permissionMode":
+  // "auto"|"acceptEdits"|"default"|"plan"|"dontAsk",...}. The `permissionMode`
+  // field also rides on every plain `user` record (far more frequent — see
+  // JsonlRecord.permissionMode). This is the real auto-accept-aware permission
+  // timer signal (see isAutoAcceptPermissionMode in toolProfiles.ts).
+  | 'permission-mode'
   | (string & {}); // allows any string but provides autocomplete for known types
 
 /** Raw JSONL record from Claude Code transcript files */
@@ -682,6 +695,11 @@ export interface JsonlRecord {
   sessionId?: string;
   slug?: string;
   cwd?: string;
+  /** The session's permission mode at the time of this record — carried on
+   *  every `user` record and the dedicated `permission-mode` record type. See
+   *  isAutoAcceptPermissionMode() in toolProfiles.ts. Distinct from the
+   *  hook-derived, display-only SessionState.permissionMode. */
+  permissionMode?: string;
   timestamp?: string;
   uuid?: string;
   parentUuid?: string;
