@@ -227,6 +227,17 @@ annotated, and the unknown state shows nothing rather than guessing.
 
 ### Writer ownership (externalWriter)
 
+Gated entirely behind `serac.experimental.externalWriterBlock` (default
+**off**, still being tuned). Off means `SessionDiscovery.resolveWriterOwnership()`
+and `isExternalWriterFresh()` both return before touching the process
+registry, `writerOwnership.ts`, or `writerActivity.ts` at all — a no-op, not
+just hidden in the UI — so every snapshot's `externalWriter` is `undefined`
+and every open/send decision passes through unblocked. The poll loop's
+`writerOwnership.refresh()` call and `recencyCache` sweep are gated the same
+way; `processRegistry.scan()` itself still always runs (it also feeds the
+unrelated permission-false-positive liveness gate). Everything below this
+paragraph only applies when the setting is on.
+
 `SessionSnapshot.externalWriter` is `true` when a session's registered live
 process (`~/.claude/sessions/<pid>.json`) is confirmed to be a child of a
 *different* VS Code window's Extension Host than this one, detected by

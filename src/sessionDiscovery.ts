@@ -12,6 +12,7 @@ import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
 import { WriterOwnership, aggregateWriterOwnership } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
+import { readSettings } from './settings.js';
 import { claudeStateDir } from './paths.js';
 import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
@@ -1020,8 +1021,18 @@ export class SessionDiscovery {
    *  check is scoped to only the CONFIRMED-EXTERNAL processes among `procs`
    *  (not every process registered under the id) — see
    *  `isRecentlyActiveElsewhere`'s docstring for why an own-window process's
-   *  recency must never be allowed to stand in for the external writer's. */
+   *  recency must never be allowed to stand in for the external writer's.
+   *
+   *  Gated on `serac.experimental.externalWriterBlock` (default OFF): when
+   *  off, this returns `undefined` before touching the process registry or
+   *  `writerOwnership` at all — the whole feature is a no-op, not just
+   *  hidden in the UI, matching the "no filtering/blocking by default"
+   *  requirement. Read fresh (not cached) each call, same as every other
+   *  experimental-gate read in this codebase (see e.g. `getMessagingSettings`
+   *  in extension.ts) — cheap, and this function already runs on every
+   *  snapshot build. */
   private resolveWriterOwnership(sessionId: string): boolean | undefined {
+    if (!readSettings().experimental.externalWriterBlock) { return undefined; }
     const procs = this.processRegistry.getProcessesForSession(sessionId);
     const ownership = aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid)));
     if (ownership !== true) { return ownership; }
@@ -1068,8 +1079,13 @@ export class SessionDiscovery {
    *  fresh-registry-scan-and-fresh-`resolveFor()` contract — an authoritative
    *  open/send decision must never trust a cached verdict. Scoped to only the
    *  CONFIRMED-EXTERNAL processes among `procs` — see
-   *  `isRecentlyActiveElsewhere`'s docstring for why. */
+   *  `isRecentlyActiveElsewhere`'s docstring for why.
+   *
+   *  Gated on `serac.experimental.externalWriterBlock` (default OFF): when
+   *  off, resolves `false` (never blocks) before even scanning the process
+   *  registry — see `resolveWriterOwnership`'s docstring for the same gate. */
   async isExternalWriterFresh(sessionId: string): Promise<boolean> {
+    if (!readSettings().experimental.externalWriterBlock) { return false; }
     await this.processRegistry.scan();
     const procs = this.processRegistry.getProcessesForSession(sessionId);
     if (procs.length === 0) { return false; }
@@ -1502,20 +1518,27 @@ export class SessionDiscovery {
       // the same treatment.
       if (this.processRegistry.shouldRescan()) {
         await this.processRegistry.scan();
-        const liveProcesses = this.processRegistry.getLiveProcesses();
-        await this.writerOwnership.refresh(liveProcesses);
-        // Sweep recencyCache for ids no longer backed by any live process. The
-        // per-session prune loop above only walks `this.sessions` (the local
-        // workspace scan), but recencyCache is shared across local, foreign,
-        // sibling-worktree, and team-lead sessions via the one
-        // writerOwnershipProbeFactory closure (see its wiring above, near the
-        // constructor) — a
-        // confirmed-external entry only ever gets created while backed by a
-        // live process, so "no longer live" is a safe, universal eviction
-        // signal regardless of which category the id came from.
-        const liveSessionIds = new Set(liveProcesses.map(p => p.sessionId));
-        for (const id of this.recencyCache.keys()) {
-          if (!liveSessionIds.has(id)) { this.recencyCache.delete(id); }
+        // writerOwnership.refresh() and the recencyCache sweep below exist
+        // purely in service of the externalWriter feature (ps subprocess
+        // spawning + cache bookkeeping) — processRegistry.scan() itself must
+        // always run regardless (it also feeds the unrelated permission-
+        // false-positive liveness gate), so only these two are gated.
+        if (readSettings().experimental.externalWriterBlock) {
+          const liveProcesses = this.processRegistry.getLiveProcesses();
+          await this.writerOwnership.refresh(liveProcesses);
+          // Sweep recencyCache for ids no longer backed by any live process. The
+          // per-session prune loop above only walks `this.sessions` (the local
+          // workspace scan), but recencyCache is shared across local, foreign,
+          // sibling-worktree, and team-lead sessions via the one
+          // writerOwnershipProbeFactory closure (see its wiring above, near the
+          // constructor) — a
+          // confirmed-external entry only ever gets created while backed by a
+          // live process, so "no longer live" is a safe, universal eviction
+          // signal regardless of which category the id came from.
+          const liveSessionIds = new Set(liveProcesses.map(p => p.sessionId));
+          for (const id of this.recencyCache.keys()) {
+            if (!liveSessionIds.has(id)) { this.recencyCache.delete(id); }
+          }
         }
       }
 

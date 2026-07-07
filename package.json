@@ -361,6 +361,12 @@
             "scope": "application",
             "description": "Experimental, off by default. Enables an inline composer at the foot of a live teammate's transcript that writes a message directly into that member's inbox — Serac's only write into ~/.claude/. Direct delivery bypasses the team lead and has no delivery guarantee (the member drains its inbox on a ~5s poll). Disable to remove the composer and the write path entirely."
           },
+          "serac.experimental.externalWriterBlock": {
+            "type": "boolean",
+            "default": false,
+            "scope": "application",
+            "description": "Experimental, off by default. When on, a session confirmed to have a live writer process in a different VS Code window (and recently active within the last 10 minutes) dims on its card and refuses to open/message from here, to prevent two processes appending to the same session file. Off by default while this is still being tuned — with it off, Serac never checks or blocks on this at all."
+          },
           "serac.experimental.operatorName": {
             "type": "string",
             "default": "operator",

@@ -84,6 +84,12 @@ export interface SeracSettings {
     /** The honest sender label written as the inbox entry's `from`. Synthesized
      *  server-side (never accepted from the webview) and validated. */
     operatorName: string;
+    /** Master gate for the externalWriter block (a session with a confirmed
+     *  live writer in a different VS Code window dims and refuses to
+     *  open/message from here). Default off while still being tuned — off
+     *  means SessionDiscovery never runs the ownership/recency checks at
+     *  all, not just that the UI hides them. */
+    externalWriterBlock: boolean;
   };
   hooks: {
     /** Hook-ingress mode: patch Claude Code's settings.json so hook events
@@ -124,7 +130,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
   usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
   animations: { enabled: true },
   cleanup: { confirmRequired: true },
-  experimental: { teammateMessaging: false, operatorName: 'operator' },
+  experimental: { teammateMessaging: false, operatorName: 'operator', externalWriterBlock: false },
   hooks: { enabled: false, debug: false },
 };
 
@@ -185,6 +191,7 @@ export function readSettings(): SeracSettings {
     experimental: {
       teammateMessaging: cfg.get<boolean>('experimental.teammateMessaging', d.experimental.teammateMessaging),
       operatorName: cfg.get<string>('experimental.operatorName', d.experimental.operatorName),
+      externalWriterBlock: cfg.get<boolean>('experimental.externalWriterBlock', d.experimental.externalWriterBlock),
     },
     hooks: {
       enabled: cfg.get<boolean>('hooks.enabled', d.hooks.enabled),

@@ -13,6 +13,7 @@ import { SessionDiscovery } from './sessionDiscovery.js';
 import type { SessionSnapshot } from './types.js';
 import { EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
+import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
 
 /**
  * Tests for SessionDiscovery.
@@ -135,10 +136,18 @@ describe('SessionDiscovery', () => {
     fs.mkdirSync(workspacePath, { recursive: true });
     fs.mkdirSync(projectsDir, { recursive: true });
     workspaceKey = workspacePath.replace(/[^a-zA-Z0-9]/g, '-');
+    // externalWriter is gated behind serac.experimental.externalWriterBlock,
+    // default OFF in production. Most of this file's externalWriter/
+    // isRecentlyActiveElsewhere/recencyCache tests below predate the gate and
+    // assume the feature is active, so turn it on ambiently for the whole
+    // suite — the "externalWriterBlock gate" describe block near the bottom
+    // explicitly overrides this to prove the real (off) default.
+    _setConfigValues({ 'serac.experimental.externalWriterBlock': true });
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    _resetConfig();
   });
 
   // ── Meta persistence ──────────────────────────────────────────
@@ -1236,6 +1245,62 @@ describe('SessionDiscovery', () => {
         for (let i = 0; i < 4; i++) { await poll(); }
 
         expect(cache.has(sessionId)).toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+  });
+
+  describe('externalWriter gated behind serac.experimental.externalWriterBlock (default off)', () => {
+    it('off (the real default) — never touches the process registry or blocks, even for a genuinely confirmed-external, actively-writing process', async () => {
+      // Clears the ambient "on" the outer beforeEach sets for the rest of
+      // this file's (pre-existing) externalWriter tests — this test alone
+      // proves the real production default.
+      _resetConfig();
+      const sessionId = 'gate-off-default';
+      const filePath = createJsonlFile(sessionId);
+      fs.utimesSync(filePath, new Date(), new Date()); // as block-worthy as it gets
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+
+        // getProcessesForSession is only ever called by resolveWriterOwnership
+        // and isExternalWriterFresh — never invoked proves the gate returns
+        // before either function does any work at all, not just before blocking.
+        const registrySpy = vi.spyOn(
+          (discovery as unknown as { processRegistry: { getProcessesForSession: (id: string) => unknown } }).processRegistry,
+          'getProcessesForSession',
+        );
+
+        expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBeUndefined();
+        expect(registrySpy).not.toHaveBeenCalled();
+
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
+        expect(registrySpy).not.toHaveBeenCalled();
+
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('on — restores the exact current behaviour (confirmed-external + recent activity blocks)', async () => {
+      _setConfigValues({ 'serac.experimental.externalWriterBlock': true });
+      const sessionId = 'gate-on-restores';
+      const filePath = createJsonlFile(sessionId);
+      fs.utimesSync(filePath, new Date(), new Date());
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+
+        expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(true);
+
         discovery.stop();
       } finally {
         ext.cleanup();
