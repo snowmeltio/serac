@@ -877,9 +877,17 @@ export function renderUsageHtml(
   footerSlots: PanelFooterSlot[],
   now: number,
 ): string {
+  // Companion-registered footer slots (e.g. the account-switcher row) are
+  // independent of live-usage availability, so they must render in every
+  // state — including platforms where the usage API is unsupported (Windows/
+  // Linux) or disconnected. Otherwise a registered slot silently vanishes
+  // wherever live usage can't be read.
+  const slotsHtml = renderFooterSlots(footerSlots);
+  const slotsFooter = slotsHtml ? '<div class="usage-footer">' + slotsHtml + '</div>' : '';
+
   // Ghost state when no data has arrived yet.
   if (!usage || !usage.loaded) {
-    return '<div class="usage-ghost-msg" style="font-style:normal">Calling usage API…</div>';
+    return '<div class="usage-ghost-msg" style="font-style:normal">Calling usage API…</div>' + slotsFooter;
   }
 
   const u = usage;
@@ -888,13 +896,13 @@ export function renderUsageHtml(
   // Platform not supported — no OAuth credential access
   if (!u.platformSupported) {
     html += '<div class="usage-row"><div class="usage-row-label usage-row-disabled">Live usage not available. <a class="usage-link" href="https://claude.ai/settings/usage">View online.</a></div></div>';
-    return html;
+    return html + slotsFooter;
   }
 
   // API disconnected state
   if (!u.apiConnected) {
     html += '<div class="usage-updated" style="text-align:left"><span class="api-dot disconnected"></span>Live usage unavailable · <a class="usage-link" href="https://claude.ai/settings/usage">view online</a></div>';
-    return html;
+    return html + slotsFooter;
   }
 
   // --- Current session (5h) ---
@@ -1016,7 +1024,7 @@ export function renderUsageHtml(
     const stateLabel = u.apiConnected ? '' : ' <span class="cached-tag">(cached)</span>';
     footer += '<div class="usage-updated"><span class="api-dot ' + stateClass + '" title="API ' + stateClass + '"></span>Updated ' + formatAgeCoarse(now - u.lastPoll) + ' ago' + stateLabel + '</div>';
   }
-  const slotsHtml = renderFooterSlots(footerSlots);
+  // slotsHtml computed once at the top (shared with the early-return states).
   if (footer || slotsHtml) {
     html += '<div class="usage-footer">' + slotsHtml + footer + '</div>';
   }

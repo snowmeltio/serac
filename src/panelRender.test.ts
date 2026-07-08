@@ -555,6 +555,22 @@ describe('renderUsageHtml', () => {
       .toContain('Live usage unavailable');
   });
 
+  it('renders companion footer slots in every state, even when live usage is unavailable', () => {
+    // The account-switcher row must show on Windows/Linux (platformSupported
+    // false) and while disconnected — not only on the live-usage happy path.
+    const slot = { slotId: 'snowmelt-account', label: 'me@example.com', hasCommand: true };
+    const states = [
+      null,                                                              // ghost / no data
+      { loaded: true, platformSupported: false },                        // usage API unsupported
+      { loaded: true, platformSupported: true, apiConnected: false },    // disconnected
+    ];
+    for (const usage of states) {
+      const html = renderUsageHtml(makeCtx(), usage, [slot], NOW);
+      expect(html).toContain('me@example.com');
+      expect(html).toContain('usage-slot-row');
+    }
+  });
+
   it('renders session and weekly bars with the updated-ago footer', () => {
     const html = renderUsageHtml(makeCtx(), liveUsage, [], NOW);
     expect(html).toContain('Current session usage');
