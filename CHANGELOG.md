@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.16.10 (2026-07-10) — Workflow bar above the agent strip; new agent detail bar
+
+### Changed
+- **The header strip (the workflow/team/subagent summary line) now renders above the agent strip, not below it.** Zone order in the default log view returns to "what am I in, then its summary, then pick an agent."
+- **Per-pill model tags are gone from the agent strip.** A same-model workflow run no longer repeats "Sonnet 5" on every pill (v1.16.6 added the visible tag; it's still carried in each pill's tooltip). A new agent detail bar sits directly under the agent strip instead, showing the selected agent's model, tokens, runtime, and tool-call count, scoped to whichever pill is active.
+
 ## v1.16.9 (2026-07-07) — Stop false "Waiting for permission" in Auto mode
 
 ### Fixed

@@ -899,16 +899,33 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(q('.wf-permrow')).toBeNull();
   });
 
-  it('agent pill shows the formatted model, in title and as a visible span', () => {
+  it('agent pill carries the formatted model in its title only, not a visible tag', () => {
     const model = logModel() as any;
     model.groups[0].agents[0] = agent({ agentId: 'agent001', label: 'audit:privacy', phaseTitle: 'Audit', model: 'claude-sonnet-5' });
     sendRender(model);
     const pill1 = qa('.wf-agent-pill').find(p => p.dataset.agent === 'agent001')!;
-    expect(pill1.querySelector('.wf-agent-pill-model')!.textContent).toBe('Sonnet 5');
+    expect(pill1.querySelector('.wf-agent-pill-model')).toBeNull();
     expect(pill1.getAttribute('title')).toBe('audit:privacy · done · Sonnet 5');
-    // agent002 (fixture default: model '') omits the span entirely.
-    const pill2 = qa('.wf-agent-pill').find(p => p.dataset.agent === 'agent002')!;
-    expect(pill2.querySelector('.wf-agent-pill-model')).toBeNull();
+  });
+
+  it('agent detail bar surfaces the selected agent\'s model/tokens/runtime/tool-calls under the agent strip', () => {
+    const model = logModel() as any;
+    model.groups[0].agents[0] = agent({
+      agentId: 'agent001', label: 'audit:privacy', phaseTitle: 'Audit',
+      model: 'claude-sonnet-5', tokens: 1500, toolCalls: 4, durationMs: 65000,
+    });
+    sendRender(model);
+    const bar = q('.wf-astrip')!;
+    expect(bar).not.toBeNull();
+    expect(bar.querySelector('.wf-astrip-name')!.textContent).toBe('audit:privacy');
+    expect(qa('.wf-astrip-meta-item').map(i => i.textContent)).toEqual([
+      'Sonnet 5', '· 1m 5s', '· 1.5k tokens', '· 4 tools',
+    ]);
+  });
+
+  it('agent detail bar is absent when the selected agent has no model/tokens/runtime to show', () => {
+    sendRender(logModel()); // fixture default: model '', tokens 0, toolCalls 0, durationMs null
+    expect(q('.wf-astrip')).toBeNull();
   });
 
   it('agent strip selection posts viewAgent and renders the selected agent\'s entries', () => {
@@ -1393,7 +1410,7 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
 
   // ── Zone order + label rail (Phase 2.2, A/B) ─────────────────────────
 
-  it('zones stack pickers-first: view row, then agent strip, then header strip, then the rest', () => {
+  it('zones stack view row, then header strip (summary), then agent strip, then the rest', () => {
     const m = logModel() as any;
     m.groups[0].agents[1].status = 'waiting'; // → permission row present too
     sendRender(m);
@@ -1401,9 +1418,9 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'brief' },
     ], [], emptyEvidence(), []);
     const classes = Array.from(root().children).map(c => (c as HTMLElement).className.split(' ')[0]);
-    const order = ['wf-view-row', 'wf-agentstrip', 'wf-hstrip', 'wf-permrow', 'wf-rstrip', 'wf-facets', 'wf-log-scroll'];
-    // Every zone present, in exactly this order (view row and agent strip are
-    // SIBLINGS at the top, both before the header strip).
+    // Fixture agent001 has no model/tokens/duration, so the agent detail bar
+    // doesn't render here — see the dedicated agent-detail-bar tests above.
+    const order = ['wf-view-row', 'wf-hstrip', 'wf-agentstrip', 'wf-permrow', 'wf-rstrip', 'wf-facets', 'wf-log-scroll'];
     expect(classes).toEqual(order);
   });
 
