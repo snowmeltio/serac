@@ -590,6 +590,7 @@ body {
 .wf-agentstrip > .wf-zone-label,
 .wf-agentstrip-pills > .wf-zone-label,
 .wf-hstrip > .wf-zone-label,
+.wf-astrip > .wf-zone-label,
 .wf-facets > .wf-zone-label { padding-top: 4px; }
 /* ── Shared zone collapse control (Phase 2.3) ──
  * The views row's bordered collapse/expand button, generalised — one visual
@@ -901,12 +902,34 @@ body {
   font-weight: 600;
 }
 .wf-agent-pill-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-/* Model label — same muted metric styling as the classic nav row's .wf-nav-model. */
-.wf-agent-pill-model { font-size: 9px; color: var(--vscode-descriptionForeground); flex-shrink: 0; }
-.wf-agent-pill.active .wf-agent-pill-model { color: inherit; }
 /* The collapsed strip's overflow chip — same dashed register as the views
  * row's "+N" chip. */
 .wf-agent-pill.more { border-style: dashed; color: var(--vscode-descriptionForeground); }
+
+/* ── 4b. Agent detail bar ──
+ * The selected agent's own model/tokens/runtime/tool-calls, one line directly
+ * under the agent strip (Murray, 2026-07-10) — the per-pill model tag moved
+ * here so a same-model run doesn't repeat "Sonnet 5" on every pill. Same
+ * rail-label + wrapping-body shape as the header strip, one size down since
+ * it's the single-agent zoom-in rather than the workflow-wide roll-up. */
+.wf-astrip {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+.wf-astrip-body { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; flex: 1; min-width: 0; }
+.wf-astrip-name {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wf-astrip-meta-item { white-space: nowrap; flex-shrink: 0; }
 
 /* ── 5. Facet bar ──
  * Phase 2.5: controls live in a wrapping body after the rail label (same

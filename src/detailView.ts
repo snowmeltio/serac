@@ -1252,6 +1252,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function renderAgentPill(groupKey: string, a: DetailAgentView): string {
     const active = groupKey === selectedGroupKey && a.agentId === selectedAgentId;
     const badge = a.teammate ? '<span class="wf-teammate-badge" title="Agent Team member">team</span>' : '';
+    // Model rides in the title/aria-label only (Murray, 2026-07-10): a repeated
+    // "Sonnet 5" on every pill in a same-model run was pure clutter — the
+    // agent detail bar under the strip is now the one place it shows visibly.
     const modelLabel = a.model ? formatModelLabel(a.model) : '';
     const nameWithStatus = a.label + ' · ' + a.status + (modelLabel ? ' · ' + modelLabel : '');
     return '<span class="wf-agent-pill' + (active ? ' active' : '') + '"'
@@ -1262,8 +1265,38 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + statusDot(a.status)
       + '<span class="wf-agent-pill-label">' + escapeHtml(a.label) + '</span>'
       + badge
-      + (modelLabel ? '<span class="wf-agent-pill-model">' + escapeHtml(modelLabel) + '</span>' : '')
       + '</span>';
+  }
+
+  /** Selected-agent detail bar: sits directly under the agent strip, one line
+   *  scoped to whichever pill is active (the header strip above stays the
+   *  workflow-wide roll-up). Carries what the per-pill model tag used to show
+   *  plus tokens/runtime/tool-calls — the same facts renderReader shows in
+   *  classic mode, reformatted as a rail-aligned strip to match the rest of
+   *  log mode. Absent when the selected agent has none of these to report
+   *  (a fresh agent with no tokens/model/duration yet). */
+  function renderAgentDetailBar(agent: DetailAgentView | undefined): string {
+    if (!agent) { return ''; }
+    const metaBits: string[] = [];
+    const modelLabel = agent.model ? formatModelLabel(agent.model) : '';
+    if (modelLabel) { metaBits.push(escapeHtml(modelLabel)); }
+    const dur = fmtDuration(agent.durationMs);
+    if (dur) { metaBits.push(dur); }
+    if (agent.tokens > 0) { metaBits.push(fmtTokens(agent.tokens) + ' tokens'); }
+    if (agent.toolCalls > 0) { metaBits.push(agent.toolCalls + ' tool' + (agent.toolCalls === 1 ? '' : 's')); }
+    if (agent.attempt && agent.attempt > 1) { metaBits.push('attempt ' + agent.attempt); }
+    if (metaBits.length === 0) { return ''; }
+    let metaHtml = '';
+    for (let i = 0; i < metaBits.length; i++) {
+      metaHtml += '<span class="wf-astrip-meta-item">' + (i > 0 ? '· ' : '') + metaBits[i] + '</span>';
+    }
+    return '<div class="wf-astrip">'
+      + zoneLabel('')
+      + '<div class="wf-astrip-body">'
+      + statusDot(agent.status)
+      + '<span class="wf-astrip-name">' + escapeHtml(agent.label) + '</span>'
+      + metaHtml
+      + '</div></div>';
   }
 
   /** Agent strip: the old left-nav's job. Phase 2.1: a workflow's phases each
@@ -1700,12 +1733,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
 
     const agent = findAgent(selectedGroupKey, selectedAgentId);
-    // Zone order (Phase 2.2): pickers stack at the top — pick what you're
-    // looking at (view, then agent) BEFORE its summary (header strip), then
-    // the banners (permission, Result), then the log's own controls.
+    // Zone order (Murray, 2026-07-10): view row first (what am I in), then its
+    // summary (header strip — the workflow-wide roll-up), THEN the agent
+    // strip (pick which agent) with its own detail bar directly beneath it,
+    // then the banners (permission, Result), then the log's own controls.
     root.innerHTML = renderViewRow()
-      + renderAgentStrip()
       + renderHeaderStrip()
+      + renderAgentStrip()
+      + renderAgentDetailBar(agent)
       + renderPermRow()
       + (agent ? renderResultStrip(agent) : '')
       + (agent ? renderFacets(agent) : '')
