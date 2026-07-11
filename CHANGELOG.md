@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.11 (2026-07-12) — Stop false "Waiting for permission" from parallel subagent fan-out
+
+### Fixed
+- **A session no longer flashes "Waiting for permission" when a turn fans out parallel `Agent`/`Task` subagent calls alongside another tool.** A sibling tool's own result can land well after the subagent it happened to be batched with resolves — batched multi-tool-turn submission and/or execution-slot queueing, unrelated to permission. The 15s/30s heuristic timer previously read that gap as a stuck prompt; it now defers to the same "blocking subagent" signal the poll-path status check already trusted, and gives a sibling tool a fresh check once the subagent clears instead of leaving it stuck past the hard ceiling.
+
 ## v1.16.10 (2026-07-10) — Workflow bar above the agent strip; new agent detail bar
 
 ### Changed
