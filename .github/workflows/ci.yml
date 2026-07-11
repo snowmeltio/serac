@@ -9,7 +9,13 @@ on:
 jobs:
   verify:
     name: verify
-    runs-on: ubuntu-latest
+    # macOS, not ubuntu: usageProvider.ts gates Keychain token lookups on
+    # process.platform === 'darwin', and its tests only exercise their mocks
+    # on that path. Matches the actual dev/target environment (live usage is
+    # currently macOS-only by design — see PR #17). Follow-up: make the
+    # suite platform-independent (mock process.platform) so CI isn't pinned
+    # to a specific OS as more cross-platform work lands.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
