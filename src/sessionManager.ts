@@ -369,6 +369,18 @@ export class SessionManager {
         // AskUserQuestion either way — a genuine interactive prompt, not a
         // permission gate (see isAutoAcceptMode()).
         if (source === 'timer' && !needsUserInput && this.isAutoAcceptMode()) { return; }
+        // Blocking-subagent fan-out: a parallel Agent/Task call still
+        // unresolved in this turn fully explains a sibling tool's silence —
+        // its result can't land before the subagent's, for reasons that have
+        // nothing to do with permission (batched multi-tool turn submission /
+        // execution-slot queueing observed 2026-07-11). computeDemotion's poll
+        // path already treats hasBlockingSubagents() as decisive (never
+        // demotes while true); the TIMER path had no equivalent guard, so a
+        // slow sibling of a long-running subagent could still flip to a false
+        // "Waiting for permission" that only self-clears once the subagent
+        // resolves. A HOOK fire is ground truth and is never suppressed here
+        // either, matching the auto-accept-mode invariant above.
+        if (source === 'timer' && !needsUserInput && this.hasBlockingSubagents()) { return; }
         // Require an active tool, EXCEPT for direct-input tools accelerated by a
         // hook ahead of the JSONL tool_use record (activeTools still empty). The
         // JSONL path re-affirms their `waiting` state, so there is no flip risk.
@@ -1187,8 +1199,16 @@ export class SessionManager {
     // A user record is a genuine new-turn reopener — release the Stop guard.
     this.turnEndedByStop = false;
     this.setRunning();
-    // Cancel any pending permission timer — tool results have arrived
-    this.permissionTracker.cancel();
+    // A tool_result arrived — the pending timer (armed for the whole batch of
+    // active tools) is no longer valid for whatever just resolved. reschedule()
+    // cancels it and, if OTHER non-exempt tools are still active (a resolved
+    // sibling doesn't mean the turn is over), arms a fresh one for them; if
+    // activeTools is now empty it behaves exactly like a plain cancel(). Using
+    // a bare cancel() here left a genuinely-blocked sibling tool with no timer
+    // at all once a batch-mate resolved (adversarial review, 2026-07-11) — the
+    // reschedule() call inside completeSubagent() alone doesn't survive this
+    // line running immediately after it in the same tool_result loop.
+    this.permissionTracker.reschedule();
 
     // [F2] Check AFTER status = 'running' so markSessionDone() isn't overwritten.
     // If all subagents are done and only Agent/Task tool IDs remain in activeTools,

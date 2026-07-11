@@ -486,10 +486,17 @@ describe('SessionManager sidechain tests', () => {
       await feedRecords(mgr, [toolResultRecord('tool-1')]);
       expect(mgr.getStatus()).toBe('running');
 
-      // tool-2 still pending; demoteIfStale catches it after threshold
+      // tool-2 still pending. Before 2026-07-11 the tool_result's cancel()
+      // left tool-2 with no live timer at all, so only the SLOWER poll-path
+      // demoteIfStale eventually caught it. That tool_result now reschedules
+      // instead of just cancelling (a genuinely-blocked sibling must get a
+      // fresh timer window once a batch-mate resolves — see the completeSubagent
+      // fix), so the timer itself catches tool-2 well inside the 31s advance,
+      // ahead of demoteIfStale — which then has nothing left to do.
       vi.advanceTimersByTime(31_000);
+      expect(mgr.getStatus()).toBe('waiting');
       const changed = mgr.demoteIfStale(30_000);
-      expect(changed).toBe(true);
+      expect(changed).toBe(false);
       expect(mgr.getStatus()).toBe('waiting');
     });
   });

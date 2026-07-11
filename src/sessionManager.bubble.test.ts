@@ -306,6 +306,73 @@ describe('Session-level permission wait', () => {
     vi.advanceTimersByTime(20_000);
     expect(mgr.getStatus()).not.toBe('waiting');
   });
+
+  // Regression pin for the 2026-07-11 parallel fan-out FP: a session fanned
+  // out two Agent (Explore) calls plus a Bash call in one turn; the Bash
+  // tool_result landed ~157s after its tool_use (0.25s after the slower
+  // Agent's) because a blocking subagent explained the silence, not a stuck
+  // permission prompt. The timer had no equivalent to computeDemotion's
+  // hasBlockingSubagents() guard and flipped the card to a false "Waiting
+  // for permission" for ~2 minutes until the subagents resolved.
+  it('timer stays suppressed while a blocking subagent explains a sibling tool\'s silence (parallel fan-out FP)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [spawnAgent('agent-1'), sessionToolUse('Bash', 'tu-bash')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    vi.advanceTimersByTime(16_000); // past Bash's slow 15s delay
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('the same slow tool still fires the timer normally with no blocking subagent present (regression guard)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [sessionToolUse('Bash', 'tu-bash')]);
+    vi.advanceTimersByTime(16_000);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+
+  // Regression pin: processUserRecord must RESCHEDULE (not just cancel) the
+  // session timer on every tool_result. A bare cancel() (the pre-2026-07-11
+  // behaviour) left tu-bash with no live timer at all once agent-1 stopped
+  // being a blocking subagent — the Claude Code tool-use protocol forbids a
+  // fresh top-level tool_use arriving while tu-bash is still unresolved, so
+  // no other path would get a second chance to flag it. Without the
+  // reschedule, a genuinely-blocked tu-bash would sit at 'running'
+  // indefinitely (past the 3-min hard ceiling, silently to 'done').
+  it('resolving the blocking subagent re-arms the timer for a sibling tool still pending', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [spawnAgent('agent-1'), sessionToolUse('Bash', 'tu-bash')]);
+    vi.advanceTimersByTime(16_000);
+    expect(mgr.getStatus()).toBe('running'); // suppressed while agent-1 is blocking
+
+    // agent-1 resolves — tu-bash (Bash) is still unresolved and active.
+    await feed(mgr, [{
+      type: 'user', timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'tool_result', tool_use_id: 'agent-1' }] },
+    }]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(false);
+
+    // No blocking subagent left; the tool_result's reschedule gives tu-bash a
+    // fresh window — doubled to 30s since agent-1's tool_result just landed
+    // (recency window, mirrors "completed subagent does not count toward all
+    // blocked" above).
+    vi.advanceTimersByTime(31_000);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+
+  it('a ground-truth PermissionRequest hook fire still flips to waiting despite a blocking subagent', async () => {
+    const router = new HookEventRouter();
+    const mgr = makeManagerWithHooks(router);
+    await feed(mgr, [user('go')]);
+    await feed(mgr, [spawnAgent('agent-1'), sessionToolUse('Bash', 'tu-bash')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    router.onHookEvent('test-session-id', 'PermissionRequest', { tool_name: 'Bash' });
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toBe('Waiting for permission');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
