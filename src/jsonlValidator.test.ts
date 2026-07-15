@@ -237,6 +237,11 @@ describe('assistant record helpers', () => {
     expect(getModelId({ type: 'assistant', message: { content: [] } })).toBeNull();
   });
 
+  it('getModelId returns null for the synthetic sentinel', () => {
+    const r = { type: 'assistant', message: { model: '<synthetic>', content: [] } } as unknown as JsonlRecord;
+    expect(getModelId(r)).toBeNull();
+  });
+
   it('getInputTokens sums all input token types', () => {
     const r = {
       type: 'assistant',

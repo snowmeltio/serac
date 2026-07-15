@@ -16,6 +16,7 @@ import { readSettings } from './settings.js';
 import { claudeStateDir } from './paths.js';
 import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
+import { SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 
@@ -922,8 +923,10 @@ export class SessionDiscovery {
   private readonly subagentModelCache = new Map<string, string>();
 
   /** Head-read a subagent transcript for its model (`message.model` on the
-   *  first assistant record — meta.json never carries it). Bounded to a single
-   *  64 KB read; the first assistant record lands within the opening lines. */
+   *  first REAL assistant record — meta.json never carries it; the synthetic
+   *  sentinel is skipped so an opening synthetic turn doesn't get cached as
+   *  the agent's model). Bounded to a single 64 KB read; the first assistant
+   *  record lands within the opening lines. */
   private readSubagentModel(filePath: string): string | null {
     const cached = this.subagentModelCache.get(filePath);
     if (cached) { return cached; }
@@ -940,7 +943,7 @@ export class SessionDiscovery {
         try {
           const rec = JSON.parse(line) as { message?: { model?: unknown } };
           const model = rec.message?.model;
-          if (typeof model === 'string' && model) {
+          if (typeof model === 'string' && model && model !== SYNTHETIC_MODEL_ID) {
             this.subagentModelCache.set(filePath, model);
             return model;
           }
