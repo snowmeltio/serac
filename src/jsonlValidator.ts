@@ -10,6 +10,12 @@
 
 import type { JsonlRecord, JsonlContentBlock } from './types.js';
 
+/** Sentinel `message.model` value Claude Code writes on locally-synthesized
+ *  assistant turns (e.g. a "No response requested." placeholder) that never
+ *  called a real model. Excluded everywhere a model id is read so it can't
+ *  clobber the last real model tracked for a session or subagent. */
+export const SYNTHETIC_MODEL_ID = '<synthetic>';
+
 // ── Record validation ──────────────────────────────────────────────
 
 /** Validate and normalise a raw parsed JSON value into a JsonlRecord.
@@ -114,11 +120,13 @@ export function getFirstText(record: JsonlRecord): string | null {
   return null;
 }
 
-/** Get the model ID from an assistant record. */
+/** Get the model ID from an assistant record. Null for the synthetic
+ *  sentinel (see SYNTHETIC_MODEL_ID) as well as a missing/non-string field,
+ *  so a locally-synthesized turn never overwrites the last real model. */
 export function getModelId(record: JsonlRecord): string | null {
   const msg = record.message as Record<string, unknown> | undefined;
   const model = msg?.model;
-  return typeof model === 'string' ? model : null;
+  return typeof model === 'string' && model !== SYNTHETIC_MODEL_ID ? model : null;
 }
 
 /** Get token usage from an assistant record. Returns total input tokens

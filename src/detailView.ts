@@ -970,12 +970,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  scoped to the selected agent (that's the agent strip's job). */
   function headerAgg(): {
     running: number; waiting: number; done: number; failed: number;
-    tokens: number; durationMs: number | null; model: string; pillStatus: string;
+    tokens: number; durationMs: number | null; model: string; modelExtra: number;
+    modelTitle: string; pillStatus: string;
   } {
     const agents = allAgents();
     let running = 0, waiting = 0, done = 0, failed = 0, tokens = 0;
     let maxDur: number | null = null;
     const models = new Set<string>();
+    let mostRecentModel = '';
     for (const a of agents) {
       if (a.status === 'running') { running++; }
       else if (a.status === 'waiting') { waiting++; }
@@ -983,13 +985,21 @@ declare function acquireVsCodeApi(): VsCodeApi;
       else { done++; } // done/stale roll up to "done" in the glance count
       tokens += a.tokens;
       if (a.durationMs !== null) { maxDur = maxDur === null ? a.durationMs : Math.max(maxDur, a.durationMs); }
-      if (a.model) { models.add(a.model); }
+      // allAgents() walks groups/agents in the same oldest-run-first order
+      // the strip renders them in (no per-agent timestamp exists to sort by
+      // instead — see renderPermRow's note), so the last hit is the most
+      // recently spawned agent's model, a reasonable proxy for "current".
+      if (a.model) { models.add(a.model); mostRecentModel = a.model; }
     }
-    // A shared model across every agent is worth naming; a mixed run isn't
-    // attributable to one label, so it's omitted rather than picking one.
-    const modelLabel = models.size === 1 ? formatModelLabel([...models][0]) : '';
+    // Naming the most recent model beats the old blank-on-mixed (Murray,
+    // 2026-07-15): a mixed run still names ONE real model instead of hiding
+    // that any model ran at all. The rest of the set rides a "+N" suffix and
+    // the full list in the title tooltip, same pattern as renderAgentPill.
+    const modelLabel = mostRecentModel ? formatModelLabel(mostRecentModel) : '';
+    const modelExtra = models.size > 1 ? models.size - 1 : 0;
+    const modelTitle = models.size > 1 ? [...models].map(formatModelLabel).join(', ') : '';
     const pillStatus = running > 0 ? 'running' : waiting > 0 ? 'waiting' : failed > 0 ? 'failed' : 'done';
-    return { running, waiting, done, failed, tokens, durationMs: maxDur, model: modelLabel, pillStatus };
+    return { running, waiting, done, failed, tokens, durationMs: maxDur, model: modelLabel, modelExtra, modelTitle, pillStatus };
   }
 
   /** Header strip (mockup §2): source badge, container name, status pill, live
@@ -1016,7 +1026,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const dur = fmtDuration(agg.durationMs);
     if (dur) { metaBits.push(dur); }
     if (agg.tokens > 0) { metaBits.push(fmtTokens(agg.tokens) + ' tokens'); }
-    if (agg.model) { metaBits.push(escapeHtml(agg.model)); }
+    if (agg.model) {
+      const label = escapeHtml(agg.model + (agg.modelExtra > 0 ? ' +' + agg.modelExtra : ''));
+      metaBits.push(agg.modelTitle ? '<span title="' + escapeHtml(agg.modelTitle) + '">' + label + '</span>' : label);
+    }
     // Each meta bit is one unbreakable unit; the separator dot rides INSIDE
     // the non-first spans so a wrapped line keeps the register's dots
     // without ever orphaning one.
