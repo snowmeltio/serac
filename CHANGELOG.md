@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.16.12 (2026-07-15) — Model pill no longer shows Claude Code's synthetic sentinel
+
+### Fixed
+- **A session's model pill no longer shows the literal `<synthetic>` sentinel.** Claude Code writes that value on its own locally-generated assistant turns (e.g. a "No response requested." placeholder) that never called a real model. When one of those landed as a session's most recent model-bearing record, the model tracking picked it up verbatim and rendered it in place of the real model. The sentinel is now excluded everywhere a model id is read, including the subagent model recovery (which could otherwise permanently cache a synthetic opening record).
+
+### Changed
+- **The workflow/team header's model roll-up now names a model on a mixed-model run instead of going blank.** When agents in one run used genuinely different real models, it previously omitted the model field entirely. It now shows the most recently spawned agent's model with a "+N" count (e.g. `Fable 5 +2`), with the full set in the tooltip.
+
 ## v1.16.11 (2026-07-12) — Stop false "Waiting for permission" from parallel subagent fan-out
 
 ### Fixed
