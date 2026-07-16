@@ -608,11 +608,16 @@ describe('renderUsageHtml', () => {
       null,                                                              // ghost / no data
       { loaded: true, platformSupported: false },                        // usage API unsupported
       { loaded: true, platformSupported: true, apiConnected: false },    // disconnected
+      liveUsage,                                                         // live-usage happy path
     ];
     for (const usage of states) {
       const html = renderUsageHtml(makeCtx(), usage, [slot], NOW);
       expect(html).toContain('me@example.com');
       expect(html).toContain('usage-slot-row');
+      // Exactly one slot row: guards against the live path double-rendering
+      // slotsHtml if the shared computation at the top of renderUsageHtml is
+      // ever duplicated back at the bottom (it used to be computed twice).
+      expect(html.split('usage-slot-row').length - 1).toBe(1);
     }
   });
 
