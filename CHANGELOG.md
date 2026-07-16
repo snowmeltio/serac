@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.16 (2026-07-16) — Companion footer slots render cross-platform
+
+### Fixed
+- **Companion-registered footer rows (e.g. the Snowmelt account-switcher) now appear on every platform.** The usage panel's footer used to compute those slots only after the live-usage happy path, so a Windows/Linux session (unsupported platform) or a disconnected API state never got past the earlier return and the slot silently vanished. Footer slots are independent of live-usage availability and now render in every usage state — ghost, platform-unsupported, disconnected, and live.
+
 ## v1.16.15 (2026-07-16) — Done-but-unseen stays visible until seen
 
 ### Changed
