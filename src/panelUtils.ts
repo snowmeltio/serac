@@ -55,6 +55,9 @@ export interface PanelSession {
   worktreeRoot?: string;
   /** Display label (basename of worktreeRoot). */
   worktreeLabel?: string;
+  /** Hook enrichment — session's current permission mode (see
+   *  SessionSnapshot.permissionMode). Feeds the meta-row mode badge. */
+  permissionMode?: string;
 }
 
 export interface PanelSubagent {
@@ -230,6 +233,30 @@ function liveQualifier(s: PanelSession): string {
   if (s.processLive === true) { return ' \u00b7 <span class="status-pill-time">live</span>'; }
   if (s.processLive === false) { return ' \u00b7 <span class="status-pill-time">ended</span>'; }
   return '';
+}
+
+export interface PermissionModeBadge {
+  /** CSS modifier class \u2014 rendered as `mode-badge-<className>`. */
+  className: string;
+  glyph: string;
+  label: string;
+}
+
+/** Maps a session's permission mode (`SessionSnapshot.permissionMode`,
+ *  sourced from the JSONL `permissionMode` field / PreToolUse hook) to its
+ *  meta-row badge. The five known values match Claude Code's permission-mode
+ *  picker (Manual / Edit automatically / Plan / Auto / Bypass permissions);
+ *  `dontAsk` and anything unrecognised return null (no badge) \u2014 the same
+ *  conservative fallback isAutoAcceptPermissionMode uses in toolProfiles.ts. */
+export function permissionModeBadge(mode: string | undefined): PermissionModeBadge | null {
+  switch (mode) {
+    case 'default': return { className: 'manual', glyph: '\u270b', label: 'manual' };
+    case 'acceptEdits': return { className: 'edit', glyph: '</>', label: 'edits' };
+    case 'plan': return { className: 'plan', glyph: '\u{1f4cb}', label: 'plan' };
+    case 'auto': return { className: 'auto', glyph: '\u26a1', label: 'auto' };
+    case 'bypassPermissions': return { className: 'bypass', glyph: '\u{1f500}', label: 'bypass' };
+    default: return null;
+  }
 }
 
 // ===== Same-file collision detection =====

@@ -14,6 +14,10 @@
   --sm-team-violet: #b48ef0;
   /* Warning orange — incomplete (killed/abandoned) runs, matching detailView. */
   --sm-orange: #d9a23a;
+  /* Permission-mode badge hues with no existing brand token: a considered
+   * neutral for Manual (not pure grey) and a cyan for Edit automatically. */
+  --sm-slate-grey: #9a9fa6;
+  --sm-cyan: #5fb8c2;
   /* RGB components for alpha variants */
   --sm-orange-rgb: 217, 162, 58;
   --sm-blizzard-blue-rgb: 97, 133, 247;
@@ -547,6 +551,31 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
  * card is seen/stale, matching the detail chips. */
 .card.stale .bg-shell-badge { opacity: 0.5; }
 
+/* Permission-mode badge — same outlined-chip recipe as .bg-shell-badge, but a
+ * distinct colour per mode so it never gets read as a status/liveness signal.
+ * Always shown (including Manual) so the meta row names every card's mode at
+ * a glance, not just the elevated-autonomy ones. */
+.mode-badge {
+  font-size: 9px;
+  line-height: 1.2;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  opacity: 0.85;
+  flex-shrink: 0;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.mode-badge-glyph { font-size: 9.5px; }
+.mode-badge-manual { color: var(--sm-slate-grey); }
+.mode-badge-edit { color: var(--sm-cyan); }
+.mode-badge-plan { color: var(--sm-team-violet); }
+.mode-badge-auto { color: var(--sm-orange); }
+.mode-badge-bypass { color: var(--sm-salmon-red); }
+.card.stale .mode-badge { opacity: 0.5; }
+
 .card-detail {
   font-size: 11px;
   color: var(--vscode-descriptionForeground, #888888);
@@ -931,5 +960,12 @@ body.vscode-light .wf-view-chip.wf-chip-waiting { color: #c47a3a; }
 body.vscode-light .wf-view-chip.wf-chip-done    { color: #3a9a9d; }
 body.vscode-light .wf-view-chip.wf-chip-incomplete { color: #a87718; }
 body.vscode-light .bg-shell-badge { color: #4a6cd4; }
+/* Light-theme mode-badge substitutions — same recipe as wf-view-chip above.
+ * Bypass keeps --sm-salmon-red as-is, matching .tool-error-badge/wf-chip-failed,
+ * which also read fine unadjusted on light. */
+body.vscode-light .mode-badge-manual { color: #6b6f76; }
+body.vscode-light .mode-badge-edit { color: #2f8a93; }
+body.vscode-light .mode-badge-plan { color: #8a5fd6; }
+body.vscode-light .mode-badge-auto { color: #a87718; }
 body.vscode-light .card-agent-row { color: #666666; }
 body.vscode-light .card-agent-row:hover { background: rgba(0, 0, 0, 0.05); color: var(--vscode-foreground, #333333); }

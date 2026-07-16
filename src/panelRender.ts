@@ -31,6 +31,7 @@ import {
   getCompactThreshold,
   formatTokenCount,
   groupForeignWorkspaces,
+  permissionModeBadge,
   PanelSession,
   UsageData,
 } from './panelUtils.js';
@@ -422,6 +423,15 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     // version yet) must hash to the same family as "Opus" / "Opus 4.8*".
     const family = s.modelLabel.replace(/\*$/, '').split(' ')[0];
     metaHtml += '<span class="model-pill" style="--model-hue:' + modelHue(family) + '">' + escapeHtml(s.modelLabel) + '</span>';
+  }
+  // Permission-mode badge — glyph + word, same outlined-chip recipe as the
+  // background-shell/loop badges below. A distinct colour per mode (see
+  // panel.css .mode-badge-*) so it never gets read as a status signal.
+  const modeBadge = permissionModeBadge(s.permissionMode);
+  if (modeBadge) {
+    metaHtml += '<span class="mode-badge mode-badge-' + modeBadge.className + '" title="Permission mode: '
+      + escapeHtml(modeBadge.label) + '"><span class="mode-badge-glyph">' + escapeHtml(modeBadge.glyph)
+      + '</span>' + escapeHtml(modeBadge.label) + '</span>';
   }
   // Another VS Code window is confirmed to be this session's live writer right
   // now (see .card.external-writer in panel.css) — the dimmed card alone reads
