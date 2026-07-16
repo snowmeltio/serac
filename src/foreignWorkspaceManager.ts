@@ -28,27 +28,19 @@ type WindowGate = ReturnType<typeof foreignWindowGate>;
 const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 /** done → stale promotion delay once acknowledged (mirrors SessionDiscovery) */
 const STALE_PROMOTION_MS = 10_000;
-/** done → stale decay for sessions never acknowledged. Deliberately long:
- *  a foreign `done` count is the panel's done-but-unseen signal (teal row
- *  wash + D chip), so it must survive until the user actually looks at the
- *  session — mirroring STALE_PROMOTION_MS here cleared it ~10s after the
- *  turn ended. Still bounded so an unattended run (headless agent, workspace
- *  never opened) decays within a day instead of glowing for the whole
- *  7-day age gate. */
-const UNSEEN_DECAY_MS = 24 * 60 * 60 * 1000;
 
 /** Display promotion for a done foreign session: true = show as stale
- *  ("seen"). Acknowledged sessions promote 10s after acknowledgement (the
- *  local grace, mirrored). Unacknowledged sessions promote only after the
- *  long unseen decay — foreign `done` means done-but-unseen. The decay term
- *  is checked first so a late acknowledgement can't briefly revive an
- *  already-decayed `done` (ack + 10s restarting the window). */
+ *  ("seen"). Acknowledgement is the ONLY promotion path — 10s after it,
+ *  mirroring the local grace. A never-acknowledged session holds `done`
+ *  (the panel's done-but-unseen signal: teal row wash + D chip) for as long
+ *  as it's tracked; the discovery window / age gate is the eventual ceiling
+ *  for workspaces nothing ever opens. Deliberately no time-based decay here
+ *  (a 24h decay shipped briefly in v1.16.14): unseen finished work must
+ *  stay visible until actually seen. */
 export function shouldPromoteDoneToStale(
   now: number,
-  lastActivity: number,
   meta: Pick<SessionMeta, 'acknowledged' | 'acknowledgedAt'> | undefined,
 ): boolean {
-  if (now - lastActivity > UNSEEN_DECAY_MS) { return true; }
   if (meta?.acknowledged) { return now - (meta.acknowledgedAt ?? 0) > STALE_PROMOTION_MS; }
   return false;
 }
@@ -348,10 +340,10 @@ export class ForeignWorkspaceManager {
    *  (running/waiting/done/stale) are aggregated for display; dismissed
    *  sessions are excluded from counts. `done` is promoted to `stale` once the
    *  user has acknowledged the session in its own workspace and 10s has
-   *  elapsed (mirrors SessionDiscovery's local stale logic), or after the
-   *  long unseen decay when nothing ever acknowledges it — see
-   *  shouldPromoteDoneToStale. Workspaces with no active sessions render
-   *  with empty counts. */
+   *  elapsed (mirrors SessionDiscovery's local stale logic); a session
+   *  nothing ever acknowledges holds `done` until the discovery window
+   *  evicts it — see shouldPromoteDoneToStale. Workspaces with no active
+   *  sessions render with empty counts. */
   getWorkspaces(): WorkspaceGroup[] {
     const now = Date.now();
     const groups = new Map<string, Record<string, number>>();
@@ -367,10 +359,9 @@ export class ForeignWorkspaceManager {
       }
       if (meta?.dismissed) { continue; }
 
-      // Stale rollover — see shouldPromoteDoneToStale for the two-tier rule
-      // (ack + 10s, or the long unseen decay for never-acknowledged sessions).
+      // Stale rollover — acknowledgement-only, see shouldPromoteDoneToStale.
       let status = snapshot.status;
-      if (status === 'done' && shouldPromoteDoneToStale(now, snapshot.lastActivity, meta)) {
+      if (status === 'done' && shouldPromoteDoneToStale(now, meta)) {
         status = 'stale';
       }
 
