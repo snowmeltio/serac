@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.16.14 (2026-07-16) — Teal wash on done-but-unseen workspace rows
+
+### Added
+- **Other-workspace and worktree rows now wash teal when an agent there has finished but hasn't been seen.** Matches the existing peach wash for waiting-on-permission rows, using the established done hue. Waiting outranks done when a workspace has both. Applies to Other workspaces rows, Worktrees-pane rows, and the expanded worktree picker's child rows; the wash clears once the session is acknowledged in its own window.
+
+### Fixed
+- **A finished, unattended session's done count no longer rolls over to "seen" 10 seconds after the turn ends.** The foreign done→stale rollover applied the same 10s delay to never-acknowledged sessions as to acknowledged ones, so the done signal (and the new teal wash) vanished before anyone could have looked. Never-acknowledged sessions now hold done for 24 hours; acknowledging one still rolls it over 10s later, and a late acknowledgement can no longer briefly revive an already-faded done.
+
 ## v1.16.13 (2026-07-16) — Permission-mode badge on session cards
 
 ### Added
