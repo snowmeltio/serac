@@ -28,6 +28,7 @@ import {
   PSEUDO_TMP_REPO_ROOT,
   isTmpScratchPath,
   computeFileCollisions, RUNNING_QUIET_MS,
+  permissionModeBadge,
 } from './panelUtils.js';
 import { applyWorkflowLiveStatus, computeWaitingCount } from './panelUtils.js';
 
@@ -870,6 +871,15 @@ describe('pickerChildRow', () => {
     expect(live).toContain('1W');
   });
 
+  it('washes done-but-unseen rows teal; waiting outranks done', () => {
+    const doneRow = pickerChildRow({ ...base, counts: { done: 1 } });
+    expect(doneRow).toContain('ws-row-done');
+    expect(doneRow).not.toContain('ws-row-waiting');
+    const both = pickerChildRow({ ...base, counts: { done: 1, waiting: 1 } });
+    expect(both).toContain('ws-row-waiting');
+    expect(both).not.toContain('ws-row-done');
+  });
+
   it('includes extra chips between name and counts', () => {
     expect(pickerChildRow({ ...base, extraChipsHtml: '<span class="ws-main-chip">main</span>' }))
       .toContain('</span><span class="ws-main-chip">main</span><div class="ws-counts">');
@@ -895,5 +905,21 @@ describe('computeWaitingCount', () => {
   it('excludes dismissed teams entirely', () => {
     const teams = [team({ dismissed: true, orch: 'waiting', agents: ['waiting'] })];
     expect(computeWaitingCount({ localWaiting: 1, teams, foreignWaitingCount: 0, siblingWaitingCount: 0 })).toBe(1);
+  });
+});
+
+describe('permissionModeBadge', () => {
+  it('maps each of the five known modes to its badge', () => {
+    expect(permissionModeBadge('default')).toEqual({ className: 'manual', glyph: '✋', label: 'manual' });
+    expect(permissionModeBadge('acceptEdits')).toEqual({ className: 'edit', glyph: '</>', label: 'edits' });
+    expect(permissionModeBadge('plan')).toEqual({ className: 'plan', glyph: '📋', label: 'plan' });
+    expect(permissionModeBadge('auto')).toEqual({ className: 'auto', glyph: '⚡', label: 'auto' });
+    expect(permissionModeBadge('bypassPermissions')).toEqual({ className: 'bypass', glyph: '🔀', label: 'bypass' });
+  });
+
+  it('returns null for dontAsk, unknown values, and undefined', () => {
+    expect(permissionModeBadge('dontAsk')).toBeNull();
+    expect(permissionModeBadge('something-new')).toBeNull();
+    expect(permissionModeBadge(undefined)).toBeNull();
   });
 });

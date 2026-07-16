@@ -26,8 +26,24 @@ import { readIdeOpenFolders } from './claudeEnvSignals.js';
 type WindowGate = ReturnType<typeof foreignWindowGate>;
 /** Confidence ranking for max-confidence aggregation */
 const CONFIDENCE_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
-/** done → stale promotion delay (mirrors SessionDiscovery) */
+/** done → stale promotion delay once acknowledged (mirrors SessionDiscovery) */
 const STALE_PROMOTION_MS = 10_000;
+
+/** Display promotion for a done foreign session: true = show as stale
+ *  ("seen"). Acknowledgement is the ONLY promotion path — 10s after it,
+ *  mirroring the local grace. A never-acknowledged session holds `done`
+ *  (the panel's done-but-unseen signal: teal row wash + D chip) for as long
+ *  as it's tracked; the discovery window / age gate is the eventual ceiling
+ *  for workspaces nothing ever opens. Deliberately no time-based decay here
+ *  (a 24h decay shipped briefly in v1.16.14): unseen finished work must
+ *  stay visible until actually seen. */
+export function shouldPromoteDoneToStale(
+  now: number,
+  meta: Pick<SessionMeta, 'acknowledged' | 'acknowledgedAt'> | undefined,
+): boolean {
+  if (meta?.acknowledged) { return now - (meta.acknowledgedAt ?? 0) > STALE_PROMOTION_MS; }
+  return false;
+}
 /** IDE lock re-scan cadence (see getIdeOpenFolders). */
 const IDE_LOCKS_TTL_MS = 30_000;
 
@@ -324,8 +340,10 @@ export class ForeignWorkspaceManager {
    *  (running/waiting/done/stale) are aggregated for display; dismissed
    *  sessions are excluded from counts. `done` is promoted to `stale` once the
    *  user has acknowledged the session in its own workspace and 10s has
-   *  elapsed (mirrors SessionDiscovery's local stale logic). Workspaces with
-   *  no active sessions render with empty counts. */
+   *  elapsed (mirrors SessionDiscovery's local stale logic); a session
+   *  nothing ever acknowledges holds `done` until the discovery window
+   *  evicts it — see shouldPromoteDoneToStale. Workspaces with no active
+   *  sessions render with empty counts. */
   getWorkspaces(): WorkspaceGroup[] {
     const now = Date.now();
     const groups = new Map<string, Record<string, number>>();
@@ -341,20 +359,10 @@ export class ForeignWorkspaceManager {
       }
       if (meta?.dismissed) { continue; }
 
-      // Stale rollover: prefer the source workspace's acknowledgedAt when the
-      // user has actually acknowledged. Fall back to lastActivity so unattended
-      // workspaces (closed VSCode, headless agent) still decay instead of
-      // sticking on `done` indefinitely.
+      // Stale rollover — acknowledgement-only, see shouldPromoteDoneToStale.
       let status = snapshot.status;
-      if (status === 'done') {
-        if (meta?.acknowledged) {
-          const ackTime = meta.acknowledgedAt ?? 0;
-          if (now - ackTime > STALE_PROMOTION_MS) {
-            status = 'stale';
-          }
-        } else if (now - snapshot.lastActivity > STALE_PROMOTION_MS) {
-          status = 'stale';
-        }
+      if (status === 'done' && shouldPromoteDoneToStale(now, meta)) {
+        status = 'stale';
       }
 
       const counts = groups.get(snapshot.workspaceKey)!;

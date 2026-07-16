@@ -328,6 +328,19 @@ describe('renderCardInner', () => {
     expect(on).toContain('Active elsewhere');
   });
 
+  it('permission-mode badge renders the glyph and label for a known mode', () => {
+    const html = renderCardInner(makeCtx(), makeSession({ permissionMode: 'bypassPermissions' }), NOW, false);
+    expect(html).toContain('mode-badge-bypass');
+    expect(html).toContain('🔀');
+    expect(html).toContain('bypass');
+  });
+
+  it('permission-mode badge is absent for an unrecognised mode or when unset', () => {
+    expect(renderCardInner(makeCtx(), makeSession(), NOW, false)).not.toContain('mode-badge');
+    const html = renderCardInner(makeCtx(), makeSession({ permissionMode: 'dontAsk' }), NOW, false);
+    expect(html).not.toContain('mode-badge');
+  });
+
   it('context bar renders when contextTokens > 0 and respects compactSettings', () => {
     const s = makeSession({ contextTokens: 100_000, modelLabel: 'Opus' });
     const html = renderCardInner(makeCtx({ compactSettings: { autoCompactWindow: 200_000, autoCompactPct: 95 } }), s, NOW, false);
@@ -429,6 +442,25 @@ describe('renderWsRow', () => {
     expect(html).toContain('data-cwd="/Users/me/plain"');
     expect(html).not.toContain('ws-chevron');
   });
+
+  it('washes done-but-unseen rows teal; waiting outranks done', () => {
+    const doneRow = renderWsRow(makeCtx(), {
+      workspaceKey: 'k', displayName: 'plain', counts: { done: 1 }, cwd: '/Users/me/plain',
+    });
+    expect(doneRow).toContain('ws-row-done');
+    expect(doneRow).not.toContain('ws-row-waiting');
+    const both = renderWsRow(makeCtx(), {
+      workspaceKey: 'k', displayName: 'plain', counts: { done: 1, waiting: 1 }, cwd: '/Users/me/plain',
+    });
+    expect(both).toContain('ws-row-waiting');
+    expect(both).not.toContain('ws-row-done');
+    // No wash at all without waiting or done counts (running/stale don't tint).
+    const neither = renderWsRow(makeCtx(), {
+      workspaceKey: 'k', displayName: 'plain', counts: { running: 1, stale: 2 }, cwd: '/Users/me/plain',
+    });
+    expect(neither).not.toContain('ws-row-waiting');
+    expect(neither).not.toContain('ws-row-done');
+  });
 });
 
 describe('renderWorktreeRow', () => {
@@ -450,6 +482,19 @@ describe('renderWorktreeRow', () => {
     expect(html).toContain('ws-current-pin');
     expect(html).not.toContain('data-cwd');
     expect(html).toContain('(current)');
+  });
+
+  it('washes done-but-unseen rows teal; waiting outranks done', () => {
+    const doneRow = renderWorktreeRow(makeCtx(), { ...base, counts: { done: 2 } });
+    expect(doneRow).toContain('ws-row-done');
+    expect(doneRow).not.toContain('ws-row-waiting');
+    const both = renderWorktreeRow(makeCtx(), { ...base, counts: { done: 2, waiting: 1 } });
+    expect(both).toContain('ws-row-waiting');
+    expect(both).not.toContain('ws-row-done');
+    // No wash at all without waiting or done counts (running/stale don't tint).
+    const neither = renderWorktreeRow(makeCtx(), { ...base, counts: { running: 1, stale: 2 } });
+    expect(neither).not.toContain('ws-row-waiting');
+    expect(neither).not.toContain('ws-row-done');
   });
 });
 

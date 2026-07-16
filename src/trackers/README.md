@@ -90,6 +90,13 @@ PermissionTracker's invariants were implicit. They are:
   to `waiting` ahead of their JSONL `tool_use` record. Non-input tools keep the
   gate: their JSONL path runs `setRunning()`, which would otherwise flip an
   accelerated `waiting → running`.
+- Same `source === 'timer'`-only rule applies to the session-level
+  `hasBlockingSubagents()` guard (added 2026-07-11): a parallel `Agent`/`Task`
+  call still unresolved in the same turn explains a sibling tool's silence
+  (batched multi-tool-turn submission / execution-slot queueing, not
+  permission), so the timer no-ops while one is blocking — but a `'hook'` fire
+  is never suppressed by it, same as the mode gate above. See ARCHITECTURE.md
+  status-inference item 10.
 
 ## Adding a new tracker
 

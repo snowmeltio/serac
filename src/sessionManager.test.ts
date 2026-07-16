@@ -403,6 +403,32 @@ describe('SessionManager state machine', () => {
     expect(mgr.getSnapshot().modelLabel).toBe('Opus 4.6');
   });
 
+  it('ignores a trailing synthetic-sentinel record, keeping the last real model', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('hello')]);
+    await feedRecords(mgr, [{
+      type: 'assistant',
+      timestamp: new Date().toISOString(),
+      message: {
+        content: [{ type: 'text', text: 'Hi' }],
+        model: 'claude-fable-5',
+        usage: { input_tokens: 100 },
+      } as Record<string, unknown>,
+    } as JsonlRecord]);
+    // Claude Code's own locally-synthesized turn (no real API call) — must
+    // not clobber the real model just read above.
+    await feedRecords(mgr, [{
+      type: 'assistant',
+      timestamp: new Date().toISOString(),
+      message: {
+        content: [{ type: 'text', text: 'No response requested.' }],
+        model: '<synthetic>',
+        usage: { input_tokens: 0 },
+      } as Record<string, unknown>,
+    } as JsonlRecord]);
+    expect(mgr.getSnapshot().modelLabel).toBe('Fable 5');
+  });
+
   // ── Custom title ───────────────────────────────────────────────
 
   it('processes custom-title records', async () => {

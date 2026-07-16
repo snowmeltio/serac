@@ -1708,6 +1708,23 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     expect(css).toMatch(/\.wf-hstrip-body\s*{[^}]*flex-wrap:\s*wrap/);
   });
 
+  it('header model on a mixed run names the most recent agent\'s model with a "+N" count and the full set in the tooltip', () => {
+    const m = logModel() as any;
+    m.groups[0].agents = [
+      agent({ agentId: 'agent001', label: 'audit:privacy', model: 'claude-sonnet-5' }),
+      agent({ agentId: 'agent002', label: 'audit:security', model: 'claude-opus-4-8' }),
+      agent({ agentId: 'agent003', label: 'audit:perf', status: 'running', model: 'claude-fable-5' }),
+    ];
+    sendRender(m);
+    const items = qa('.wf-hstrip-meta-item');
+    const modelItem = items[items.length - 1];
+    // Most recently listed agent's model wins the visible label, not the
+    // first — the old behaviour hid the model entirely on any mismatch.
+    expect(modelItem.textContent).toContain('Fable 5 +2');
+    const tooltip = modelItem.querySelector('span[title]')!;
+    expect(tooltip.getAttribute('title')).toBe('Sonnet 5, Opus 4.8, Fable 5');
+  });
+
   it('display-bar controls sit in their own wrapping body after the rail label', () => {
     sendRender(logModel());
     expect(q('.wf-facets > .wf-zone-label')).not.toBeNull(); // label outside the wrapper

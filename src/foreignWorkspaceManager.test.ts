@@ -17,7 +17,7 @@ vi.mock('vscode', async () => {
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
+import { ForeignWorkspaceManager, shouldPromoteDoneToStale } from './foreignWorkspaceManager.js';
 import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
 import { PSEUDO_TMP_REPO_ROOT } from './panelUtils.js';
 
@@ -348,5 +348,28 @@ describe('ForeignWorkspaceManager: live-only visibility window', () => {
     const c2 = await manager.poll();
     expect(c1 || c2).toBe(true);
     expect(manager.getWorkspaces().length).toBe(0);
+  });
+});
+
+describe('shouldPromoteDoneToStale: done means done-but-unseen', () => {
+  const NOW = 1_784_000_000_000;
+  const unack = { acknowledged: false, acknowledgedAt: null };
+
+  it('never promotes a never-acknowledged session — unseen finished work stays visible', () => {
+    // No time-based decay: the discovery window / age gate is the only
+    // ceiling for workspaces nothing ever opens. (A 10s mirror, then a 24h
+    // decay, both previously cleared the done-but-unseen signal too early.)
+    expect(shouldPromoteDoneToStale(NOW, unack)).toBe(false);
+    expect(shouldPromoteDoneToStale(NOW, undefined)).toBe(false);
+    expect(shouldPromoteDoneToStale(NOW + 30 * 24 * 60 * 60 * 1000, unack)).toBe(false);
+  });
+
+  it('promotes 10s after acknowledgement', () => {
+    expect(shouldPromoteDoneToStale(NOW, { acknowledged: true, acknowledgedAt: NOW - 5_000 })).toBe(false);
+    expect(shouldPromoteDoneToStale(NOW, { acknowledged: true, acknowledgedAt: NOW - 11_000 })).toBe(true);
+  });
+
+  it('acknowledged with a null timestamp promotes immediately (epoch fallback)', () => {
+    expect(shouldPromoteDoneToStale(NOW, { acknowledged: true, acknowledgedAt: null })).toBe(true);
   });
 });

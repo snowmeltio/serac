@@ -1,5 +1,36 @@
 # Changelog
 
+## v1.16.15 (2026-07-16) — Done-but-unseen stays visible until seen
+
+### Changed
+- **A never-acknowledged done session now keeps its teal wash and done count until it is actually seen.** The 24-hour decay introduced in v1.16.14 is removed: the signal exists to surface finished work that needs attention, so it no longer expires on a timer. Acknowledging the session in its own window still rolls it over to "seen" 10 seconds later, and the discovery window / age gate (default 7 days, configurable via `serac.discovery.foreignWorkspacesWindow`) remains the eventual ceiling for workspaces that are never opened.
+
+## v1.16.14 (2026-07-16) — Teal wash on done-but-unseen workspace rows
+
+### Added
+- **Other-workspace and worktree rows now wash teal when an agent there has finished but hasn't been seen.** Matches the existing peach wash for waiting-on-permission rows, using the established done hue. Waiting outranks done when a workspace has both. Applies to Other workspaces rows, Worktrees-pane rows, and the expanded worktree picker's child rows; the wash clears once the session is acknowledged in its own window.
+
+### Fixed
+- **A finished, unattended session's done count no longer rolls over to "seen" 10 seconds after the turn ends.** The foreign done→stale rollover applied the same 10s delay to never-acknowledged sessions as to acknowledged ones, so the done signal (and the new teal wash) vanished before anyone could have looked. Never-acknowledged sessions now hold done for 24 hours; acknowledging one still rolls it over 10s later, and a late acknowledgement can no longer briefly revive an already-faded done.
+
+## v1.16.13 (2026-07-16) — Permission-mode badge on session cards
+
+### Added
+- **A session's card now names its permission mode.** A glyph + word badge (Manual ✋, Edit automatically `</>`, Plan 📋, Auto ⚡, Bypass permissions 🔀) sits in the meta row next to the model pill, sourced from the permission-mode tracking Serac already carried internally but never surfaced. Colours are kept distinct from the left-edge status palette so the two never read as the same signal.
+
+## v1.16.12 (2026-07-15) — Model pill no longer shows Claude Code's synthetic sentinel
+
+### Fixed
+- **A session's model pill no longer shows the literal `<synthetic>` sentinel.** Claude Code writes that value on its own locally-generated assistant turns (e.g. a "No response requested." placeholder) that never called a real model. When one of those landed as a session's most recent model-bearing record, the model tracking picked it up verbatim and rendered it in place of the real model. The sentinel is now excluded everywhere a model id is read, including the subagent model recovery (which could otherwise permanently cache a synthetic opening record).
+
+### Changed
+- **The workflow/team header's model roll-up now names a model on a mixed-model run instead of going blank.** When agents in one run used genuinely different real models, it previously omitted the model field entirely. It now shows the most recently spawned agent's model with a "+N" count (e.g. `Fable 5 +2`), with the full set in the tooltip.
+
+## v1.16.11 (2026-07-12) — Stop false "Waiting for permission" from parallel subagent fan-out
+
+### Fixed
+- **A session no longer flashes "Waiting for permission" when a turn fans out parallel `Agent`/`Task` subagent calls alongside another tool.** A sibling tool's own result can land well after the subagent it happened to be batched with resolves — batched multi-tool-turn submission and/or execution-slot queueing, unrelated to permission. The 15s/30s heuristic timer previously read that gap as a stuck prompt; it now defers to the same "blocking subagent" signal the poll-path status check already trusted, and gives a sibling tool a fresh check once the subagent clears instead of leaving it stuck past the hard ceiling.
+
 ## v1.16.10 (2026-07-10) — Workflow bar above the agent strip; new agent detail bar
 
 ### Changed

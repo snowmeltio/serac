@@ -736,6 +736,22 @@ describe('SessionDiscovery', () => {
       discovery.stop();
     });
 
+    it('skips a leading synthetic sentinel record and keeps scanning for the real model', async () => {
+      const sessionId = 'sess-model-synthetic';
+      createJsonlFile(sessionId);
+      const jsonl = [
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'No response requested.' }] } }),
+        JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-opus-4-8', content: [] } }),
+      ].join('\n') + '\n';
+      writeSubagent(sessionId, 'aaa111', { agentType: 'Explore' }, jsonl);
+
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      const byId = Object.fromEntries(discovery.listSubagentFiles(sessionId).map(e => [e.agentId, e]));
+      discovery.stop();
+      expect(byId['aaa111'].model).toBe('claude-opus-4-8');
+    });
+
     it('ignores the workflows/ subdir and non-agent files', async () => {
       const sessionId = 'sess-list2';
       createJsonlFile(sessionId);
