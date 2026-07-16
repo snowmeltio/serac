@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.15 (2026-07-16) — Done-but-unseen stays visible until seen
+
+### Changed
+- **A never-acknowledged done session now keeps its teal wash and done count until it is actually seen.** The 24-hour decay introduced in v1.16.14 is removed: the signal exists to surface finished work that needs attention, so it no longer expires on a timer. Acknowledging the session in its own window still rolls it over to "seen" 10 seconds later, and the discovery window / age gate (default 7 days, configurable via `serac.discovery.foreignWorkspacesWindow`) remains the eventual ceiling for workspaces that are never opened.
+
 ## v1.16.14 (2026-07-16) — Teal wash on done-but-unseen workspace rows
 
 ### Added
