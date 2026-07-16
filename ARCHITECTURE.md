@@ -542,6 +542,12 @@ Sessions with no topic and no activity in idle/stale status are silently filtere
 
 `customTitle` > `title` (from session-meta.json) > `topic` (first user message) > folder name > slug > session ID.
 
+### Foreign workspace row washes and the two-tier stale rollover
+
+Foreign/worktree rows carry an attention wash: peach (`ws-row-waiting`) when any session in the workspace is waiting on permission/input, teal (`ws-row-done`) when any is done-but-unseen. Waiting outranks done — the three row builders (`renderWsRow`, `renderWorktreeRow`, `pickerChildRow`) emit at most one of the two classes.
+
+The teal wash keys off the foreign `done` count, whose display promotion to `stale` ("seen") is two-tier (`foreignWorkspaceManager.ts:shouldPromoteDoneToStale`): an **acknowledged** session promotes 10s after acknowledgement (mirrors the local rule), while a **never-acknowledged** session holds `done` for a 24h unseen decay (`UNSEEN_DECAY_MS`) — previously it decayed on the same 10s constant, which cleared the done signal seconds after an unattended turn ended. The decay term is checked ahead of the acknowledgement term so a late acknowledgement can't briefly revive an already-decayed `done`.
+
 ### Foreign workspace worktree picker
 
 When `groupForeignWorkspaces` aggregates 2+ foreign workspaces sharing a `repoRoot`, the synthetic row becomes click-to-expand (chevron, no `data-cwd`). Expanding inlines one child row per worktree of the repo (read from `<repoRoot>/.git/worktrees/*` by `ForeignWorkspaceManager`, refreshed on the same 60s cadence as the local `discoveredWorktrees`). Per-worktree counts come from the pre-aggregation `members` preserved on the synthetic row. Inactive worktrees (no Claude Code activity within the foreign-workspace age gate, `ageGateDaysFor('foreignWorkspaces')`) still appear, marked with a quiet "no activity" tag. Picking a worktree posts `openWorkspace` and auto-collapses the parent; an idle expand collapses after `serac.worktrees.autoCollapseAfterSeconds`.

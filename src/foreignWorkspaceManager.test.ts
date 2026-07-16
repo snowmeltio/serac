@@ -17,7 +17,7 @@ vi.mock('vscode', async () => {
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
+import { ForeignWorkspaceManager, shouldPromoteDoneToStale } from './foreignWorkspaceManager.js';
 import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
 import { PSEUDO_TMP_REPO_ROOT } from './panelUtils.js';
 
@@ -348,5 +348,40 @@ describe('ForeignWorkspaceManager: live-only visibility window', () => {
     const c2 = await manager.poll();
     expect(c1 || c2).toBe(true);
     expect(manager.getWorkspaces().length).toBe(0);
+  });
+});
+
+describe('shouldPromoteDoneToStale: done means done-but-unseen', () => {
+  const NOW = 1_784_000_000_000;
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  const unack = { acknowledged: false, acknowledgedAt: null };
+
+  it('keeps an unacknowledged done session at done well past 10s (the old mirror bug)', () => {
+    expect(shouldPromoteDoneToStale(NOW, NOW - 11_000, unack)).toBe(false);
+    expect(shouldPromoteDoneToStale(NOW, NOW - 3 * HOUR, unack)).toBe(false);
+    expect(shouldPromoteDoneToStale(NOW, NOW - 3 * HOUR, undefined)).toBe(false);
+  });
+
+  it('decays a never-acknowledged session after the 24h unseen window', () => {
+    expect(shouldPromoteDoneToStale(NOW, NOW - 23 * HOUR, unack)).toBe(false);
+    expect(shouldPromoteDoneToStale(NOW, NOW - 25 * HOUR, unack)).toBe(true);
+    expect(shouldPromoteDoneToStale(NOW, NOW - 25 * HOUR, undefined)).toBe(true);
+  });
+
+  it('promotes 10s after acknowledgement', () => {
+    const ackFresh = { acknowledged: true, acknowledgedAt: NOW - 5_000 };
+    const ackAged = { acknowledged: true, acknowledgedAt: NOW - 11_000 };
+    expect(shouldPromoteDoneToStale(NOW, NOW - MIN, ackFresh)).toBe(false);
+    expect(shouldPromoteDoneToStale(NOW, NOW - MIN, ackAged)).toBe(true);
+  });
+
+  it('a late acknowledgement cannot revive an already-decayed done (no teal flash after seen)', () => {
+    const lateAck = { acknowledged: true, acknowledgedAt: NOW - 2_000 };
+    expect(shouldPromoteDoneToStale(NOW, NOW - 25 * HOUR, lateAck)).toBe(true);
+  });
+
+  it('acknowledged with a null timestamp promotes immediately (epoch fallback)', () => {
+    expect(shouldPromoteDoneToStale(NOW, NOW - MIN, { acknowledged: true, acknowledgedAt: null })).toBe(true);
   });
 });

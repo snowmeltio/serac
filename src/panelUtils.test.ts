@@ -871,6 +871,15 @@ describe('pickerChildRow', () => {
     expect(live).toContain('1W');
   });
 
+  it('washes done-but-unseen rows teal; waiting outranks done', () => {
+    const doneRow = pickerChildRow({ ...base, counts: { done: 1 } });
+    expect(doneRow).toContain('ws-row-done');
+    expect(doneRow).not.toContain('ws-row-waiting');
+    const both = pickerChildRow({ ...base, counts: { done: 1, waiting: 1 } });
+    expect(both).toContain('ws-row-waiting');
+    expect(both).not.toContain('ws-row-done');
+  });
+
   it('includes extra chips between name and counts', () => {
     expect(pickerChildRow({ ...base, extraChipsHtml: '<span class="ws-main-chip">main</span>' }))
       .toContain('</span><span class="ws-main-chip">main</span><div class="ws-counts">');
