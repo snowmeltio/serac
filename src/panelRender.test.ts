@@ -328,6 +328,19 @@ describe('renderCardInner', () => {
     expect(on).toContain('Active elsewhere');
   });
 
+  it('permission-mode badge renders the glyph and label for a known mode', () => {
+    const html = renderCardInner(makeCtx(), makeSession({ permissionMode: 'bypassPermissions' }), NOW, false);
+    expect(html).toContain('mode-badge-bypass');
+    expect(html).toContain('🔀');
+    expect(html).toContain('bypass');
+  });
+
+  it('permission-mode badge is absent for an unrecognised mode or when unset', () => {
+    expect(renderCardInner(makeCtx(), makeSession(), NOW, false)).not.toContain('mode-badge');
+    const html = renderCardInner(makeCtx(), makeSession({ permissionMode: 'dontAsk' }), NOW, false);
+    expect(html).not.toContain('mode-badge');
+  });
+
   it('context bar renders when contextTokens > 0 and respects compactSettings', () => {
     const s = makeSession({ contextTokens: 100_000, modelLabel: 'Opus' });
     const html = renderCardInner(makeCtx({ compactSettings: { autoCompactWindow: 200_000, autoCompactPct: 95 } }), s, NOW, false);
