@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.13 (2026-07-16) — Permission-mode badge on session cards
+
+### Added
+- **A session's card now names its permission mode.** A glyph + word badge (Manual ✋, Edit automatically `</>`, Plan 📋, Auto ⚡, Bypass permissions 🔀) sits in the meta row next to the model pill, sourced from the permission-mode tracking Serac already carried internally but never surfaced. Colours are kept distinct from the left-edge status palette so the two never read as the same signal.
+
 ## v1.16.12 (2026-07-15) — Model pill no longer shows Claude Code's synthetic sentinel
 
 ### Fixed
