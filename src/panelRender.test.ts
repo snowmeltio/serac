@@ -442,6 +442,25 @@ describe('renderWsRow', () => {
     expect(html).toContain('data-cwd="/Users/me/plain"');
     expect(html).not.toContain('ws-chevron');
   });
+
+  it('washes done-but-unseen rows teal; waiting outranks done', () => {
+    const doneRow = renderWsRow(makeCtx(), {
+      workspaceKey: 'k', displayName: 'plain', counts: { done: 1 }, cwd: '/Users/me/plain',
+    });
+    expect(doneRow).toContain('ws-row-done');
+    expect(doneRow).not.toContain('ws-row-waiting');
+    const both = renderWsRow(makeCtx(), {
+      workspaceKey: 'k', displayName: 'plain', counts: { done: 1, waiting: 1 }, cwd: '/Users/me/plain',
+    });
+    expect(both).toContain('ws-row-waiting');
+    expect(both).not.toContain('ws-row-done');
+    // No wash at all without waiting or done counts (running/stale don't tint).
+    const neither = renderWsRow(makeCtx(), {
+      workspaceKey: 'k', displayName: 'plain', counts: { running: 1, stale: 2 }, cwd: '/Users/me/plain',
+    });
+    expect(neither).not.toContain('ws-row-waiting');
+    expect(neither).not.toContain('ws-row-done');
+  });
 });
 
 describe('renderWorktreeRow', () => {
@@ -463,6 +482,19 @@ describe('renderWorktreeRow', () => {
     expect(html).toContain('ws-current-pin');
     expect(html).not.toContain('data-cwd');
     expect(html).toContain('(current)');
+  });
+
+  it('washes done-but-unseen rows teal; waiting outranks done', () => {
+    const doneRow = renderWorktreeRow(makeCtx(), { ...base, counts: { done: 2 } });
+    expect(doneRow).toContain('ws-row-done');
+    expect(doneRow).not.toContain('ws-row-waiting');
+    const both = renderWorktreeRow(makeCtx(), { ...base, counts: { done: 2, waiting: 1 } });
+    expect(both).toContain('ws-row-waiting');
+    expect(both).not.toContain('ws-row-done');
+    // No wash at all without waiting or done counts (running/stale don't tint).
+    const neither = renderWorktreeRow(makeCtx(), { ...base, counts: { running: 1, stale: 2 } });
+    expect(neither).not.toContain('ws-row-waiting');
+    expect(neither).not.toContain('ws-row-done');
   });
 });
 

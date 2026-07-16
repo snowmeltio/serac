@@ -658,8 +658,10 @@ export function pickerChildRow(opts: {
   extraChipsHtml?: string;
 }): string {
   const waiting = opts.counts['waiting'] || 0;
+  const done = opts.counts['done'] || 0;
   const hasLive = (opts.counts['running'] || 0) > 0 || waiting > 0;
-  const cls = 'ws-row ws-picker-child ws-row-clickable' + (waiting > 0 ? ' ws-row-waiting' : '');
+  const cls = 'ws-row ws-picker-child ws-row-clickable'
+    + (waiting > 0 ? ' ws-row-waiting' : done > 0 ? ' ws-row-done' : '');
   return '<div class="' + cls + '"'
     + (hasLive ? ' data-confidence="' + escapeHtml(opts.confidence ?? 'medium') + '"' : '')
     + ' data-cwd="' + escapeHtml(opts.cwd) + '"'

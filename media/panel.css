@@ -452,6 +452,16 @@ body.vscode-light .ws-row-clickable:hover { background: var(--vscode-list-hoverB
 body.vscode-light .ws-row-waiting { background: rgba(var(--sm-frozen-peach-rgb), 0.18); }
 body.vscode-light .ws-row-waiting:hover { background: rgba(var(--sm-frozen-peach-rgb), 0.28); }
 
+/* Done-but-unseen rows wash teal (the done status hue) — an agent has
+ * finished in that workspace and the result hasn't been acknowledged yet.
+ * The wash clears once the session is seen (done promotes to stale in the
+ * counts). Waiting outranks done: the renderers emit only one of the two
+ * classes, peach first. */
+.ws-row-done { background: rgba(var(--sm-arctic-teal-rgb), 0.10); }
+.ws-row-done:hover { background: rgba(var(--sm-arctic-teal-rgb), 0.18); }
+body.vscode-light .ws-row-done { background: rgba(var(--sm-arctic-teal-rgb), 0.18); }
+body.vscode-light .ws-row-done:hover { background: rgba(var(--sm-arctic-teal-rgb), 0.28); }
+
 .card-meta {
   display: flex;
   align-items: center;

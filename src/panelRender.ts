@@ -565,6 +565,7 @@ export function tildeAbbrev(ctx: RenderContext, p: string): string {
 export function renderWsRow(ctx: RenderContext, ws: WorkspaceGroup): string {
   const running = ws.counts['running'] || 0;
   const waiting = ws.counts['waiting'] || 0;
+  const done = ws.counts['done'] || 0;
   const wtCount = ws.worktreeCount ?? 0;
   const wtMembers = ws.worktreeMembersLabel ?? '';
   const isAggregated = wtCount > 1;
@@ -582,7 +583,9 @@ export function renderWsRow(ctx: RenderContext, ws: WorkspaceGroup): string {
   const rowClass = 'ws-row'
     + (isAggregated ? ' ws-row-aggregated' : '')
     + (pickerEligible ? ' ws-row-expandable' : '')
-    + (waiting > 0 ? ' ws-row-waiting' : '')
+    // Waiting outranks done: an agent blocked on permission is the actionable
+    // state, so the peach wash wins when a workspace has both.
+    + (waiting > 0 ? ' ws-row-waiting' : done > 0 ? ' ws-row-done' : '')
     + ((pickerEligible || ws.cwd) ? ' ws-row-clickable' : '');
   const countsHtml = countsChipsHtml(ws.counts);
   const hasLiveSessions = running > 0 || waiting > 0;
@@ -710,11 +713,12 @@ export function renderScratchPickerChildren(ctx: RenderContext, ws: WorkspaceGro
 export function renderWorktreeRow(ctx: RenderContext, wt: PanelWorktreeRow): string {
   const running = wt.counts['running'] || 0;
   const waiting = wt.counts['waiting'] || 0;
+  const done = wt.counts['done'] || 0;
   const hasLive = running > 0 || waiting > 0;
   const countsHtml = countsChipsHtml(wt.counts);
 
   const cls = 'ws-row ws-row-worktree'
-    + (waiting > 0 ? ' ws-row-waiting' : '')
+    + (waiting > 0 ? ' ws-row-waiting' : done > 0 ? ' ws-row-done' : '')
     + (wt.isCurrent ? ' ws-row-current' : ' ws-row-clickable');
   // Tooltip is the full worktree path (with $HOME tilde-abbreviated). Keeps
   // it on one line; "Switch to" / "Current worktree" prefixes were redundant
