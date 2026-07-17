@@ -473,16 +473,6 @@ body.vscode-light .ws-row-done:hover { background: rgba(var(--sm-arctic-teal-rgb
   flex-wrap: wrap;
 }
 
-.session-id-pill {
-  font-size: 9px;
-  font-family: var(--vscode-editor-font-family, monospace);
-  color: var(--vscode-descriptionForeground, #555555);
-  letter-spacing: 0.2px;
-  flex-shrink: 0;
-}
-.session-id-pill.clickable { cursor: pointer; }
-.session-id-pill.clickable:hover { color: var(--vscode-foreground, #cccccc); text-decoration: underline; }
-
 .model-pill {
   font-size: 9px;
   font-weight: 600;
@@ -496,6 +486,11 @@ body.vscode-light .ws-row-done:hover { background: rgba(var(--sm-arctic-teal-rgb
  * grey, used only for families not yet classified into a cost tier. */
 .model-pill { color: hsl(var(--model-hue, 0) 45% 70%); }
 body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
+/* Model pill doubles as the session-ID copy affordance — cursor + underline
+ * on hover, keeping its hue-based colour (cost-tier signal) rather than
+ * overriding it the way the old grey session-id-pill's hover did. */
+.model-pill.clickable { cursor: pointer; }
+.model-pill.clickable:hover { text-decoration: underline; }
 
 /* Branch / worktree indicator — lives on its OWN line beneath the meta row
  * (.card-branch), present only when the session has a git branch. Off the
