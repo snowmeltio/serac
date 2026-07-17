@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.19 (2026-07-17) — Permission-mode pill updates immediately
+
+### Fixed
+- **The permission-mode pill (Auto/Plan/etc.) no longer lags behind a mode switch.** It previously only updated via the PreToolUse hook, which requires the model to have already invoked a tool — so switching modes and sending a message left the pill showing the old mode until the model responded. It now primes from the JSONL record the instant the message is sent.
+
 ## v1.16.18 (2026-07-17) — Status pill height matches card title
 
 ### Fixed
