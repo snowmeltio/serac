@@ -373,11 +373,11 @@ body {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.3px;
-  padding: 2px 6px;
-  border-radius: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
   white-space: nowrap;
   flex-shrink: 0;
-  line-height: 14px;
+  line-height: 13px;
 }
 /* Elapsed-time chunk inside the status pill stays lowercase, matching the
  * rest of the UI (e.g. "DONE · 3h" rather than "DONE · 3H"). */
