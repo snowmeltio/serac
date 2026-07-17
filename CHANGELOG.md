@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.18 (2026-07-17) — Status pill height matches card title
+
+### Fixed
+- **The status pill in a card's top-right corner no longer overhangs the card title.** Tightened its padding, line-height, and corner radius so its height matches the title's first line.
+
 ## v1.16.17 (2026-07-17) — Copy session ID via the model pill
 
 ### Changed
