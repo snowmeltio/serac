@@ -99,12 +99,14 @@ export interface SessionState {
   /** Hook enrichment (PostToolUse): outcome of the most recently completed tool.
    *  Display-only; never affects status. Undefined until a PostToolUse arrives. */
   lastTool?: ToolOutcome;
-  /** Hook enrichment (PreToolUse): the session's current permission mode
-   *  (e.g. "default", "acceptEdits", "bypassPermissions"). Display-only for the
-   *  snapshot/UI consumer, but ALSO read internally by
-   *  SessionManager.isAutoAcceptMode() (alongside the distinct JSONL-native
-   *  JsonlRecord.permissionMode, which works without hooks) to gate the
-   *  permission-typed 'waiting' transitions — see toolProfiles.ts. */
+  /** The session's current permission mode (e.g. "default", "acceptEdits",
+   *  "bypassPermissions"). Primed from JsonlRecord.permissionMode the instant
+   *  a message is sent, then kept current by the hook-derived PreToolUse
+   *  enrichment once the model invokes a tool (requires hook ingress).
+   *  Display-only for the snapshot/UI consumer, but ALSO read internally by
+   *  SessionManager.isAutoAcceptMode() (which ORs this against the
+   *  independently-tracked jsonlPermissionMode) to gate the permission-typed
+   *  'waiting' transitions — see toolProfiles.ts. */
   permissionMode?: string;
   /** Hook enrichment (SessionEnd): why the session ended
    *  ("clear" | "logout" | "prompt_input_exit" | "other"). Display-only. */
@@ -160,7 +162,8 @@ export interface SessionSnapshot {
   worktreeLabel?: string;
   /** Hook enrichment — outcome of the most recently completed tool (PostToolUse). */
   lastTool?: ToolOutcome;
-  /** Hook enrichment — session's current permission mode (PreToolUse).
+  /** Session's current permission mode — primed from the JSONL
+   *  `permissionMode` field, then kept current by the PreToolUse hook.
    *  Display-only here (webview never derives behaviour from it) — see
    *  SessionState.permissionMode for the internal status-gating consumer. */
   permissionMode?: string;
@@ -697,8 +700,10 @@ export interface JsonlRecord {
   cwd?: string;
   /** The session's permission mode at the time of this record — carried on
    *  every `user` record and the dedicated `permission-mode` record type. See
-   *  isAutoAcceptPermissionMode() in toolProfiles.ts. Distinct from the
-   *  hook-derived, display-only SessionState.permissionMode. */
+   *  isAutoAcceptPermissionMode() in toolProfiles.ts. Also feeds
+   *  SessionState.permissionMode directly (arrives well before the
+   *  hook-derived PreToolUse enrichment, which requires the model to have
+   *  already invoked a tool). */
   permissionMode?: string;
   timestamp?: string;
   uuid?: string;

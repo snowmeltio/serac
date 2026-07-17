@@ -313,12 +313,18 @@ all of it, which Draft 2 got wrong.
    so writing `activity` would be clobbered by a *stale* later-arriving JSONL
    `tool_use` (arrival-order, not event-order — the exact race Draft 2
    over-claimed immunity to). A dedicated field sidesteps it entirely.
-   - This `permissionMode` is the hook-derived, display-only one
-     (`SessionState.permissionMode`, requires hook ingress). It is distinct
-     from the JSONL-native `permissionMode` (every `user` record + the
-     `permission-mode` record type, works without hooks) that Status inference
-     item 9 reads to gate the permission-typed `waiting` transitions — that
-     field is *not* enrichment, by design.
+   - `SessionState.permissionMode` (the display pill) is primed from the
+     JSONL-native `permissionMode` field (every `user` record + the
+     `permission-mode` record type — works without hooks, arrives the instant
+     a message is sent) and then kept current by the hook-derived
+     `PreToolUse` enrichment once the model actually invokes a tool (requires
+     hook ingress). Before this pairing (fixed 2026-07-17), the pill was
+     hook-only and visibly lagged: switching mode and sending updated the
+     JSONL immediately, but the pill sat stale until the model responded and
+     called a tool. `SessionManager.jsonlPermissionMode` remains a separate
+     internal field for the status-inference gate (item 9) — `isAutoAcceptMode()`
+     ORs it against `state.permissionMode` independently, so either source
+     alone still closes the gate regardless of hook ingress.
    - **Exception — `PreCompact` is a status-stabiliser, not enrichment.** It
      opens the compacting grace window (below): holds `running`/high-confidence
      and suppresses demotion. It is the one lifecycle event that touches status.
