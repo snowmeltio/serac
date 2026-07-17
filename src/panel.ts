@@ -306,13 +306,13 @@ let FOREIGN_SLIDE_MS = 220;
       return;
     }
 
-    // Copy ID pill
+    // Copy ID pill (model pill doubles as the copy affordance)
     const copyPill = target.closest<HTMLElement>('[data-copy-id]');
     if (copyPill) {
       e.stopPropagation();
       vscode.postMessage({ type: 'copyToClipboard', text: copyPill.dataset.copyId });
-      copyPill.textContent = 'copied';
-      setTimeout(() => { copyPill.textContent = copyPill.dataset.copyId!.slice(0, 8); }, 1000);
+      copyPill.textContent = 'ID copied!';
+      setTimeout(() => { copyPill.textContent = copyPill.dataset.modelLabel!; }, 1000);
       return;
     }
 

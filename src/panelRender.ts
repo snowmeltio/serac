@@ -411,7 +411,6 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
   actionsHtml += '</div>';
 
   let metaHtml = '<div class="card-meta">';
-  metaHtml += '<span class="session-id-pill clickable" data-copy-id="' + escapeHtml(s.sessionId) + '" title="Copy session ID">' + escapeHtml(s.sessionId.slice(0, 8)) + '</span>';
   if (s.modelLabel) {
     // Cost-tier hue: blue = cheap, orange = expensive (see MODEL_COST_HUE).
     // A separate colour register from status colours — hue varies, sat/light
@@ -422,7 +421,12 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     // Strip a trailing "*" (unconfirmed-guess marker) first — "Opus*" (no
     // version yet) must hash to the same family as "Opus" / "Opus 4.8*".
     const family = s.modelLabel.replace(/\*$/, '').split(' ')[0];
-    metaHtml += '<span class="model-pill" style="--model-hue:' + modelHue(family) + '">' + escapeHtml(s.modelLabel) + '</span>';
+    // Doubles as the session-ID copy affordance — clicking the model name
+    // copies the full session ID (data-copy-id) and flashes "ID copied!"
+    // before reverting to data-model-label (panel.ts's copy-pill handler).
+    metaHtml += '<span class="model-pill clickable" style="--model-hue:' + modelHue(family) + '" data-copy-id="'
+      + escapeHtml(s.sessionId) + '" data-model-label="' + escapeHtml(s.modelLabel) + '" title="Click to copy session ID">'
+      + escapeHtml(s.modelLabel) + '</span>';
   }
   // Permission-mode badge — glyph + word, same outlined-chip recipe as the
   // background-shell/loop badges below. A distinct colour per mode (see
