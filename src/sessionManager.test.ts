@@ -258,6 +258,27 @@ describe('SessionManager state machine', () => {
     expect(mgr.getStatus()).toBe('waiting');
   });
 
+  // ── Display pill: JSONL primes it ahead of the PreToolUse hook ──
+  // Regression guard for the pill lagging until the model responded: the
+  // JSONL `permissionMode` field on the `user` record must reach the display
+  // pill directly, not just the internal auto-accept gate.
+
+  it('updates the display permissionMode pill from the JSONL field immediately, before any tool runs', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { permissionMode: 'plan' })]);
+    // No assistant/tool_use record yet — PreToolUse could not have fired.
+    expect(mgr.getSnapshot().permissionMode).toBe('plan');
+  });
+
+  it('updates the pill again when a later message switches mode', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { permissionMode: 'auto' })]);
+    expect(mgr.getSnapshot().permissionMode).toBe('auto');
+    await feedRecords(mgr, [assistantTextRecord('Done')]);
+    await feedRecords(mgr, [userRecord('do something else', { permissionMode: 'plan' })]);
+    expect(mgr.getSnapshot().permissionMode).toBe('plan');
+  });
+
   // ── Idle timer ─────────────────────────────────────────────────
 
   it('transitions to done after idle timer fires (5s after output seen)', async () => {

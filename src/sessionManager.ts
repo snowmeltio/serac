@@ -287,10 +287,14 @@ export class SessionManager {
    *  empty activeTools until its JSONL tool_use re-affirms). */
   private lastWaitingReason = '';
   /** Session's permission mode, read from the JSONL `permissionMode` field
-   *  (every `user` record + the `permission-mode` record type). NOT display —
-   *  gates the permission-typed 'waiting' transitions above (see
-   *  isAutoAcceptPermissionMode() in toolProfiles.ts). Distinct from the
-   *  hook-derived, display-only state.permissionMode. */
+   *  (every `user` record + the `permission-mode` record type). Gates the
+   *  permission-typed 'waiting' transitions above (see
+   *  isAutoAcceptPermissionMode() in toolProfiles.ts) — kept as its own field
+   *  because isAutoAcceptMode() ORs it against the hook-derived
+   *  state.permissionMode independently, so either source alone still closes
+   *  the gate. Also mirrored into state.permissionMode at the read site
+   *  (processRecord) so the display pill updates the instant a message is
+   *  sent, rather than waiting on the PreToolUse hook. */
   private jsonlPermissionMode?: string;
   /** Glance-pack capture (display-only): branch, tool-error count, last reply. */
   private gitBranch = '';
@@ -1006,8 +1010,15 @@ export class SessionManager {
     // permissionMode gates real status transitions (unlike the cosmetic fields
     // above) — captured only once a record is confirmed to belong to this
     // session, so an unrelated/foreign record can't skew the auto-accept gate.
+    // Also mirrored into state.permissionMode (the display pill): JSONL carries
+    // the mode the instant a message is sent, well before the PreToolUse hook
+    // can fire on the model's first tool call, so this closes the visible lag
+    // where the pill sat stale until the model responded. The hook still wins
+    // once it fires (same call site, sessionManager.ts onPermissionMode) — it
+    // just can't arrive first.
     if (typeof record.permissionMode === 'string' && record.permissionMode) {
       this.jsonlPermissionMode = record.permissionMode;
+      this.state.permissionMode = record.permissionMode;
     }
 
     // Only update lastActivity for meaningful records (user/assistant turns).
