@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.17 (2026-07-17) — Copy session ID via the model pill
+
+### Changed
+- **Session cards no longer show a separate session-ID chip.** Click the model pill (e.g. "Sonnet 5") instead — it copies the session ID to the clipboard and flashes "ID copied!" for a second before reverting to the model name.
+
 ## v1.16.16 (2026-07-16) — Companion footer slots render cross-platform
 
 ### Fixed
