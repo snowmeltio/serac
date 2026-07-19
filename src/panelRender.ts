@@ -292,14 +292,21 @@ export function countLiveAgents(wfs: PanelWorkflow[] | undefined, subs: PanelSes
 /** Aggregate state for a session card's detail chip — reflects what the chip
  *  opens (its workflow run(s) and/or plain Task subagents), so a live workflow
  *  under an idle session still reads as running. Precedence: a permission wait
- *  outranks running, which outranks a failed/incomplete run, else done. */
+ *  outranks running, which outranks the MOST RECENT run's own outcome, else
+ *  done. Only the latest run (by startTime) decides failed/incomplete/done —
+ *  an old failure that a later retry superseded shouldn't tint the chip red
+ *  forever; that's the orchestrator doing its job, not an unresolved problem.
+ *  The full history still shows in the drill-in, just not as the headline
+ *  colour. */
 export function detailChipState(wfs: PanelWorkflow[] | undefined, subs: PanelSession['subagents'] | undefined): string {
   if ((subs ?? []).some(a => a.waitingOnPermission)) { return 'waiting'; }
   if ((wfs ?? []).some(w => w.status === 'running') || (subs ?? []).some(a => a.running)) { return 'running'; }
-  if ((wfs ?? []).some(w => w.status === 'failed')) { return 'failed'; }
+  const latest = (wfs ?? []).reduce<PanelWorkflow | null>(
+    (best, w) => (!best || w.startTime > best.startTime) ? w : best, null);
+  if (latest?.status === 'failed') { return 'failed'; }
   // Killed/abandoned runs are "didn't finish", not "errored" — warning
   // orange on both surfaces (the detail panel already renders it so).
-  if ((wfs ?? []).some(w => w.status === 'incomplete')) { return 'incomplete'; }
+  if (latest?.status === 'incomplete') { return 'incomplete'; }
   return 'done';
 }
 

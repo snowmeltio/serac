@@ -114,13 +114,37 @@ describe('detailChipState', () => {
     )).toBe('running');
   });
 
-  it('failed outranks incomplete, which outranks done', () => {
-    expect(detailChipState([
-      makeWorkflow({ status: 'failed' }), makeWorkflow({ status: 'incomplete' }),
-    ], [])).toBe('failed');
+  it('a single terminal run reports its own outcome', () => {
+    expect(detailChipState([makeWorkflow({ status: 'failed' })], [])).toBe('failed');
     expect(detailChipState([makeWorkflow({ status: 'incomplete' })], [])).toBe('incomplete');
     expect(detailChipState([makeWorkflow({ status: 'completed' })], [])).toBe('done');
     expect(detailChipState(undefined, undefined)).toBe('done');
+  });
+
+  it('only the MOST RECENT run decides the tint — an older failure superseded by a later success reads as done', () => {
+    expect(detailChipState([
+      makeWorkflow({ status: 'failed', startTime: NOW - 300_000 }),
+      makeWorkflow({ status: 'completed', startTime: NOW - 60_000 }),
+    ], [])).toBe('done');
+    // Array order shouldn't matter, only startTime.
+    expect(detailChipState([
+      makeWorkflow({ status: 'completed', startTime: NOW - 60_000 }),
+      makeWorkflow({ status: 'failed', startTime: NOW - 300_000 }),
+    ], [])).toBe('done');
+  });
+
+  it('a newer failure after an older success still reads as failed', () => {
+    expect(detailChipState([
+      makeWorkflow({ status: 'completed', startTime: NOW - 300_000 }),
+      makeWorkflow({ status: 'failed', startTime: NOW - 60_000 }),
+    ], [])).toBe('failed');
+  });
+
+  it('a newer incomplete run after an older failure reads as incomplete', () => {
+    expect(detailChipState([
+      makeWorkflow({ status: 'failed', startTime: NOW - 300_000 }),
+      makeWorkflow({ status: 'incomplete', startTime: NOW - 60_000 }),
+    ], [])).toBe('incomplete');
   });
 });
 
