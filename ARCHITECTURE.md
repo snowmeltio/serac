@@ -163,6 +163,9 @@ read `DONE` while detached agents kept working for many minutes (found live
   agents + subagents, background included) and tints by their aggregate state
   via `detailChipState`, so a `done` card with live robots reads as active down
   in the meta row; live agents also keep their inline roster rows on done cards.
+  The failed/incomplete tint reflects only the **most recent** workflow run
+  (by `startTime`), not any run ever — a failure a later retry superseded
+  reads as done, not failed.
 
 ### Background-shell signal (SPIKE — non-status enrichment)
 
@@ -635,7 +638,7 @@ The sidecar's per-agent `state` maps to `WorkflowAgentStatus` (`DisplayStatus` p
 
 ### Rendering
 
-A session that owns run(s) renders as a normal card with: a clickable detail chip in the meta row (labelled `workflow`/`workflows`, or `agents` when the session also has plain subagents) that opens the detail panel **and** focuses the conversation; a **glance-only** roll-up (progress bar + a single count, e.g. `2/4 agents` / `✓ 4 agents` / `run failed`). The per-phase pills, token/tool/duration metrics, and per-agent rows are **not** on the card — they live in the detail panel. Likewise the subagent section on a session card is just the summary line (`3 subagents: 1 waiting, 2 running`); the per-agent rows + result previews are panel-only. The chip is tinted by the **agents' own** aggregate state (`wf-chip-*`: running/waiting/failed/done), dimmed when the parent card is seen/stale. Card-body click opens the **invoking conversation**; the chip opens the **detail panel** (`detailPanel.ts`) beside it. All gated behind `serac.show.workflows`.
+A session that owns run(s) renders as a normal card with: a clickable detail chip in the meta row (labelled `workflow`/`workflows`, or `agents` when the session also has plain subagents) that opens the detail panel **and** focuses the conversation; a **glance-only** roll-up (progress bar + a single count, e.g. `2/4 agents` / `✓ 4 agents` / `run failed`). The per-phase pills, token/tool/duration metrics, and per-agent rows are **not** on the card — they live in the detail panel. Likewise the subagent section on a session card is just the summary line (`3 subagents: 1 waiting, 2 running`); the per-agent rows + result previews are panel-only. The chip is tinted by the **agents' own** aggregate state (`wf-chip-*`: running/waiting/failed/incomplete/done), dimmed when the parent card is seen/stale — failed/incomplete reflects only the most recent run, not any historical one (`detailChipState`). Card-body click opens the **invoking conversation**; the chip opens the **detail panel** (`detailPanel.ts`) beside it. All gated behind `serac.show.workflows`.
 
 Compatibility/safety: malformed agent entries are skipped (the rest still parses); `getWorkflowAgentFilePath` validates `runId`/`agentId` against path traversal and existence-checks before returning.
 

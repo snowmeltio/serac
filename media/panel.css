@@ -964,10 +964,15 @@ body.vscode-light .wf-view-chip.wf-chip-running { color: #4a6cd4; }
 body.vscode-light .wf-view-chip.wf-chip-waiting { color: #c47a3a; }
 body.vscode-light .wf-view-chip.wf-chip-done    { color: #3a9a9d; }
 body.vscode-light .wf-view-chip.wf-chip-incomplete { color: #a87718; }
+/* wf-chip-failed needs its own light override too — body.vscode-light .wf-tag
+ * (above) outranks the bare .wf-view-chip.wf-chip-failed rule on specificity
+ * (2 classes + 1 element beats 2 classes + 0), so without this the chip fell
+ * back to .wf-tag's grey in light mode instead of reading as failed at all. */
+body.vscode-light .wf-view-chip.wf-chip-failed { color: #d44444; }
 body.vscode-light .bg-shell-badge { color: #4a6cd4; }
 /* Light-theme mode-badge substitutions — same recipe as wf-view-chip above.
- * Bypass keeps --sm-salmon-red as-is, matching .tool-error-badge/wf-chip-failed,
- * which also read fine unadjusted on light. */
+ * Bypass keeps --sm-salmon-red as-is, matching .tool-error-badge, which isn't
+ * built on .wf-tag so it doesn't hit the specificity issue above. */
 body.vscode-light .mode-badge-manual { color: #6b6f76; }
 body.vscode-light .mode-badge-edit { color: #2f8a93; }
 body.vscode-light .mode-badge-plan { color: #8a5fd6; }
