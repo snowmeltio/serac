@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.16.20 (2026-07-19) — Failed-run chip reads correctly in light mode
+
+### Fixed
+- **A failed workflow's agents chip no longer goes flat grey in light mode.** A light-theme override for the base chip style unintentionally outranked the failed-state colour on CSS specificity, so failed runs lost their red tint on light themes even though dark mode showed it correctly. Added the missing override.
+- **A session's agents chip no longer stays red forever after a failed workflow run is superseded by a successful retry.** The chip's failed/incomplete tint now reflects only the most recent run, not any run in the session's history — an orchestrator that retried and fixed a failure now reads as done, not failed.
+
 ## v1.16.19 (2026-07-17) — Permission-mode pill updates immediately
 
 ### Fixed
