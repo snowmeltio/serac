@@ -1167,16 +1167,19 @@ describe('panel.ts integration', () => {
       });
       const badge = document.querySelector('.card-meta .bg-shell-badge') as HTMLElement;
       expect(badge).toBeTruthy();
-      expect(badge.textContent).toContain('1 shell running');
+      expect(badge.textContent).toContain('1 \u{1F41A}');
+      expect(badge.title).toBe('1 background shell launched with run_in_background still running');
       // Non-status: the card keeps its real status (done), badge is additive.
       expect(document.querySelector('.card')!.classList.contains('done')).toBe(true);
     });
 
-    it('pluralises the count', () => {
+    it('pluralises the tooltip for multiple shells', () => {
       sendUpdate({
         sessions: [makeSession({ sessionId: 'bg-2', status: 'done', backgroundShellCount: 3 })],
       });
-      expect((document.querySelector('.bg-shell-badge') as HTMLElement).textContent).toContain('3 shells running');
+      const badge = document.querySelector('.bg-shell-badge') as HTMLElement;
+      expect(badge.textContent).toContain('3 \u{1F41A}');
+      expect(badge.title).toBe('3 background shells launched with run_in_background still running');
     });
 
     it('omits the badge when there are no background shells', () => {

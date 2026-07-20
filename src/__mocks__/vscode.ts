@@ -66,19 +66,23 @@ export class EventEmitter<T> {
 
 // --- Webview ---
 export function createMockWebview() {
-  const messageHandlers: Array<(msg: unknown) => void> = [];
+  const messageHandlers: Array<(msg: unknown) => unknown> = [];
   return {
     options: {} as Record<string, unknown>,
     html: '',
     cspSource: 'https://mock.csp.source',
     postMessage: vi.fn().mockResolvedValue(true),
-    onDidReceiveMessage: vi.fn((handler: (msg: unknown) => void) => {
+    onDidReceiveMessage: vi.fn((handler: (msg: unknown) => unknown) => {
       messageHandlers.push(handler);
       return { dispose: vi.fn() };
     }),
     asWebviewUri: vi.fn((uri: Uri) => uri),
-    _fireMessage(msg: unknown) {
-      for (const h of messageHandlers) { h(msg); }
+    /** Real vscode never awaits the handler either — but production code
+     *  now returns its promise (rather than voiding it) so this mock can
+     *  wait for real async work (fs reads, tailer, etc.) to actually finish
+     *  instead of tests guessing "enough" setTimeout(0) ticks to settle it. */
+    _fireMessage(msg: unknown): Promise<unknown> {
+      return Promise.all(messageHandlers.map(h => h(msg)));
     },
     _messageHandlers: messageHandlers,
   };

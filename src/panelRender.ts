@@ -455,8 +455,9 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
   // a quiet running-tinted chip so a `done` card still flags the live build.
   const bgShells = s.backgroundShellCount ?? 0;
   if (bgShells > 0) {
-    const bgLabel = bgShells + ' shell' + (bgShells === 1 ? '' : 's') + ' running';
-    metaHtml += '<span class="bg-shell-badge" title="Background shells launched with run_in_background still running">' + bgLabel + '</span>';
+    const bgLabel = bgShells + ' \u{1F41A}';
+    metaHtml += '<span class="bg-shell-badge" title="' + bgShells + ' background shell' + (bgShells === 1 ? '' : 's')
+      + ' launched with run_in_background still running">' + bgLabel + '</span>';
   }
   // Loops badge — the card is sleeping (ScheduleWakeup pending) or looping
   // (session crons live). Same quiet running-tinted chip as the shell badge:

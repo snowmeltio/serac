@@ -169,7 +169,7 @@ export class DetailPanel {
         },
       );
       this.panel.webview.html = this.getHtml(this.panel.webview);
-      this.panel.webview.onDidReceiveMessage((raw: unknown) => { void this.onMessage(raw); });
+      this.panel.webview.onDidReceiveMessage((raw: unknown) => this.onMessage(raw));
       this.panel.onDidDispose(() => {
         this.panel = undefined;
         this.containerId = null;
