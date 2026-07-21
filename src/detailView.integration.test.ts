@@ -124,6 +124,17 @@ describe('detailView.ts — collapse + grouped switcher', () => {
     expect(other.hasAttribute('aria-current')).toBe(false);
   });
 
+  it('classic empty state also swaps in the failed run’s error line', () => {
+    const m = twoSourceModel() as any;
+    m.groups = [];
+    m.runStatus = 'failed';
+    m.runError = 'Error: exploded\n  at <anonymous>';
+    sendRender(m);
+    const empty = q('.wf-empty.wf-empty-error')!;
+    expect(empty.textContent).toBe('Run failed: Error: exploded');
+    expect(root().textContent).not.toContain('No agents to show');
+  });
+
   it('phase header surfaces a failed count (UX-4)', () => {
     const model = twoSourceModel() as any;
     model.groups[0].agents.push(agent({ agentId: 'agent003', label: 'audit:perf', status: 'failed', phaseTitle: 'Audit' }));
@@ -1676,6 +1687,63 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     m4.groups = [{ key: 'wf_run1', title: null, agents: [] }];
     sendRender(m4);
     expect(q('.wf-hstrip-counts')!.textContent).toBe('0 done');
+  });
+
+  // ── Failed-run surfacing (the v1.16.21 "DONE · 0 done" ghost) ────────
+
+  it('a failed 0-agent run wears a FAILED pill, "run failed" counts, and the sidecar error line', () => {
+    const m = logModel() as any;
+    m.groups = [{ key: 'wf_run1', title: null, agents: [] }];
+    m.runStatus = 'failed';
+    m.runError = "Error: undefined is not an object (evaluating 'args.list.length')\n  at <anonymous>";
+    sendRender(m);
+    const pill = q('.wf-hstrip-pill')!;
+    expect(pill.textContent).toBe('failed');
+    expect(pill.classList.contains('status-failed')).toBe(true);
+    expect(pill.getAttribute('title')).toContain('args.list.length');
+    expect(q('.wf-hstrip-counts')!.textContent).toBe('run failed');
+    // The empty body carries the error's first line, not the bare "No agents"
+    // copy; the full (capped) text rides the tooltip.
+    const empty = q('.wf-empty.wf-empty-error')!;
+    expect(empty.textContent).toContain('Run failed: Error: undefined is not an object');
+    expect(empty.textContent).not.toContain('at <anonymous>');
+    expect(empty.getAttribute('title')).toContain('at <anonymous>');
+    expect(root().textContent).not.toContain('No agents to show');
+  });
+
+  it('an incomplete 0-agent run reads "run incomplete" with the matching pill', () => {
+    const m = logModel() as any;
+    m.groups = [{ key: 'wf_run1', title: null, agents: [] }];
+    m.runStatus = 'incomplete';
+    sendRender(m);
+    const pill = q('.wf-hstrip-pill')!;
+    expect(pill.textContent).toBe('incomplete');
+    expect(pill.classList.contains('status-incomplete')).toBe(true);
+    expect(q('.wf-hstrip-counts')!.textContent).toBe('run incomplete');
+    // No error recorded → the neutral empty copy stays.
+    expect(q('.wf-empty')!.textContent).toContain('No agents to show');
+  });
+
+  it('agents in flight still drive the pill — runStatus only takes over once nothing runs or waits', () => {
+    const m = logModel() as any; // has one running agent
+    m.runStatus = 'failed';
+    sendRender(m);
+    expect(q('.wf-hstrip-pill')!.textContent).toBe('running');
+  });
+
+  it('a failed run WITH agents keeps the roster but the failed pill carries the error tooltip', () => {
+    const m = logModel() as any;
+    m.groups = [{
+      key: 'wf_run1', title: null,
+      agents: [agent({ agentId: 'f1', label: 'boom', status: 'failed' })],
+    }];
+    m.runStatus = 'failed';
+    m.runError = 'Error: exploded';
+    sendRender(m);
+    const pill = q('.wf-hstrip-pill')!;
+    expect(pill.textContent).toBe('failed');
+    expect(pill.getAttribute('title')).toBe('Error: exploded');
+    expect(q('.wf-empty-error')).toBeNull();
   });
 
   it('header strip is atomic: body wrapper, ellipsis title with tooltip, meta bits as separate nowrap spans', () => {

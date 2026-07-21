@@ -59,7 +59,10 @@ describe('parseWorkflowSidecar', () => {
     expect(parseWorkflowSidecar('{}', SID)).toBeNull(); // no runId
   });
 
-  it('skips one malformed agent entry but keeps the valid ones', () => {
+  it('synthesises a placeholder id for an agent entry missing agentId (errored before registering)', () => {
+    // The runtime writes agentId:null for an agent that errored before it
+    // registered. Skipping the entry made every roll-up undercount (the
+    // header said "6 agents" while 5 rows rendered — the wf_c8900737 case).
     const obj = {
       runId: 'wf_partial-001',
       workflowName: 'partial',
@@ -67,14 +70,18 @@ describe('parseWorkflowSidecar', () => {
       phases: [{ title: 'Only', detail: '' }],
       workflowProgress: [
         { type: 'workflow_phase', index: 1, title: 'Only' },
-        { type: 'workflow_agent', index: 1, phaseIndex: 1, state: 'done' }, // no agentId → skipped
+        { type: 'workflow_agent', index: 1, phaseIndex: 1, state: 'error', label: 'apply-fix' }, // no agentId
         { type: 'workflow_agent', index: 2, agentId: 'akeep01', phaseIndex: 1, state: 'done', label: 'kept' },
       ],
     };
     const snap = parseWorkflowSidecar(JSON.stringify(obj), SID);
     expect(snap).not.toBeNull();
-    expect(snap!.agents).toHaveLength(1);
-    expect(snap!.agents[0].label).toBe('kept');
+    expect(snap!.agents).toHaveLength(2);
+    expect(snap!.agents[0].agentId).toBe('missing-0');
+    expect(snap!.agents[0].label).toBe('apply-fix');
+    expect(snap!.agents[0].status).toBe('failed');
+    expect(snap!.counts.failed).toBe(1);
+    expect(snap!.agents[1].label).toBe('kept');
   });
 
   it('maps an "incomplete" run status through (killed/abandoned run)', () => {
@@ -132,7 +139,10 @@ describe('parseWorkflowSidecar', () => {
     expect(snap!.agents.find(a => a.agentId === 'adone')!.status).toBe('done');
   });
 
-  it('maps agent "waiting" state through and falls unknown/absent states back to "running"', () => {
+  it('maps agent "waiting" through; unknown/absent states degrade to terminal "done", never "running"', () => {
+    // Regression pin for the v1.16.21 ghost-count bug: a defaulted-running
+    // agent in a completion sidecar feeds the card's "agents — N running"
+    // chip forever. Unknown states must degrade terminal (quiet), not live.
     const obj = {
       runId: 'wf_states-001',
       workflowName: 'states',
@@ -141,16 +151,56 @@ describe('parseWorkflowSidecar', () => {
       workflowProgress: [
         { type: 'workflow_phase', index: 1, title: 'Only' },
         { type: 'workflow_agent', index: 1, agentId: 'awa01', phaseIndex: 1, state: 'waiting' },
-        { type: 'workflow_agent', index: 2, agentId: 'aspawn', phaseIndex: 1, state: 'spawning' }, // unknown → running
-        { type: 'workflow_agent', index: 3, agentId: 'anone', phaseIndex: 1 },                     // absent → running
+        { type: 'workflow_agent', index: 2, agentId: 'aspawn', phaseIndex: 1, state: 'spawning' }, // unknown → done
+        { type: 'workflow_agent', index: 3, agentId: 'anone', phaseIndex: 1 },                     // absent → done
       ],
     };
     const snap = parseWorkflowSidecar(JSON.stringify(obj), SID);
     expect(snap!.agents.find(a => a.agentId === 'awa01')!.status).toBe('waiting');
     expect(snap!.counts.waiting).toBe(1);
-    expect(snap!.agents.find(a => a.agentId === 'aspawn')!.status).toBe('running');
-    expect(snap!.agents.find(a => a.agentId === 'anone')!.status).toBe('running');
-    expect(snap!.counts.running).toBe(2);
+    expect(snap!.agents.find(a => a.agentId === 'aspawn')!.status).toBe('done');
+    expect(snap!.agents.find(a => a.agentId === 'anone')!.status).toBe('done');
+    expect(snap!.counts.done).toBe(2);
+    expect(snap!.counts.running).toBeUndefined();
+  });
+
+  it('maps agent "error" state to failed and parses the run-level error field (the ghost-5 sidecars)', () => {
+    // Mirrors the real wf_1f43de65 failure: status:'failed', agents in state
+    // 'error', durationMs 5, error carrying the crash message + stack.
+    const obj = {
+      runId: 'wf_error-001',
+      workflowName: 'dealflow-import',
+      status: 'failed',
+      durationMs: 5,
+      error: "Error: undefined is not an object (evaluating 'args.list.length')\n  at <anonymous>",
+      phases: [{ title: 'Import', detail: '' }],
+      workflowProgress: [
+        { type: 'workflow_phase', index: 1, title: 'Import' },
+        { type: 'workflow_agent', index: 1, agentId: 'aerr1', phaseIndex: 1, state: 'error' },
+        { type: 'workflow_agent', index: 2, agentId: 'aerr2', phaseIndex: 1, state: 'error' },
+      ],
+    };
+    const snap = parseWorkflowSidecar(JSON.stringify(obj), SID);
+    expect(snap!.status).toBe('failed');
+    expect(snap!.agents.every(a => a.status === 'failed')).toBe(true);
+    expect(snap!.counts.failed).toBe(2);
+    expect(snap!.counts.running).toBeUndefined();
+    expect(snap!.error).toContain('args.list.length');
+  });
+
+  it('tolerates error as an object with message, and reports null when absent', () => {
+    const base = {
+      runId: 'wf_error-002',
+      workflowName: 'e',
+      status: 'failed',
+      workflowProgress: [],
+    };
+    const objErr = parseWorkflowSidecar(JSON.stringify({ ...base, error: { message: 'boom' } }), SID);
+    expect(objErr!.error).toBe('boom');
+    const noErr = parseWorkflowSidecar(JSON.stringify(base), SID);
+    expect(noErr!.error).toBeNull();
+    const junkErr = parseWorkflowSidecar(JSON.stringify({ ...base, error: 42 }), SID);
+    expect(junkErr!.error).toBeNull();
   });
 
   it('reconstructs phases from workflowProgress when phases[] is absent', () => {

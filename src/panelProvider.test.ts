@@ -86,6 +86,7 @@ function makeWorkflow(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapsh
     agents: [],
     counts: { done: 3 },
     logs: [],
+    error: null,
     dismissed: false,
     ...overrides,
   };

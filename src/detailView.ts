@@ -834,8 +834,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (!model || model.groups.every(g => g.agents.length === 0)) {
       // The header carries the switcher, so it stays visible even when the
       // selected view has no agents — the user can switch to one that does.
-      root.innerHTML = renderHeader()
-        + '<div class="wf-empty">No agents to show for this view.</div>';
+      root.innerHTML = renderHeader() + renderEmptyBody();
       lastRenderedKey = null;
       refocus?.();
       updateComposer();
@@ -998,8 +997,37 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const modelLabel = mostRecentModel ? formatModelLabel(mostRecentModel) : '';
     const modelExtra = models.size > 1 ? models.size - 1 : 0;
     const modelTitle = models.size > 1 ? [...models].map(formatModelLabel).join(', ') : '';
-    const pillStatus = running > 0 ? 'running' : waiting > 0 ? 'waiting' : failed > 0 ? 'failed' : 'done';
+    // Run-level failed/incomplete outranks the agent roll-up once nothing is
+    // in flight: a failed 0-agent run has all-zero counters and previously
+    // fell through to a DONE pill ("DONE · 0 done" on a crashed run).
+    const runBad = model && (model.runStatus === 'failed' || model.runStatus === 'incomplete')
+      ? model.runStatus : null;
+    const pillStatus = running > 0 ? 'running' : waiting > 0 ? 'waiting'
+      : (runBad ?? (failed > 0 ? 'failed' : 'done'));
     return { running, waiting, done, failed, tokens, durationMs: maxDur, model: modelLabel, modelExtra, modelTitle, pillStatus };
+  }
+
+  /** A failed/incomplete pill carries the run's error as its tooltip — the
+   *  cheapest always-reachable surface for "why did it fail", even when the
+   *  roster is non-empty and the empty-body error line never renders. */
+  function pillTitleAttr(pillStatus: string): string {
+    if (!model?.runError) { return ''; }
+    if (pillStatus !== 'failed' && pillStatus !== 'incomplete') { return ''; }
+    return ' title="' + escapeHtml(model.runError.slice(0, 1000)) + '"';
+  }
+
+  /** Empty-roster body. A failed run with no agents previously rendered only
+   *  "No agents to show" — the sidecar's error is strictly more useful (the
+   *  v1.16.21 blank panel: a script that crashed in 5ms surfaced nothing).
+   *  First line renders; the full text (capped) rides the title attribute. */
+  function renderEmptyBody(): string {
+    const err = model?.runError;
+    if (err) {
+      const word = model?.runStatus === 'incomplete' ? 'incomplete' : 'failed';
+      return '<div class="wf-empty wf-empty-error" title="' + escapeHtml(err.slice(0, 1000)) + '">'
+        + escapeHtml('Run ' + word + ': ' + err.split('\n')[0].slice(0, 300)) + '</div>';
+    }
+    return '<div class="wf-empty">No agents to show for this view.</div>';
   }
 
   /** Header strip (mockup §2): source badge, container name, status pill, live
@@ -1021,7 +1049,12 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (agg.waiting > 0) { countBits.push(agg.waiting + ' waiting'); }
     if (agg.failed > 0) { countBits.push(agg.failed + ' failed'); }
     if (agg.done > 0) { countBits.push(agg.done + ' done'); }
-    if (countBits.length === 0) { countBits.push('0 done'); }
+    // An empty roster on a failed/incomplete run reads "run failed", not the
+    // absurd "0 done" the zero-drop fallback used to produce.
+    if (countBits.length === 0) {
+      countBits.push(agg.pillStatus === 'failed' || agg.pillStatus === 'incomplete'
+        ? 'run ' + agg.pillStatus : '0 done');
+    }
     const metaBits: string[] = [];
     const dur = fmtDuration(agg.durationMs);
     if (dur) { metaBits.push(dur); }
@@ -1043,7 +1076,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + zoneLabel(badge)
       + '<div class="wf-hstrip-body">'
       + '<span class="wf-hstrip-name" title="' + escapeHtml(model.title) + '">' + escapeHtml(model.title) + '</span>'
-      + '<span class="wf-hstrip-pill status-' + agg.pillStatus + '">' + escapeHtml(agg.pillStatus) + '</span>'
+      + '<span class="wf-hstrip-pill status-' + agg.pillStatus + '"' + pillTitleAttr(agg.pillStatus) + '>' + escapeHtml(agg.pillStatus) + '</span>'
       + '<span class="wf-hstrip-counts">' + countBits.join(' · ') + '</span>'
       + '<span class="wf-hstrip-meta">' + metaHtml + '</span>'
       // The word hides at narrow width (CSS .wf-openconv-text); the glyph
@@ -1737,8 +1770,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const isAgentChange = pendingTopOnSettle;
 
     if (!model || model.groups.every(g => g.agents.length === 0)) {
-      root.innerHTML = renderViewRow() + renderHeaderStrip()
-        + '<div class="wf-empty">No agents to show for this view.</div>';
+      root.innerHTML = renderViewRow() + renderHeaderStrip() + renderEmptyBody();
       lastRenderedKey = null;
       refocus?.();
       updateComposer();

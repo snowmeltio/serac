@@ -329,6 +329,8 @@ export class DetailPanel {
       metrics: metricsBits.join(' · '),
       groups,
       views: this.buildViewChoices(runs, selected?.runId ?? null, 'workflow', this.subsForViewChoices(sessionId, team), team),
+      runStatus: selected?.status,
+      runError: selected?.error ?? null,
       team: team?.name,
     };
   }
