@@ -58,7 +58,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  fresh key name so it can't collide with any older persisted shape. */
   let agentStripCollapsed: boolean | null = null;
   /** Result strip (Phase 3, DESIGN-DETAIL-PANE-V2.md) collapse preference.
-   *  Tri-state, unlike viewRowCollapsed/briefCollapsed's plain booleans: null
+   *  Tri-state, same pattern as viewRowCollapsed/agentStripCollapsed: null
    *  means "no explicit user choice yet", in which case the strip is
    *  COLLAPSED to its one-line summary for every agent, running or done
    *  (Phase 2.2, Murray 2026-07-02: results are so lengthy that the open
@@ -909,7 +909,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return html + '</div>';
   }
 
-  /** Focus an agent-strip pill by identity (mirrors focusNavRow). Phase 2.3:
+  /** Focus an agent-strip pill by identity. Phase 2.3:
    *  the pill may now be hidden behind the collapsed strip's "+N" fold — fall
    *  back to the active pill so keyboard focus survives instead of dropping
    *  to <body>. */
