@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.17.1 (2026-07-21) — Session-meta persistence hardened against rare races
+
+### Fixed
+- **A dismiss or acknowledge can no longer be silently reverted by a concurrent reload.** If another VS Code window rewrote `session-meta.json` at the exact moment this window was re-reading it, a user action landing mid-read could be lost when the fresh disk state replaced memory. The reload now re-checks for unflushed changes after the read and stands down; the user action always survives.
+- **A change landing while a save is mid-write is no longer lost.** Saving snapshots the state, and a mutation arriving during the write used to have its "needs saving" flag cleared by the completing save — leaving it in memory only. The save now detects the overlap and leaves the flag set for the next flush.
+- **Persistent save failures are no longer silent.** A save that fails (disk full, permissions) now cleans up its temp file and, once the failure looks persistent, logs that cross-window reload syncing is paused until a save succeeds. Pending changes are also flushed on shutdown as a best effort.
+
 ## v1.17.0 (2026-07-21) — Holistic audit: truthful failed runs, classic view retired, session core refactored
 
 ### Fixed
