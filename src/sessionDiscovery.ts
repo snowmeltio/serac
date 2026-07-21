@@ -329,6 +329,10 @@ export class SessionDiscovery {
 
   stop(): void {
     this.disposed = true;
+    // Best-effort persist of any dirty tail state (bounded by one poll cycle —
+    // every cycle ends in a flush). Fire-and-forget: stop() is synchronous and
+    // deactivation can't await; the store's queue serialises it safely.
+    void this.meta.flush();
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
