@@ -4,7 +4,8 @@
  * cover all branches explicitly and catch regressions faster.
  */
 import { describe, it, expect } from 'vitest';
-import { computeDemotion, getToolProfile, isAutoAcceptPermissionMode, SessionManager } from './sessionManager.js';
+import { computeDemotion, getToolProfile, isAutoAcceptPermissionMode } from './toolProfiles.js';
+import { extractAssistantPreview } from './trackers/glanceTracker.js';
 
 describe('computeDemotion', () => {
   const NOW = 100_000;
@@ -303,8 +304,8 @@ describe('getToolProfile', () => {
   });
 });
 
-describe('SessionManager.extractAssistantPreview', () => {
-  const extract = (t: string, cap?: number) => SessionManager.extractAssistantPreview(t, cap);
+describe('extractAssistantPreview', () => {
+  const extract = (t: string, cap?: number) => extractAssistantPreview(t, cap);
 
   it('stops at the sentence boundary instead of straddling a trailing heading (the reported bug)', () => {
     const text = "Everything's set up and the fan-out is running. Status:\n\n**Done this session**\n- FY25 closed out";

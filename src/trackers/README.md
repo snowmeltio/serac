@@ -38,6 +38,7 @@ Today, all four trackers ship a JSONL/timer-derived variant only:
 | `TurnLifecycleTracker` | no-op (idle timer owns `done`) | `Stop` → accelerate `done` (host-edge turn-close guard) |
 | `ToolOutcomeTracker` | no-op (no JSONL source) | `PostToolUse`/`PreToolUse` → `lastTool`/`permissionMode` (enrichment) |
 | `SessionLifecycleTracker` | no-op (no JSONL source) | `SessionEnd` (enrichment) / `PreCompact` (compacting grace window) |
+| `GlanceTracker` | user/assistant/file-history JSONL records | n/a — display-only enrichment (topic, branch, tracked files, error count, last reply) |
 
 The Phase 4 swap is a one-line change inside each factory body; no
 SessionManager call site changes.
