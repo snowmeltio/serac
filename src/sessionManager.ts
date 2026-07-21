@@ -125,26 +125,18 @@ import { makeToolOutcomeTracker, type ToolOutcomeTracker } from './trackers/tool
 import { makeSessionLifecycleTracker, type SessionLifecycleTracker } from './trackers/sessionLifecycleTracker.js';
 import { makeBackgroundShellTracker, type BackgroundShellTracker, BACKGROUND_SHELL_CEILING_MS } from './trackers/backgroundShellTracker.js';
 import { makeSessionLoopTracker, type SessionLoopTracker } from './trackers/sessionLoopTracker.js';
+import { makeGlanceTracker } from './trackers/glanceTracker.js';
 import type { HookEventRouter } from './hookEventRouter.js';
-// Re-export for backward compatibility (tests import from sessionManager)
-export { computeDemotion, getToolProfile, isAutoAcceptPermissionMode } from './toolProfiles.js';
-export type { ToolProfile } from './toolProfiles.js';
 
 /** Idle threshold: if no new data for 5s after a turn, mark as idle/done */
 const IDLE_DELAY_MS = 5000;
 
-/** Cap on tracked-file paths kept from a file-history-snapshot record. */
-const MAX_TRACKED_FILES = 200;
 /** Safety bound on the PreCompact grace window. Compaction normally closes via
  *  the `compact_boundary` signal; if that never arrives (e.g. crash mid-compact),
  *  release the window after this long so the session isn't pinned `running`. */
 const COMPACT_GRACE_TIMEOUT_MS = 60_000;
 /** Permission timer constants moved to trackers/permissionTracker.ts. */
-/** Topic extraction patterns [A3]:
- *  HANDOFF_PATTERN — matches "HANDOFF-PROMPT: <title>" or "HANDOFF-PROMPT <title>"
- *  CONTINUE_PATTERN — matches "Continuing: /path/to/project" from /continue prompts */
-const HANDOFF_PATTERN = /^HANDOFF-PROMPT[:\s]*(.+)/m;
-const CONTINUE_PATTERN = /^Continuing:\s*\/.*$/;
+/** Topic extraction patterns moved to trackers/glanceTracker.ts [A3]. */
 /** Background-agent surface strings (Claude Code wording, not an API — same
  *  brittleness charter as the background-shell tracker; fail-safe on a wording
  *  change is the old behaviour: banner treated as completion).
@@ -297,14 +289,9 @@ export class SessionManager {
    *  (processRecord) so the display pill updates the instant a message is
    *  sent, rather than waiting on the PreToolUse hook. */
   private jsonlPermissionMode?: string;
-  /** Glance-pack capture (display-only): branch, tool-error count, last reply. */
-  private gitBranch = '';
-  /** File paths tracked by the LATEST file-history-snapshot record — the
-   *  files this session has edited. Display-only: feeds the cross-session
-   *  same-file collision badge. Capped; empty when none. */
-  private trackedFiles: string[] = [];
-  private toolErrorCount = 0;
-  private lastAssistantText = '';
+  /** Glance-pack capture (display-only): topic, branch, tracked files,
+   *  tool-error count, last reply. See trackers/glanceTracker.ts. */
+  private readonly glance = makeGlanceTracker();
   /** Origin worktree metadata, set by SiblingWorktreeManager so emitted
    *  snapshots can be tagged for cross-worktree display. */
   private worktreeRoot?: string;
@@ -439,12 +426,9 @@ export class SessionManager {
       lastActivity: now,
       firstActivity: now,
       idleTimerId: undefined,
-      topic: '',
       contextTokens: 0,
       modelId: opts.defaultModelGuess || '',
       modelConfirmed: !opts.defaultModelGuess,
-      firstUserMessages: [],
-      firstAssistantResponse: '',
       customTitle: '',
       aiTitle: '',
       userTurnCount: 0,
@@ -459,10 +443,9 @@ export class SessionManager {
     this.state.activity = '';
     this.clearTools(this.state.activeTools);
     this.state.userTurnCount = 0;
-    this.state.firstUserMessages = [];
-    this.state.firstAssistantResponse = '';
-    // Preserve customTitle, aiTitle, and topic across compaction — clearing
-    // them causes the display name to fall back to the compacted summary text.
+    // Preserve customTitle, aiTitle, and (in the glance tracker) topic across
+    // compaction — clearing them causes the display name to fall back to the
+    // compacted summary text.
     this.state.contextTokens = 0;
     // modelId is deliberately NOT cleared — compaction rewrites the JSONL but
     // doesn't change the model, so the last confirmed value is still the best
@@ -479,12 +462,10 @@ export class SessionManager {
     this.backgroundShellTracker.reset();
     this.loopTracker.clearAll();
     // Glance enrichment rebuilds from the replayed records — stale values must
-    // not survive a truncation they may no longer be true of.
-    this.gitBranch = '';
+    // not survive a truncation they may no longer be true of (topic survives;
+    // see glanceTracker.reset()).
+    this.glance.reset();
     this.jsonlPermissionMode = undefined;
-    this.toolErrorCount = 0;
-    this.lastAssistantText = '';
-    this.trackedFiles = [];
     // Dispose all subagent resources before clearing
     this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
@@ -538,26 +519,13 @@ export class SessionManager {
   }
 
   /** Get a serialisable snapshot for the webview */
-  /** Latest-wins capture of the snapshot's tracked file set. The record is
-   *  written by Claude Code as it backs up files it edits; keys are paths. */
-  private processFileHistorySnapshot(record: JsonlRecord): boolean {
-    const snap = (record as { snapshot?: { trackedFileBackups?: unknown } }).snapshot;
-    const backups = snap?.trackedFileBackups;
-    if (!backups || typeof backups !== 'object' || Array.isArray(backups)) { return false; }
-    const files = Object.keys(backups).filter(k => k.length > 0).slice(0, MAX_TRACKED_FILES);
-    const changed = files.length !== this.trackedFiles.length
-      || files.some((f, i) => f !== this.trackedFiles[i]);
-    this.trackedFiles = files;
-    return changed;
-  }
-
   getSnapshot(): SessionSnapshot {
     return {
       sessionId: this.state.sessionId,
       slug: this.state.slug,
       ...this.cwdTracker.getState(),
       workspaceKey: this.state.workspaceKey,
-      topic: this.state.topic,
+      topic: this.glance.getTopic(),
       status: this.state.status,
       activity: this.state.activity,
       subagents: this.state.subagents
@@ -580,7 +548,7 @@ export class SessionManager {
       firstActivity: this.state.firstActivity.getTime(),
       dismissed: false,
       contextTokens: this.state.contextTokens,
-      searchText: [this.state.topic, this.state.slug].join(' '),
+      searchText: [this.glance.getTopic(), this.state.slug].join(' '),
       modelLabel: this.formatModelLabel(this.state.modelId, this.state.modelConfirmed),
       title: null,  // Populated by SessionDiscovery from session-meta.json
       customTitle: this.state.customTitle,
@@ -593,12 +561,9 @@ export class SessionManager {
       endReason: this.state.endReason,
       compacting: this.state.compacting,
       backgroundShellCount: this.backgroundShellTracker.count() || undefined,
-      gitBranch: this.gitBranch || undefined,
-      toolErrorCount: this.toolErrorCount || undefined,
-      lastAssistantText: this.lastAssistantText || undefined,
       processLive: this.registryLiveness(),
       externalWriter: this.writerOwnershipProbe?.(),
-      trackedFiles: this.trackedFiles.length > 0 ? this.trackedFiles : undefined,
+      ...this.glance.snapshotFields(),
       ...this.loopSnapshotFields(),
     };
   }
@@ -983,6 +948,7 @@ export class SessionManager {
     this.backgroundShellTracker.dispose();
     this.cwdTracker.dispose();
     this.compactBoundaryTracker.dispose();
+    this.glance.dispose();
     this.subagentLifecycle.dispose();
     this.subagentLifecycle.disposeAll(this.state.subagents);
     for (const subagent of this.state.subagents) {
@@ -998,11 +964,7 @@ export class SessionManager {
       this.state.slug = record.slug;
     }
     this.cwdTracker.onCwd(record.cwd);
-    const branch = (record as { gitBranch?: unknown }).gitBranch;
-    // CC stamps the literal "HEAD" in non-git workspaces (and detached HEAD)
-    // — everything is in HEAD by definition there, so the pill differentiates
-    // nothing. Suppress it; a real branch name overwrites as usual.
-    if (typeof branch === 'string' && branch && branch !== 'HEAD') { this.gitBranch = branch; }
+    this.glance.onGitBranch((record as { gitBranch?: unknown }).gitBranch);
     if (record.sessionId && record.sessionId !== this.state.sessionId) {
       return false;
     }
@@ -1050,7 +1012,7 @@ export class SessionManager {
         }
         return false;
       case 'file-history-snapshot':
-        return this.processFileHistorySnapshot(record);
+        return this.glance.onFileHistorySnapshot(record);
       default:
         return false;
     }
@@ -1075,61 +1037,8 @@ export class SessionManager {
       this.firstActivitySet = true;
     }
 
-    // Capture first 2-3 user messages for title generation (up to 500 chars total)
-    if (this.state.firstUserMessages.length < 3) {
-      const totalChars = this.state.firstUserMessages.reduce((sum, m) => sum + m.length, 0);
-      if (totalChars < 500) {
-        const content = getContentBlocks(record);
-        for (const block of content) {
-          if (block.type === 'text' && block.text) {
-            const text = block.text.trim();
-            if (text.startsWith('<')) continue; // Skip system injections
-            const remaining = 500 - totalChars;
-            if (remaining > 0) {
-              this.state.firstUserMessages.push(text.slice(0, remaining));
-            }
-            break;
-          }
-        }
-      }
-    }
-
-    // Extract topic from first user message with text content
-    if (!this.state.topic) {
-      const content = getContentBlocks(record);
-      for (const block of content) {
-        if (block.type === 'text' && block.text) {
-          // Skip system injections and path-style prompts
-          const text = block.text.trim();
-          if (text.startsWith('<') || text.startsWith('HANDOFF-PROMPT')) {
-            // Use first line after any prefix for HANDOFF-PROMPT
-            if (text.startsWith('HANDOFF-PROMPT')) {
-              const match = text.match(HANDOFF_PATTERN);
-              if (match) {
-                this.state.topic = match[1].trim().slice(0, 60);
-                break;
-              }
-            }
-            continue;
-          }
-          // Take first line, up to 60 chars
-          const firstLine = text.split('\n')[0].trim();
-          if (firstLine.length > 0) {
-            // Strip leading "Continuing: " prefix from /continue prompts
-            let topic = firstLine;
-            const continueMatch = topic.match(CONTINUE_PATTERN);
-            if (continueMatch) {
-              // Extract just the project folder name from the path
-              const pathParts = topic.split('/').filter(Boolean);
-              const folder = pathParts[pathParts.length - 1] || '';
-              topic = folder ? `Continuing: ${folder}` : 'Continuing session';
-            }
-            this.state.topic = topic.slice(0, 60);
-            break;
-          }
-        }
-      }
-    }
+    // Sticky topic extraction — first user message with usable text wins
+    this.glance.onUserRecord(record);
 
     // Process tool_result blocks — mark tools as complete
     const content = getContentBlocks(record);
@@ -1137,7 +1046,7 @@ export class SessionManager {
     for (const block of content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         hadToolResult = true;
-        if (block.is_error === true) { this.toolErrorCount++; }
+        if (block.is_error === true) { this.glance.onToolError(); }
         this.lastToolResultAt = Date.now();
         // SPIKE: detect backgrounded-Bash launch/completion from the result text
         // (display-only; never affects status). A launch banner adds an
@@ -1248,23 +1157,13 @@ export class SessionManager {
 
     const content = getContentBlocks(record);
 
-    // Capture first assistant text for title generation
-    if (!this.state.firstAssistantResponse) {
-      for (const block of content) {
-        if (block.type === 'text' && block.text) {
-          this.state.firstAssistantResponse = block.text.trim().slice(0, 500);
-          break;
-        }
-      }
-    }
-    // And the most recent assistant text — the done-card preview. Take the
-    // first coherent prose line/sentence, not a blind 200-char tail that can
-    // straddle a trailing "Status" / "Done this session" heading and read as
-    // running and done at once.
+    // Capture the most recent assistant text — the done-card preview. Takes
+    // the first coherent prose line/sentence, not a blind 200-char tail that
+    // can straddle a trailing "Status" / "Done this session" heading and read
+    // as running and done at once.
     for (const block of content) {
       if (block.type === 'text' && block.text && block.text.trim()) {
-        const preview = SessionManager.extractAssistantPreview(block.text);
-        if (preview) { this.lastAssistantText = preview; }
+        this.glance.onAssistantText(block.text);
       }
     }
 
@@ -1816,41 +1715,6 @@ export class SessionManager {
       if (len >= 2000) { break; }
     }
     return parts.length ? parts.join('\n').slice(0, 2000) : null;
-  }
-
-  /** Extract a coherent one-line preview from an assistant text block for the
-   *  done/stale card. Takes the first non-empty prose line — skipping markdown
-   *  headings, bold-only "heading" lines, and horizontal rules — then trims to
-   *  the first genuine sentence boundary if one sits comfortably under the cap.
-   *  Faithful: it only selects a boundary, never rewrites or summarises.
-   *
-   *  Fixes the blind-slice bug where `text.slice(0, 200)` ran the opening prose
-   *  straight into a trailing "Status" / "**Done this session**" heading, so the
-   *  card read as running and done at once. Returns '' for an all-headings/rules
-   *  message so the caller keeps the prior preview instead of clobbering it. */
-  static extractAssistantPreview(text: string, cap = 200): string {
-    const isSkippable = (line: string): boolean =>
-      /^#{1,6}\s/.test(line)                        // markdown heading
-      || /^(\*\*.+\*\*|__.+__):?\s*$/.test(line)    // bold-only "heading" line
-      || /^[-*_]{3,}$/.test(line);                  // horizontal rule
-    let chosen = '';
-    for (const raw of text.split('\n')) {
-      const line = raw.trim();
-      if (!line || isSkippable(line)) { continue; }
-      chosen = line;
-      break;
-    }
-    if (!chosen) { return ''; }
-    // Strip a leading list marker so a bulleted reply reads cleanly.
-    chosen = chosen.replace(/^([-*+]|\d+[.)])\s+/, '');
-    // Stop at the first real sentence end — punctuation followed by a space and
-    // a capital, or end of line — but only past a small floor, so "e.g." and
-    // "config.json" don't truncate the thought mid-sentence.
-    const m = chosen.match(/[.!?](?=\s+[A-Z]|\s*$)/);
-    if (m && m.index !== undefined && m.index >= 40 && m.index + 1 <= cap) {
-      chosen = chosen.slice(0, m.index + 1);
-    }
-    return chosen.slice(0, cap).trim();
   }
 
   /** Extract a short result preview from a tool_result block */
