@@ -815,7 +815,10 @@ body.vscode-light .waiting .card-name { color: #a0653c; }
 /* -- Status pills -- */
 body.vscode-light .waiting .status-pill { color: #4a2e16; }
 body.vscode-light .running .status-pill { color: #ffffff; background: rgba(74, 108, 212, 0.8); }
-body.vscode-light .done .status-pill { color: #ffffff; }
+/* Background MUST be overridden together with the colour: the dark rule's
+ * 50%-alpha teal composites to ~#b0e0e2 over a white card, which put white
+ * text at 1.44:1 (shipped that way v1.0.0→v1.16.21). */
+body.vscode-light .done .status-pill { color: #ffffff; background: #2a7578; } /* 5.37:1 */
 body.vscode-light .stale .status-pill { color: #666666; background: #e0e0e0; }
 
 /* -- Foreign workspace count chips (light) -- */

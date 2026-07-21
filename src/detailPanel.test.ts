@@ -80,6 +80,7 @@ function makeWorkflow(overrides: Partial<WorkflowSnapshot> = {}): WorkflowSnapsh
     ],
     counts: { done: 3 },
     logs: [],
+    error: null,
     dismissed: false,
     ...overrides,
   };
@@ -214,6 +215,22 @@ describe('DetailPanel', () => {
       expect(m.groups[1].agents.map((a: any) => a.agentId)).toEqual(['a3']);
       expect(m.views?.[0]).toMatchObject({ kind: 'workflow', status: 'completed' });
       expect(m.metrics).toContain('3 agents');
+      // Run-level status/error thread through for the header pill override.
+      expect(m.runStatus).toBe('completed');
+      expect(m.runError).toBeNull();
+    });
+
+    it('threads a failed run’s status and error into the model (0-agent crash case)', () => {
+      const h = setup();
+      h.deps.getWorkflows.mockReturnValue([makeWorkflow({
+        status: 'failed', agents: [], counts: {}, agentCount: 0,
+        error: 'Error: undefined is not an object',
+      })]);
+      h.panel.show('workflow', 'sess-1', 'sess-1');
+      const m = h.lastModel();
+      expect(m.runStatus).toBe('failed');
+      expect(m.runError).toBe('Error: undefined is not an object');
+      expect(m.groups.every((g: any) => g.agents.length === 0)).toBe(true);
     });
 
     it('computes elapsed-so-far and passes the live tool for a running agent (UX-1)', () => {

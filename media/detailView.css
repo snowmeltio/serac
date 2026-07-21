@@ -55,6 +55,10 @@ body {
   font-size: 12px;
 }
 
+/* Failed-run empty state: the sidecar's error line replaces the bare "No
+ * agents" copy (renderEmptyBody), tinted like every other failure surface. */
+.wf-empty-error { color: var(--sm-salmon-red); }
+
 /* ── Header ──
  * Top of the pane: a heading + the switcher (the selectable groupings), then the
  * selected view's metrics. The heading names what the chips are; the parent
@@ -684,6 +688,11 @@ body {
 .wf-hstrip-pill.status-done { color: #0c1b1b; background: var(--sm-teal-bright); }
 .wf-hstrip-pill.status-waiting { color: #4a2e12; background: var(--sm-frozen-peach); }
 .wf-hstrip-pill.status-failed { color: #fff; background: var(--sm-salmon-red); }
+/* Run-level status override (a failed/incomplete run with an empty roster
+ * previously read "done"): incomplete wears the warning orange the switcher
+ * chips and nav dots already use. Solid fill + near-black text works
+ * unmodified in both themes, like the done/waiting pills above. */
+.wf-hstrip-pill.status-incomplete { color: #241a04; background: var(--vscode-charts-orange, #d9a23a); }
 .wf-hstrip-counts { color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
 /* Meta bits are individually atomic (each item carries its own leading
  * separator dot inside the nowrap unit) so they wrap BETWEEN facts, never
@@ -1198,6 +1207,7 @@ body.vscode-light .wf-teammate-badge { color: #895ed6; } /* 4.53:1 */
 body.vscode-light .wf-composer-status.ok { color: #0e7a80; } /* 5.10:1 */
 body.vscode-light .wf-composer-status.error { color: #c93634; } /* 5.17:1 */
 body.vscode-light .wf-nav-count-failed { color: #c93634; } /* 5.17:1, same salmon override as composer-status.error */
+body.vscode-light .wf-empty-error { color: #c93634; } /* 5.17:1, same salmon override */
 body.vscode-light #wf-root.nav-collapsed .wf-nav-toggle,
 body.vscode-light #wf-root.nav-collapsed .wf-nav-toggle:hover { color: #3a5fd9; } /* 5.50:1, same blue override as wf-who */
 

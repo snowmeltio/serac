@@ -31,7 +31,15 @@ function num(v: unknown): number | null {
 /** Map a sidecar per-agent `state` onto WorkflowAgentStatus. 'failed' is
  *  preserved as its own status: the detail panel sorts failed agents first
  *  and rolls them up in the header, and the webview tints their dots — all
- *  of which is dead weight if failures flatten to 'done'. */
+ *  of which is dead weight if failures flatten to 'done'. The runtime writes
+ *  'error' for an agent that threw — same terminal-failure surface.
+ *
+ *  In-flight states (running/progress/start/waiting/queued — seen only in
+ *  killed/in-flight sidecars) are enumerated exhaustively; an UNKNOWN state
+ *  degrades to 'done', never 'running'. A wrongly-done agent under-reports
+ *  quietly; a wrongly-running agent feeds the card's live-agent count forever
+ *  (the v1.16.21 ghost bug: 'error' fell into a default-running arm, so every
+ *  errored agent ran eternally in the "agents — N running" chip). */
 function mapAgentState(state: unknown): WorkflowAgentStatus {
   switch (state) {
     case 'done': return 'done';
@@ -42,7 +50,8 @@ function mapAgentState(state: unknown): WorkflowAgentStatus {
     case 'waiting': return 'waiting';
     case 'queued': return 'waiting';
     case 'failed': return 'failed';
-    default: return 'running';
+    case 'error': return 'failed';
+    default: return 'done';
   }
 }
 
@@ -114,8 +123,12 @@ export function parseWorkflowSidecar(content: string, sessionId: string): Workfl
       }
 
       if (entry.type !== 'workflow_agent') { continue; }
-      const agentId = str(entry.agentId);
-      if (!agentId) { continue; } // skip malformed agent, keep the rest
+      // The runtime writes agentId:null for an agent that errored before
+      // registering. Dropping the entry undercounted every roll-up (header
+      // said "6 agents" while 5 rows rendered), so synthesise a stable
+      // placeholder id instead: the transcript resolver misses (rendered as
+      // "Transcript not available yet.") but the row and counts survive.
+      const agentId = str(entry.agentId) ?? ('missing-' + agents.length);
 
       const status = mapAgentState(entry.state);
       counts[status] = (counts[status] ?? 0) + 1;
@@ -149,6 +162,10 @@ export function parseWorkflowSidecar(content: string, sessionId: string): Workfl
     ? raw.logs.filter((l): l is string => typeof l === 'string')
     : [];
 
+  // The one artefact that explains a failed run (message + stack). A string
+  // in every observed sidecar; tolerate an {message} object defensively.
+  const error = str(raw.error) ?? (isObj(raw.error) ? str(raw.error.message) : null);
+
   return {
     runId,
     sessionId,
@@ -167,6 +184,7 @@ export function parseWorkflowSidecar(content: string, sessionId: string): Workfl
     agents,
     counts,
     logs,
+    error,
     dismissed: false,
   };
 }

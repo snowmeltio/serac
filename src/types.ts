@@ -536,6 +536,11 @@ export interface WorkflowSnapshot {
   counts: Record<string, number>;
   /** log() narrator lines (sidecar only; empty for live runs). */
   logs: string[];
+  /** Failure detail (message + stack) from a failed sidecar; null elsewhere
+   *  (live runs have no error record). Required, not optional: a failed run
+   *  whose error is silently absent is exactly the blank-panel bug this
+   *  field exists to fix. */
+  error: string | null;
   dismissed: boolean;
 }
 

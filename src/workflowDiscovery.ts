@@ -602,6 +602,7 @@ export class WorkflowDiscovery {
       agents,
       counts,
       logs: [],
+      error: null,
       dismissed: false,
     };
   }

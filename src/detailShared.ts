@@ -86,6 +86,13 @@ export interface DetailModel {
   groups: DetailGroupView[];
   /** View switcher (session-card sources, >1 view only); omitted otherwise. */
   views?: DetailViewChoice[];
+  /** Workflow source only: run-level status of the selected run. Terminal-bad
+   *  values ('failed'/'incomplete') override the agent-derived header pill —
+   *  a failed 0-agent run must never read "done". */
+  runStatus?: string;
+  /** Workflow source only: the failed run's error (message + stack) from the
+   *  sidecar; shown in place of the bare empty-roster line. */
+  runError?: string | null;
   /** Set to the team name when this session is an Agent Team orchestrator — the
    *  webview then frames its subagents as teammates (heading + per-agent badge). */
   team?: string;
