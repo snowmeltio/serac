@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.17.0 (2026-07-21) — Holistic audit: truthful failed runs, classic view retired, session core refactored
+
+### Fixed
+- **A failed workflow run no longer shows ghost running agents or a DONE badge.** A run that died mid-flight used to leave its in-flight agents counted (and drawn) as running on the session card, and the run itself could still roll up as done. Failed runs now surface truthfully everywhere: the card count, the drill-in roster, and the run's own status pill.
+
+### Changed
+- **The detail panel's classic two-pane view is retired.** It shipped in v1.16.0 as a temporary fallback toggle during the log-view transition; the log view has been the default (and the better read) since, so the toggle and the entire two-pane reader are gone.
+- **Session-core internals refactored under a holistic audit, with adversarial review.** The audit (26 verified findings) drove four refactor waves: glance-state and session-meta persistence extracted into dedicated modules with their own behaviour tests, the five type domains split out of one 750-line file, theme accents consolidated into role tokens, dead code deleted, and two long-standing traps pinned by new tests (local-snapshot worktree tagging, recency-cache TTL vs refresh interval). No intended behaviour change beyond the items listed here; each wave passed adversarial review before merging.
+
+### Added
+- **The transcript log is keyboard-scrollable and offers a jump-to-latest pill.** The log container is now focusable (tab to it, arrow keys scroll), and scrolling up on a live agent reveals a floating "↓ latest" pill that returns to the tail — using the same at-bottom threshold as the auto-follow, so the pill and the follow behaviour always agree.
+
 ## v1.16.21 (2026-07-21) — Background-shell badge reads "N 🐚"
 
 ### Changed
