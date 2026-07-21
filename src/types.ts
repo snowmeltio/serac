@@ -155,8 +155,15 @@ export interface SessionSnapshot {
   aiTitle: string;
   /** How confident we are in the displayed status */
   confidence: StatusConfidence;
-  /** When set, the session originates from a sibling worktree of the local
-   *  repo. Equals the worktree's CWD; clicking the card opens VS Code there. */
+  /** The session's originating worktree CWD. TAGGING INVARIANT: every local
+   *  snapshot producer stamps this — local sessions carry
+   *  worktreeRoot === workspacePath (sessionDiscovery.getSnapshots and
+   *  scanExtendedArchive), sibling sessions their own worktree CWD (via
+   *  setWorktreeOrigin). `!worktreeRoot` is NOT a local test — that
+   *  assumption killed new-chat auto-focus for two releases; the panel-side
+   *  fallback survives only as a defensive default for degraded hosts.
+   *  Optional in the type because foreign/team snapshots legitimately omit
+   *  it; a test pins the local producers' stamping. */
   worktreeRoot?: string;
   /** Display label for the originating worktree (basename of worktreeRoot). */
   worktreeLabel?: string;
@@ -683,7 +690,6 @@ export type JsonlRecordType =
   | 'ai-title'
   | 'last-prompt'
   | 'summary'
-  | 'agent-name'
   // Constant marker seen as {"type":"mode","mode":"normal",...} — surveyed
   // 2026-07-07 across ~2,870 real occurrences, always "normal". NOT a
   // permission-mode signal (an earlier note here assumed it was; corrected).
@@ -732,8 +738,6 @@ export interface JsonlRecord {
   customTitle?: string;
   /** Auto-generated title from `ai-title` records */
   aiTitle?: string;
-  /** Auto-generated agent display name from `agent-name` records */
-  agentName?: string;
   [key: string]: unknown;
 }
 
