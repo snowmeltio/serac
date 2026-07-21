@@ -17,7 +17,8 @@ import { claudeStateDir, sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath
 import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
 import { SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
-import type { SessionSnapshot, SessionMeta, SessionMetaFile, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot } from './types.js';
+import { makeSessionMetaStore, type SessionMetaStore } from './sessionMetaStore.js';
+import type { SessionSnapshot, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 
 /** Minimal log interface matching VS Code's LogOutputChannel */
@@ -47,22 +48,15 @@ export class SessionDiscovery {
   private readonly workspaceKey: string;
   private readonly metaFilePath: string;
   private sessions: Map<string, SessionManager> = new Map();
-  private sessionMeta: Map<string, SessionMeta> = new Map();
+  /** session-meta.json lifecycle: load/reload/dirty/serialised saves.
+   *  See sessionMetaStore.ts for the concurrency invariants ([C1], [H2]). */
+  private readonly meta: SessionMetaStore;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
   private onChangeCallback: (() => void) | undefined;
-  /** Track whether we've written meta this cycle to avoid redundant saves */
-  private metaDirty = false;
   /** Prevents timer callbacks from running after dispose */
   private disposed = false;
-  /** Last known mtime of session-meta.json (ms). 0 = never loaded. */
-  private metaLastMtime = 0;
   /** Guard against concurrent poll executions */
   private polling = false;
-  /** Serialises fire-and-forget saveMeta() calls to prevent concurrent write races */
-  private saveQueue: Promise<void> = Promise.resolve();
-  /** Monotonic counter making each save's tmp path unique, so two overlapping
-   *  saveMeta() writes can never share (and clobber) one tmp file. */
-  private saveSeq = 0;
   /** Concurrency limit for session updates (stays under macOS ulimit -n 256) */
   private static readonly UPDATE_BATCH_SIZE = 50;
   /** Age gate: skip JSONL files older than this during scan [Phase 6].
@@ -169,6 +163,7 @@ export class SessionDiscovery {
     this.workspaceKey = sanitiseWorkspaceKey(workspacePath);
     this.metaFilePath = path.join(this.projectsDir, this.workspaceKey, 'session-meta.json');
     this.log = opts?.log ?? nullLogger;
+    this.meta = makeSessionMetaStore(this.metaFilePath, this.log);
     this.localCwd = workspacePath;
     this.localWorktreeLabel = path.basename(workspacePath) || workspacePath;
     this.hookRouter = opts?.hookRouter;
@@ -185,176 +180,58 @@ export class SessionDiscovery {
     this.workflowDiscovery = new WorkflowDiscovery(this.projectsDir, this.workspaceKey, this.log, this.processRegistry);
     // Freshness parity: out-of-window sessions (foreign / sibling / team
     // orchestrators) get the same registry-backed death gate as primary cards.
-    // Same tri-state contract as the primary probe (degraded scan → null);
-    // the seen-live latch stays in-memory for these (no cross-reload seed).
-    const probeFactory = (sessionId: string) => () =>
-      this.processRegistry.isScanClean() ? this.processRegistry.isSessionLive(sessionId) : null;
+    const probeFactory = (sessionId: string) => this.livenessProbeFor(sessionId);
     this.foreignManager.setLivenessProbeFactory(probeFactory);
     this.siblingManager.setLivenessProbeFactory(probeFactory);
     this.teamDiscovery.setLivenessProbeFactory(probeFactory);
-    // Parallel probe: is a *different* VS Code window the confirmed live
-    // writer of this session right now? Account-agnostic by design — see
-    // WriterOwnership's header comment.
-    const writerOwnershipProbeFactory = (sessionId: string) => () => this.resolveWriterOwnership(sessionId);
+    const writerOwnershipProbeFactory = (sessionId: string) => this.writerOwnershipProbeFor(sessionId);
     this.foreignManager.setWriterOwnershipProbeFactory(writerOwnershipProbeFactory);
     this.siblingManager.setWriterOwnershipProbeFactory(writerOwnershipProbeFactory);
     this.teamDiscovery.setWriterOwnershipProbeFactory(writerOwnershipProbeFactory);
   }
 
-  // ── Meta persistence ──────────────────────────────────────────────
+  // ── Probe factories ───────────────────────────────────────────────
+  // ONE derivation of each probe, shared by primary SessionManagers and the
+  // foreign/sibling/team factories above — the closures were re-written
+  // inline at both sites and would have drifted apart silently.
 
-  /** Load session metadata from disk. Migrates from legacy files on first run.
-   *  Distinguishes ENOENT (expected, migrate) from parse errors (warn, preserve). */
-  private async loadMeta(): Promise<void> {
-    let content: string;
-    try {
-      content = await fs.promises.readFile(this.metaFilePath, 'utf-8');
-    } catch (err) {
-      // File doesn't exist — try legacy migration
-      this.sessionMeta = new Map();
-      await this.migrateFromLegacy();
-      return;
-    }
-
-    try {
-      const file: SessionMetaFile = JSON.parse(content);
-      this.sessionMeta = new Map(Object.entries(file.sessions));
-      try {
-        const stat = await fs.promises.stat(this.metaFilePath);
-        this.metaLastMtime = stat.mtimeMs;
-      } catch { /* stat failed; leave mtime as-is */ }
-    } catch (err) {
-      // File exists but is corrupted — warn and preserve existing in-memory state
-      this.log.warn('session-meta.json is corrupted, preserving in-memory state:', err);
-      if (this.sessionMeta.size === 0) {
-        // No in-memory state to preserve — try legacy migration as fallback
-        await this.migrateFromLegacy();
-      }
-    }
+  /** Registry-backed liveness, bound to a session id. Tri-state: null when
+   *  the last scan was degraded (absence must never read as death off a
+   *  transient disk error), else whether a live process backs the session.
+   *  Deliberately NOT gated on isActive(): when the ONLY registered process
+   *  dies the registry empties, and an isActive() gate would switch the probe
+   *  off at the exact moment it matters. Safety against registry-less
+   *  machines lives in the manager's seen-live latch — a session never
+   *  observed live is never confirmed dead, so an old client degrades to the
+   *  timer path. */
+  private livenessProbeFor(sessionId: string): () => boolean | null {
+    return () => this.processRegistry.isScanClean()
+      ? this.processRegistry.isSessionLive(sessionId)
+      : null;
   }
 
-  /** Reload meta only if the file has been modified externally since our last read [H2] */
-  private async reloadMetaIfChanged(): Promise<void> {
-    // Skip reload when we have unflushed in-memory mutations [C1]
-    if (this.metaDirty) { return; }
-    try {
-      const stat = await fs.promises.stat(this.metaFilePath);
-      if (stat.mtimeMs > this.metaLastMtime) {
-        await this.loadMeta();
-      }
-    } catch {
-      // File doesn't exist — nothing to reload
-    }
-  }
-
-  /** Save session metadata to disk */
-  private async saveMeta(): Promise<void> {
-    const dir = path.dirname(this.metaFilePath);
-    try {
-      await fs.promises.access(dir);
-    } catch {
-      await fs.promises.mkdir(dir, { recursive: true });
-    }
-    const file: SessionMetaFile = {
-      sessions: Object.fromEntries(this.sessionMeta),
-    };
-    const tmpPath = `${this.metaFilePath}.${process.pid}.${++this.saveSeq}.tmp`;
-    await fs.promises.writeFile(tmpPath, JSON.stringify(file, null, 2), 'utf-8');
-    await fs.promises.rename(tmpPath, this.metaFilePath);
-    // Update mtime so reloadMetaIfChanged() won't re-read our own write [C1]
-    try {
-      const stat = await fs.promises.stat(this.metaFilePath);
-      this.metaLastMtime = stat.mtimeMs;
-    } catch { /* stat failed */ }
-    this.metaDirty = false;
-  }
-
-  /** Flush pending meta changes if dirty. Routes through the same serialising
-   *  queue as enqueueSave() so a poll-loop flush can't run a second, un-ordered
-   *  saveMeta() concurrently with an in-flight enqueued save. */
-  private async flushMeta(): Promise<void> {
-    if (this.metaDirty) {
-      this.enqueueSave();
-      await this.saveQueue;
-    }
-  }
-
-  /** Enqueue a save to prevent concurrent write races [audit fix] */
-  private enqueueSave(): void {
-    this.saveQueue = this.saveQueue
-      .then(() => this.saveMeta())
-      .catch((err) => { this.log.error('saveMeta failed:', err); });
-  }
-
-  /** One-time migration from legacy dismissed-sessions + acknowledged-sessions files */
-  private async migrateFromLegacy(): Promise<void> {
-    const claudeDir = path.dirname(this.metaFilePath);
-    const dismissedPath = path.join(claudeDir, 'dismissed-sessions');
-    const acknowledgedPath = path.join(claudeDir, 'acknowledged-sessions');
-    let migrated = false;
-
-    // Read legacy dismissed
-    try {
-      const content = await fs.promises.readFile(dismissedPath, 'utf-8');
-      const ids = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-      for (const id of ids) {
-        const meta = this.getOrCreateMeta(id);
-        meta.dismissed = true;
-        migrated = true;
-      }
-    } catch { /* no legacy file */ }
-
-    // Read legacy acknowledged
-    try {
-      const content = await fs.promises.readFile(acknowledgedPath, 'utf-8');
-      const ids = content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-      for (const id of ids) {
-        const meta = this.getOrCreateMeta(id);
-        meta.acknowledged = true;
-        // Timestamp 0 = immediately stale on reload (same as old behaviour)
-        meta.acknowledgedAt = 0;
-        migrated = true;
-      }
-    } catch { /* no legacy file */ }
-
-    if (migrated) {
-      await this.saveMeta();
-    }
-  }
-
-  /** Get or create a meta entry for a session */
-  private getOrCreateMeta(sessionId: string): SessionMeta {
-    let meta = this.sessionMeta.get(sessionId);
-    if (!meta) {
-      meta = {
-        title: null,
-        dismissed: false,
-        acknowledged: false,
-        acknowledgedAt: null,
-        firstSeen: Date.now(),
-      };
-      this.sessionMeta.set(sessionId, meta);
-    }
-    return meta;
+  /** Parallel probe: is a *different* VS Code window the confirmed live
+   *  writer of this session right now? Account-agnostic by design — see
+   *  WriterOwnership's header comment. */
+  private writerOwnershipProbeFor(sessionId: string): () => boolean | undefined {
+    return () => this.resolveWriterOwnership(sessionId);
   }
 
   // ── Public API (signatures unchanged where possible) ──────────────
 
   /** Dismiss a session */
   dismissSession(sessionId: string): void {
-    const meta = this.getOrCreateMeta(sessionId);
-    meta.dismissed = true;
-    this.metaDirty = true;
+    this.meta.getOrCreate(sessionId).dismissed = true;
+    this.meta.markDirty();
     // Fire-and-forget save — UI is updated from in-memory state
-    this.enqueueSave();
+    this.meta.enqueueSave();
   }
 
   /** Undismiss a session */
   undismissSession(sessionId: string): void {
-    const meta = this.getOrCreateMeta(sessionId);
-    meta.dismissed = false;
-    this.metaDirty = true;
-    this.enqueueSave();
+    this.meta.getOrCreate(sessionId).dismissed = false;
+    this.meta.markDirty();
+    this.meta.enqueueSave();
   }
 
   /** R4: Mark completed subagents as acknowledged so they're pruned from the card */
@@ -374,12 +251,12 @@ export class SessionDiscovery {
 
   /** Mark a session as acknowledged (user has focused it) */
   acknowledgeSession(sessionId: string): void {
-    const meta = this.getOrCreateMeta(sessionId);
+    const meta = this.meta.getOrCreate(sessionId);
     if (meta.acknowledged) { return; }
     meta.acknowledged = true;
     meta.acknowledgedAt = Date.now();
-    this.metaDirty = true;
-    this.enqueueSave();
+    this.meta.markDirty();
+    this.meta.enqueueSave();
   }
 
   /** Start watching for sessions. Calls onChange when state changes. */
@@ -387,7 +264,7 @@ export class SessionDiscovery {
     this.onChangeCallback = onChange;
 
     // Load session metadata (with legacy migration)
-    await this.loadMeta();
+    await this.meta.load();
 
     // Resolve local repoRoot before any scanning so the sibling manager knows
     // which other workspace dirs share our repo. Failure is non-fatal — we just
@@ -529,7 +406,7 @@ export class SessionDiscovery {
     const now = Date.now();
     const snapshots: SessionSnapshot[] = [];
     // Suppress sessions claimed by active (non-dismissed) teams
-    const teamClaimed = this.teamDiscovery.getClaimedSessionIds(this.sessionMeta);
+    const teamClaimed = this.teamDiscovery.getClaimedSessionIds(this.meta.asMap());
     for (const session of this.sessions.values()) {
       if (teamClaimed.has(session.getSessionId())) { continue; }
       const snapshot = session.getSnapshot();
@@ -537,21 +414,13 @@ export class SessionDiscovery {
       // consistently — the panel hides the pill when origin == local.
       snapshot.worktreeRoot = this.localCwd;
       snapshot.worktreeLabel = this.localWorktreeLabel;
-      const meta = this.sessionMeta.get(snapshot.sessionId);
+      const meta = this.meta.get(snapshot.sessionId);
 
       snapshot.dismissed = meta?.dismissed ?? false;
       snapshot.title = meta?.title ?? null;
 
-      // Cache live title fields into meta so they survive the 7-day archive
-      // cutoff (lightweight scanner doesn't parse JSONL).
-      if (meta && snapshot.aiTitle && snapshot.aiTitle !== meta.aiTitle) {
-        meta.aiTitle = snapshot.aiTitle;
-        this.metaDirty = true;
-      }
-      if (meta && snapshot.customTitle && snapshot.customTitle !== meta.customTitle) {
-        meta.customTitle = snapshot.customTitle;
-        this.metaDirty = true;
-      }
+      // (Title write-back into meta lives in the poll cycle — see pollInner.
+      // This read path must stay mutation-free.)
 
       // Apply stale transition: done + acknowledged + 10s elapsed = stale
       // But guard against enqueued sessions (C3): a queued session is done+acknowledged
@@ -579,7 +448,7 @@ export class SessionDiscovery {
     // time anchor (rather than acknowledgedAt) so the Worktrees pane decays
     // correctly without cross-workspace meta reads.
     for (const sib of this.siblingManager.getSnapshots()) {
-      if (this.sessionMeta.get(sib.sessionId)?.dismissed) { sib.dismissed = true; }
+      if (this.meta.get(sib.sessionId)?.dismissed) { sib.dismissed = true; }
       if (sib.status === 'done' && now - sib.lastActivity > 10_000) {
         sib.status = 'stale';
       }
@@ -664,7 +533,7 @@ export class SessionDiscovery {
           if (age <= SessionDiscovery.SCAN_AGE_GATE_MS) { continue; }
           if (rangeMs !== Infinity && age > rangeMs) { continue; }
 
-          let meta = this.sessionMeta.get(sessionId);
+          let meta = this.meta.get(sessionId);
 
           // Backfill cached title fields once per session. Files written before
           // this code shipped have no aiTitle/customTitle in meta, so we stream
@@ -672,10 +541,10 @@ export class SessionDiscovery {
           if (!meta || (meta.aiTitle === undefined && meta.customTitle === undefined)) {
             const titles = await this.extractTitlesFromJsonl(filePath);
             if (titles.aiTitle || titles.customTitle) {
-              meta = this.getOrCreateMeta(sessionId);
+              meta = this.meta.getOrCreate(sessionId);
               if (titles.aiTitle) { meta.aiTitle = titles.aiTitle; }
               if (titles.customTitle) { meta.customTitle = titles.customTitle; }
-              this.metaDirty = true;
+              this.meta.markDirty();
               backfilled++;
             } else if (meta) {
               // Record an empty marker so we don't re-scan this file every
@@ -683,14 +552,14 @@ export class SessionDiscovery {
               // "scanned, nothing found" from "never scanned" (undefined).
               meta.aiTitle = meta.aiTitle ?? '';
               meta.customTitle = meta.customTitle ?? '';
-              this.metaDirty = true;
+              this.meta.markDirty();
             } else {
               // No meta entry and no titles found — still mark scanned to
               // avoid re-reading on future range expansions.
-              meta = this.getOrCreateMeta(sessionId);
+              meta = this.meta.getOrCreate(sessionId);
               meta.aiTitle = '';
               meta.customTitle = '';
-              this.metaDirty = true;
+              this.meta.markDirty();
             }
           }
 
@@ -728,7 +597,7 @@ export class SessionDiscovery {
         }
       }
       this.extendedArchiveLoadedRange = rangeMs;
-      if (this.metaDirty) { this.enqueueSave(); }
+      if (this.meta.isDirty()) { this.meta.enqueueSave(); }
       this.log.info('[archive] Extended archive scan complete: %d entries for range %dms (scanned %d jsonl files, %d title backfills)', this.extendedArchive.size, rangeMs, files.filter(f => f.endsWith('.jsonl')).length, backfilled);
     } catch (err) {
       this.log.warn('[archive] Failed to read workspace directory %s: %s', wsDir, err);
@@ -792,7 +661,7 @@ export class SessionDiscovery {
   getWaitingCount(): number {
     let count = 0;
     for (const session of this.sessions.values()) {
-      if (this.sessionMeta.get(session.getSessionId())?.dismissed) { continue; }
+      if (this.meta.get(session.getSessionId())?.dismissed) { continue; }
       if (session.getStatus() === 'waiting') { count++; }
     }
     return count;
@@ -822,25 +691,23 @@ export class SessionDiscovery {
 
   /** Get team snapshots for the webview. */
   getTeamSnapshots(): TeamSnapshot[] {
-    return this.teamDiscovery.getTeamSnapshots(this.sessionMeta);
+    return this.teamDiscovery.getTeamSnapshots(this.meta.asMap());
   }
 
   /** Dismiss a team (archive). Stored in sessionMeta keyed as team:<teamId>. */
   dismissTeam(teamId: string): void {
     const metaKey = `team:${teamId}`;
-    const meta = this.getOrCreateMeta(metaKey);
-    meta.dismissed = true;
-    this.metaDirty = true;
-    this.enqueueSave();
+    this.meta.getOrCreate(metaKey).dismissed = true;
+    this.meta.markDirty();
+    this.meta.enqueueSave();
   }
 
   /** Undismiss a team. */
   undismissTeam(teamId: string): void {
     const metaKey = `team:${teamId}`;
-    const meta = this.getOrCreateMeta(metaKey);
-    meta.dismissed = false;
-    this.metaDirty = true;
-    this.enqueueSave();
+    this.meta.getOrCreate(metaKey).dismissed = false;
+    this.meta.markDirty();
+    this.meta.enqueueSave();
   }
 
   /** Get JSONL path for a team agent session (for transcript viewing). */
@@ -972,7 +839,7 @@ export class SessionDiscovery {
 
   /** Get workflow-run snapshots for the webview. */
   getWorkflowSnapshots(): WorkflowSnapshot[] {
-    return this.workflowDiscovery.getWorkflowSnapshots(this.sessionMeta);
+    return this.workflowDiscovery.getWorkflowSnapshots(this.meta.asMap());
   }
 
   /** Resolve a workflow agent's transcript JSONL (for the detail panel reader). */
@@ -983,18 +850,16 @@ export class SessionDiscovery {
   /** Dismiss a workflow run (archive). Stored in sessionMeta as workflow:<runId>;
    *  getWorkflowSnapshots overlays this onto WorkflowSnapshot.dismissed. */
   dismissWorkflow(runId: string): void {
-    const meta = this.getOrCreateMeta(`workflow:${runId}`);
-    meta.dismissed = true;
-    this.metaDirty = true;
-    this.enqueueSave();
+    this.meta.getOrCreate(`workflow:${runId}`).dismissed = true;
+    this.meta.markDirty();
+    this.meta.enqueueSave();
   }
 
   /** Undismiss a workflow run. */
   undismissWorkflow(runId: string): void {
-    const meta = this.getOrCreateMeta(`workflow:${runId}`);
-    meta.dismissed = false;
-    this.metaDirty = true;
-    this.enqueueSave();
+    this.meta.getOrCreate(`workflow:${runId}`).dismissed = false;
+    this.meta.markDirty();
+    this.meta.enqueueSave();
   }
 
   // ── Process-liveness API ──────────────────────────────────────────
@@ -1246,34 +1111,24 @@ export class SessionDiscovery {
                 this.log.trace(msg);
               }
             },
-            // Registry-backed liveness, bound to this session id. Tri-state:
-            // null when the last scan was degraded (absence must never read as
-            // death off a transient disk error), else whether a live process
-            // backs it. Deliberately NOT gated on isActive(): when the ONLY
-            // registered process dies the registry empties, and an isActive()
-            // gate would switch the probe off at the exact moment it matters.
-            // Safety against registry-less machines lives in the manager's
-            // seen-live latch — a session never observed live is never
-            // confirmed dead, so an old client degrades to the timer path.
-            livenessProbe: () => this.processRegistry.isScanClean()
-              ? this.processRegistry.isSessionLive(sessionId)
-              : null,
-            writerOwnershipProbe: () => this.resolveWriterOwnership(sessionId),
+            // Shared probe derivations — see the Probe factories section.
+            livenessProbe: this.livenessProbeFor(sessionId),
+            writerOwnershipProbe: this.writerOwnershipProbeFor(sessionId),
             // The latch survives reloads via session-meta.json — without the
             // seed, every reload disarmed the death gate until re-observed.
-            registrySeenLive: this.sessionMeta.get(sessionId)?.seenLive === true,
+            registrySeenLive: this.meta.get(sessionId)?.seenLive === true,
             onRegistrySeenLive: () => {
-              const meta = this.getOrCreateMeta(sessionId);
+              const meta = this.meta.getOrCreate(sessionId);
               if (!meta.seenLive) {
                 meta.seenLive = true;
-                this.metaDirty = true;
+                this.meta.markDirty();
               }
             },
           });
           this.sessions.set(sessionId, manager);
           // Ensure meta entry exists for newly discovered sessions
-          this.getOrCreateMeta(sessionId);
-          this.metaDirty = true;
+          this.meta.getOrCreate(sessionId);
+          this.meta.markDirty();
           // Do initial read
           await manager.update();
         }
@@ -1347,7 +1202,7 @@ export class SessionDiscovery {
     try {
 
       // Reload meta only if externally modified (prevents overwriting in-memory mutations) [H2]
-      await this.reloadMetaIfChanged();
+      await this.meta.reloadIfChanged();
 
       // Check for new session files
       await this.scan();
@@ -1444,13 +1299,34 @@ export class SessionDiscovery {
       for (const session of this.sessions.values()) {
         const status = session.getStatus();
         if (status === 'running') {
-          const meta = this.sessionMeta.get(session.getSessionId());
+          const meta = this.meta.get(session.getSessionId());
           if (meta?.acknowledged) {
             meta.acknowledged = false;
             meta.acknowledgedAt = null;
-            this.metaDirty = true;
+            this.meta.markDirty();
             changed = true;
           }
+        }
+      }
+
+      // Cache live title fields into meta so they survive the 7-day archive
+      // cutoff (the lightweight archive scanner doesn't parse JSONL). Lives
+      // here — not in getSnapshots — so the snapshot read path stays
+      // mutation-free; flushed by the end-of-cycle flush below. Deliberately
+      // covers ALL sessions including team-claimed ones (the old getSnapshots
+      // site skipped those incidentally via the card-suppression `continue`;
+      // caching their titles too is strictly better for the archive).
+      for (const session of this.sessions.values()) {
+        const meta = this.meta.get(session.getSessionId());
+        if (!meta) { continue; }
+        const { aiTitle, customTitle } = session.getTitles();
+        if (aiTitle && aiTitle !== meta.aiTitle) {
+          meta.aiTitle = aiTitle;
+          this.meta.markDirty();
+        }
+        if (customTitle && customTitle !== meta.customTitle) {
+          meta.customTitle = customTitle;
+          this.meta.markDirty();
         }
       }
 
@@ -1458,10 +1334,9 @@ export class SessionDiscovery {
       // Snapshot keys before iterating to avoid delete-during-iteration [audit fix]
       const META_TTL_MS = 30 * 24 * 60 * 60 * 1000;
       const now2 = Date.now();
-      for (const [id, meta] of Array.from(this.sessionMeta)) {
+      for (const [id, meta] of this.meta.entries()) {
         if (!this.sessions.has(id) && meta.firstSeen && (now2 - meta.firstSeen > META_TTL_MS)) {
-          this.sessionMeta.delete(id);
-          this.metaDirty = true;
+          this.meta.delete(id);
         }
       }
 
@@ -1476,10 +1351,7 @@ export class SessionDiscovery {
           session.dispose();
           this.sessions.delete(id);
           // Also prune orphaned meta entry [M5]
-          if (this.sessionMeta.has(id)) {
-            this.sessionMeta.delete(id);
-            this.metaDirty = true;
-          }
+          this.meta.delete(id);
           // And any stale recency verdict for this locally-scanned id. The
           // broader sweep below (near processRegistry.shouldRescan()) also
           // covers foreign/sibling/team-lead ids sharing this same cache;
@@ -1490,7 +1362,7 @@ export class SessionDiscovery {
       }
 
       // Flush any meta changes from scan (new sessions)
-      await this.flushMeta();
+      await this.meta.flush();
 
       // Sibling worktrees of the local repo: scan periodically, poll every cycle.
       // Run before foreign manager so foreign can exclude any newly-discovered siblings.

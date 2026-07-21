@@ -604,6 +604,12 @@ export class SessionManager {
     return 'low';
   }
 
+  /** Live title fields for SessionDiscovery's poll-cycle meta write-back
+   *  (cached into session-meta.json so titles survive the archive cutoff). */
+  getTitles(): { aiTitle: string; customTitle: string } {
+    return { aiTitle: this.state.aiTitle, customTitle: this.state.customTitle };
+  }
+
   getSessionId(): string {
     return this.state.sessionId;
   }
