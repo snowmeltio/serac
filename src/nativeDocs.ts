@@ -133,7 +133,7 @@ export type RecordLookupResult =
   | { ok: false; reason: 'too-large' | 'not-found' | 'read-error' };
 
 function lookupErrorMessage(reason: 'too-large' | 'not-found' | 'read-error'): string {
-  if (reason === 'too-large') { return 'Transcript is too large to re-open here (over 8MB) — try the classic view instead.'; }
+  if (reason === 'too-large') { return 'Transcript is too large to re-open here (over 8MB) — view it in the detail panel instead.'; }
   if (reason === 'not-found') { return 'Could not find that record — the transcript may have changed since it was loaded.'; }
   return 'Could not read the transcript file.';
 }

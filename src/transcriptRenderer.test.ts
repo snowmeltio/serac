@@ -780,7 +780,7 @@ describe('renderTranscript', async () => {
     });
 
     it('leaves content byte-identical — only toolName is new', async () => {
-      // The markdown exporter and the classic chat renderer both consume
+      // The markdown exporter and the detail-pane log renderer both consume
       // `content`; correlation must never touch it.
       const entries = await parseTranscript(writeJsonl([
         toolUse('toolu_b1', 'Bash', { command: 'ls' }),
