@@ -113,7 +113,8 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import { JsonlTailer } from './jsonlTailer.js';
 import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType, getContentBlocks } from './jsonlValidator.js';
-import { computeDemotion, getToolProfile, isAutoAcceptPermissionMode, MAX_ACTIVE_TOOLS, HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS } from './toolProfiles.js';
+import { computeDemotion, getToolProfile, isAutoAcceptPermissionMode, MAX_ACTIVE_TOOLS } from './toolProfiles.js';
+import { sessionDirFromJsonl, subagentJsonlPath } from './paths.js';
 import { formatModelLabel } from './detailShared.js';
 import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
@@ -836,8 +837,7 @@ export class SessionManager {
    *  actually have live background agents (rare, few per session). */
   private backgroundAgentFileMtime(subagent: SubagentInfo): number | null {
     if (!subagent.agentId) { return null; }
-    const sessionDir = this.state.filePath.replace(/\.jsonl$/, '');
-    const file = path.join(sessionDir, 'subagents', `agent-${subagent.agentId}.jsonl`);
+    const file = subagentJsonlPath(sessionDirFromJsonl(this.state.filePath), subagent.agentId);
     try {
       return fs.statSync(file).mtimeMs;
     } catch {

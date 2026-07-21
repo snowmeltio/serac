@@ -14,6 +14,7 @@ import type { SessionSnapshot } from './types.js';
 import { EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
+import { DEFAULT_SETTINGS } from './settings.js';
 
 /**
  * Tests for SessionDiscovery.
@@ -521,6 +522,38 @@ describe('SessionDiscovery', () => {
     expect(oldInClear).toBeUndefined();
 
     discovery.stop();
+  });
+
+  it('stamps extended-archive snapshots with local worktree origin (tagging invariant)', async () => {
+    // TAGGING INVARIANT: every local snapshot producer stamps
+    // worktreeRoot === workspacePath. panel.ts treats a missing worktreeRoot
+    // as a defensive fallback only — an untagged foreign snapshot matching
+    // that fallback killed new-chat auto-focus for two releases. This archive
+    // producer shipped untagged for weeks; this test pins the stamp.
+    const oldFilePath = createJsonlFile('old-archived');
+    const eightDaysAgo = Date.now() - (8 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(oldFilePath, new Date(eightDaysAgo), new Date(eightDaysAgo));
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    await discovery.setArchiveRange(0);
+
+    const snap = discovery.getSnapshots().find(s => s.sessionId === 'old-archived');
+    expect(snap).toBeDefined();
+    expect(snap!.worktreeRoot).toBe(workspacePath);
+    expect(snap!.worktreeLabel).toBe(path.basename(workspacePath));
+
+    discovery.stop();
+  });
+
+  it('recency cache TTL exceeds the default refresh interval', () => {
+    // The recency cache exists to coalesce isRecentlyActiveElsewhere disk
+    // probes across poll cycles. If the TTL ever drops below the refresh
+    // interval, every poll misses the cache and probes disk — the same
+    // TTL-vs-refresh-interval trap that bit the v1.16.7 externalWriter
+    // cache (entries expired between refreshes, silently disabling it).
+    expect(SessionDiscovery.RECENCY_CACHE_TTL_MS)
+      .toBeGreaterThan(DEFAULT_SETTINGS.refresh.intervalSeconds * 1000);
   });
 
   it('setArchiveRange(0) converts to Infinity internally', async () => {

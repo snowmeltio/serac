@@ -592,6 +592,10 @@ let FOREIGN_SLIDE_MS = 220;
     const wsRootNorm = normPath(workspacePath);
     sessions = sessions.filter(s => {
       if (isGhost(s)) { return false; }
+      // Defensive only: every local producer stamps worktreeRoot (see the
+      // SessionSnapshot tagging invariant), so an untagged snapshot should
+      // not reach here. Treating one as local is the least-wrong default for
+      // a degraded host — but it is NOT a local test; do not lean on it.
       if (!s.worktreeRoot) { return true; }
       return normPath(s.worktreeRoot) === wsRootNorm;
     });

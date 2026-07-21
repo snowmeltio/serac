@@ -13,7 +13,7 @@ import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
 import { WriterOwnership, aggregateWriterOwnership } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { readSettings } from './settings.js';
-import { claudeStateDir } from './paths.js';
+import { claudeStateDir, sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath } from './paths.js';
 import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
 import { SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
@@ -123,7 +123,11 @@ export class SessionDiscovery {
    *  will see reduced amortisation, but `getSessionLastWriteMtime`'s own
    *  entry/time budget (see `writerActivity.ts`) now bounds the cost of an
    *  uncached call regardless, so a cache miss is no longer expensive. */
-  private static readonly RECENCY_CACHE_TTL_MS = 10_000;
+  /** Must exceed the default refresh interval (settings.refresh.intervalSeconds)
+   *  or the cache expires before the next guaranteed tick and every poll pays
+   *  full price — the v1.16.7 regression. The relationship is pinned by a test
+   *  (sessionDiscovery.test.ts), which is why this is not `private`. */
+  static readonly RECENCY_CACHE_TTL_MS = 10_000;
   private recencyCache = new Map<string, { active: boolean; expiresAt: number }>();
   /** Extended archive: lightweight snapshots for sessions older than SCAN_AGE_GATE_MS.
    *  Only populated when archiveRangeMs > SCAN_AGE_GATE_MS. Keyed by sessionId. */
@@ -709,6 +713,14 @@ export class SessionDiscovery {
             customTitle: meta?.customTitle ?? '',
             aiTitle: meta?.aiTitle ?? '',
             confidence: 'high', // terminal status
+            // Tagging invariant: EVERY local snapshot producer stamps its
+            // origin (worktreeRoot === workspacePath for local). This literal
+            // shipped untagged for weeks — benign only because panel.ts's
+            // untagged-means-local fallback happened to match; that exact
+            // assumption killed new-chat auto-focus for two releases when a
+            // foreign snapshot arrived untagged.
+            worktreeRoot: this.localCwd,
+            worktreeLabel: this.localWorktreeLabel,
           };
           this.extendedArchive.set(sessionId, snapshot);
         } catch (err) {
@@ -866,8 +878,7 @@ export class SessionDiscovery {
     if (!isValidSessionId(agentId)) { return null; }
     const jsonlPath = this.getSessionFilePath(sessionId);
     if (!jsonlPath) { return null; }
-    const sessionDir = jsonlPath.replace(/\.jsonl$/, '');
-    const file = path.join(sessionDir, 'subagents', `agent-${agentId}.jsonl`);
+    const file = subagentJsonlPath(sessionDirFromJsonl(jsonlPath), agentId);
     return fs.existsSync(file) ? file : null;
   }
 
@@ -882,7 +893,7 @@ export class SessionDiscovery {
   listSubagentFiles(sessionId: string): { agentId: string; agentType: string | null; description: string | null; model: string | null }[] {
     const jsonlPath = this.getSessionFilePath(sessionId);
     if (!jsonlPath) { return []; }
-    const subagentsDir = path.join(jsonlPath.replace(/\.jsonl$/, ''), 'subagents');
+    const subagentsDir = subagentsDirFor(sessionDirFromJsonl(jsonlPath));
     let files: string[];
     try {
       files = fs.readdirSync(subagentsDir);
@@ -1146,7 +1157,7 @@ export class SessionDiscovery {
     return procs.some(proc => {
       const wsDir = path.join(this.projectsDir, sanitiseWorkspaceKey(proc.cwd));
       const filePath = path.join(wsDir, `${sessionId}.jsonl`);
-      const subagentsDir = path.join(wsDir, sessionId, 'subagents');
+      const subagentsDir = subagentsDirFor(path.join(wsDir, sessionId));
       const lastWrite = getSessionLastWriteMtime(filePath, subagentsDir, {
         recentEnoughMs: EXTERNAL_WRITER_QUIET_MS,
         nowMs: now,

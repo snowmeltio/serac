@@ -14,7 +14,7 @@ import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { parseAgentTeamsConfig } from './teamManifest.js';
-import { claudeStateDir } from './paths.js';
+import { claudeStateDir, subagentsDirFor, subagentMetaPath } from './paths.js';
 import { isValidSessionId } from './validation.js';
 import type {
   TeamManifest, TeamSnapshot, TeamAgentSnapshot,
@@ -511,8 +511,8 @@ export class TeamDiscovery {
     // Re-runs leave stale duplicates, so prefer the newest by mtime. Match only
     // against roster names so this can't collide with a plain Task subagent.
     const leadWorkspaceKey = sanitiseWorkspaceKey(manifest.orchestrator.cwd);
-    const subagentsDir = path.join(
-      this.projectsDir, leadWorkspaceKey, manifest.orchestrator.sessionId, 'subagents',
+    const subagentsDir = subagentsDirFor(
+      path.join(this.projectsDir, leadWorkspaceKey, manifest.orchestrator.sessionId),
     );
     const rosterNames = new Set([...manifest.agents.map(a => a.name), ...manifest.inProcessMembers]);
 
@@ -574,9 +574,9 @@ export class TeamDiscovery {
     if (!SAFE_PATH_COMPONENT.test(teamDir)) { return null; }
 
     // hash → member name via the SPECIFIC meta file (agentId is path-safe + bounded).
-    const metaPath = path.join(
-      this.projectsDir, sanitiseWorkspaceKey(manifest.orchestrator.cwd),
-      manifest.orchestrator.sessionId, 'subagents', `agent-${agentId}.meta.json`,
+    const metaPath = subagentMetaPath(
+      path.join(this.projectsDir, sanitiseWorkspaceKey(manifest.orchestrator.cwd), manifest.orchestrator.sessionId),
+      agentId,
     );
     let agentType: unknown;
     try {

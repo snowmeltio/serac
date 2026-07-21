@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { claudeStateDir, claudeConfigFile, claudeKeychainService, claudeAccountId } from './paths.js';
+import {
+  claudeStateDir, claudeConfigFile, claudeKeychainService, claudeAccountId,
+  sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath, subagentMetaPath,
+} from './paths.js';
 
 const ORIG_ENV = process.env.CLAUDE_CONFIG_DIR;
 
@@ -168,5 +171,38 @@ describe('claudeAccountId', () => {
 
   it('treats an explicit null configFile as no account', () => {
     expect(claudeAccountId(null)).toBeNull();
+  });
+});
+
+describe('session/subagent layout helpers', () => {
+  const sessionDir = '/proj/-Users-x-repo/abc123';
+
+  it('sessionDirFromJsonl strips only a trailing .jsonl suffix', () => {
+    expect(sessionDirFromJsonl('/proj/-Users-x-repo/abc123.jsonl')).toBe(sessionDir);
+    // .jsonl elsewhere in the path must survive — only the suffix is the marker
+    expect(sessionDirFromJsonl('/proj/a.jsonl.bak/abc.jsonl')).toBe('/proj/a.jsonl.bak/abc');
+    expect(sessionDirFromJsonl('/proj/no-suffix')).toBe('/proj/no-suffix');
+  });
+
+  it('subagentsDirFor appends the subagents directory', () => {
+    expect(subagentsDirFor(sessionDir)).toBe(path.join(sessionDir, 'subagents'));
+  });
+
+  it('subagentJsonlPath builds agent-<id>.jsonl under subagents/', () => {
+    expect(subagentJsonlPath(sessionDir, 'a1b2')).toBe(
+      path.join(sessionDir, 'subagents', 'agent-a1b2.jsonl'),
+    );
+  });
+
+  it('subagentMetaPath builds agent-<id>.meta.json under subagents/', () => {
+    expect(subagentMetaPath(sessionDir, 'a1b2')).toBe(
+      path.join(sessionDir, 'subagents', 'agent-a1b2.meta.json'),
+    );
+  });
+
+  it('jsonl and meta paths agree with subagentsDirFor (one layout, one owner)', () => {
+    const dir = subagentsDirFor(sessionDir);
+    expect(subagentJsonlPath(sessionDir, 'z9').startsWith(dir + path.sep)).toBe(true);
+    expect(subagentMetaPath(sessionDir, 'z9').startsWith(dir + path.sep)).toBe(true);
   });
 });

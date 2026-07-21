@@ -10,6 +10,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath } from './paths.js';
 import { JsonlTailer } from './jsonlTailer.js';
 import type { SubagentInfo, JsonlRecord } from './types.js';
 
@@ -138,12 +139,12 @@ export class SubagentTailerManager {
     if (subagent.tailer) { return; }
     if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
 
-    const sessionDir = this.ctx.getSessionFilePath().replace(/\.jsonl$/, '');
-    const subagentsDir = path.join(sessionDir, 'subagents');
+    const sessionDir = sessionDirFromJsonl(this.ctx.getSessionFilePath());
+    const subagentsDir = subagentsDirFor(sessionDir);
     const siblings = this.ctx.getAllSubagents();
 
     if (subagent.agentId) {
-      const subagentFile = path.join(subagentsDir, `agent-${subagent.agentId}.jsonl`);
+      const subagentFile = subagentJsonlPath(sessionDir, subagent.agentId);
       try {
         await fs.promises.access(subagentFile);
         // Re-check the cap after the await: concurrent silence-fires can each

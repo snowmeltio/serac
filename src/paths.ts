@@ -46,6 +46,33 @@ export function claudeAccountId(configFile?: string | null): string | null {
   }
 }
 
+// ── Session / subagent on-disk layout ────────────────────────────────
+// One owner for the `<sessionDir>/subagents/agent-<id>.jsonl` shape. The
+// derivation was re-written independently at six call sites across four
+// modules (audit 2026-07-21), so a Claude Code layout change would have
+// drifted them apart silently. Pure string functions — id validation and
+// existence checks stay at the callers.
+
+/** A session's directory: its JSONL path with the `.jsonl` suffix stripped. */
+export function sessionDirFromJsonl(jsonlPath: string): string {
+  return jsonlPath.replace(/\.jsonl$/, '');
+}
+
+/** The subagents directory under a session dir. */
+export function subagentsDirFor(sessionDir: string): string {
+  return path.join(sessionDir, 'subagents');
+}
+
+/** A subagent transcript: `<sessionDir>/subagents/agent-<agentId>.jsonl`. */
+export function subagentJsonlPath(sessionDir: string, agentId: string): string {
+  return path.join(sessionDir, 'subagents', `agent-${agentId}.jsonl`);
+}
+
+/** A subagent meta sidecar: `<sessionDir>/subagents/agent-<agentId>.meta.json`. */
+export function subagentMetaPath(sessionDir: string, agentId: string): string {
+  return path.join(sessionDir, 'subagents', `agent-${agentId}.meta.json`);
+}
+
 /** macOS Keychain service name for the active environment's credentials. */
 export function claudeKeychainService(): string {
   const env = process.env.CLAUDE_CONFIG_DIR;
