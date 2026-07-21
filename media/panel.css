@@ -27,6 +27,60 @@
   --sm-team-violet-rgb: 180, 142, 240;
 }
 
+/* Role tokens [audit 2026-07-21]: accents used AS TEXT (plus the count
+ * chips' fill/text pairs). Dark reads the brand hues directly; the light
+ * block below redefines ONLY these token values — never per-element
+ * colours — so a new chip/badge referencing a role token themes correctly
+ * everywhere with zero extra rules. This replaces the per-element
+ * body.vscode-light overrides whose specificity silently outranked
+ * unthemed state rules (the PR #35 wf-chip-failed regression); the
+ * invariants live in panel.css.test.ts. */
+:root {
+  --accent-running-text: var(--sm-blizzard-blue);
+  --accent-running-soft-text: var(--sm-blizzard-light);
+  --accent-waiting-text: var(--sm-frozen-peach);
+  --accent-done-text: var(--sm-arctic-teal);
+  --accent-done-soft-text: var(--sm-teal-bright);
+  --accent-failed-text: var(--sm-salmon-red);
+  --accent-incomplete-text: var(--sm-orange);
+  --accent-team-text: var(--sm-team-violet);
+  --wf-badge-text: var(--sm-arctic-teal);
+  --mode-manual-text: var(--sm-slate-grey);
+  --mode-edit-text: var(--sm-cyan);
+  --chip-muted-text: var(--vscode-descriptionForeground, #888888);
+  --chip-stale-text: #999999;
+  --usage-ghost-text: #444444;
+  --count-waiting-bg: var(--sm-frozen-peach);   --count-waiting-text: #1e1e1e;
+  --count-running-bg: var(--sm-blizzard-light); --count-running-text: #ffffff;
+  --count-done-bg: var(--sm-teal-bright);       --count-done-text: #1e1e1e;
+  --count-stale-bg: #555555;                    --count-stale-text: #cccccc;
+}
+/* Light + high-contrast-light values (HC dark inherits :root's brand hues —
+ * the pre-token behaviour, now explicit). Hexes carried over verbatim from
+ * the hand-written light pass; on-white ratios noted, sub-4.5 ones are a
+ * pre-existing design debt to tighten in their own pass, not here. */
+body.vscode-light,
+body.vscode-high-contrast-light {
+  --accent-running-text: #4a6cd4;      /* 4.79:1 */
+  --accent-running-soft-text: #4a6cd4;
+  --accent-waiting-text: #c47a3a;      /* 3.39:1 */
+  --accent-done-text: #3a9a9d;         /* 3.34:1 */
+  --accent-done-soft-text: #3a9a9d;
+  --accent-failed-text: #d44444;       /* 4.46:1 */
+  --accent-incomplete-text: #a87718;   /* 3.95:1 */
+  --accent-team-text: #8a5fd6;         /* 4.48:1 */
+  --wf-badge-text: #2f9e8f;            /* 3.28:1 */
+  --mode-manual-text: #6b6f76;         /* 5.05:1 */
+  --mode-edit-text: #2f8a93;           /* 4.06:1 */
+  --chip-muted-text: #777777;          /* 4.48:1 */
+  --chip-stale-text: #999999;
+  --usage-ghost-text: #999999;
+  --count-waiting-bg: var(--sm-frozen-peach);   --count-waiting-text: #4a2e16;
+  --count-running-bg: #4a6cd4;                  --count-running-text: #ffffff;
+  --count-done-bg: var(--sm-teal-bright);       --count-done-text: #ffffff;
+  --count-stale-bg: #d0d0d0;                    --count-stale-text: #555555;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body { height: 100%; }
@@ -76,10 +130,10 @@ body {
 }
 
 .status-count { white-space: nowrap; }
-.status-count.waiting-count { color: var(--sm-frozen-peach); }
-.status-count.running-count { color: var(--sm-blizzard-light); }
-.status-count.done-count { color: var(--sm-teal-bright); }
-.status-count.stale-count { color: #999999; }
+.status-count.waiting-count { color: var(--accent-waiting-text); }
+.status-count.running-count { color: var(--accent-running-soft-text); }
+.status-count.done-count { color: var(--accent-done-soft-text); }
+.status-count.stale-count { color: var(--chip-stale-text); }
 
 /* Cross-workspace rows. max-height keeps a long workspace list from pushing
  * the rest of the panel offscreen — caps at ~12 rows then scrolls internally.
@@ -193,10 +247,10 @@ body {
   font-size: 10px;
   letter-spacing: -0.1px;
 }
-.ws-counts .status-count.waiting-count { background: var(--sm-frozen-peach); color: #1e1e1e; }
-.ws-counts .status-count.running-count { background: var(--sm-blizzard-light); color: #ffffff; }
-.ws-counts .status-count.done-count    { background: var(--sm-teal-bright); color: #1e1e1e; }
-.ws-counts .status-count.stale-count   { background: #555555; color: #cccccc; }
+.ws-counts .status-count.waiting-count { background: var(--count-waiting-bg); color: var(--count-waiting-text); }
+.ws-counts .status-count.running-count { background: var(--count-running-bg); color: var(--count-running-text); }
+.ws-counts .status-count.done-count    { background: var(--count-done-bg); color: var(--count-done-text); }
+.ws-counts .status-count.stale-count   { background: var(--count-stale-bg); color: var(--count-stale-text); }
 
 /* Worktree picker: aggregated rows with 2+ worktrees are click-to-expand,
  * revealing an inline list of every worktree (incl. main). The chevron
@@ -426,13 +480,10 @@ body {
   letter-spacing: -0.1px;
   white-space: nowrap;
   flex-shrink: 0;
-  color: var(--vscode-descriptionForeground, #888888);
+  color: var(--chip-muted-text);
   background: transparent;
   border: 1px solid currentColor;
   opacity: 0.75;
-}
-body.vscode-light .worktree-count-chip {
-  color: #777777;
 }
 /* Clickable workspace / worktree rows */
 .ws-row-clickable { cursor: pointer; }
@@ -515,8 +566,8 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
   font-size: 9px;
   font-weight: 600;
   line-height: 1.2;
-  color: var(--sm-salmon-red);
-  border: 1px solid color-mix(in srgb, var(--sm-salmon-red) 45%, transparent);
+  color: var(--accent-failed-text);
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
   border-radius: 7px;
   padding: 0 5px;
   flex-shrink: 0;
@@ -529,8 +580,8 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
   font-size: 9px;
   font-weight: 600;
   line-height: 1.2;
-  color: var(--sm-salmon-red);
-  border: 1px solid color-mix(in srgb, var(--sm-salmon-red) 45%, transparent);
+  color: var(--accent-failed-text);
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
   border-radius: 7px;
   padding: 0 5px;
   flex-shrink: 0;
@@ -547,7 +598,7 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
   padding: 0 5px;
   border: 1px solid currentColor;
   border-radius: 3px;
-  color: var(--sm-blizzard-blue);
+  color: var(--accent-running-text);
   opacity: 0.85;
   flex-shrink: 0;
   white-space: nowrap;
@@ -574,11 +625,13 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
   gap: 3px;
 }
 .mode-badge-glyph { font-size: 9.5px; }
-.mode-badge-manual { color: var(--sm-slate-grey); }
-.mode-badge-edit { color: var(--sm-cyan); }
-.mode-badge-plan { color: var(--sm-team-violet); }
-.mode-badge-auto { color: var(--sm-orange); }
-.mode-badge-bypass { color: var(--sm-salmon-red); }
+.mode-badge-manual { color: var(--mode-manual-text); }
+.mode-badge-edit { color: var(--mode-edit-text); }
+.mode-badge-plan { color: var(--accent-team-text); }
+.mode-badge-auto { color: var(--accent-incomplete-text); }
+/* Bypass shares the failure register (it now follows the light token like
+ * .tool-error-badge, which it deliberately matches). */
+.mode-badge-bypass { color: var(--accent-failed-text); }
 .card.stale .mode-badge { opacity: 0.5; }
 
 .card-detail {
@@ -605,8 +658,6 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 .card-agent-dot.waiting { background: var(--sm-frozen-peach); box-shadow: 0 0 3px rgba(var(--sm-frozen-peach-rgb), 0.4); }
 .card-agent-dot.failed { background: var(--sm-salmon-red); }
 .card-agent-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mini-spinner { display: inline-block; width: 7px; height: 7px; border: 1px solid rgba(var(--sm-blizzard-blue-rgb), 0.2); border-top-color: var(--sm-blizzard-blue); border-radius: 50%; animation: spin 1s linear infinite; flex-shrink: 0; }
-@keyframes spin { to { transform: rotate(360deg); } }
 
 /* === CONTEXT BAR (bottom border of card) === */
 .context-bar {
@@ -650,7 +701,7 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 }
 .time-pill:hover { background: rgba(255, 255, 255, 0.12); color: var(--vscode-foreground, #cccccc); }
 .time-pill:focus-visible { outline: 2px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
-.time-pill.active { background: rgba(var(--sm-blizzard-blue-rgb), 0.15); color: var(--sm-blizzard-blue); font-weight: 600; }
+.time-pill.active { background: rgba(var(--sm-blizzard-blue-rgb), 0.15); color: var(--accent-running-text); font-weight: 600; }
 .time-pill:not(.active) { font-weight: 400; }
 
 .compact-row { display: flex; align-items: center; padding: 4px 8px; border-radius: 4px; cursor: pointer; gap: 7px; transition: background 0.1s; }
@@ -669,8 +720,7 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 .action-btn:hover,
 .action-btn:focus-visible { opacity: 1 !important; background: rgba(255,255,255,0.08); }
 .action-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder, #007acc); outline-offset: -1px; }
-.action-btn.dismiss-btn-force:hover,
-.team-dismiss-btn.dismiss-btn-force:hover { background: rgba(229, 192, 123, 0.18); color: var(--vscode-editorWarning-foreground, #e5c07b); }
+.action-btn.dismiss-btn-force:hover { background: rgba(229, 192, 123, 0.18); color: var(--vscode-editorWarning-foreground, #e5c07b); }
 
 /* Transcript button on compact archive rows */
 .compact-transcript { font-size: 10px; color: #888888; cursor: pointer; opacity: 0; transition: opacity 0.15s; padding: 0 2px; flex-shrink: 0; }
@@ -704,14 +754,14 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 .usage-bar-fill.critical { background: var(--sm-salmon-red); }
 .usage-bar-pct { font-size: 10px; font-weight: 600; font-family: var(--vscode-editor-font-family, monospace); min-width: 56px; text-align: right; flex-shrink: 0; }
 .usage-bar-elapsed { font-weight: 400; color: var(--vscode-descriptionForeground, rgba(204,204,204,0.6)); }
-.usage-bar-pct.ok { color: var(--sm-blizzard-blue); }
-.usage-bar-pct.good { color: var(--sm-arctic-teal); }
-.usage-bar-pct.warn { color: var(--sm-frozen-peach); }
-.usage-bar-pct.critical { color: var(--sm-salmon-red); }
+.usage-bar-pct.ok { color: var(--accent-running-text); }
+.usage-bar-pct.good { color: var(--accent-done-text); }
+.usage-bar-pct.warn { color: var(--accent-waiting-text); }
+.usage-bar-pct.critical { color: var(--accent-failed-text); }
 
 /* Ghost state (expired/no active window) */
 .usage-bar-wrap.ghost { background: none; border: 1px dashed rgba(255,255,255,0.08); overflow: visible; transition: background 0.5s ease, border-color 0.5s ease; }
-.usage-bar-pct.ghost { color: #444444; font-weight: 400; }
+.usage-bar-pct.ghost { color: var(--usage-ghost-text); font-weight: 400; }
 .usage-row.ghost { color: #555555; }
 .usage-row.ghost .usage-row-label { color: #555555; font-weight: 500; }
 .usage-ghost-msg { font-size: 9px; color: #444444; font-style: italic; margin-top: 2px; margin-bottom: 4px; }
@@ -719,13 +769,13 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 
 /* Status line */
 .usage-status { font-size: 9px; font-weight: 600; margin-top: 2px; }
-.usage-status.warn { color: var(--sm-frozen-peach); }
-.usage-status.critical { color: var(--sm-salmon-red); }
+.usage-status.warn { color: var(--accent-waiting-text); }
+.usage-status.critical { color: var(--accent-failed-text); }
 
 /* Updated-ago footer */
 .usage-updated { font-size: 9px; color: #777777; text-align: right; margin-top: 4px; }
-.usage-updated .cached-tag { color: var(--sm-frozen-peach); font-weight: 600; }
-.usage-link { color: var(--sm-blizzard-light); text-decoration: none; }
+.usage-updated .cached-tag { color: var(--accent-waiting-text); font-weight: 600; }
+.usage-link { color: var(--accent-running-soft-text); text-decoration: none; }
 .usage-link:hover { text-decoration: underline; }
 .api-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
 .api-dot.connected, .api-dot.ok { background: var(--sm-arctic-teal); }
@@ -778,7 +828,7 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 
 /* === TEAM GROUPS (Cornice agent teams) === */
 /* Team affiliation badge (archive compact rows) — violet, the team accent. */
-.team-badge { font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; line-height: 13px; color: var(--sm-team-violet); background: rgba(var(--sm-team-violet-rgb), 0.15); }
+.team-badge { font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; line-height: 13px; color: var(--accent-team-text); background: rgba(var(--sm-team-violet-rgb), 0.15); }
 
 /* Team archive compact row */
 .team-compact-row { display: flex; align-items: center; padding: 4px 8px; border-radius: 4px; cursor: pointer; gap: 7px; transition: background 0.1s; }
@@ -790,10 +840,7 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 /* ============ LIGHT THEME ============ */
 
 /* -- Top bar: status counts -- */
-body.vscode-light .status-count.waiting-count { color: #c47a3a; }
-body.vscode-light .status-count.running-count { color: #4a6cd4; }
-body.vscode-light .status-count.done-count { color: #3a9a9d; }
-body.vscode-light .status-count.stale-count { color: #999999; }
+/* (status counts theme through the role tokens at the top of the file) */
 
 /* -- Cards: backgrounds & focus -- */
 body.vscode-light .card { background: var(--vscode-editor-background, #ffffff); }
@@ -822,19 +869,11 @@ body.vscode-light .done .status-pill { color: #ffffff; background: #2a7578; } /*
 body.vscode-light .stale .status-pill { color: #666666; background: #e0e0e0; }
 
 /* -- Foreign workspace count chips (light) -- */
-body.vscode-light .ws-counts .status-count.waiting-count { background: var(--sm-frozen-peach); color: #4a2e16; }
-body.vscode-light .ws-counts .status-count.running-count { background: #4a6cd4; color: #ffffff; }
-body.vscode-light .ws-counts .status-count.done-count    { background: var(--sm-teal-bright); color: #ffffff; }
-body.vscode-light .ws-counts .status-count.stale-count   { background: #d0d0d0; color: #555555; }
-
-/* -- Model pills -- */
-
+/* (count chips theme through the --count-* tokens at the top of the file) */
 
 /* -- Action buttons -- */
 body.vscode-light .action-btn:hover { background: rgba(0,0,0,0.06); }
 body.vscode-light .dismiss-btn:hover { background: rgba(0,0,0,0.06); }
-
-body.vscode-light .mini-spinner { border-color: rgba(74, 108, 212, 0.25); border-top-color: #4a6cd4; }
 
 /* -- Context bar -- */
 body.vscode-light .context-fill { background: #cccccc; }
@@ -846,41 +885,27 @@ body.vscode-light .compact-transcript { color: #999999; }
 /* -- Time-range pills -- */
 body.vscode-light .time-pill { background: rgba(0, 0, 0, 0.04); }
 body.vscode-light .time-pill:hover { background: rgba(0, 0, 0, 0.08); }
-body.vscode-light .time-pill.active { background: rgba(var(--sm-blizzard-blue-rgb), 0.12); color: #4a6cd4; }
+body.vscode-light .time-pill.active { background: rgba(var(--sm-blizzard-blue-rgb), 0.12); }
 
 /* -- Usage section -- */
 body.vscode-light .usage-row.weekly { border-top-color: rgba(0, 0, 0, 0.08); }
 body.vscode-light .usage-bar-wrap { background: rgba(0, 0, 0, 0.08); }
 body.vscode-light .usage-row-reset { color: #888888; }
 body.vscode-light .usage-updated { color: #888888; }
-body.vscode-light .usage-status.warn { color: #c47a3a; }
-body.vscode-light .usage-status.critical { color: #d44444; }
 body.vscode-light .usage-bar-wrap.ghost { border-color: rgba(0, 0, 0, 0.1); }
-body.vscode-light .usage-bar-pct.ghost { color: #999999; }
 body.vscode-light .usage-row.ghost { color: #999999; }
 body.vscode-light .usage-row.ghost .usage-row-label { color: #999999; }
 body.vscode-light .usage-ghost-msg { color: #999999; }
 body.vscode-light .usage-weekly-sep { border-top-color: rgba(0, 0, 0, 0.06); }
 
 /* -- Teams -- */
-body.vscode-light .team-group { background: var(--vscode-editor-background, #ffffff); }
-body.vscode-light .team-group.team-stale { border-left-color: #cccccc; }
-body.vscode-light .team-orchestrator:hover { background: var(--vscode-list-hoverBackground, #f0f0f0); }
-body.vscode-light .team-badge { color: #8a5fd6; background: rgba(var(--sm-team-violet-rgb), 0.1); }
-body.vscode-light .team-agent:hover { background: rgba(0, 0, 0, 0.04); }
-body.vscode-light .team-agent-dot.done { background: #cccccc; }
-body.vscode-light .team-agent-dot.stale { background: #dddddd; }
-body.vscode-light .team-agent-activity { color: #999999; }
-body.vscode-light .team-agent-status { color: #999999; }
-body.vscode-light .team-agent-status.running-status { color: #4a6cd4; }
-body.vscode-light .team-agent-status.waiting-status { color: #c47a3a; }
-body.vscode-light .team-agent-status.failed-status { color: #d44444; }
-body.vscode-light .team-agent-subagent-dot.done { background: #cccccc; }
-body.vscode-light .team-depth-badge { background: rgba(0, 0, 0, 0.06); color: #999999; }
-body.vscode-light .team-dismiss-btn:hover { background: rgba(0, 0, 0, 0.06); }
+/* (the pre-v1.11 team-section rules — team-group / team-agent-* / team-depth /
+ * team-dismiss — were dead here long after the fold removed their markup;
+ * panel.css.test.ts's generator check now proves such orphans out.) */
+body.vscode-light .team-badge { background: rgba(var(--sm-team-violet-rgb), 0.1); }
 body.vscode-light .team-compact-row:hover { background: var(--vscode-list-hoverBackground, #f0f0f0); }
 body.vscode-light .workflow-compact-row:hover { background: var(--vscode-list-hoverBackground, #f0f0f0); }
-body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-teal-rgb), 0.12); }
+body.vscode-light .wf-badge { background: rgba(var(--sm-arctic-teal-rgb), 0.12); }
 
 /* ── Workflow / agents on a session card ─────────────────────────────
  * A session that ran one or more Opus 4.8 Workflows (or spawned subagents /
@@ -901,7 +926,7 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
   flex-shrink: 0;
   text-transform: none;
   letter-spacing: 0.2px;
-  color: var(--vscode-descriptionForeground, #888888);
+  color: var(--chip-muted-text);
   background: transparent;
   border: 1px solid currentColor;
   opacity: 0.75;
@@ -918,7 +943,7 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
 
 /* WF badge on the compact archive row — same recipe as .team-badge but tinted
  * to the teal workflow accent instead of blizzard-blue. */
-.wf-badge { font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; line-height: 13px; color: var(--sm-arctic-teal); background: rgba(var(--sm-arctic-teal-rgb), 0.15); }
+.wf-badge { font-size: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; padding: 1px 5px; border-radius: 3px; white-space: nowrap; flex-shrink: 0; line-height: 13px; color: var(--wf-badge-text); background: rgba(var(--sm-arctic-teal-rgb), 0.15); }
 
 /* The WF chip doubles as the detail-panel trigger: clickable, tinted to the
  * agents' own aggregate state (wf-chip-* class, set at render), with a trailing
@@ -936,11 +961,11 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
 /* The chip is tinted by its OWN aggregate state (wf-chip-* class set at render),
  * not the parent card/team status — a live workflow under an idle session still
  * reads as running. Set on workflow, subagents, and team chips alike. */
-.wf-view-chip.wf-chip-running { color: var(--sm-blizzard-blue); }
-.wf-view-chip.wf-chip-waiting { color: var(--sm-frozen-peach); }
-.wf-view-chip.wf-chip-done    { color: var(--sm-arctic-teal); }
-.wf-view-chip.wf-chip-failed  { color: var(--sm-salmon-red); }
-.wf-view-chip.wf-chip-incomplete { color: var(--sm-orange); }
+.wf-view-chip.wf-chip-running { color: var(--accent-running-text); }
+.wf-view-chip.wf-chip-waiting { color: var(--accent-waiting-text); }
+.wf-view-chip.wf-chip-done    { color: var(--accent-done-text); }
+.wf-view-chip.wf-chip-failed  { color: var(--accent-failed-text); }
+.wf-view-chip.wf-chip-incomplete { color: var(--accent-incomplete-text); }
 /* "Seen": a stale (acknowledged) parent card dims its chip rather than dropping
  * it to the inert muted .wf-tag colour — the state tint stays, just quieter. */
 .card.stale .wf-view-chip { opacity: 0.6; }
@@ -959,26 +984,11 @@ body.vscode-light .wf-badge { color: #2f9e8f; background: rgba(var(--sm-arctic-t
  * so the count (and arrow) carry it — bold enough to read at chip size. */
 .agent-live-count { font-weight: 600; font-variant-numeric: tabular-nums; }
 
-body.vscode-light .wf-tag { color: #777777; }
-/* Light-theme pass for the v1.13/v1.14 additions — same substitutions as the
- * established affordances: #4a6cd4 for blues, #c47a3a for peach, #3a9a9d for
- * teal, dark-on-light hover. */
-body.vscode-light .wf-view-chip.wf-chip-running { color: #4a6cd4; }
-body.vscode-light .wf-view-chip.wf-chip-waiting { color: #c47a3a; }
-body.vscode-light .wf-view-chip.wf-chip-done    { color: #3a9a9d; }
-body.vscode-light .wf-view-chip.wf-chip-incomplete { color: #a87718; }
-/* wf-chip-failed needs its own light override too — body.vscode-light .wf-tag
- * (above) outranks the bare .wf-view-chip.wf-chip-failed rule on specificity
- * (2 classes + 1 element beats 2 classes + 0), so without this the chip fell
- * back to .wf-tag's grey in light mode instead of reading as failed at all. */
-body.vscode-light .wf-view-chip.wf-chip-failed { color: #d44444; }
-body.vscode-light .bg-shell-badge { color: #4a6cd4; }
-/* Light-theme mode-badge substitutions — same recipe as wf-view-chip above.
- * Bypass keeps --sm-salmon-red as-is, matching .tool-error-badge, which isn't
- * built on .wf-tag so it doesn't hit the specificity issue above. */
-body.vscode-light .mode-badge-manual { color: #6b6f76; }
-body.vscode-light .mode-badge-edit { color: #2f8a93; }
-body.vscode-light .mode-badge-plan { color: #8a5fd6; }
-body.vscode-light .mode-badge-auto { color: #a87718; }
+/* Tags, view chips, shell badge, and mode badges all theme through the role
+ * tokens at the top of the file. No per-element light overrides here — a
+ * body.vscode-light override on a base recipe (.wf-tag) outranks every
+ * unthemed state rule on specificity, which is how wf-chip-failed shipped
+ * grey in light mode for five releases (PR #35). panel.css.test.ts forbids
+ * reintroducing one. */
 body.vscode-light .card-agent-row { color: #666666; }
 body.vscode-light .card-agent-row:hover { background: rgba(0, 0, 0, 0.05); color: var(--vscode-foreground, #333333); }
