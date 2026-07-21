@@ -41,22 +41,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
   let model: DetailModel | null = null;
   let selectedGroupKey: string | null = null;
   let selectedAgentId: string | null = null;
-  /** Left-nav collapsed to a thin rail to free horizontal space for the reader.
-   *  Reflected as a `nav-collapsed` class on the persistent #wf-root (not baked
-   *  into the nav markup) so toggling it animates the existing .wf-nav width via
-   *  CSS — a full innerHTML re-render would destroy the element and kill the
-   *  transition. Manual only: selecting an agent no longer auto-collapses. */
-  let navCollapsed = false;
-  /** Inception-brief block collapsed in the reader. Default expanded (shown). */
-  let briefCollapsed = false;
-
-  // ── Phase 2: log view (default) vs classic (temporary fallback) ─────
-  // DESIGN-DETAIL-PANE-V2.md forensic-log skeleton: a single-pane log replaces
-  // the two-pane navigator. Classic stays reachable for one release via the
-  // header-strip toggle while confidence builds; both render functions read the
-  // SAME selection/transcript-cache state below, so switching modes mid-session
-  // keeps the current agent selected.
-  let mode: 'log' | 'classic' = 'log';
   /** View row (session-scoped switcher, mockup view 4/4b) collapsed to one line
    *  with only the active + running/waiting chips shown, the rest folded into a
    *  "+N" overflow chip. Tri-state since Phase 2.5 (same pattern as
@@ -104,6 +88,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  every agent change (see renderLogMode) — index 3 means nothing once the
    *  selection moves to a different agent's entry list. */
   const expandedRows = new Set<number>();
+  /** The tkey last painted by renderLogMode; a change means an agent switch,
+   *  which resets scroll to the top once the transcript settles. */
+  let lastRenderedKey: string | null = null;
+  /** Set on agent change; holds "scroll to top" until the transcript for the
+   *  new selection finishes loading, so a loading→loaded re-render doesn't
+   *  inherit the previous agent's scroll position. */
+  let pendingTopOnSettle = false;
 
   // ── Narrow register (Phase 2.5) ─────────────────────────────────────
   // The webview is its own viewport, so a plain media query drives the CSS
@@ -130,9 +121,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
     owner?: string;
     groupKey?: string;
     agentId?: string;
-    navCollapsed?: boolean;
-    briefCollapsed?: boolean;
-    mode?: 'log' | 'classic';
     viewRowCollapsed?: boolean | null;
     agentStripCollapsed?: boolean | null;
     resultStripCollapsed?: boolean | null;
@@ -140,9 +128,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
     timeMode?: 'clock' | 'offset';
   }
   const persisted = (vscode.getState() ?? {}) as PersistedState;
-  navCollapsed = persisted.navCollapsed === true;
-  briefCollapsed = persisted.briefCollapsed === true;
-  mode = persisted.mode === 'classic' ? 'classic' : 'log';
   // A stored boolean (including one written by 1.16.0's two-state model)
   // loads as an EXPLICIT choice; anything else means no choice yet.
   viewRowCollapsed = typeof persisted.viewRowCollapsed === 'boolean' ? persisted.viewRowCollapsed : null;
@@ -169,9 +154,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
       owner: cacheOwner ?? undefined,
       groupKey: selectedGroupKey ?? undefined,
       agentId: selectedAgentId ?? undefined,
-      navCollapsed,
-      briefCollapsed,
-      mode,
       viewRowCollapsed,
       agentStripCollapsed,
       resultStripCollapsed,
@@ -201,33 +183,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
       : '|' + groupKey + '|' + agentId;
   }
 
-  /** A per-record time label: relative while recent ("just now", "5m ago",
-   *  "2h ago"), crossing over to an absolute date once ≥ ~24h old (the
-   *  GitHub/Slack timeago pattern). `t`/`now` are epoch ms; the webview is a
-   *  browser context so Date is unrestricted here. */
-  function formatRelativeTime(t: number, now: number): string {
-    const diff = now - t;
-    if (diff < 60000) { return 'just now'; }            // < 1 min (also covers small clock skew)
-    if (diff < 3600000) { return Math.floor(diff / 60000) + 'm ago'; }
-    if (diff < 86400000) { return Math.floor(diff / 3600000) + 'h ago'; }
-    const d = new Date(t);
-    const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short' };
-    if (d.getFullYear() !== new Date(now).getFullYear()) { opts.year = 'numeric'; }
-    return d.toLocaleDateString(undefined, opts);
-  }
-
-  /** A quiet timestamp span for a transcript turn: relative-then-absolute text,
-   *  with the full local date-time always on hover. Empty when the record has no
-   *  (parseable) timestamp. */
-  function renderTime(iso?: string): string {
-    if (!iso) { return ''; }
-    const t = Date.parse(iso);
-    if (isNaN(t)) { return ''; }
-    const rel = formatRelativeTime(t, Date.now());
-    const abs = new Date(t).toLocaleString();
-    return '<span class="wf-turn-time" data-t="' + t + '" title="' + escapeHtml(abs) + '">' + escapeHtml(rel) + '</span>';
-  }
-
   function findAgent(groupKey: string | null, agentId: string | null): DetailAgentView | undefined {
     if (!model || groupKey === null || agentId === null) { return undefined; }
     // A workflow's phase groups all share one key (the runId), so several groups
@@ -254,12 +209,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   /** Focus a roster row by identity (dataset match — ids can hold characters
    *  a selector would need escaping for). */
-  function focusNavRow(groupKey: string, agentId: string): void {
-    for (const el of Array.from(root.querySelectorAll<HTMLElement>('.wf-nav-row'))) {
-      if (el.dataset.group === groupKey && el.dataset.agent === agentId) { el.focus(); return; }
-    }
-  }
-
   function firstAgent(): { groupKey: string; agentId: string } | null {
     if (!model) { return null; }
     for (const g of model.groups) {
@@ -330,281 +279,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return '<span class="wf-dot ' + escapeHtml(status) + '"></span>';
   }
 
-  function renderNav(): string {
-    if (!model) { return ''; }
-    let html = '';
-    for (const g of model.groups) {
-      if (g.title !== null) {
-        const count = g.agents.length;
-        const done = g.agents.filter(a => a.status === 'done').length;
-        const failed = g.agents.filter(a => a.status === 'failed').length;
-        // Failures surface in the header itself: at 50-agent scale the phase
-        // headers are the triage layer, and "4/5" alone reads as still-running.
-        const failedHtml = failed > 0
-          ? ' · <span class="wf-nav-count-failed">' + failed + ' failed</span>'
-          : '';
-        html += '<div class="wf-nav-phase"><span>' + escapeHtml(g.title) + '</span>'
-          + '<span class="wf-nav-count">' + done + '/' + count + failedHtml + '</span></div>';
-      }
-      for (const a of g.agents) { html += renderNavRow(g.key, a); }
-    }
-    return html;
-  }
-
-  function renderNavRow(groupKey: string, a: DetailAgentView): string {
-    const active = groupKey === selectedGroupKey && a.agentId === selectedAgentId;
-    const badge = a.teammate ? '<span class="wf-teammate-badge" title="Agent Team member">team</span>' : '';
-    const modelLabel = a.model ? formatModelLabel(a.model) : '';
-    // Status rides in the title/aria-label so it survives ellipsis truncation
-    // and is announced — the dot alone is colour-only signalling (WCAG 1.4.1).
-    const nameWithStatus = a.label + ' · ' + a.status + (modelLabel ? ' · ' + modelLabel : '');
-    // Roving tabindex (UX-3): one Tab stop for the whole roster (the active
-    // row); ArrowUp/ArrowDown walk the rest. 50 agents are otherwise 50 stops.
-    return '<div class="wf-nav-row' + (active ? ' active' : '') + (a.teammate ? ' teammate' : '') + '" data-group="' + escapeHtml(groupKey)
-      + '" data-agent="' + escapeHtml(a.agentId) + '" role="button" tabindex="' + (active ? '0' : '-1') + '"'
-      + ' title="' + escapeHtml(nameWithStatus) + '" aria-label="' + escapeHtml(nameWithStatus) + '"'
-      + (active ? ' aria-current="true"' : '') + '>'
-      + statusDot(a.status)
-      + '<span class="wf-nav-label">' + escapeHtml(a.label) + '</span>'
-      + badge
-      + (modelLabel ? '<span class="wf-nav-model">' + escapeHtml(modelLabel) + '</span>' : '')
-      + (a.tokens > 0 ? '<span class="wf-nav-tokens">' + fmtTokens(a.tokens) + '</span>' : '')
-      + '</div>';
-  }
-
-  function renderReader(): string {
-    const agent = findAgent(selectedGroupKey, selectedAgentId);
-    if (!agent) {
-      return '<div class="wf-reader-empty">Select an agent to view its transcript.</div>';
-    }
-    const metaBits: string[] = [];
-    if (agent.phaseTitle) { metaBits.push(escapeHtml(agent.phaseTitle)); }
-    const readerModel = agent.model ? formatModelLabel(agent.model) : '';
-    if (readerModel) { metaBits.push(escapeHtml(readerModel)); }
-    if (agent.tokens > 0) { metaBits.push(fmtTokens(agent.tokens) + ' tokens'); }
-    // Gated like tokens: team rows and disk-only subagents carry toolCalls: 0
-    // because the data is genuinely untracked — "0 tools" would read as "did
-    // nothing" rather than "not measured".
-    if (agent.toolCalls > 0) { metaBits.push(agent.toolCalls + ' tools'); }
-    const dur = fmtDuration(agent.durationMs);
-    if (dur) { metaBits.push(dur); }
-    if (agent.attempt && agent.attempt > 1) { metaBits.push('attempt ' + agent.attempt); }
-
-    // Live signal (UX-1): for a running agent, a recessed tool line answers
-    // "what is it doing right now?" — the meta duration above answers "for how
-    // long" (the host sends elapsed-so-far while durationMs is unsettled).
-    const liveTool = agent.status === 'running' && agent.lastToolName
-      ? '<div class="wf-reader-live wf-tool"><b>' + escapeHtml(agent.lastToolName) + '</b>'
-        + (agent.lastToolSummary ? ' ' + escapeHtml(agent.lastToolSummary) : '') + '</div>'
-      : '';
-    const head = '<div class="wf-reader-head">'
-      + '<div class="wf-reader-title">' + statusDot(agent.status) + escapeHtml(agent.label) + '</div>'
-      + '<div class="wf-reader-meta">' + metaBits.join(' · ') + '</div>'
-      + liveTool + '</div>';
-
-    let body = '<div class="wf-reader-body">';
-    const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
-    const entries = (st && st.state === 'ready') ? st.entries : [];
-    const suffix = (st && st.state === 'ready') ? st.suffix : [];
-
-    // The agent's first prompt turn is its inception brief — the task it was
-    // spawned with. Pull it out of the flow and pin it, distinct, at the top so
-    // the reader leads with "what was asked" rather than the response. Fall back
-    // to the sidecar promptPreview before the transcript loads.
-    const briefIdx = entries.findIndex(e => e.role === 'user');
-    const briefText = briefIdx !== -1 ? entries[briefIdx].content : (agent.promptPreview || '');
-    const briefTs = briefIdx !== -1 ? entries[briefIdx].timestamp : '';
-    if (briefText) { body += renderBrief(briefText, briefTs); }
-
-    const rest = briefIdx !== -1 ? entries.filter((_, i) => i !== briefIdx) : entries;
-    if (rest.length > 0) {
-      for (const e of rest) { body += renderTurn(e); }
-    } else if (entries.length === 0) {
-      // No transcript turns yet — show the result preview (if any) plus status.
-      if (agent.resultPreview) { body += renderTurnRaw('result', agent.resultPreview); }
-      if (st && st.state === 'loading') {
-        body += '<div class="wf-note">Loading transcript…</div>';
-      } else if (st && st.state === 'error') {
-        body += '<div class="wf-note">' + escapeHtml(st.message) + '</div>';
-      } else if (st && st.state === 'ready') {
-        body += '<div class="wf-note">No further turns recorded.</div>';
-      }
-    }
-    body += renderSuffix(suffix);
-    body += '</div>';
-    return head + body;
-  }
-
-  /** The teammate-inbox tail, in ONE replaceable container — the append fast
-   *  path swaps this node wholesale while only ever appending turn nodes. */
-  function renderSuffix(suffix: TranscriptEntry[]): string {
-    if (suffix.length === 0) { return ''; }
-    let html = '<div class="wf-suffix">';
-    for (const e of suffix) { html += renderTurn(e); }
-    return html + '</div>';
-  }
-
-  /** The inception brief — the agent's spawning prompt — pinned at the top of
-   *  the reader. Collapsible (briefs can run to tens of KB); height-capped with
-   *  internal scroll when expanded so it never buries the response. */
-  function renderBrief(text: string, timestamp?: string): string {
-    const caret = briefCollapsed ? '▸' : '▾';
-    const head = '<div class="wf-brief-head" role="button" tabindex="0" aria-expanded="'
-      + (briefCollapsed ? 'false' : 'true') + '">'
-      + '<span class="wf-brief-caret">' + caret + '</span>'
-      + '<span class="wf-brief-label">Inception brief</span>'
-      + renderTime(timestamp) + '</div>';
-    const inner = briefCollapsed ? '' : '<div class="wf-brief-body">' + renderLines(text) + '</div>';
-    return '<div class="wf-brief' + (briefCollapsed ? ' collapsed' : '') + '">' + head + inner + '</div>';
-  }
-
-  function renderTurn(e: TranscriptEntry): string {
-    // 'tool' = tool_result blocks riding back to the assistant in a user-role
-    // record — responses TO the assistant, so never labelled "prompt".
-    const who = e.role === 'user' ? 'prompt'
-      : e.role === 'assistant' ? 'assistant'
-        : e.role === 'tool' ? 'tool' : 'system';
-    return renderTurnRaw(who, e.content, e.timestamp);
-  }
-
-  /** `who` is the CSS class; the visible label differs only for 'tool'. */
-  function renderTurnRaw(who: string, content: string, timestamp?: string): string {
-    const label = who === 'tool' ? 'tool result' : who;
-    return '<div class="wf-turn ' + escapeHtml(who) + '">'
-      + '<div class="wf-who">' + escapeHtml(label) + renderTime(timestamp) + '</div>'
-      + '<div class="wf-bubble">' + renderLines(content) + '</div></div>';
-  }
-
-  /** Render multiline content (shared by turns and the brief block) as light
-   *  markdown — agents speak markdown, so headings, lists, and tables should read
-   *  as such rather than as raw `#`/`|` noise. A run of plain prose lines becomes
-   *  ONE pre-wrap block so its vertical rhythm is pure line-height (no per-line
-   *  margin stacking). Block constructs (headings, `-`/`1.` lists, `|` tables,
-   *  `---` rules) break the prose flow. A `> `-prefixed line stays a tool call.
-   *  Single blank lines survive as paragraph breaks; runs of blanks collapse.
-   *  Deliberately small: no nesting, no block quotes, no fenced code — enough to
-   *  de-noise typical agent output without a markdown dependency in the webview. */
-  function renderLines(content: string): string {
-    const lines = content.split('\n').map(l => l.replace(/\r$/, ''));
-    let inner = '';
-    let prose: string[] = [];
-    const flush = () => {
-      while (prose.length && prose[prose.length - 1] === '') { prose.pop(); }
-      if (prose.length) { inner += '<div class="wf-prose">' + prose.join('\n') + '</div>'; }
-      prose = [];
-    };
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
-
-      // Tool call — the transcript renderer's `> ` convention.
-      if (line.startsWith('> ')) { flush(); inner += '<div class="wf-tool">' + formatInline(line.slice(2)) + '</div>'; i++; continue; }
-
-      // A line that is wholly a pseudo-XML/HTML wrapper tag — the framing agents
-      // wrap briefs in (`<teammate-message …>`, `<system-reminder>`, closing
-      // tags). Keep it (it's context) but recess it so the brief leads with the
-      // actual instruction, not the envelope.
-      if (/^\s*<\/?[a-zA-Z][\w:-]*(\s[^<>]*)?>\s*$/.test(line)) {
-        flush();
-        inner += '<div class="wf-md-tag">' + formatInline(line.trim()) + '</div>';
-        i++; continue;
-      }
-
-      // Heading (#..####).
-      const h = /^(#{1,4})\s+(.*)$/.exec(line);
-      if (h) { flush(); inner += '<div class="wf-md-h' + h[1].length + '">' + formatInline(h[2]) + '</div>'; i++; continue; }
-
-      // Horizontal rule.
-      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { flush(); inner += '<hr class="wf-md-hr">'; i++; continue; }
-
-      // Table — a `|`-row immediately followed by a `|---|` separator row.
-      if (line.trim().startsWith('|') && i + 1 < lines.length
-          && /-/.test(lines[i + 1]) && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1])) {
-        flush();
-        const rows = [splitRow(line)];
-        i += 2; // header consumed, separator skipped
-        while (i < lines.length && lines[i].trim().startsWith('|')) { rows.push(splitRow(lines[i])); i++; }
-        inner += renderTable(rows);
-        continue;
-      }
-
-      // Unordered list.
-      if (/^\s*[-*]\s+/.test(line)) {
-        flush();
-        const items: string[] = [];
-        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*]\s+/, '')); i++; }
-        inner += '<ul class="wf-md-list">' + items.map(it => '<li>' + formatInline(it) + '</li>').join('') + '</ul>';
-        continue;
-      }
-
-      // Ordered list.
-      if (/^\s*\d+\.\s+/.test(line)) {
-        flush();
-        const items: string[] = [];
-        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, '')); i++; }
-        inner += '<ol class="wf-md-list">' + items.map(it => '<li>' + formatInline(it) + '</li>').join('') + '</ol>';
-        continue;
-      }
-
-      // Blank — one paragraph break; collapse leading/consecutive blanks.
-      if (line.trim() === '') { if (prose.length && prose[prose.length - 1] !== '') { prose.push(''); } i++; continue; }
-
-      // Plain prose.
-      prose.push(formatInline(line));
-      i++;
-    }
-    flush();
-    return inner;
-  }
-
-  /** Split a markdown table row into trimmed cells (drop the outer pipes). */
-  function splitRow(line: string): string[] {
-    let s = line.trim();
-    if (s.startsWith('|')) { s = s.slice(1); }
-    if (s.endsWith('|')) { s = s.slice(0, -1); }
-    return s.split('|').map(c => c.trim());
-  }
-
-  // Caps for the markdown echo path. A teammate's REPLY renders here too — i.e.
-  // arbitrary, possibly-hostile agent output — so bound the work a single
-  // construct can force (wide tables, very long lines) defensively.
-  const MAX_TABLE_COLS = 24;
-  const MAX_TABLE_ROWS = 200;
-  const MAX_INLINE_LEN = 50000;
-
-  function renderTable(rows: string[][]): string {
-    if (rows.length === 0) { return ''; }
-    const cols = Math.min(rows[0].length, MAX_TABLE_COLS);
-    const bodyRows = rows.slice(1, MAX_TABLE_ROWS);
-    let h = '<table class="wf-md-table"><thead><tr>';
-    for (let c = 0; c < cols; c++) { h += '<th>' + formatInline(rows[0][c] || '') + '</th>'; }
-    h += '</tr></thead><tbody>';
-    for (const r of bodyRows) {
-      h += '<tr>';
-      for (let c = 0; c < cols; c++) { h += '<td>' + formatInline(r[c] || '') + '</td>'; }
-      h += '</tr>';
-    }
-    return h + '</tbody></table>';
-  }
-
-  /** Minimal inline markdown: **bold**, *italic*, `code`, and [text](url) (the
-   *  url is dropped — the reader is read-only). Everything escaped first; bold is
-   *  consumed before italic so `**x**` doesn't get mangled by the single-`*` rule.
-   *  The italic span is length-bounded and a pathologically long line skips inline
-   *  passes entirely — both guard against regex backtracking on hostile output. */
-  function formatInline(text: string): string {
-    const s0 = escapeHtml(text);
-    if (s0.length > MAX_INLINE_LEN) { return s0; } // too long to risk inline regex passes
-    let s = s0;
-    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-    s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-    s = s.replace(/(^|[^*])\*([^*\s][^*]{0,200}?)\*(?!\*)/g, '$1<i>$2</i>');
-    s = s.replace(/\[([^\]]+)\]\((?:[^)]+)\)/g, '$1');
-    return s;
-  }
-
-  /** Map a view/agent status to a status-dot class so a chip's dot — and its
-   *  selected tint — match the status bubble palette used elsewhere. */
   function dotClass(status: string): string {
     return status === 'completed' || status === 'done' ? 'done'
       : status === 'running' ? 'running'
@@ -629,124 +303,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return '';
   }
 
-  /** The selectable groupings shown at the top of the pane. Workflow/subagents
-   *  sources carry `model.views`; the team source has none (separate surface),
-   *  so synthesise a single chip from the team itself — every drill-in then
-   *  reads the same: one row of chips you pick from. */
-  function viewChips(): DetailViewChoice[] {
-    if (!model) { return []; }
-    if (model.views && model.views.length > 0) { return model.views; }
-    if (model.source === 'team') {
-      return [{ id: model.containerId, kind: 'team', label: model.title, status: aggStatus(allAgents()), active: true }];
-    }
-    return [];
-  }
-
-  /** A heading over the switcher so it's obvious what the chips are. */
-  function switcherHeading(): string {
-    if (!model) { return ''; }
-    if (model.source === 'team') { return 'Agent team'; }
-    const views = model.views || [];
-    const hasWf = views.some(v => v.kind === 'workflow');
-    const hasSub = views.some(v => v.kind === 'subagents');
-    // A team orchestrator: its subagents are teammates — name the team.
-    if (model.team) {
-      if (hasWf && hasSub) { return 'Workflows & teammates · ' + model.team; }
-      if (hasWf) { return 'Workflows · team ' + model.team; }
-      return 'Team · ' + model.team;
-    }
-    if (hasWf && hasSub) { return 'Workflows & subagents in this session'; }
-    if (hasWf) { return (views.filter(v => v.kind === 'workflow').length > 1 ? 'Workflows' : 'Workflow') + ' in this session'; }
-    if (hasSub) { return 'Subagents in this session'; }
-    return 'Agents in this session';
-  }
-
-  function renderChip(v: DetailViewChoice): string {
-    const dot = dotClass(v.status);
-    return '<span class="wf-switch-chip' + (v.active ? ' active' : '') + (dot ? ' status-' + dot : '') + '"'
-      + ' data-view-id="' + escapeHtml(v.id) + '" data-view-kind="' + escapeHtml(v.kind) + '"'
-      + ' role="button" tabindex="0"'
-      + ' title="' + escapeHtml(v.label) + ' · ' + escapeHtml(v.status)
-      + (v.summary ? '\n' + escapeHtml(v.summary) : '') + '">'
-      + '<span class="wf-dot ' + dot + '"></span>'
-      + '<span class="wf-switch-chip-label">' + escapeHtml(v.label) + '</span></span>';
-  }
-
-  /** The label for a source group in the switcher. */
-  function groupLabel(kind: string, count: number): string {
-    if (kind === 'workflow') { return count > 1 ? 'Workflows' : 'Workflow'; }
-    if (kind === 'subagents') { return 'Subagents'; }
-    if (kind === 'team') { return 'Agent team'; }
-    return 'Agents';
-  }
-
-  /** Render the switcher chips, separately grouped by source (workflows /
-   *  subagents / agent teams) so each kind is visually delineated rather than
-   *  intermixed. A single-source view renders a flat chip row (no sub-labels —
-   *  the heading already names it); two or more sources render labelled groups. */
-  function renderSwitcher(chips: DetailViewChoice[]): string {
-    if (chips.length === 0) { return ''; }
-    const order = ['workflow', 'subagents', 'team'];
-    const kinds = order.filter(k => chips.some(c => c.kind === k));
-    for (const c of chips) { if (!kinds.includes(c.kind)) { kinds.push(c.kind); } }
-    const grouped = kinds.length > 1;
-    let html = '<div class="wf-switch' + (grouped ? ' grouped' : '') + '">';
-    for (const kind of kinds) {
-      const inKind = chips.filter(c => c.kind === kind);
-      if (inKind.length === 0) { continue; }
-      if (grouped) {
-        html += '<div class="wf-switch-group">'
-          + '<div class="wf-switch-group-label">' + escapeHtml(groupLabel(kind, inKind.length)) + '</div>'
-          + '<div class="wf-switch-chips">';
-      }
-      for (const v of inKind) { html += renderChip(v); }
-      if (grouped) { html += '</div></div>'; }
-    }
-    return html + '</div>';
-  }
-
-  /** The pane header: a heading + the switcher chips (the selectable groupings,
-   *  grouped by source and the selected one tinted to its status), the selected
-   *  view's metrics, and a jump back to the parent session. The parent session id
-   *  is intentionally omitted — it's identical across every chip, so it added
-   *  noise, not information. */
-  function renderHeader(): string {
-    if (!model) { return ''; }
-    const metrics = model.metrics
-      ? '<div class="wf-head-metrics">' + escapeHtml(model.metrics) + '</div>' : '';
-    return '<div class="wf-head">'
-      + '<div class="wf-head-top">'
-      + '<div class="wf-head-heading">' + escapeHtml(switcherHeading()) + '</div>'
-      + '<div class="wf-head-top-actions">'
-      + '<span class="wf-mode-toggle" role="button" tabindex="0" title="Switch to the log view">log view</span>'
-      + '<div class="wf-openconv" role="button" tabindex="0" title="Open the parent agent session">↗ open parent session</div>'
-      + '</div>'
-      + '</div>'
-      + renderSwitcher(viewChips())
-      + metrics
-      + '</div>';
-  }
-
-  /** Re-render fully replaces the tree via innerHTML, resetting both panes'
-   *  scroll. The reader is restored with intent (see below); the nav just keeps
-   *  its offset. Reader scroll model — log/terminal style:
-   *   • switching agents      → start at the TOP (read the brief/first turns);
-   *   • same agent, was at the bottom → stick to the BOTTOM (live tail follows
-   *     new turns as a running agent streams);
-   *   • same agent, scrolled up → preserve the offset, so appended content stays
-   *     below the fold and what you're reading never jumps. */
-  let lastRenderedKey: string | null = null;
-  /** A top-reset is OWED to the reader after a selection change, but must not
-   *  be consumed by the interim loading-placeholder render: that render's tiny
-   *  scrollHeight reads as "at bottom", so the follow-up ready render would
-   *  stick to the BOTTOM of the freshly loaded transcript instead of the top.
-   *  The flag stays set until a settled (ready/error) render applies it. */
-  let pendingTopOnSettle = false;
-
-  /** What to re-focus after the innerHTML swap. Captured from
-   *  document.activeElement before render() destroys it (UX-3): scroll gets
-   *  carefully restored, keyboard focus deserves the same care — a model push
-   *  mid-roster-walk otherwise drops focus to <body> silently. */
   function captureFocus(): (() => void) | null {
     const active = document.activeElement as HTMLElement | null;
     if (!active || !root.contains(active)) { return null; }
@@ -762,24 +318,17 @@ declare function acquireVsCodeApi(): VsCodeApi;
         if (pos !== null) { el.setSelectionRange(pos, pos); }
       };
     }
-    const row = active.closest<HTMLElement>('.wf-nav-row');
-    if (row) {
-      const g = row.dataset.group ?? '';
-      const a = row.dataset.agent ?? '';
-      return () => focusNavRow(g, a);
-    }
     const pill = active.closest<HTMLElement>('.wf-agent-pill');
     if (pill) {
       const g = pill.dataset.group ?? '';
       const a = pill.dataset.agent ?? '';
       return () => focusAgentPill(g, a);
     }
-    const chip = active.closest<HTMLElement>('.wf-switch-chip, .wf-view-chip');
+    const chip = active.closest<HTMLElement>('.wf-view-chip');
     if (chip) {
       const id = chip.dataset.viewId;
-      const cls = chip.classList.contains('wf-view-chip') ? 'wf-view-chip' : 'wf-switch-chip';
       return () => {
-        for (const el of Array.from(root.querySelectorAll<HTMLElement>('.' + cls))) {
+        for (const el of Array.from(root.querySelectorAll<HTMLElement>('.wf-view-chip'))) {
           if (el.dataset.viewId === id) { el.focus(); return; }
         }
       };
@@ -793,9 +342,14 @@ declare function acquireVsCodeApi(): VsCodeApi;
         (root.querySelector('.wf-zone-collapse[data-zone="' + zone + '"]') as HTMLElement | null)?.focus();
       };
     }
+    // The scroll container itself (keyboard-scrollable, tabindex 0). Exact
+    // match, not closest(): focus on a log ROW inside it must keep falling
+    // through to "no restore" rather than teleporting to the container.
+    if (active.classList.contains('wf-log-scroll')) {
+      return () => { (root.querySelector('.wf-log-scroll') as HTMLElement | null)?.focus(); };
+    }
     for (const cls of [
-      'wf-nav-toggle', 'wf-brief-head', 'wf-openconv', 'wf-mode-toggle',
-      'wf-facet-time', 'wf-facet-foldall', 'wf-rstrip-head',
+      'wf-openconv', 'wf-facet-time', 'wf-facet-foldall', 'wf-rstrip-head', 'wf-jump-latest',
     ] as const) {
       if (active.closest('.' + cls)) {
         return () => { (root.querySelector('.' + cls) as HTMLElement | null)?.focus(); };
@@ -804,83 +358,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return null;
   }
 
-  /** Mode dispatcher — the single entry point every message handler and event
-   *  listener calls. Both modes share selection state, the transcript cache,
-   *  and the refresh loop; only the markup and scroll-container differ. */
+  /** Single entry point every message handler and event listener calls. */
   function render(): void {
-    if (mode === 'classic') { renderClassicMode(); } else { renderLogMode(); }
+    renderLogMode();
   }
 
-  function renderClassicMode(): void {
-    const refocus = captureFocus();
-    const prevReader = root.querySelector('.wf-reader') as HTMLElement | null;
-    const prevNav = root.querySelector('.wf-nav') as HTMLElement | null;
-    const prevTop = prevReader ? prevReader.scrollTop : 0;
-    const wasAtBottom = prevReader
-      ? isNearBottom(prevReader.scrollTop, prevReader.clientHeight, prevReader.scrollHeight, STICK_THRESHOLD_PX)
-      : false;
-    const navTop = prevNav ? prevNav.scrollTop : 0;
-    // Selection identity is the full transcript key (owner + group + agent), so
-    // same-named agents across containers still register as a change.
-    const selKey = (selectedGroupKey !== null && selectedAgentId !== null)
-      ? tkey(selectedGroupKey, selectedAgentId) : null;
-    if (selKey !== lastRenderedKey) { pendingTopOnSettle = true; }
-    const isAgentChange = pendingTopOnSettle;
-    // Collapse lives as a class on the persistent #wf-root, not in the nav
-    // markup — so the toggle can animate the existing .wf-nav width (see the
-    // toggle handler). The full roster is always rendered; CSS clips it when
-    // collapsed, so a width transition has real content to slide over.
-    root.classList.toggle('nav-collapsed', navCollapsed);
-    if (!model || model.groups.every(g => g.agents.length === 0)) {
-      // The header carries the switcher, so it stays visible even when the
-      // selected view has no agents — the user can switch to one that does.
-      root.innerHTML = renderHeader() + renderEmptyBody();
-      lastRenderedKey = null;
-      refocus?.();
-      updateComposer();
-      return;
-    }
-    // Rail dot (UX-6): when collapsed, the rail's only content is the toggle —
-    // this keeps the run's worst-case roll-up visible there. Always in the
-    // markup, shown purely by the .nav-collapsed CSS, so the no-re-render
-    // toggle animation is preserved; the steady refresh keeps it current.
-    const railStatus = aggStatus(allAgents());
-    const railDot = railStatus
-      ? '<span class="wf-dot wf-rail-dot ' + escapeHtml(railStatus === 'completed' ? 'done' : railStatus) + '" aria-hidden="true"></span>'
-      : '';
-    const navInner = '<div class="wf-nav-head"><button class="wf-nav-toggle"'
-      + ' title="Toggle agent list" aria-label="Toggle agent list">'
-      + '<span class="wf-nav-toggle-icon" aria-hidden="true"></span>'
-      + railDot
-      + '<span class="wf-nav-toggle-text">Agents</span></button></div>' + renderNav();
-    root.innerHTML = renderHeader()
-      + '<div class="wf-2pane">'
-      + '<div class="wf-nav">' + navInner + '</div>'
-      + '<div class="wf-reader">' + renderReader() + '</div>'
-      + '</div>';
-    const newReader = root.querySelector('.wf-reader') as HTMLElement | null;
-    const newNav = root.querySelector('.wf-nav') as HTMLElement | null;
-    if (newReader) {
-      newReader.scrollTop = chooseReaderScrollTop({
-        isAgentChange, wasAtBottom, prevTop, scrollHeight: newReader.scrollHeight,
-      });
-    }
-    if (newNav && navTop) { newNav.scrollTop = navTop; }
-    // The owed top-reset is consumed only once the selected transcript has
-    // settled (ready or error); a loading placeholder keeps it pending.
-    const st = selKey ? transcripts.get(selKey) : undefined;
-    if (!st || st.state !== 'loading') { pendingTopOnSettle = false; }
-    lastRenderedKey = selKey;
-    refocus?.();
-    updateComposer();
-  }
-
-  // ── Log view (Phase 2, default mode) ─────────────────────────────────
+  // ── Log view ──────────────────────────────────────────────────────
   // Single-pane forensic log. Zone order (Phase 2.2 — pickers stack first):
   // view row → agent strip → header strip → pinned permission row → Result
-  // strip → facet bar → the log. DESIGN-DETAIL-PANE-V2.md §4a. Shares
-  // selection, the transcript cache, and the refresh loop with classic mode
-  // (above) — only the markup and the scroll container differ.
+  // strip → facet bar → the log. DESIGN-DETAIL-PANE-V2.md §4a.
 
   /** Leading integer off a host-computed roll-up summary ("12 agents · 9
    *  done · 1 failed", `rollupSummary()` in detailPanel.ts) — the view row's
@@ -914,8 +400,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  everything else"). Collapsed keeps the active chip plus anything
    *  running/waiting, folding the rest behind a "+N" overflow chip. Renders
    *  nothing when the model carries no `views` (a plain team drill-in, which
-   *  has no cross-source switcher — same gate the classic switcher uses via
-   *  viewChips(), but the log view intentionally does NOT synthesise a
+   *  has no cross-source switcher — and intentionally does NOT synthesise a
    *  single-chip fallback for team: with only one thing to show, a one-chip
    *  row is pure chrome the header strip already covers). */
   /** The shared left label cell (Phase 2.2): every top zone row leads with a
@@ -1031,8 +516,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
   }
 
   /** Header strip (mockup §2): source badge, container name, status pill, live
-   *  counts, duration/tokens/model. Replaces the classic `.wf-head` heading +
-   *  metrics block in log mode. Phase 2.5: everything after the rail label
+   *  counts, duration/tokens/model. Phase 2.5: everything after the rail label
    *  sits in a wrapping body (whole units flow to continuation lines that
    *  indent to the rail — the view row's pattern), counts drop their zero
    *  segments, and each meta bit is its own atomic nowrap span. */
@@ -1082,7 +566,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
       // The word hides at narrow width (CSS .wf-openconv-text); the glyph
       // plus the title attribute keep the affordance legible icon-only.
       + '<span class="wf-openconv wf-hstrip-openconv" role="button" tabindex="0" title="Open the parent agent session">↗ <span class="wf-openconv-text">session</span></span>'
-      + '<span class="wf-mode-toggle" role="button" tabindex="0" title="Switch to the classic view">classic view</span>'
       + '</div></div>';
   }
 
@@ -1126,9 +609,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
   const RESULT_MAX_COMMAND_CHIPS = 4;
   const MISMATCH_DISCLAIMER = "Computed from tool calls, not the agent's prose.";
 
-  /** The same "first user entry" the classic reader's inception brief uses
-   *  (see renderReader), falling back to the sidecar's promptPreview before
-   *  the transcript has loaded — one line, truncated. */
+  /** The "first user entry" (the inception brief — same pick buildLogRows
+   *  makes), falling back to the sidecar's promptPreview before the
+   *  transcript has loaded — one line, truncated. */
   function resultBriefText(agent: DetailAgentView): string {
     const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
     const entries = (st && st.state === 'ready') ? st.entries : [];
@@ -1317,9 +800,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
   /** Selected-agent detail bar: sits directly under the agent strip, one line
    *  scoped to whichever pill is active (the header strip above stays the
    *  workflow-wide roll-up). Carries what the per-pill model tag used to show
-   *  plus tokens/runtime/tool-calls — the same facts renderReader shows in
-   *  classic mode, reformatted as a rail-aligned strip to match the rest of
-   *  log mode. Absent when the selected agent has none of these to report
+   *  plus tokens/runtime/tool-calls, as a rail-aligned strip to match the
+   *  rest of the pane. Absent when the selected agent has none of these to report
    *  (a fresh agent with no tokens/model/duration yet). */
   function renderAgentDetailBar(agent: DetailAgentView | undefined): string {
     if (!agent) { return ''; }
@@ -1345,15 +827,15 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + '</div></div>';
   }
 
-  /** Agent strip: the old left-nav's job. Phase 2.1: a workflow's phases each
+  /** Agent strip: the agent roster. Phase 2.1: a workflow's phases each
    *  get their OWN line — a phase header (title + done/total, failed called
-   *  out like the classic nav's phase header) with that phase's pills wrapping
+   *  out first-class) with that phase's pills wrapping
    *  beneath it — one phase after another vertically, so a phase reads as a
    *  unit instead of pills and titles interleaving in one flowing row. Flat
    *  sources (subagents/team, no titles) keep the single pill row. Roving
    *  tabindex — ArrowLeft/ArrowRight walk EVERY pill in document order,
-   *  crossing phase lines like the classic nav's Up/Down crossed group
-   *  boundaries (one flat list either way; a 2D grid model would buy nothing
+   *  crossing phase-line boundaries (one flat list either way; a 2D grid
+   *  model would buy nothing
    *  at these row counts and complicate focus restore). */
   function renderAgentStrip(): string {
     if (!model) { return ''; }
@@ -1404,9 +886,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
         const count = g.agents.length;
         const done = g.agents.filter(a => a.status === 'done').length;
         const failed = g.agents.filter(a => a.status === 'failed').length;
-        // Same failed-first-class treatment as the classic nav header (and the
-        // same .wf-nav-count-failed class, so the light-theme contrast override
-        // applies here too): "4/5" alone reads as still-running.
+        // Failed gets first-class treatment (.wf-nav-count-failed carries the
+        // light-theme contrast override): "4/5" alone reads as still-running.
         const failedHtml = failed > 0
           ? ' · <span class="wf-nav-count-failed">' + failed + ' failed</span>'
           : '';
@@ -1454,7 +935,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const entries = (st && st.state === 'ready') ? st.entries : [];
     const suffix = (st && st.state === 'ready') ? st.suffix : [];
     const all = [...entries, ...suffix];
-    // Same rule as the classic reader's inception brief: the first genuine
+    // The inception brief: the first genuine
     // prompt turn (tool_result plumbing rides in as role 'tool', never 'user').
     const briefIdx = all.findIndex(e => e.role === 'user');
     const rows: LogRow[] = all.map((e, i) => ({ entry: e, idx: i, isBrief: i === briefIdx, isResult: false }));
@@ -1752,6 +1233,18 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return html + '</div>';
   }
 
+  /** Show the jump-to-latest pill only while the log is scrolled away from
+   *  the bottom — the same STICK threshold the auto-follow uses, so the pill
+   *  and the follow behaviour agree on what "at the bottom" means. Called on
+   *  every render and (via the capture-phase listener below) every scroll. */
+  function updateJumpPill(): void {
+    const pill = root.querySelector('.wf-jump-latest') as HTMLElement | null;
+    const scroll = root.querySelector('.wf-log-scroll') as HTMLElement | null;
+    if (!pill || !scroll) { return; }
+    const show = !isNearBottom(scroll.scrollTop, scroll.clientHeight, scroll.scrollHeight, STICK_THRESHOLD_PX);
+    pill.classList.toggle('visible', show);
+  }
+
   function renderLogMode(): void {
     const refocus = captureFocus();
     const prevScroll = root.querySelector('.wf-log-scroll') as HTMLElement | null;
@@ -1789,14 +1282,16 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + renderPermRow()
       + (agent ? renderResultStrip(agent) : '')
       + (agent ? renderFacets(agent) : '')
-      + '<div class="wf-log-scroll">'
+      + '<div class="wf-log-scroll" tabindex="0">'
       + (agent ? renderLogRows(agent) : '<div class="wf-log-empty">Select an agent to view its transcript.</div>')
-      + '</div>';
+      + '</div>'
+      + '<div class="wf-jump-latest" role="button" tabindex="0" title="Jump to the latest entry">↓ latest</div>';
 
     const newScroll = root.querySelector('.wf-log-scroll') as HTMLElement | null;
     if (newScroll) {
       newScroll.scrollTop = chooseReaderScrollTop({ isAgentChange, wasAtBottom, prevTop, scrollHeight: newScroll.scrollHeight });
     }
+    updateJumpPill();
     const st = selKey ? transcripts.get(selKey) : undefined;
     if (!st || st.state !== 'loading') { pendingTopOnSettle = false; }
     lastRenderedKey = selKey;
@@ -1928,48 +1423,21 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   // ── Events ─────────────────────────────────────────────────────────
 
+  // Scroll events don't bubble, so the jump-pill visibility check listens in
+  // the CAPTURE phase on the persistent root — it survives every innerHTML
+  // rebuild without per-render re-attachment.
+  root.addEventListener('scroll', () => { updateJumpPill(); }, true);
+
   root.addEventListener('click', (e: MouseEvent) => {
     const target = e.target as HTMLElement;
-    if (target.closest('.wf-nav-toggle')) {
-      // Toggle collapse by flipping the class on the persistent root, NOT a
-      // re-render — so the existing .wf-nav width transitions smoothly (and the
-      // reader, flex:1, widens in lockstep). A render() here would rebuild the
-      // element and the animation would never fire.
-      navCollapsed = !navCollapsed;
-      root.classList.toggle('nav-collapsed', navCollapsed);
-      saveState();
-      return;
-    }
-    if (target.closest('.wf-brief-head')) {
-      briefCollapsed = !briefCollapsed;
-      saveState();
-      render();
-      return;
-    }
-    const navRow = target.closest<HTMLElement>('.wf-nav-row');
-    if (navRow) {
-      // Selecting an agent keeps the list expanded so you can click straight
-      // through the roster without re-expanding each time — collapse is manual,
-      // via the toggle (which then hands the freed width to the reader).
-      selectAgent(navRow.dataset.group!, navRow.dataset.agent!);
-      return;
-    }
-    const viewChip = target.closest<HTMLElement>('.wf-switch-chip');
-    if (viewChip) {
-      if (!viewChip.classList.contains('active')) {
-        vscode.postMessage({ type: 'selectDetailView', id: viewChip.dataset.viewId!, kind: viewChip.dataset.viewKind! });
-      }
+    if (target.closest('.wf-jump-latest')) {
+      const scroll = root.querySelector('.wf-log-scroll') as HTMLElement | null;
+      if (scroll) { scroll.scrollTop = scroll.scrollHeight; }
+      updateJumpPill();
       return;
     }
     if (target.closest('.wf-openconv')) {
       if (model) { vscode.postMessage({ type: 'openConversation', sessionId: model.sessionId }); }
-      return;
-    }
-    // ── Log view (Phase 2) ──────────────────────────────────────────
-    if (target.closest('.wf-mode-toggle')) {
-      mode = mode === 'log' ? 'classic' : 'log';
-      saveState();
-      render();
       return;
     }
     // Shared zone collapse control (Phase 2.3). Checked BEFORE the
@@ -2141,26 +1609,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   root.addEventListener('keydown', (e: KeyboardEvent) => {
     const target = e.target as HTMLElement;
-    // Arrow navigation (UX-3): Up/Down on a roster row moves selection AND
-    // focus to the adjacent agent, across group boundaries, matching VS
-    // Code's native list idiom (selection follows focus).
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      const row = target.closest<HTMLElement>('.wf-nav-row');
-      if (row && model) {
-        e.preventDefault();
-        const flat: Array<{ groupKey: string; agentId: string }> = [];
-        for (const g of model.groups) { for (const a of g.agents) { flat.push({ groupKey: g.key, agentId: a.agentId }); } }
-        const idx = flat.findIndex(x => x.groupKey === row.dataset.group && x.agentId === row.dataset.agent);
-        const next = idx === -1 ? undefined : flat[idx + (e.key === 'ArrowDown' ? 1 : -1)];
-        if (next) {
-          selectAgent(next.groupKey, next.agentId); // re-renders with the new active row
-          focusNavRow(next.groupKey, next.agentId);
-        }
-      }
-      return;
-    }
-    // Agent strip (log view): ArrowLeft/ArrowRight, same idiom as the classic
-    // nav's Up/Down — a horizontal strip walks horizontally.
+    // Agent strip: ArrowLeft/ArrowRight walks the horizontal strip, matching
+    // VS Code's native list idiom (selection follows focus).
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       const pill = target.closest<HTMLElement>('.wf-agent-pill');
       if (pill && model) {
@@ -2178,10 +1628,9 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     if (e.key !== 'Enter' && e.key !== ' ') { return; }
     const activatable = target.closest(
-      '.wf-nav-row, .wf-openconv, .wf-switch-chip, .wf-nav-toggle, .wf-brief-head, '
-      + '.wf-view-chip, .wf-zone-collapse, .wf-mode-toggle, .wf-agent-pill, '
+      '.wf-openconv, .wf-view-chip, .wf-zone-collapse, .wf-agent-pill, '
       + '.wf-facet-kind, .wf-facet-time, .wf-facet-foldall, .wf-log-row, .wf-rstrip-head, '
-      + '.wf-log-action, .wf-rstrip-chip.clickable',
+      + '.wf-log-action, .wf-rstrip-chip.clickable, .wf-jump-latest',
     );
     if (activatable) {
       e.preventDefault();
@@ -2273,35 +1722,13 @@ declare function acquireVsCodeApi(): VsCodeApi;
         }
         return;
       }
-      // The brief is the FIRST user entry: appending can only change the
-      // structure when no user entry existed yet (promptPreview fallback) and
-      // one arrives now — pin-out then needs a full render.
-      const briefStable = existing.entries.some(e => e.role === 'user') || !delta.some(e => e.role === 'user');
-      // Classic-only optimisation: the log view's rows (timestamps, facet
-      // counts, the terminal RESULT row) are cheap enough to fully rebuild —
-      // see the `render()` call below, which dispatches to renderLogMode() —
-      // and .wf-reader-body only ever exists in classic mode anyway.
-      const canFastAppend = mode === 'classic'
-        && key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')
-        && existing.entries.length > 0
-        && briefStable
-        && root.querySelector('.wf-reader-body') !== null;
       existing.entries.push(...delta);
       existing.suffix = suffix.slice();
       existing.evidence = evidence;
       existing.mismatches = mismatches.slice();
-      if (!canFastAppend) {
-        if (key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
-        return;
-      }
-      const reader = root.querySelector('.wf-reader') as HTMLElement;
-      const body = root.querySelector('.wf-reader-body') as HTMLElement;
-      const stick = isNearBottom(reader.scrollTop, reader.clientHeight, reader.scrollHeight, STICK_THRESHOLD_PX);
-      body.querySelector('.wf-suffix')?.remove();
-      let html = '';
-      for (const e of delta) { html += renderTurn(e); }
-      body.insertAdjacentHTML('beforeend', html + renderSuffix(suffix));
-      if (stick) { reader.scrollTop = reader.scrollHeight; }
+      // Log rows (timestamps, facet counts, the terminal RESULT row) are cheap
+      // enough to fully rebuild — no append fast-path needed.
+      if (key === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
     } else if (msg.type === 'agentTranscriptError') {
       transcripts.set(String(msg.key), { state: 'error', message: String(msg.message || 'Failed to load transcript.') });
       if (String(msg.key) === tkey(selectedGroupKey ?? '', selectedAgentId ?? '')) { render(); }
@@ -2337,17 +1764,4 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   // Stream the selected running agent's transcript (no-op for terminal agents).
   startRefreshLoop(STEADY_REFRESH_MS);
-
-  // Relative-time slow tick: terminal agents never re-render, so "5m ago"
-  // would otherwise freeze. Updates the time spans in place (textContent
-  // only — no innerHTML swap, so scroll and text selection are untouched).
-  const TIME_TICK_MS = 60_000;
-  setInterval(() => {
-    if (typeof document !== 'undefined' && document.hidden) { return; }
-    const now = Date.now();
-    root.querySelectorAll('.wf-turn-time[data-t]').forEach(el => {
-      const t = Number(el.getAttribute('data-t'));
-      if (t > 0) { el.textContent = formatRelativeTime(t, now); }
-    });
-  }, TIME_TICK_MS);
 })();
