@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.16.21 (2026-07-21) — Background-shell badge reads "N 🐚"
+
+### Changed
+- **The background-shell badge now reads "N 🐚" instead of "N shell(s) running".** Reclaims horizontal space in the card's meta row; hovering still shows the full explanation via tooltip.
+
 ## v1.16.20 (2026-07-19) — Failed-run chip reads correctly in light mode
 
 ### Fixed
