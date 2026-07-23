@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.17.3 (2026-07-23) — Status-machine audit gaps closed, resumed workflow runs stay live
+
+### Fixed
+- **A session no longer shows DONE while its only live work is a detached background agent.** A session whose turn had ended via the idle timer, but which had delegated to a `run_in_background` Agent/Task still running, previously read `done` until the agent's own completion notification or a backstop caught up — it now presents as `running` for as long as the delegated agent is alive.
+- **A corrupt or clock-skewed record timestamp can no longer stall the hard-ceiling demotion.** `lastActivity` is now clamped to wall-clock `now` at every write site, so a future-stamped record can't push the 3-minute running-ceiling's age computation negative and pin a session open indefinitely.
+- **A resumed workflow run is no longer invisible.** Claude Code's Workflow tool lets a completed run be relaunched under the same `runId` (`resumeFromRunId`); the live-tier machine previously treated a completion sidecar's mere presence as terminal forever, so a resumed run's growing journal stayed hidden behind the stale, already-completed tree. The panel now re-enters the live tier when a sidecar-owning run's journal has grown past its own completion evidence, and falls back to the last good sidecar tree if a resume goes quiet without completing.
+
+### Changed
+- Regression coverage added for six previously thin or unpinned status-machine paths (confidence-tier short-circuits, `toolProfiles` classification, the ENOENT reload-abort branch, `SessionMetaStore.delete()`'s implicit dirty-marking, the reconcile-only stale-waiting path, and compact-grace re-open), found during a holistic audit against the pre-refactor baseline.
+- The subagent pill in the detail panel now has width bounds so a long agent name or model tag can't distort the panel layout.
+
 ## v1.17.2 (2026-07-23) — Workflow-liveness gaps closed
 
 ### Fixed
