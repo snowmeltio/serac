@@ -54,6 +54,10 @@ interface LiveRunState {
   corr: Map<string, AgentCorrelation>;
   /** Signature of the last snapshot emitted for this run. */
   sig: string;
+  /** When `sig` last actually changed (real progress) — the inactivity clock
+   *  for the unconfirmed-liveness ceiling below. Initialised to first-sight,
+   *  not run start, so a just-discovered run is never born "stale". */
+  lastChangedAt: number;
 }
 
 /** Derive the live-tier display fields for one agent from its record-0
@@ -139,12 +143,27 @@ export class WorkflowDiscovery {
   /** Per-run live-tier accumulator: journal tailer + cached prompt
    *  correlations + last-emitted signature (audit perf-io-1). */
   private readonly liveRuns = new Map<string, LiveRunState>();
+  /** sessionIds the liveness probe has confirmed live at least once, mirroring
+   *  SessionManager's `everSeenLiveInRegistry` latch — see the parentDead
+   *  check in buildLiveSnapshot(). Never pruned: bounded by the number of
+   *  distinct sessions this instance has ever scanned. */
+  private readonly everSeenLiveSessions = new Set<string>();
   /** Set by scan() when the snapshot set changes; read + cleared by poll(). */
   private changedSincePoll = false;
   /** Counts scan() invocations so the live cadence can walk the full
    *  workspace only every Nth scan — see scan(). */
   private scanCount = 0;
   private static readonly FULL_WALK_INTERVAL = 10;
+  /** Backstop for when the registry can't vouch for a run's parent at all (no
+   *  probe wired, degraded scan, or the session has never been confirmed
+   *  live — see everSeenLiveSessions). Mirrors sessions'
+   *  EXTENDED_THINKING_CEILING_MS, which exists for the identical "can't
+   *  confirm liveness" gap: a run with no real progress for this long, and no
+   *  registry evidence either way, is marked `incomplete` rather than riding
+   *  `running` all the way to the 7-day age gate. Generous on purpose — a
+   *  single slow tool call (a big build, a render, an assembly step) can
+   *  legitimately produce no journal/agent activity for tens of minutes. */
+  private static readonly UNCONFIRMED_LIVENESS_CEILING_MS = 30 * 60 * 1000;
 
   constructor(
     private readonly projectsDir: string,
@@ -348,9 +367,24 @@ export class WorkflowDiscovery {
       } catch {
         continue;
       }
-      // A run dir with no sidecar that is older than the age gate is an
-      // abandoned/killed run — drop it (pruning removes any stale snapshot).
-      if (now - stat.mtimeMs > ageGateMsFor('workflows')) { continue; }
+      // Last-activity signal for the age gate. The run DIRECTORY's own mtime
+      // only advances when an entry is added/removed (a new sibling agent
+      // file appearing) — it does NOT advance when an existing journal/agent
+      // transcript keeps growing, the same pitfall buildLiveSnapshot's
+      // parentDead check avoids (see its comment). journal.jsonl is appended
+      // to on every started/result event across every agent in the run, so
+      // its mtime is a much closer proxy for "is anything still happening
+      // here"; fall back to the directory's own mtime for a brand-new run
+      // with no journal written yet.
+      let lastActivityMs = stat.mtimeMs;
+      try {
+        const journalStat = await fs.promises.stat(path.join(runDir, 'journal.jsonl'));
+        lastActivityMs = Math.max(lastActivityMs, journalStat.mtimeMs);
+      } catch { /* no journal yet — directory mtime is the only signal */ }
+      // A run dir with no sidecar that has shown no activity past the age
+      // gate is an abandoned/killed run — drop it (pruning removes any stale
+      // snapshot).
+      if (now - lastActivityMs > ageGateMsFor('workflows')) { continue; }
 
       seen.add(runId);
       // Re-derive each cycle (the journal tail + cached correlations make it
@@ -358,12 +392,19 @@ export class WorkflowDiscovery {
       // on completion. Only flag a change when the rebuilt snapshot actually
       // differs — otherwise an idle live run would churn the whole panel every
       // poll cycle (~500ms, since a running run holds the fast cadence).
-      const snap = await this.buildLiveSnapshot(sessionId, runId, runDir, stat.mtimeMs);
+      //
+      // startTime is birthtime (directory creation), NOT mtime — mtime creeps
+      // forward every time a new sibling agent file is created mid-run, which
+      // would understate a multi-wave run's true elapsed time. birthtime is
+      // unavailable on some platforms/filesystems (reads 0), hence the
+      // fallback — same pattern as sessionDiscovery.ts/subagentTailerManager.ts.
+      const startTime = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+      const snap = await this.buildLiveSnapshot(sessionId, runId, runDir, startTime, now);
       if (snap) {
         const state = this.liveRuns.get(runId);
         const sig = liveSnapshotSig(snap);
         if (!state || state.sig !== sig) {
-          if (state) { state.sig = sig; }
+          if (state) { state.sig = sig; state.lastChangedAt = now; }
           this.snapshots.set(runId, snap);
           this.changedSincePoll = true;
         }
@@ -424,6 +465,7 @@ export class WorkflowDiscovery {
     runId: string,
     runDir: string,
     startTime: number,
+    now: number,
   ): Promise<WorkflowSnapshot | null> {
     let state = this.liveRuns.get(runId);
     if (!state) {
@@ -433,6 +475,7 @@ export class WorkflowDiscovery {
         resolved: new Set(),
         corr: new Map(),
         sig: '',
+        lastChangedAt: now,
       };
       this.liveRuns.set(runId, state);
     }
@@ -578,11 +621,37 @@ export class WorkflowDiscovery {
     // clean, so an absent/degraded registry never false-positives a healthy
     // long-running workflow. (Run-dir mtime is NOT used — it doesn't advance on
     // transcript/journal appends, so it would misfire on healthy runs.)
+    //
+    // Latched, mirroring SessionManager's registry death-gate (real repro,
+    // 2026-07-23): the registry rescans on a relaxed cadence (every 4th poll —
+    // processRegistry.ts), so a lead session idling between JSONL turns while
+    // its OWN background Workflow runs can read as absent from a single
+    // snapshot despite being genuinely alive. Requiring at least one prior
+    // confirmed-live sighting before trusting an absence as death is exactly
+    // SessionManager's `everSeenLiveInRegistry` trade-off: a session/run this
+    // probe never catches alive is never wrongly killed by it — the 7-day age
+    // gate is the backstop for a truly abandoned run that started dead.
+    if (this.liveness?.isActive() && this.liveness.isScanClean() && this.liveness.isSessionLive(sessionId)) {
+      this.everSeenLiveSessions.add(sessionId);
+    }
     const parentDead = !!this.liveness
       && this.liveness.isActive()
       && this.liveness.isScanClean()
-      && !this.liveness.isSessionLive(sessionId);
-    const runStatus: WorkflowRunStatus = parentDead ? 'incomplete' : 'running';
+      && !this.liveness.isSessionLive(sessionId)
+      && this.everSeenLiveSessions.has(sessionId);
+
+    // Independent backstop for when the registry can't vouch for this run's
+    // parent at all — see UNCONFIRMED_LIVENESS_CEILING_MS. `lastChangedAt` is
+    // read here BEFORE the caller updates it for this cycle's result, so it
+    // reflects "how long since the last real change", not this one.
+    const registryCanVouch = !!this.liveness
+      && this.liveness.isActive()
+      && this.liveness.isScanClean()
+      && this.everSeenLiveSessions.has(sessionId);
+    const inactiveTooLong = now - state.lastChangedAt > WorkflowDiscovery.UNCONFIRMED_LIVENESS_CEILING_MS;
+
+    const runStatus: WorkflowRunStatus =
+      parentDead || (!registryCanVouch && inactiveTooLong) ? 'incomplete' : 'running';
 
     return {
       runId,

@@ -272,10 +272,34 @@ describe('WorkflowDiscovery', () => {
         JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'liveaaa1' }) + '\n', 'utf-8');
     }
 
-    it('marks the run incomplete when the parent session is dead in a clean, active registry', async () => {
+    // Real-world repro (2026-07-23, BCT deck-build session): a lead session
+    // idles between JSONL turns while its own background Workflow keeps
+    // running. The registry rescans on a relaxed cadence (every 4th poll,
+    // see processRegistry.ts), so a session that is genuinely alive can read
+    // as absent from a single snapshot — exactly while its own turn is
+    // quiet. Without a latch this misfired 'incomplete' on a healthy run,
+    // which fed applyWorkflowLiveStatus's `status === 'running'` filter and
+    // left the card stuck on 'done' with a live workflow still under it.
+    it('does NOT mark incomplete on a session never yet confirmed live, even if currently absent', async () => {
+      writeLiveRun('wf_neverlive-001');
+      const neverSeenLiveProbe = { isActive: () => true, isScanClean: () => true, isSessionLive: () => false };
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log, neverSeenLiveProbe);
+      await d.scan();
+      const snaps = d.getWorkflowSnapshots(emptyMeta());
+      expect(snaps[0].status).toBe('running');
+      expect(d.hasActiveRuns()).toBe(true);
+      d.dispose();
+    });
+
+    it('marks the run incomplete once the parent session, previously confirmed live, is later absent', async () => {
       writeLiveRun('wf_dead-001');
-      const deadProbe = { isActive: () => true, isScanClean: () => true, isSessionLive: () => false };
-      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log, deadProbe);
+      let live = true;
+      const flakyProbe = { isActive: () => true, isScanClean: () => true, isSessionLive: (id: string) => live && id === SID };
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log, flakyProbe);
+      await d.scan(); // seen live once — latches
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].status).toBe('running');
+
+      live = false; // now confirmed gone
       await d.scan();
       const snaps = d.getWorkflowSnapshots(emptyMeta());
       expect(snaps[0].status).toBe('incomplete');
@@ -298,6 +322,93 @@ describe('WorkflowDiscovery', () => {
       const d = new WorkflowDiscovery(projectsDir, WS_KEY, log, idleProbe);
       await d.scan();
       expect(d.getWorkflowSnapshots(emptyMeta())[0].status).toBe('running');
+      d.dispose();
+    });
+
+    // Companion backstop to the latch above: without a registry that can ever
+    // vouch for this run's parent, an abandoned run would otherwise ride
+    // 'running' all the way to the 7-day age gate.
+    it('marks the run incomplete after prolonged inactivity when the registry can never vouch for it', async () => {
+      vi.useFakeTimers();
+      try {
+        writeLiveRun('wf_ceiling-001');
+        const d = new WorkflowDiscovery(projectsDir, WS_KEY, log); // no liveness probe at all
+        await d.scan();
+        expect(d.getWorkflowSnapshots(emptyMeta())[0].status).toBe('running');
+
+        vi.setSystemTime(Date.now() + 31 * 60 * 1000); // past UNCONFIRMED_LIVENESS_CEILING_MS, no new activity
+        await d.scan();
+        expect(d.getWorkflowSnapshots(emptyMeta())[0].status).toBe('incomplete');
+        d.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not apply the inactivity ceiling while the registry positively confirms the parent live', async () => {
+      vi.useFakeTimers();
+      try {
+        writeLiveRun('wf_ceiling-002');
+        const liveProbe = { isActive: () => true, isScanClean: () => true, isSessionLive: (id: string) => id === SID };
+        const d = new WorkflowDiscovery(projectsDir, WS_KEY, log, liveProbe);
+        await d.scan(); // latches everSeenLive
+
+        vi.setSystemTime(Date.now() + 31 * 60 * 1000);
+        await d.scan();
+        expect(d.getWorkflowSnapshots(emptyMeta())[0].status).toBe('running');
+        d.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe('live-tier run directory mtime pitfalls', () => {
+    // Real repro reasoning (2026-07-23, same audit as the liveness latch
+    // above): a run directory's own mtime only advances when an entry is
+    // added/removed (a new sibling agent file appearing) — never when an
+    // EXISTING journal/transcript keeps growing. Two separate places in
+    // buildLiveSnapshot/scanLiveRuns used to read that mtime as if it meant
+    // "recent activity", the exact pitfall the parentDead check's own comment
+    // warns against.
+    it('does not prune a live run whose journal is recent even when the run directory mtime reads old', async () => {
+      const runId = 'wf_dirmtime-001';
+      const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'liveaaa1' }) + '\n', 'utf-8');
+      // The directory's own mtime is frozen from whenever its last sibling
+      // agent file was created — well past the 7-day age gate — even though
+      // the journal itself (written just above) is genuinely current.
+      const eightDaysAgoSec = (Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000;
+      fs.utimesSync(runDir, eightDaysAgoSec, eightDaysAgoSec);
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      const snaps = d.getWorkflowSnapshots(emptyMeta());
+      expect(snaps).toHaveLength(1);
+      expect(snaps[0].status).toBe('running');
+      d.dispose();
+    });
+
+    it("derives startTime from the run directory's birthtime, not its mtime", async () => {
+      const runId = 'wf_birthtime-001';
+      const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify({ type: 'started', key: 'v2:a', agentId: 'liveaaa1' }) + '\n', 'utf-8');
+      const birthtimeMs = fs.statSync(runDir).birthtimeMs;
+
+      // Simulate a new sibling agent file bumping the directory's mtime
+      // forward, well past its true birth — mtime is settable, birthtime isn't.
+      const futureSec = (Date.now() + 20 * 60 * 1000) / 1000;
+      fs.utimesSync(runDir, futureSec, futureSec);
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+      expect(Math.abs(snap.startTime - birthtimeMs)).toBeLessThan(5000);
+      expect(snap.startTime).toBeLessThan(futureSec * 1000 - 60_000);
       d.dispose();
     });
   });
