@@ -128,6 +128,23 @@ describe('pollTrackedSessions', () => {
 
     expect(dispose).not.toHaveBeenCalled();
     expect(sessions.size).toBe(1);
+    expect(changed).toBe(true);
+  });
+
+  // L16: the 30s demotion threshold used to be pinned only as a side effect
+  // of the eviction test above (which cares about never-evict, not the
+  // threshold value). Decoupled into its own assertion on the ordinary
+  // no-data active path so a restructure of the eviction scenario can't
+  // silently drop the only check on DEMOTE_STALE_MS.
+  it('demotes a quiet active session that produced no data with the shared 30s stale threshold', async () => {
+    const demoteIfStale = vi.fn(() => true);
+    const sessions = new Map([
+      ['ws/quiet-active', fakeSession({ getStatus: () => 'waiting', update: async () => false, demoteIfStale })],
+    ]);
+
+    // Window predicate says "in" — this is not the eviction scenario.
+    const changed = await pollTrackedSessions(sessions, 1000, () => true);
+
     expect(demoteIfStale).toHaveBeenCalledWith(30_000);
     expect(changed).toBe(true);
   });
