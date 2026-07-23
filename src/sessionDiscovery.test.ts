@@ -187,6 +187,46 @@ describe('SessionDiscovery', () => {
     d2.stop();
   });
 
+  it('dismissing a done session that was never focused still marks it acknowledged', async () => {
+    // Regression: dismissSession() used to only set `dismissed`, leaving a
+    // done-but-never-focused card `acknowledged: false` forever — the teal
+    // done-but-unseen wash never cleared for cards archived straight off the
+    // list rather than opened first.
+    const discovery = makeDiscovery();
+    const enqueueRecord = JSON.stringify({
+      type: 'queue-operation', operation: 'enqueue',
+      timestamp: new Date().toISOString(),
+    });
+    createJsonlFile('session-done', enqueueRecord);
+    await discovery.start(() => {});
+
+    discovery.dismissSession('session-done');
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    expect(meta.sessions['session-done'].dismissed).toBe(true);
+    expect(meta.sessions['session-done'].acknowledged).toBe(true);
+    discovery.stop();
+  });
+
+  it('dismissing a running session does not mark it acknowledged', async () => {
+    // acknowledgeIfDone() is a no-op for running/waiting sessions — dismissing
+    // an in-progress session must not falsely clear its unseen state.
+    const discovery = makeDiscovery();
+    createJsonlFile('session-active'); // bare user record -> running, not done
+    await discovery.start(() => {});
+
+    discovery.dismissSession('session-active');
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+    expect(meta.sessions['session-active'].dismissed).toBe(true);
+    expect(meta.sessions['session-active'].acknowledged).toBeFalsy();
+    discovery.stop();
+  });
+
   it('round-trips workflow dismiss/undismiss through getWorkflowSnapshots and persists the flag', async () => {
     // A completed run owned by session-wf. dismissWorkflow archives just the run
     // (keyed workflow:<runId> in session-meta, distinct from the session key).

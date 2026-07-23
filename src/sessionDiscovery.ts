@@ -221,6 +221,9 @@ export class SessionDiscovery {
 
   /** Dismiss a session */
   dismissSession(sessionId: string): void {
+    // Archiving a done session implies the user has seen it, regardless of
+    // whether it was the last-focused card.
+    this.acknowledgeIfDone(sessionId);
     this.meta.getOrCreate(sessionId).dismissed = true;
     this.meta.markDirty();
     // Fire-and-forget save — UI is updated from in-memory state

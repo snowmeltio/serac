@@ -305,6 +305,32 @@ describe('SessionManager state machine', () => {
     expect(snap.subagents[0].running).toBe(true);
   });
 
+  it('stamps lastActivity from the sidechain record\'s own timestamp, not wall-clock', async () => {
+    // Regression: updateSubagentActivity() used to call new Date() instead of
+    // using the record's timestamp. A JSONL replay (e.g. on window reopen)
+    // processes every historical record synchronously, so new Date() would
+    // re-stamp lastActivity to "now" (replay time) for any session that ever
+    // ran a subagent — even a subagent that finished long ago. All records
+    // here share one historical timestamp (as a real replayed JSONL would),
+    // isolating the assertion to whether the sidechain path uses that
+    // timestamp rather than wall-clock at processing time.
+    const oldTimestamp = new Date('2020-01-01T00:00:00.000Z').toISOString();
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { timestamp: oldTimestamp })]);
+    await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-1', { description: 'Research' }, { timestamp: oldTimestamp })]);
+    await feedRecords(mgr, [{
+      type: 'assistant',
+      timestamp: oldTimestamp,
+      isSidechain: true,
+      parentToolUseID: 'agent-1',
+      message: { content: [{ type: 'text', text: 'still working' }] },
+    }]);
+
+    const snap = mgr.getSnapshot();
+    expect(snap.lastActivity).toBe(new Date(oldTimestamp).getTime());
+    expect(Date.now() - snap.lastActivity).toBeGreaterThan(1000 * 60 * 60 * 24 * 365);
+  });
+
   it('caps subagents at 50', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);

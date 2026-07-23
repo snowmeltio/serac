@@ -1098,7 +1098,7 @@ export class SessionManager {
               if (!subagent.agentId && launchMatch[1]) {
                 subagent.agentId = launchMatch[1];
               }
-              this.updateSubagentActivity(subagent);
+              this.updateSubagentActivity(subagent, timestamp);
             } else {
               this.completeSubagent(subagent, SessionManager.extractResultPreview(block));
             }
@@ -1264,7 +1264,7 @@ export class SessionManager {
           s => s.parentToolUseId === parentId
         );
         if (subagent) {
-          this.updateSubagentActivity(subagent);
+          this.updateSubagentActivity(subagent, parseTimestamp(record.timestamp));
           subagent.running = true;
           // Progress means subagent is working, not blocked
           if (subagent.waitingOnPermission) {
@@ -1582,11 +1582,15 @@ export class SessionManager {
 
   /** Update a subagent's last activity and propagate to session.
    *  Ensures demoteIfStale uses the most recent activity across session + subagents
-   *  without needing a loop. */
-  private updateSubagentActivity(subagent: SubagentInfo): void {
-    const now = new Date();
-    subagent.lastActivity = now;
-    this.state.lastActivity = now;
+   *  without needing a loop. Takes the record's own timestamp rather than wall-clock:
+   *  a reload replays the whole JSONL, so `new Date()` would re-stamp every historical
+   *  subagent record to ~now, pinning lastActivity to whenever the window last opened
+   *  instead of the session's true last touch. */
+  private updateSubagentActivity(subagent: SubagentInfo, timestamp: Date): void {
+    subagent.lastActivity = timestamp;
+    if (timestamp.getTime() > this.state.lastActivity.getTime()) {
+      this.state.lastActivity = timestamp;
+    }
   }
 
   /** Find the subagent that owns a sidechain record via parentToolUseID */
@@ -1623,14 +1627,14 @@ export class SessionManager {
    *  extended-thinking grace (main-thread agent_progress records already keep
    *  the turn alive via processProgressRecord). */
   private applySubagentAssistantRecord(subagent: SubagentInfo, record: JsonlRecord): void {
-    this.updateSubagentActivity(subagent);
+    this.updateSubagentActivity(subagent, parseTimestamp(record.timestamp));
     this.applySubagentToolUseBlocks(subagent, getContentBlocks(record));
   }
 
   /** Apply a user record to a subagent: remove tools, increment toolsCompleted,
    *  clear permission state, recover parent status if unblocked. */
   private applySubagentUserRecord(subagent: SubagentInfo, record: JsonlRecord): void {
-    this.updateSubagentActivity(subagent);
+    this.updateSubagentActivity(subagent, parseTimestamp(record.timestamp));
     this.applySubagentToolResultBlocks(subagent, getContentBlocks(record));
   }
 
