@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.17.2 (2026-07-23) — Workflow-liveness gaps closed
+
+### Fixed
+- **A session no longer shows DONE while its own background Workflow is still visibly running.** The live-tier parent-death check had no latch requiring a session to be seen live at least once before an absence could be read as death — a session idling between JSONL turns while its own Workflow kept running could misread as dead from a single registry snapshot (the registry rescans only every 4th poll), flipping the run to `incomplete` and leaving the card stuck on `done`. Now mirrors `SessionManager`'s existing latch.
+- **A live run's age-gate check and reported duration no longer rely on directory mtime**, which only advances when a sibling agent file is added or removed — never when an existing journal keeps growing. The age gate now also considers `journal.jsonl`'s mtime; `startTime` now derives from the run directory's stable birthtime.
+- **Live workflow runs now have an inactivity backstop.** A run with no real activity for 30 minutes and no positive registry confirmation of its parent session now degrades to `incomplete`, mirroring the 15-minute ceiling sessions already had. A registry-confirmed-live parent always overrides the clock.
+
 ## v1.17.1 (2026-07-21) — Session-meta persistence hardened against rare races
 
 ### Fixed

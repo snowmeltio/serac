@@ -14,10 +14,11 @@ import { extractEvidence, type Evidence } from './evidenceExtractor.js';
 import { detectMismatches, type Mismatch } from './mismatch.js';
 
 /**
- * The detail view: a single editor-area webview (ViewColumn.Beside) laid out as
- * a two-pane navigator — left = groups → agents, right = the selected agent's
- * transcript. One instance is reused (revealed) so opening another drill-in
- * swaps its contents rather than spawning tabs.
+ * The detail view: a single editor-area webview (ViewColumn.Two, beside the
+ * conversation's fixed Column One) laid out as a two-pane navigator — left =
+ * groups → agents, right = the selected agent's transcript. One instance is
+ * reused (revealed) so opening another drill-in swaps its contents rather
+ * than spawning tabs.
  *
  * Source-keyed: the same panel serves workflow runs, agent teams, and a
  * session's Task subagents. Only the model-builder (and the host-side transcript
@@ -158,10 +159,20 @@ export class DetailPanel {
     this.pendingSelect = target ?? null;
 
     if (!this.panel) {
+      // Column Two, not Beside. Beside resolves relative to whatever editor is
+      // ACTIVE at this exact call, but the invoking click also fires a
+      // separate `focusSession` message that opens the conversation into
+      // Column One — asynchronously, after this handler returns (openClaudeEditor
+      // awaits an external-writer check before it runs `claude-vscode.editor.open`).
+      // So at creation time the "active" editor is often whatever the user had
+      // open BEFORE the click, not the conversation — Beside would dock next to
+      // that instead, sometimes spawning a third column. The conversation is
+      // always pinned to Column One (extension.ts's openClaudeEditor), so Column
+      // Two is the correct fixed anchor regardless of ordering or prior focus.
       this.panel = vscode.window.createWebviewPanel(
         'seracDetail',
         'Agents',
-        vscode.ViewColumn.Beside,
+        vscode.ViewColumn.Two,
         {
           enableScripts: true,
           retainContextWhenHidden: true,
