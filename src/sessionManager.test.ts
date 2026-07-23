@@ -305,6 +305,152 @@ describe('SessionManager state machine', () => {
     expect(snap.subagents[0].running).toBe(true);
   });
 
+  it('stamps lastActivity from the sidechain record\'s own timestamp, not wall-clock', async () => {
+    // Regression: updateSubagentActivity() used to call new Date() instead of
+    // using the record's timestamp. A JSONL replay (e.g. on window reopen)
+    // processes every historical record synchronously, so new Date() would
+    // re-stamp lastActivity to "now" (replay time) for any session that ever
+    // ran a subagent — even a subagent that finished long ago. All records
+    // here share one historical timestamp (as a real replayed JSONL would),
+    // isolating the assertion to whether the sidechain path uses that
+    // timestamp rather than wall-clock at processing time.
+    const oldTimestamp = new Date('2020-01-01T00:00:00.000Z').toISOString();
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something', { timestamp: oldTimestamp })]);
+    await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-1', { description: 'Research' }, { timestamp: oldTimestamp })]);
+    await feedRecords(mgr, [{
+      type: 'assistant',
+      timestamp: oldTimestamp,
+      isSidechain: true,
+      parentToolUseID: 'agent-1',
+      message: { content: [{ type: 'text', text: 'still working' }] },
+    }]);
+
+    const snap = mgr.getSnapshot();
+    expect(snap.lastActivity).toBe(new Date(oldTimestamp).getTime());
+    expect(Date.now() - snap.lastActivity).toBeGreaterThan(1000 * 60 * 60 * 24 * 365);
+  });
+
+  it('clamps a future-stamped sidechain record so lastActivity cannot pin ahead of now (regression: unclamped corrupt/clock-skewed timestamps stalled demoteIfStale)', async () => {
+    // L7: updateSubagentActivity() trusted the record's own timestamp with only
+    // a monotonic max guard — nothing capped it at wall-clock "now". A future
+    // timestamp (corrupt data or clock skew) pinned lastActivity ahead of now,
+    // so computeDemotion's age (now - lastActivity) went negative and stayed
+    // negative as real time passed, permanently defeating the hard-ceiling
+    // demotion. The fix clamps every stamped timestamp to Math.min(ts, now).
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('do something')]);
+    await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-1', { description: 'Research task' })]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(true);
+
+    const futureTimestamp = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // +1h
+    await feedRecords(mgr, [{
+      type: 'assistant',
+      timestamp: futureTimestamp,
+      isSidechain: true,
+      parentToolUseID: 'agent-1',
+      message: { content: [{ type: 'text', text: 'still working' }] },
+    }]);
+
+    // lastActivity must not have jumped into the future.
+    expect(mgr.getSnapshot().lastActivity).toBeLessThanOrEqual(Date.now());
+
+    // Go silent past the hard ceiling (3 min). Without the clamp, age stays
+    // deeply negative and demoteIfStale never fires.
+    vi.advanceTimersByTime(180_001);
+    const changed = mgr.demoteIfStale(30_000);
+    expect(changed).toBe(true);
+    expect(mgr.getStatus()).toBe('done');
+  });
+
+  // ── L3: updateSubagentActivity's four call sites + monotonic guard ─────
+  // The bundled test above ("stamps lastActivity from the sidechain record's
+  // own timestamp") only exercises the sidechain-assistant path
+  // (applySubagentAssistantRecord, :1630). The launch-banner site (:1101) is
+  // pinned indirectly by the L8 sweepBackgroundAgents fallback tests below
+  // (subagent.lastActivity isn't exposed on SubagentSnapshot, so its only
+  // observable surface is the sweep's force-complete timing). These two
+  // isolate the remaining two: the agent_progress relay (:1267) and
+  // applySubagentUserRecord (:1637), plus the guard itself.
+
+  it('agent_progress relay updates lastActivity from the record\'s own timestamp, not wall-clock at processing', async () => {
+    const mgr = makeManager();
+    const t0 = Date.now();
+    await feedRecords(mgr, [userRecord('go')]);
+    await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-1', { description: 'Worker' })]);
+
+    // Advance wall-clock well past the timestamp the progress record will
+    // carry — isolates "uses record.timestamp" from "uses Date.now()".
+    vi.advanceTimersByTime(50_000);
+    const recordTs = new Date(t0 + 20_000).toISOString();
+    await feedRecords(mgr, [{
+      type: 'progress',
+      timestamp: recordTs,
+      parentToolUseID: 'agent-1',
+      data: { type: 'agent_progress' },
+    }]);
+
+    expect(mgr.getSnapshot().lastActivity).toBe(new Date(recordTs).getTime());
+    expect(mgr.getSnapshot().lastActivity).not.toBe(Date.now());
+  });
+
+  it('sidechain tool_result (applySubagentUserRecord) updates lastActivity from the record\'s own timestamp, not wall-clock at processing', async () => {
+    const mgr = makeManager();
+    const t0 = Date.now();
+    await feedRecords(mgr, [userRecord('go')]);
+    await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-1', { description: 'Worker' })]);
+
+    vi.advanceTimersByTime(50_000);
+    const recordTs = new Date(t0 + 20_000).toISOString();
+    await feedRecords(mgr, [{
+      type: 'user',
+      timestamp: recordTs,
+      isSidechain: true,
+      parentToolUseID: 'agent-1',
+      message: { content: [{ type: 'tool_result', tool_use_id: 'sub-tool-1' }] },
+    }]);
+
+    expect(mgr.getSnapshot().lastActivity).toBe(new Date(recordTs).getTime());
+    expect(mgr.getSnapshot().lastActivity).not.toBe(Date.now());
+  });
+
+  it('monotonic guard: an older subagent record after a newer one does not roll state.lastActivity backward (T2-then-T1 keeps T2)', async () => {
+    // Only uniform timestamps were ever fed through the bundled test, so the
+    // guard's rejection branch (updateSubagentActivity's `>` comparison) was
+    // never forced to reject anything. This sends T2 (agent_progress) then an
+    // older T1 (sidechain assistant) for the same subagent and asserts the
+    // session-level lastActivity does not regress to T1.
+    const base = Date.now();
+    const spawnTs = new Date(base - 60_000).toISOString();
+    const t2 = new Date(base - 20_000).toISOString(); // newer
+    const t1 = new Date(base - 40_000).toISOString(); // older than t2, newer than spawn
+
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('go', { timestamp: spawnTs })]);
+    await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-1', { description: 'Worker' }, { timestamp: spawnTs })]);
+
+    // T2 arrives first via the agent_progress relay.
+    await feedRecords(mgr, [{
+      type: 'progress',
+      timestamp: t2,
+      parentToolUseID: 'agent-1',
+      data: { type: 'agent_progress' },
+    }]);
+    expect(mgr.getSnapshot().lastActivity).toBe(new Date(t2).getTime());
+
+    // T1 (older) arrives second via a sidechain assistant record for the same
+    // subagent. The guard must reject it: lastActivity stays at T2.
+    await feedRecords(mgr, [{
+      type: 'assistant',
+      timestamp: t1,
+      isSidechain: true,
+      parentToolUseID: 'agent-1',
+      message: { content: [{ type: 'text', text: 'still working' }] },
+    }]);
+
+    expect(mgr.getSnapshot().lastActivity).toBe(new Date(t2).getTime());
+  });
+
   it('caps subagents at 50', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('do something')]);
@@ -728,6 +874,58 @@ describe('SessionManager.sweepBackgroundWork (idle done-card maintenance)', () =
     await feedRecords(mgr, [launchRecord('shell_a')]);
     expect(mgr.sweepBackgroundWork(Date.now())).toBe(false);
     expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
+  });
+});
+
+describe('SessionManager.sweepBackgroundAgents — mtime-unavailable fallback (L8)', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  // Launch banner with no agentId captured (BACKGROUND_AGENT_LAUNCH_PATTERN's
+  // group 1 is optional) — backgroundAgentFileMtime() has no path to stat and
+  // returns null, forcing the sweep onto the subagent.lastActivity fallback.
+  const AGENTLESS_LAUNCH_BANNER = 'Async agent launched successfully.\n'
+    + 'The agent is working in the background. You will be notified automatically when it completes.';
+
+  it('force-completes on the first sweep after reopen, not after a fresh 15-min grace (subagent.lastActivity now replays to the record\'s own timestamp, per the updated sweepBackgroundAgents docstring)', async () => {
+    // A JSONL reload (window reopen) replays every historical record. Before
+    // the A-1/A-2 change, updateSubagentActivity() wall-clock-stamped every
+    // replayed record, so this fallback branch always saw a fresh "now" and
+    // granted another full BACKGROUND_AGENT_CEILING_MS (15 min) of grace on
+    // every reopen. It now sees the record's true (20-min-old) timestamp, so
+    // a single sweep right after reopen force-completes immediately.
+    const oldTs = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('go', { timestamp: oldTs })]);
+    await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-nomt', { description: 'bg task' }, { timestamp: oldTs })]);
+    await feedRecords(mgr, [{
+      type: 'user',
+      timestamp: oldTs,
+      message: { content: [{ type: 'tool_result', tool_use_id: 'agent-nomt', content: AGENTLESS_LAUNCH_BANNER }] },
+    }]);
+
+    const subagent = mgr.getSnapshot().subagents[0];
+    expect(subagent.background).toBe(true);
+    expect(subagent.agentId).toBeFalsy();
+
+    // Sweep at "now" — no timer advance needed; the record is already stale.
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(true);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(false);
+  });
+
+  it('within the 15-min ceiling of its true (replayed) timestamp, an agentless-banner agent stays live', async () => {
+    const recentTs = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
+    const mgr = makeManager();
+    await feedRecords(mgr, [userRecord('go', { timestamp: recentTs })]);
+    await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-nomt2', { description: 'bg task' }, { timestamp: recentTs })]);
+    await feedRecords(mgr, [{
+      type: 'user',
+      timestamp: recentTs,
+      message: { content: [{ type: 'tool_result', tool_use_id: 'agent-nomt2', content: AGENTLESS_LAUNCH_BANNER }] },
+    }]);
+
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(false);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(true);
   });
 });
 

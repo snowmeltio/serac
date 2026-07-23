@@ -117,6 +117,67 @@ describe('PreCompact compacting grace window', () => {
     expect(mgr.getSnapshot().compacting).toBe(true);
   });
 
+  // [L15 — H-4] resetState()'s truncation-driven reopen (`if (this.state.compacting)
+  // { this.openCompactWindow(); }`) re-arms the 60s safety timeout from the
+  // truncation moment, not the original PreCompact moment — the prior test above
+  // never advances the clock afterward, so it can't tell a correctly re-armed
+  // timer from a stale one still counting down from the original PreCompact fire.
+  it('re-arms the 60s safety timeout from the truncation moment, not the original PreCompact moment', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    await feed(mgr, [assistant('pre-compact work')]);
+    router.onHookEvent(SID, 'PreCompact', { trigger: 'auto' }); // t0: window opens, original expiry t0+60s
+    expect(mgr.getSnapshot().compacting).toBe(true);
+
+    vi.advanceTimersByTime(50_000); // t0+50s — still inside the original window
+    await feed(mgr, [], /* truncated */ true); // truncation re-opens: new expiry t0+50s+60s = t0+110s
+    expect(mgr.getSnapshot().compacting).toBe(true);
+
+    // Past the ORIGINAL expiry (t0+60s) but before the re-armed one (t0+110s).
+    // A stale (non-re-armed) timer would have already fired and cleared compacting.
+    vi.advanceTimersByTime(55_000); // now at t0+105s
+    expect(mgr.getSnapshot().compacting).toBe(true);
+
+    // Past the re-armed expiry.
+    vi.advanceTimersByTime(10_000); // now at t0+115s
+    expect(mgr.getSnapshot().compacting).toBe(false);
+  });
+
+  // [L15 — H-4] The re-open path re-derives its activity string via
+  // openCompactWindow()'s own appendActivity('Compacting context') call —
+  // resetState() clears activity to '' first, so without the re-open branch
+  // the card would be left with a blank subtitle mid-compaction.
+  it('truncation-driven reopen sets the activity to "Compacting context", not the cleared empty string', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    await feed(mgr, [assistant('pre-compact work')]);
+    router.onHookEvent(SID, 'PreCompact', { trigger: 'auto' });
+
+    await feed(mgr, [], /* truncated */ true);
+    expect(mgr.getSnapshot().compacting).toBe(true);
+    expect(mgr.getSnapshot().activity).toBe('Compacting context');
+  });
+
+  // [L15 — H-4] Contrast case: with no PreCompact ever fired, `state.compacting`
+  // is false, so resetState()'s reopen guard doesn't fire and truncation lands
+  // on the plain done/blank-activity outcome — proving the two truncation tests
+  // above are exercising the compacting branch specifically, not truncation's
+  // baseline behaviour.
+  it('truncation alone, with no compact window ever opened, resets to plain done', async () => {
+    const router = new HookEventRouter();
+    const mgr = mgrWith(router);
+    await feed(mgr, [assistant('normal work')]);
+    expect(mgr.getStatus()).toBe('running');
+
+    await feed(mgr, [], /* truncated */ true); // no PreCompact hook fired
+    expect(mgr.getStatus()).toBe('done');
+    // compacting is never initialised to `false` — it stays unset (falsy)
+    // until openCompactWindow() first sets it true, so this is the right
+    // assertion for "never opened", not `.toBe(false)`.
+    expect(mgr.getSnapshot().compacting).toBeFalsy();
+    expect(mgr.getSnapshot().activity).toBe('');
+  });
+
   it('closes on compact_boundary', async () => {
     const router = new HookEventRouter();
     const mgr = mgrWith(router);

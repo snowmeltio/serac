@@ -245,6 +245,91 @@ describe('interleaving hazards', () => {
     expect(failing.isDirty()).toBe(false);
   });
 
+  it('a reload racing an ENOENT read (file vanishes between stat and read) is aborted while dirty — the mutation survives [C1 ENOENT branch]', async () => {
+    store.getOrCreate('s1').title = 'first';
+    store.markDirty();
+    await store.flush();
+
+    // Bump mtime so reloadIfChanged's pre-stat dirty check passes (we're clean
+    // post-flush) and it proceeds into loadInner(true).
+    fs.utimesSync(metaPath, new Date(), new Date(Date.now() + 5000));
+
+    let readStarted!: () => void;
+    const started = new Promise<void>(res => { readStarted = res; });
+    let releaseRead!: (err: unknown) => void;
+    const gate = new Promise<never>((_res, rej) => { releaseRead = rej; });
+    vi.spyOn(fs.promises, 'readFile').mockImplementationOnce(
+      (async () => {
+        readStarted();
+        return gate;
+      }) as typeof fs.promises.readFile,
+    );
+
+    const reload = store.reloadIfChanged();  // passes pre-stat dirty check, blocks in readFile
+    await started;
+
+    // A mutation (e.g. a dismiss click) lands mid-read, setting dirty — the
+    // exact race the file's readFile is simulating: the file was deleted
+    // between the stat and the read.
+    store.getOrCreate('mutated').title = 'during-read';
+    store.markDirty();
+
+    const enoent = Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+    releaseRead(enoent);
+    await reload;
+
+    // The abortIfDirty guard at sessionMetaStore.ts:98 must fire here — without
+    // it, the ENOENT catch unconditionally wipes sessionMeta and attempts
+    // legacy migration, losing both 'mutated' and the earlier-flushed 's1'.
+    expect(store.get('mutated')?.title).toBe('during-read');
+    expect(store.get('s1')?.title).toBe('first');
+
+    await store.flush();
+    expect(readDisk().sessions.mutated.title).toBe('during-read');
+    expect(readDisk().sessions.s1.title).toBe('first');
+  });
+
+  it('delete() during an in-flight save bumps the mutation generation — dirty survives and the next flush removes the entry [C2 via delete()]', async () => {
+    store.getOrCreate('s1').title = 'first';
+    store.markDirty();
+
+    // Gate the save's writeFile exactly as the markDirty()-driven [C2] test
+    // above does, but drive the mid-save mutation through delete() instead —
+    // delete() bumps mutationSeq via its own inline duplicate of markDirty()'s
+    // body (sessionMetaStore.ts:261-268), and that generation bump is what
+    // this test pins.
+    let writeStarted!: () => void;
+    const started = new Promise<void>(res => { writeStarted = res; });
+    let releaseWrite!: () => void;
+    const gate = new Promise<void>(res => { releaseWrite = res; });
+    const realWrite = fs.promises.writeFile.bind(fs.promises);
+    vi.spyOn(fs.promises, 'writeFile').mockImplementationOnce(
+      (async (...args: Parameters<typeof fs.promises.writeFile>) => {
+        writeStarted();
+        await gate;
+        return realWrite(...args);
+      }),
+    );
+
+    store.enqueueSave();      // snapshots {s1: first}, blocks inside writeFile
+    await started;
+    store.delete('s1');       // lands mid-save — after the snapshot
+    releaseWrite();
+
+    // Let the gated save COMPLETE (it persists the pre-delete snapshot, so
+    // 's1' is still on disk at this point) before flushing.
+    await vi.waitFor(() => { expect(readDisk().sessions.s1).toBeDefined(); });
+    await new Promise(r => setTimeout(r, 25)); // stat + flag logic after the rename
+
+    // If delete() were simplified to skip the mutationSeq bump, the completed
+    // save would clear dirty here and the deletion would never flush.
+    expect(store.isDirty()).toBe(true);
+
+    await store.flush();      // must persist the deletion — only happens if dirty survived
+    expect(readDisk().sessions.s1).toBeUndefined();
+    expect(store.isDirty()).toBe(false);
+  });
+
   it('warns once save failures look persistent (3 consecutive) that external reloads stay paused', async () => {
     const warns: unknown[] = [];
     const log: Logger = { ...silentLog, warn: (msg: unknown) => { warns.push(msg); } };

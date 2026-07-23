@@ -4,7 +4,10 @@
  * cover all branches explicitly and catch regressions faster.
  */
 import { describe, it, expect } from 'vitest';
-import { computeDemotion, getToolProfile, isAutoAcceptPermissionMode } from './toolProfiles.js';
+import {
+  computeDemotion, getToolProfile, isAutoAcceptPermissionMode,
+  HARD_CEILING_MS, NEEDS_INPUT_CEILING_MS, EXTENDED_THINKING_CEILING_MS, MAX_ACTIVE_TOOLS,
+} from './toolProfiles.js';
 import { extractAssistantPreview } from './trackers/glanceTracker.js';
 
 describe('computeDemotion', () => {
@@ -301,6 +304,47 @@ describe('getToolProfile', () => {
     for (const name of ['NotebookEdit', 'EnterWorktree', 'ExitWorktree']) {
       expect(getToolProfile(name).exempt).toBe(true);
     }
+  });
+
+  // Residual H-1 sliver: Edit/Write rows, MCP-prefix boundary cases, and
+  // exact-value pins for the four exported ceiling/limit constants (see
+  // audit ledger H-1 — refuted at "~21 tool rows" but this narrower gap
+  // was confirmed real).
+  it('returns exempt (instant local write) profile for Edit and Write', () => {
+    for (const name of ['Edit', 'Write']) {
+      const p = getToolProfile(name);
+      expect(p.exempt).toBe(true);
+      expect(p.slow).toBe(false);
+      expect(p.userInput).toBe(false);
+      expect(p.orchestration).toBe(false);
+    }
+  });
+
+  it('matches the bare "mcp__" prefix with nothing following', () => {
+    const p = getToolProfile('mcp__');
+    expect(p.slow).toBe(true);
+    expect(p.exempt).toBe(false);
+  });
+
+  it('does not match an uppercase "MCP__" prefix (case-sensitive)', () => {
+    const p = getToolProfile('MCP__slack__send_message');
+    expect(p.slow).toBe(false);
+    expect(p.exempt).toBe(false);
+  });
+
+  it('does not match "mcp__" occurring mid-string rather than as a prefix', () => {
+    const p = getToolProfile('not_mcp__tool');
+    expect(p.slow).toBe(false);
+    expect(p.exempt).toBe(false);
+  });
+});
+
+describe('toolProfiles: exported ceiling/limit constants', () => {
+  it('pins the exact values of the four exported constants', () => {
+    expect(HARD_CEILING_MS).toBe(180_000);
+    expect(NEEDS_INPUT_CEILING_MS).toBe(600_000);
+    expect(EXTENDED_THINKING_CEILING_MS).toBe(900_000);
+    expect(MAX_ACTIVE_TOOLS).toBe(500);
   });
 });
 

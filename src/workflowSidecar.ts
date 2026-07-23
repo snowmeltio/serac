@@ -28,6 +28,29 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+/**
+ * Best-effort completion timestamp from a sidecar's top-level `timestamp`
+ * field (ISO 8601, written once when the sidecar itself is written) — epoch
+ * ms, or null when absent/unparseable. Kept separate from
+ * `parseWorkflowSidecar`'s `WorkflowSnapshot`: this is discovery-internal
+ * evidence (telling a genuinely finished run from one relaunched under the
+ * same runId via resumeFromRunId — see workflowDiscovery.ts), not part of the
+ * render-ready webview payload, so it doesn't widen that type.
+ */
+export function parseSidecarCompletedAt(content: string): number | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (!isObj(raw)) { return null; }
+  const ts = raw.timestamp;
+  if (typeof ts !== 'string') { return null; }
+  const ms = Date.parse(ts);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 /** Map a sidecar per-agent `state` onto WorkflowAgentStatus. 'failed' is
  *  preserved as its own status: the detail panel sorts failed agents first
  *  and rolls them up in the header, and the webview tints their dots — all

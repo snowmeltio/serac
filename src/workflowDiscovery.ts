@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { SessionMeta, WorkflowAgentSnapshot, WorkflowRunStatus, WorkflowSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { parseWorkflowSidecar } from './workflowSidecar.js';
+import { parseWorkflowSidecar, parseSidecarCompletedAt } from './workflowSidecar.js';
 import { extractWorkflowMeta, extractAgentCalls, expandIndirectCalls, matchAgentCall, recoverInterpolatedLabel, type WorkflowAgentCall } from './workflowScript.js';
 import { readSettings, ageGateMsFor } from './settings.js';
 import { makeRescanGate } from './sessionPolling.js';
@@ -58,6 +58,19 @@ interface LiveRunState {
    *  for the unconfirmed-liveness ceiling below. Initialised to first-sight,
    *  not run start, so a just-discovered run is never born "stale". */
   lastChangedAt: number;
+  /** Content-only signature (run `status` excluded) tracked while a resumed
+   *  run sits in scanLiveRuns' abandoned-resume fallback — deliberately
+   *  separate from `sig`, which embeds `status` and is used by the plain
+   *  live path. `status` is itself DERIVED from `lastChangedAt` via the
+   *  unconfirmed-liveness ceiling, so comparing against `sig` there would be
+   *  circular: the very act of the ceiling flipping status to 'incomplete'
+   *  changes `sig`, which would read as "real activity" and refresh
+   *  `lastChangedAt`, which un-flips status back to 'running' on the very
+   *  next scan — a false wake-up with zero actual journal growth (verified
+   *  empirically; the plain live path has the identical latent quirk,
+   *  out of scope for this fix). null until the fallback is first entered,
+   *  so establishing the baseline is never itself mistaken for a change. */
+  fallbackContentSig: string | null;
 }
 
 /** Derive the live-tier display fields for one agent from its record-0
@@ -130,6 +143,20 @@ export class WorkflowDiscovery {
   private snapshots: Map<string, WorkflowSnapshot> = new Map();
   /** runId -> last-seen sidecar mtime (ms), to skip re-parsing unchanged files. */
   private mtimes: Map<string, number> = new Map();
+  /** runId -> the last successfully parsed completion sidecar, kept
+   *  independently of `snapshots` (which a re-entered live tier overwrites —
+   *  see scanLiveRuns). This is the resume-liveness evidence AND the fallback
+   *  tree for an abandoned resume: a completed run can be relaunched under
+   *  the SAME runId (resumeFromRunId), and the journal/agent transcripts keep
+   *  growing while this sidecar sits stale until the resumed run itself
+   *  completes and rewrites it. `completedAtMs` is the sidecar's own
+   *  `timestamp` field (preferred — it's the actual completion instant) with
+   *  `mtimeMs` as the filesystem fallback when that field is absent. */
+  private readonly sidecarEvidence = new Map<string, { snap: WorkflowSnapshot; mtimeMs: number; completedAtMs: number | null }>();
+  /** Slack absorbing filesystem timestamp jitter between two near-simultaneous
+   *  writes (the sidecar and the journal's final append at genuine, non-
+   *  resumed completion) — see scanLiveRuns' resume-freshness check. */
+  private static readonly RESUME_JOURNAL_TOLERANCE_MS = 2000;
   /** Per-run script parse, keyed on mtime — the script is immutable per run,
    *  so the 500ms live poll must not re-read and re-parse it every cycle. */
   private readonly scriptMeta = new Map<string, { mtimeMs: number; name: string; phases: WorkflowSnapshot['phases']; agentCalls: WorkflowAgentCall[] }>();
@@ -211,6 +238,7 @@ export class WorkflowDiscovery {
       this.scriptDirOverride.clear();
       this.scriptFallbackAttemptedAt.clear();
       this.agentStatsCache.clear();
+      this.sidecarEvidence.clear();
       this.changedSincePoll = true;
     }
   }
@@ -255,8 +283,8 @@ export class WorkflowDiscovery {
 
     const seen = new Set<string>();
     for (const sessionId of sessionIds) {
-      const sidecarRunIds = await this.scanSidecars(sessionId, now, seen);
-      await this.scanLiveRuns(sessionId, now, seen, sidecarRunIds);
+      await this.scanSidecars(sessionId, now, seen);
+      await this.scanLiveRuns(sessionId, now, seen);
     }
 
     // Prune snapshots whose sidecar/run dir vanished or aged out. A scoped
@@ -270,6 +298,7 @@ export class WorkflowDiscovery {
       this.liveRuns.delete(runId);
       this.scriptDirOverride.delete(runId);
       this.scriptFallbackAttemptedAt.delete(runId);
+      this.sidecarEvidence.delete(runId);
       this.pruneAgentStats(snap.sessionId, runId);
       this.changedSincePoll = true;
     }
@@ -284,15 +313,14 @@ export class WorkflowDiscovery {
     }
   }
 
-  /** Tier 1: completed sidecars. Returns the set of runIds that have a sidecar. */
-  private async scanSidecars(sessionId: string, now: number, seen: Set<string>): Promise<Set<string>> {
-    const runIds = new Set<string>();
+  /** Tier 1: completed sidecars. */
+  private async scanSidecars(sessionId: string, now: number, seen: Set<string>): Promise<void> {
     const dir = path.join(this.wsDir, sessionId, 'workflows');
     let files: string[];
     try {
       files = await fs.promises.readdir(dir);
     } catch {
-      return runIds; // no workflows dir for this session
+      return; // no workflows dir for this session
     }
 
     for (const file of files) {
@@ -308,16 +336,30 @@ export class WorkflowDiscovery {
       }
       if (now - stat.mtimeMs > ageGateMsFor('workflows')) { continue; } // stale: let pruning drop it
 
-      runIds.add(runId);
       seen.add(runId);
 
       if (stat.size > WorkflowDiscovery.SIDECAR_MAX_BYTES) {
         this.log.warn(`[workflows] Sidecar exceeds size cap, skipping: ${file}`);
+        // The content is never read here, so completedAtMs (parsed from it)
+        // can't be refreshed — but leaving the OLD evidence in place would
+        // pin isResumed true forever once a resume's completion rewrite
+        // happens to land oversized (resumes strictly grow the tree, so this
+        // is exactly the shape that rewrite takes). Refresh mtimeMs from the
+        // stat (the one thing readable without parsing) and null out
+        // completedAtMs so the `completedAtMs ?? mtimeMs` fallback in
+        // scanLiveRuns uses it — a genuinely-just-rewritten sidecar's mtime
+        // is at least as fresh as the journal's, which is enough to flip
+        // isResumed false and let the run settle back to the (stale-content
+        // but no-longer-misclassified-live) sidecar tier.
+        const existing = this.sidecarEvidence.get(runId);
+        if (existing) {
+          this.sidecarEvidence.set(runId, { ...existing, mtimeMs: stat.mtimeMs, completedAtMs: null });
+        }
         continue;
       }
 
       // Skip re-parse when the sidecar is unchanged.
-      if (this.mtimes.get(runId) === stat.mtimeMs && this.snapshots.has(runId)) { continue; }
+      if (this.mtimes.get(runId) === stat.mtimeMs && this.sidecarEvidence.has(runId)) { continue; }
 
       let content: string;
       try {
@@ -333,19 +375,27 @@ export class WorkflowDiscovery {
       }
       this.snapshots.set(runId, snap);
       this.mtimes.set(runId, stat.mtimeMs);
-      // The sidecar supersedes the live tier — drop the run's accumulator.
+      this.sidecarEvidence.set(runId, {
+        snap,
+        mtimeMs: stat.mtimeMs,
+        completedAtMs: parseSidecarCompletedAt(content),
+      });
+      // The sidecar supersedes the live tier — drop the run's accumulator. If
+      // the run gets relaunched under this runId later (resumeFromRunId), a
+      // fresh accumulator is built when the live tier re-engages (below),
+      // re-tailing the journal from byte 0 — cheap and correct, since the
+      // journal is one continuous, cumulative file across resume cycles.
       this.liveRuns.delete(runId);
       this.changedSincePoll = true;
     }
-    return runIds;
   }
 
-  /** Tier 2: run dirs lacking a sidecar → a minimal "running" snapshot. */
+  /** Tier 2: run dirs lacking a sidecar (or a resumed one — see below) → a
+   *  minimal "running" snapshot. */
   private async scanLiveRuns(
     sessionId: string,
     now: number,
     seen: Set<string>,
-    sidecarRunIds: Set<string>,
   ): Promise<void> {
     const liveRoot = path.join(this.wsDir, sessionId, 'subagents', 'workflows');
     let runDirs: fs.Dirent[];
@@ -358,7 +408,6 @@ export class WorkflowDiscovery {
     for (const ent of runDirs) {
       if (!ent.isDirectory() || !ent.name.startsWith('wf_')) { continue; }
       const runId = ent.name;
-      if (sidecarRunIds.has(runId)) { continue; } // completed — Tier 1 owns it
 
       const runDir = path.join(liveRoot, runId);
       let stat: fs.Stats;
@@ -367,23 +416,53 @@ export class WorkflowDiscovery {
       } catch {
         continue;
       }
-      // Last-activity signal for the age gate. The run DIRECTORY's own mtime
-      // only advances when an entry is added/removed (a new sibling agent
-      // file appearing) — it does NOT advance when an existing journal/agent
-      // transcript keeps growing, the same pitfall buildLiveSnapshot's
-      // parentDead check avoids (see its comment). journal.jsonl is appended
-      // to on every started/result event across every agent in the run, so
-      // its mtime is a much closer proxy for "is anything still happening
-      // here"; fall back to the directory's own mtime for a brand-new run
-      // with no journal written yet.
+      // Last-activity signal for the age gate AND the resume-freshness check
+      // below. The run DIRECTORY's own mtime only advances when an entry is
+      // added/removed (a new sibling agent file appearing) — it does NOT
+      // advance when an existing journal/agent transcript keeps growing, the
+      // same pitfall buildLiveSnapshot's parentDead check avoids (see its
+      // comment). journal.jsonl is appended to on every started/result event
+      // across every agent in the run, so its mtime is a much closer proxy
+      // for "is anything still happening here"; fall back to the directory's
+      // own mtime for a brand-new run with no journal written yet.
       let lastActivityMs = stat.mtimeMs;
       try {
         const journalStat = await fs.promises.stat(path.join(runDir, 'journal.jsonl'));
         lastActivityMs = Math.max(lastActivityMs, journalStat.mtimeMs);
       } catch { /* no journal yet — directory mtime is the only signal */ }
-      // A run dir with no sidecar that has shown no activity past the age
-      // gate is an abandoned/killed run — drop it (pruning removes any stale
-      // snapshot).
+
+      // A completion sidecar for this run normally supersedes the live tier
+      // outright — but Claude Code's resumeFromRunId can relaunch an
+      // already-completed run under the SAME runId, and the journal/agent
+      // transcripts keep growing while the (now stale) sidecar sits untouched
+      // on disk (real repro, 2026-07-23 — see workflowDiscovery.test.ts).
+      // Tell a genuinely finished run from one that's live again by comparing
+      // the journal's last-activity signal against the sidecar's own
+      // completion evidence (preferring its `timestamp` field over its file
+      // mtime — see workflowSidecar.ts:parseSidecarCompletedAt); a couple of
+      // seconds' slack absorbs filesystem timestamp jitter between two
+      // near-simultaneous writes, so an ordinary (non-resumed) completion
+      // never misfires this as "resumed".
+      const sidecarEvidence = this.sidecarEvidence.get(runId);
+      const isResumed = !!sidecarEvidence
+        && lastActivityMs > (sidecarEvidence.completedAtMs ?? sidecarEvidence.mtimeMs) + WorkflowDiscovery.RESUME_JOURNAL_TOLERANCE_MS;
+      if (sidecarEvidence && !isResumed) {
+        // Sidecar tier owns it. Normally scanSidecars already wrote this
+        // cycle's `this.snapshots` entry to the same object — but when the
+        // sidecar was skipped for exceeding the size cap (never reparsed),
+        // that write never happened; assert it here too so a run doesn't
+        // ride a frozen, stale 'running' live snapshot forever once its
+        // (oversized, unreadable) completion evidence says otherwise.
+        if (this.snapshots.get(runId) !== sidecarEvidence.snap) {
+          this.snapshots.set(runId, sidecarEvidence.snap);
+          this.changedSincePoll = true;
+        }
+        continue;
+      }
+
+      // A run dir with no sidecar (or a resumed one) that has shown no
+      // activity past the age gate is an abandoned/killed run — drop it
+      // (pruning removes any stale snapshot).
       if (now - lastActivityMs > ageGateMsFor('workflows')) { continue; }
 
       seen.add(runId);
@@ -400,15 +479,69 @@ export class WorkflowDiscovery {
       // fallback — same pattern as sessionDiscovery.ts/subagentTailerManager.ts.
       const startTime = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
       const snap = await this.buildLiveSnapshot(sessionId, runId, runDir, startTime, now);
-      if (snap) {
+      if (!snap) { continue; }
+
+      if (isResumed && sidecarEvidence && snap.status === 'incomplete') {
+        // The resumed run has gone quiet past the same liveness window that
+        // downgrades a never-completed run (the parent-death gate or the
+        // unconfirmed-liveness ceiling — see buildLiveSnapshot) — an
+        // abandoned resume. Fall back to the last completed sidecar tree
+        // rather than surface a synthetic incomplete roster: the sidecar is
+        // a truthful, complete artefact for the run's last finished cycle,
+        // whereas the live reconstruction of an abandoned resume is
+        // necessarily partial (and would otherwise flash the card from its
+        // settled completed state to an alarming "incomplete" for a resume
+        // nobody is watching anymore).
+        //
+        // Still record whether THIS cycle's rebuild actually changed vs the
+        // last one, even though we're displaying the sidecar instead of it —
+        // buildLiveSnapshot's unconfirmed-liveness ceiling reads
+        // `state.lastChangedAt` to decide `inactiveTooLong`, and that clock
+        // only ever advances on a real content change. Skipping this update
+        // here (because we `continue` before the plain live path's own
+        // state.sig/lastChangedAt write below) would freeze the clock the
+        // instant a resume is first classified incomplete — journal growth
+        // folded into state.started on every later cycle, but never
+        // recorded as activity, so `inactiveTooLong` stays true forever and
+        // a genuine wake-up could never clear it.
+        //
+        // Uses `fallbackContentSig`, NOT `sig`: `sig` embeds the run's
+        // `status`, which is itself derived from `lastChangedAt` via the
+        // ceiling above — comparing against it here would be circular, since
+        // the very act of the ceiling flipping status to 'incomplete' changes
+        // `sig` and would misread as "real activity", refreshing
+        // `lastChangedAt` and un-flipping status back to 'running' on the
+        // very next scan even with zero actual journal growth (confirmed
+        // empirically against a fixed sig; the plain live path has the
+        // identical latent quirk, out of scope here). A truly quiet
+        // abandoned run's CONTENT is unaffected, so `fallbackContentSig`
+        // stays put and the clock stays frozen.
         const state = this.liveRuns.get(runId);
-        const sig = liveSnapshotSig(snap);
-        if (!state || state.sig !== sig) {
-          if (state) { state.sig = sig; state.lastChangedAt = now; }
-          this.snapshots.set(runId, snap);
+        if (state) {
+          const contentSig = liveSnapshotSig({ ...snap, status: 'incomplete' });
+          if (state.fallbackContentSig !== null && state.fallbackContentSig !== contentSig) {
+            state.lastChangedAt = now;
+          }
+          state.fallbackContentSig = contentSig;
+        }
+        if (this.snapshots.get(runId) !== sidecarEvidence.snap) {
+          this.snapshots.set(runId, sidecarEvidence.snap);
           this.changedSincePoll = true;
         }
-        this.mtimes.set(runId, stat.mtimeMs);
+        continue;
+      }
+
+      const state = this.liveRuns.get(runId);
+      // Confirmed live again (not the abandoned-resume fallback above) —
+      // clear any fallback-tracking baseline so a LATER abandonment episode
+      // for this same run starts fresh rather than diffing against a
+      // now-ancient content signature from a previous quiet spell.
+      if (state) { state.fallbackContentSig = null; }
+      const sig = liveSnapshotSig(snap);
+      if (!state || state.sig !== sig) {
+        if (state) { state.sig = sig; state.lastChangedAt = now; }
+        this.snapshots.set(runId, snap);
+        this.changedSincePoll = true;
       }
     }
   }
@@ -476,6 +609,7 @@ export class WorkflowDiscovery {
         corr: new Map(),
         sig: '',
         lastChangedAt: now,
+        fallbackContentSig: null,
       };
       this.liveRuns.set(runId, state);
     }
@@ -688,8 +822,15 @@ export class WorkflowDiscovery {
    *  is that every on-disk read path is size-capped — see teamDiscovery). The
    *  harness caps scripts at 512KB; sidecar is JSON we parse whole. The
    *  journal cap bounds the tailer's lifetime offset, not a single read —
-   *  the tailer itself caps each cycle's read. */
-  private static readonly SIDECAR_MAX_BYTES = 1024 * 1024;
+   *  the tailer itself caps each cycle's read.
+   *
+   *  Matched to JOURNAL_MAX_BYTES (4MB, not the original 1MB): a resumed run
+   *  strictly grows the sidecar on its next completion (10→46 agents in the
+   *  2026-07-23 repro; the largest real sidecar observed was 881KB) — a cap
+   *  too close to typical sizes risks a permanently-oversized rewrite that
+   *  can never be reparsed (see the scanSidecars size-skip path below, which
+   *  still refreshes freshness evidence from the stat for exactly this case). */
+  private static readonly SIDECAR_MAX_BYTES = 4 * 1024 * 1024;
   private static readonly SCRIPT_MAX_BYTES = 1024 * 1024;
   private static readonly JOURNAL_MAX_BYTES = 4 * 1024 * 1024;
 
@@ -807,5 +948,6 @@ export class WorkflowDiscovery {
     this.scriptDirOverride.clear();
     this.scriptFallbackAttemptedAt.clear();
     this.agentStatsCache.clear();
+    this.sidecarEvidence.clear();
   }
 }
