@@ -429,6 +429,25 @@ export class SessionDiscovery {
       // (Title write-back into meta lives in the poll cycle — see pollInner.
       // This read path must stay mutation-free.)
 
+      // [L1/F-1] Display-layer derivation: a session whose TURN has ended
+      // (status 'done') can still have a live run_in_background subagent
+      // working — markSessionDone() deliberately leaves a live background
+      // agent running (see its own comment at the call site: "A live
+      // background agent outlives the turn by design"), and
+      // hasBlockingSubagents() excludes it from blocking demotion for the
+      // same reason. Left alone, the card reads "Done" for the whole gap
+      // until the next <task-notification>/registry-death/dormant-sweep
+      // backstop resolves it — a real, longstanding false-completion gap
+      // (decided by Murray 2026-07-23). No new label or card chrome: the
+      // card simply presents as 'running'. Must run BEFORE the stale
+      // rollover below (so a delegating card is never rolled to stale) and
+      // before the two-zone sort (so it sorts into the active zone).
+      // Sibling snapshots are deliberately out of scope — this only reads
+      // the primary session's own subagents.
+      if (snapshot.status === 'done' && snapshot.subagents.some(s => s.running && s.background)) {
+        snapshot.status = 'running';
+      }
+
       // Apply stale transition: done + acknowledged + 10s elapsed = stale
       // But guard against enqueued sessions (C3): a queued session is done+acknowledged
       // but should not go stale while waiting for dequeue.

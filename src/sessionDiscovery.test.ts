@@ -552,8 +552,9 @@ describe('SessionDiscovery', () => {
     const snapshotsAfter = discovery.getSnapshots();
     const oldInAll = snapshotsAfter.find(s => s.sessionId === oldSessionId);
     expect(oldInAll).toBeDefined();
-    // Extended archive entries are 8+ days old, so they get display status 'stale'
-    expect(oldInAll!.status === 'done' || oldInAll!.status === 'stale').toBe(true);
+    // Extended archive entries are stamped 'stale' directly by scanExtendedArchive
+    // (tightened per audit-ledger.md L2 fix sketch — was a loose done-or-stale check).
+    expect(oldInAll!.status).toBe('stale');
 
     // Setting range back to 1d should clear extended archive
     await discovery.setArchiveRange(86400000);
@@ -1395,5 +1396,451 @@ describe('SessionDiscovery', () => {
         ext.cleanup();
       }
     });
+  });
+
+  // ── L1 (F-1): delegating display state ──────────────────────────
+  // Ledger audit-ledger.md L1 / F-1, decided by Murray 2026-07-23: a primary
+  // session whose TURN has ended (status 'done') but which still has a live
+  // `run_in_background` subagent working presents as 'running' — no new
+  // label/chrome. Verbatim launch-banner shape from
+  // sessionManager.backgroundAgent.test.ts, reproduced here via real JSONL
+  // records (this file doesn't mock JsonlTailer).
+  describe('L1: delegating display state (done + live background subagent presents as running)', () => {
+    const BG_AGENT_ID = 'a14975e12a105f04f';
+    const BG_TOOL_ID = 'toolu_bg_delegating';
+    const LAUNCH_BANNER = 'Async agent launched successfully.\n'
+      + `agentId: ${BG_AGENT_ID} (internal ID - do not mention to user. Use SendMessage with to: '${BG_AGENT_ID}' to continue this agent.)\n`
+      + 'The agent is working in the background. You will be notified automatically when it completes.';
+
+    /** User kickoff -> Agent spawn (run_in_background) -> launch-banner
+     *  tool_result -> closing assistant text. Mirrors spawnBackgroundAgent()
+     *  in sessionManager.backgroundAgent.test.ts, then closes the turn so
+     *  the real 5s idle timer (IDLE_DELAY_MS) is armed with seenOutputInTurn. */
+    function backgroundDelegatingJsonl(): string {
+      const ts = new Date().toISOString();
+      const user = JSON.stringify({ type: 'user', timestamp: ts, message: { content: [{ type: 'text', text: 'kick off the build' }] } });
+      const spawn = JSON.stringify({
+        type: 'assistant', timestamp: ts,
+        message: { content: [{ type: 'tool_use', id: BG_TOOL_ID, name: 'Agent', input: { description: 'Build it', prompt: 'go', run_in_background: true } }] },
+      });
+      const toolResult = JSON.stringify({
+        type: 'user', timestamp: ts,
+        message: { content: [{ type: 'tool_result', tool_use_id: BG_TOOL_ID, content: LAUNCH_BANNER }] },
+      });
+      const closingText = JSON.stringify({
+        type: 'assistant', timestamp: ts,
+        message: { content: [{ type: 'text', text: 'The agent is running in the background.' }] },
+      });
+      return [user, spawn, toolResult, closingText].join('\n');
+    }
+
+    it('a session whose turn ended via the idle timer still presents as running while a run_in_background agent is live', async () => {
+      createJsonlFile('bg-delegating', backgroundDelegatingJsonl());
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+
+      // Sanity: the launch banner registered a live, background-flagged subagent
+      // and the turn is still open before the idle timer fires.
+      const preIdle = discovery.getSnapshots().find(s => s.sessionId === 'bg-delegating');
+      expect(preIdle?.status).toBe('running');
+      expect(preIdle?.subagents[0]?.running).toBe(true);
+      expect(preIdle?.subagents[0]?.background).toBe(true);
+
+      // Real IDLE_DELAY_MS (5s) idle timer fires markSessionDone() — the turn
+      // ends, but a live background agent deliberately survives it (#108).
+      // Before the L1 fix: the card reads 'done' here even though the agent
+      // is still delegating. After the fix: it presents as 'running'.
+      await new Promise(resolve => setTimeout(resolve, 5500));
+
+      const snap = discovery.getSnapshots().find(s => s.sessionId === 'bg-delegating');
+      expect(snap?.status).toBe('running');
+      // The underlying subagent state is untouched by the display derivation.
+      expect(snap?.subagents[0]?.running).toBe(true);
+      expect(snap?.subagents[0]?.background).toBe(true);
+      discovery.stop();
+    }, 10_000);
+
+    it('an ordinary done session (no live background subagent) is not affected', async () => {
+      const enqueueRecord = JSON.stringify({
+        type: 'queue-operation', operation: 'enqueue', timestamp: new Date().toISOString(),
+      });
+      createJsonlFile('plain-done', enqueueRecord);
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      const snap = discovery.getSnapshots().find(s => s.sessionId === 'plain-done');
+      expect(snap?.status).toBe('done');
+      discovery.stop();
+    });
+
+    it('sibling snapshots are explicitly out of scope for the derivation (Decision, 2026-07-23)', async () => {
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      const sibSnapshot = makeSnapshot('sib-delegating', {
+        status: 'done',
+        lastActivity: Date.now(),
+        subagents: [{
+          parentToolUseId: 'toolu_sib1',
+          agentId: 'sib-agent',
+          description: 'x',
+          running: true,
+          waitingOnPermission: false,
+          startedAt: Date.now(),
+          resultPreview: null,
+          toolsCompleted: 0,
+          blocking: false,
+          background: true,
+        }],
+      });
+      (discovery as unknown as {
+        siblingManager: { getSnapshots: () => unknown[] };
+      }).siblingManager.getSnapshots = () => [{ ...sibSnapshot }];
+
+      // A live background agent on a SIBLING done card is left alone — the
+      // derivation only reads this.sessions (primary), never siblingManager.
+      const snap = discovery.getSnapshots().find(s => s.sessionId === 'sib-delegating');
+      expect(snap?.status).toBe('done');
+      discovery.stop();
+    });
+  });
+
+  // ── L2 (H-2): C3 enqueue-vs-stale guard + primary done->stale rollover ──
+  describe('L2: done+acknowledged+10s -> stale rollover, gated by the C3 enqueue guard', () => {
+    /** Writes an already-done, already-acknowledged session and returns its id.
+     *  `enqueuedAtOffsetMs` is subtracted from `now` (the FAKED Date) to control
+     *  how old the enqueue record's own timestamp is, independent of `ackAgeMs`. */
+    function makeAckedDoneSession(
+      sessionId: string,
+      now: number,
+      opts: { enqueuedAtOffsetMs?: number } = {},
+    ): void {
+      const enqueueTs = new Date(now - (opts.enqueuedAtOffsetMs ?? 0)).toISOString();
+      const enqueueRecord = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: enqueueTs });
+      createJsonlFile(sessionId, enqueueRecord);
+    }
+
+    it('(a) rollover fires at ack-age 11s once the enqueue guard has long expired', async () => {
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        makeAckedDoneSession('roll-11s', t0, { enqueuedAtOffsetMs: 200_000 }); // guard expired (>120s)
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        discovery.acknowledgeSession('roll-11s');
+
+        vi.setSystemTime(t0 + 11_000);
+        expect(discovery.getSnapshots().find(s => s.sessionId === 'roll-11s')?.status).toBe('stale');
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('(b) stays done at ack-age 9s (strict > 10_000, not >=)', async () => {
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        makeAckedDoneSession('roll-9s', t0, { enqueuedAtOffsetMs: 200_000 });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        discovery.acknowledgeSession('roll-9s');
+
+        vi.setSystemTime(t0 + 9_000);
+        expect(discovery.getSnapshots().find(s => s.sessionId === 'roll-9s')?.status).toBe('done');
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('(c) a missing acknowledgedAt falls back to timestamp 0 and rolls immediately', async () => {
+      // Seed session-meta.json directly with acknowledged:true but no
+      // acknowledgedAt, so `meta.acknowledgedAt ?? 0` is exercised.
+      const sessionId = 'roll-no-ack-timestamp';
+      makeAckedDoneSession(sessionId, Date.now(), { enqueuedAtOffsetMs: 200_000 });
+      const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+      fs.writeFileSync(metaPath, JSON.stringify({
+        sessions: {
+          [sessionId]: { title: null, dismissed: false, acknowledged: true, acknowledgedAt: null, firstSeen: Date.now() },
+        },
+      }));
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.status).toBe('stale');
+      discovery.stop();
+    });
+
+    it('(d) the C3 guard suppresses rollover while now - enqueuedAt < 120_000, even with ack-age past 10s', async () => {
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        makeAckedDoneSession('roll-guarded', t0); // enqueuedAt === t0 (fresh)
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        discovery.acknowledgeSession('roll-guarded');
+
+        // Ack-age is well past 10s, but the enqueue guard is still inside 120s.
+        vi.setSystemTime(t0 + 60_000);
+        expect(discovery.getSnapshots().find(s => s.sessionId === 'roll-guarded')?.status).toBe('done');
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('(e) rollover resumes once the guard expires at 121s', async () => {
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        makeAckedDoneSession('roll-guard-expires', t0);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        discovery.acknowledgeSession('roll-guard-expires');
+
+        vi.setSystemTime(t0 + 121_000);
+        expect(discovery.getSnapshots().find(s => s.sessionId === 'roll-guard-expires')?.status).toBe('stale');
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('(f) the guard anchors to the enqueue RECORD timestamp on replay, not Date.now() at read time', async () => {
+      // Simulate a replay: the enqueue record's own timestamp is already old
+      // (250s before "now"), even though the file is being read for the first
+      // time right now. If the guard anchored to Date.now() at processing
+      // time, it would read as "just enqueued" and wrongly suppress rollover.
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        makeAckedDoneSession('roll-replay-anchor', t0, { enqueuedAtOffsetMs: 250_000 });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        discovery.acknowledgeSession('roll-replay-anchor');
+
+        vi.setSystemTime(t0 + 11_000);
+        expect(discovery.getSnapshots().find(s => s.sessionId === 'roll-replay-anchor')?.status).toBe('stale');
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // ── L4 (H-3): sibling-worktree done->stale rollover ─────────────────
+  // lastActivity-anchored, ack-free — deliberately different from the primary
+  // path (siblings can't do cross-workspace meta reads). Baseline comment
+  // preserved verbatim at sessionDiscovery.ts's sibling merge loop.
+  describe('L4: sibling done->stale rollover is lastActivity-anchored, no ack required', () => {
+    function injectSibling(discovery: SessionDiscovery, snapshot: SessionSnapshot): void {
+      (discovery as unknown as {
+        siblingManager: { getSnapshots: () => unknown[] };
+      }).siblingManager.getSnapshots = () => [{ ...snapshot }];
+    }
+
+    it('(a) rolls to stale at 11s past lastActivity', async () => {
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      injectSibling(discovery, makeSnapshot('sib-roll-11s', {
+        status: 'done', lastActivity: Date.now() - 11_000,
+        worktreeRoot: '/repos/sibling', worktreeLabel: 'sibling',
+      }));
+      expect(discovery.getSnapshots().find(s => s.sessionId === 'sib-roll-11s')?.status).toBe('stale');
+      discovery.stop();
+    });
+
+    it('(b) stays done at 9s past lastActivity', async () => {
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      injectSibling(discovery, makeSnapshot('sib-roll-9s', {
+        status: 'done', lastActivity: Date.now() - 9_000,
+        worktreeRoot: '/repos/sibling', worktreeLabel: 'sibling',
+      }));
+      expect(discovery.getSnapshots().find(s => s.sessionId === 'sib-roll-9s')?.status).toBe('done');
+      discovery.stop();
+    });
+
+    it('(c) rolls to stale with no acknowledged flag at all -- lastActivity is the sole anchor', async () => {
+      // No session-meta.json entry exists for this sibling id at all: proves
+      // the rollover doesn't depend on `acknowledged`/`acknowledgedAt`, unlike
+      // the primary-session path (L2).
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+      const preEntry = fs.existsSync(metaPath)
+        ? JSON.parse(fs.readFileSync(metaPath, 'utf-8')).sessions?.['sib-roll-no-meta']
+        : undefined;
+      expect(preEntry).toBeUndefined();
+      injectSibling(discovery, makeSnapshot('sib-roll-no-meta', {
+        status: 'done', lastActivity: Date.now() - 11_000,
+        worktreeRoot: '/repos/sibling', worktreeLabel: 'sibling',
+      }));
+      expect(discovery.getSnapshots().find(s => s.sessionId === 'sib-roll-no-meta')?.status).toBe('stale');
+      discovery.stop();
+    });
+
+    it('(d) leaves non-done statuses untouched regardless of lastActivity age', async () => {
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      injectSibling(discovery, makeSnapshot('sib-running-old', {
+        status: 'running', lastActivity: Date.now() - 60_000,
+        worktreeRoot: '/repos/sibling', worktreeLabel: 'sibling',
+      }));
+      expect(discovery.getSnapshots().find(s => s.sessionId === 'sib-running-old')?.status).toBe('running');
+      discovery.stop();
+    });
+
+    it('(e) a rolled sibling sorts into the completed zone by lastActivity, alongside primary completed cards', async () => {
+      const discovery = makeDiscovery();
+      const enqueueRecord = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: new Date().toISOString() });
+      createJsonlFile('primary-done', enqueueRecord);
+      await discovery.start(() => {});
+      injectSibling(discovery, makeSnapshot('sib-rolled-sort', {
+        status: 'done', lastActivity: Date.now() - 11_000,
+        worktreeRoot: '/repos/sibling', worktreeLabel: 'sibling',
+      }));
+      const snaps = discovery.getSnapshots().filter(s => !s.dismissed);
+      const sibIdx = snaps.findIndex(s => s.sessionId === 'sib-rolled-sort');
+      expect(snaps[sibIdx]?.status).toBe('stale');
+      // Completed zone (done + stale) sorted by lastActivity descending — the
+      // primary-done card (just created, lastActivity ~ now) sorts BEFORE the
+      // sibling rolled 11s ago.
+      const primaryIdx = snaps.findIndex(s => s.sessionId === 'primary-done');
+      expect(primaryIdx).toBeGreaterThanOrEqual(0);
+      expect(primaryIdx).toBeLessThan(sibIdx);
+      discovery.stop();
+    });
+  });
+
+  // ── L10 (A2-1): dismiss now acknowledges never-focused done sessions ───
+  // Intentional new behaviour (not a bug) — restoring a done-but-never-focused
+  // card more than 10s after dismissal now shows 'stale' (grey, seen) instead
+  // of a perpetual teal 'done' (unseen).
+  describe('L10: restoring a dismissed, never-focused done session shows stale after 10s, done within it', () => {
+    it('shows stale when restored more than 10s after dismissal', async () => {
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        // Enqueue timestamp offset 200s into the past so the C3 guard (120s)
+        // has already cleared by t0 — otherwise it masks the 10s ack-age
+        // window this test actually means to exercise (see makeAckedDoneSession
+        // in the L2 describe block above, same pattern).
+        const enqueueRecord = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: new Date(t0 - 200_000).toISOString() });
+        createJsonlFile('dismiss-then-restore-late', enqueueRecord);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+
+        discovery.dismissSession('dismiss-then-restore-late');
+        vi.setSystemTime(t0 + 11_000);
+        discovery.undismissSession('dismiss-then-restore-late');
+
+        expect(discovery.getSnapshots().find(s => s.sessionId === 'dismiss-then-restore-late')?.status).toBe('stale');
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('still shows done when restored within the 10s window', async () => {
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        // Same C3-clearing offset as above, so 'done' here is genuinely from
+        // the 10s ack-age window, not an artefact of the enqueue guard.
+        const enqueueRecord = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: new Date(t0 - 200_000).toISOString() });
+        createJsonlFile('dismiss-then-restore-soon', enqueueRecord);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+
+        discovery.dismissSession('dismiss-then-restore-soon');
+        vi.setSystemTime(t0 + 5_000);
+        discovery.undismissSession('dismiss-then-restore-soon');
+
+        expect(discovery.getSnapshots().find(s => s.sessionId === 'dismiss-then-restore-soon')?.status).toBe('done');
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // ── L11 (A2-2): dismiss must not re-stamp acknowledgedAt for an already-acked session ──
+  describe('L11: dismissing an already-acknowledged done session leaves acknowledgedAt untouched', () => {
+    it('acknowledgedAt survives dismiss+restore unchanged (guarded by acknowledgeSession\'s idempotence check)', async () => {
+      const enqueueRecord = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: new Date().toISOString() });
+      createJsonlFile('acked-then-dismissed', enqueueRecord);
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+
+      discovery.acknowledgeSession('acked-then-dismissed');
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+      const before = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      const firstAckedAt = before.sessions['acked-then-dismissed'].acknowledgedAt;
+      expect(typeof firstAckedAt).toBe('number');
+
+      // Small real delay so a regression that re-stamps would produce a
+      // strictly later timestamp, not one that happens to coincide.
+      await new Promise(resolve => setTimeout(resolve, 20));
+      discovery.dismissSession('acked-then-dismissed');
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      const after = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(after.sessions['acked-then-dismissed'].acknowledgedAt).toBe(firstAckedAt);
+      discovery.stop();
+    });
+  });
+
+  // ── L12 (B-1): poll-cycle live-title write-back, incl. team-claimed widening ──
+  describe('L12: poll-cycle title write-back caches aiTitle/customTitle into session-meta.json', () => {
+    function aiTitleJsonl(title: string): string {
+      const ts = new Date().toISOString();
+      const user = JSON.stringify({ type: 'user', timestamp: ts, message: { content: [{ type: 'text', text: 'hi' }] } });
+      const aiTitle = JSON.stringify({ type: 'ai-title', timestamp: ts, aiTitle: title });
+      return [user, aiTitle].join('\n');
+    }
+
+    it('(a) caches aiTitle for an ordinary live session on the next poll cycle', async () => {
+      createJsonlFile('poll-title-live', aiTitleJsonl('Refactor the widget'));
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+
+      // Wait for at least one poll cycle (500ms active / 2000ms idle + margin).
+      await new Promise(resolve => setTimeout(resolve, 2500));
+
+      const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(meta.sessions['poll-title-live'].aiTitle).toBe('Refactor the widget');
+      discovery.stop();
+    }, 5000);
+
+    it('(b) still caches the title for a session claimed by an active local team (deliberate widening)', async () => {
+      createJsonlFile('poll-title-team-claimed', aiTitleJsonl('Team-claimed session'));
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+
+      // Stub the team-claim check so this session is suppressed as a standalone
+      // card, the same way an in-progress team member session would be — the
+      // title write-back loop in pollInner runs over ALL sessions regardless.
+      (discovery as unknown as {
+        teamDiscovery: { getClaimedSessionIds: () => Set<string> };
+      }).teamDiscovery.getClaimedSessionIds = () => new Set(['poll-title-team-claimed']);
+
+      // Confirm the card really is suppressed from getSnapshots() while claimed.
+      expect(discovery.getSnapshots().find(s => s.sessionId === 'poll-title-team-claimed')).toBeUndefined();
+
+      await new Promise(resolve => setTimeout(resolve, 2500));
+
+      const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(meta.sessions['poll-title-team-claimed'].aiTitle).toBe('Team-claimed session');
+      discovery.stop();
+    }, 5000);
   });
 });
