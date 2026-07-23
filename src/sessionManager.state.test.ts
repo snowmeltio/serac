@@ -8,6 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { JsonlRecord } from './types.js';
+import { HookEventRouter } from './hookEventRouter.js';
 
 let mockRecords: JsonlRecord[] = [];
 vi.mock('./jsonlTailer.js', () => ({
@@ -23,7 +24,7 @@ vi.mock('./jsonlTailer.js', () => ({
   },
 }));
 
-const { SessionManager } = await import('./sessionManager.js');
+const { SessionManager, setConfidenceThresholds } = await import('./sessionManager.js');
 
 type SM = InstanceType<typeof SessionManager>;
 
@@ -454,5 +455,123 @@ describe('SessionManager: turn guard (extended thinking)', () => {
     vi.advanceTimersByTime(21_000); // now > 901_000
     expect(mgr.demoteIfStale(30_000)).toBe(true);
     expect(mgr.getStatus()).toBe('done');
+  });
+});
+
+// ── Confidence tiers [#106 / H-5] ─────────────────────────────────────────
+// computeConfidence() short-circuits to 'high' for three cases (done,
+// compacting, active subagents) before falling through to the age-based
+// tiers. These tests isolate each short-circuit from ordinary recency by
+// advancing the clock well past the age thresholds that would otherwise
+// apply, and pin the age-tier boundary as strictly `<` (not `<=`).
+describe('SessionManager: confidence tiers [H-5]', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockRecords = [];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('compacting short-circuits confidence to high past the low-tier age threshold, inside the 60s grace window', async () => {
+    // PreCompact is hook-only (no JSONL fallback — see sessionLifecycleTracker.ts),
+    // so this manager needs its own HookEventRouter, unlike the other tests
+    // in this file.
+    const SID = 'confidence-compact';
+    const router = new HookEventRouter();
+    const mgr = new SessionManager(SID, '/tmp/test.jsonl', 'test-ws', { hookRouter: router });
+    await feed(mgr, [{
+      type: 'assistant', timestamp: ts(),
+      message: { content: [{ type: 'text', text: 'thinking' }] },
+    }]);
+    router.onHookEvent(SID, 'PreCompact', { trigger: 'auto' });
+    expect(mgr.getSnapshot().compacting).toBe(true);
+
+    // 31s of silence — past CONFIDENCE_MEDIUM_MS (30s default), which would
+    // otherwise decay confidence to 'low'. Still inside the 60s compact grace
+    // window, so this is the short-circuit at work, not ordinary recency
+    // (hookEnrichment.test.ts only asserts this at age ~0).
+    vi.advanceTimersByTime(31_000);
+    const snap = mgr.getSnapshot();
+    expect(snap.compacting).toBe(true);
+    expect(snap.confidence).toBe('high');
+  });
+
+  it('done short-circuits confidence to high regardless of elapsed silence', async () => {
+    const mgr = makeManager();
+    // A freshly constructed manager starts 'done' with lastActivity = now.
+    expect(mgr.getStatus()).toBe('done');
+
+    // 120s of silence — far past the low-tier threshold.
+    vi.advanceTimersByTime(120_000);
+    expect(mgr.getStatus()).toBe('done');
+    expect(mgr.getSnapshot().confidence).toBe('high');
+  });
+
+  it('a live blocking subagent boosts confidence to high past the 5s high-tier window', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [{
+      type: 'assistant', timestamp: ts(),
+      message: { content: [{ type: 'tool_use', name: 'Agent', id: 'agent1', input: { description: 'test', prompt: 'do stuff' } }] },
+    }]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(true);
+
+    // 6s of silence — past CONFIDENCE_HIGH_MS (5s default), which would
+    // otherwise decay confidence to 'medium'. The still-running, still-blocking
+    // subagent is direct evidence the session is alive [#108].
+    vi.advanceTimersByTime(6_000);
+    const snap = mgr.getSnapshot();
+    expect(snap.subagents[0].running).toBe(true);
+    expect(snap.confidence).toBe('high');
+  });
+
+  it('confidence decays to low at 31s with a non-exempt tool still open (unconditional — no status branching)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [{
+      type: 'assistant', timestamp: ts(),
+      message: { content: [{ type: 'tool_use', name: 'SomeTool', id: 'tu1' }] },
+    }]);
+    expect(mgr.getStatus()).toBe('running');
+
+    // Non-exempt tool never resolves: the permission timer fires 'waiting' at
+    // 3s and it stays there — no compacting, no done, no subagents, so none of
+    // the confidence short-circuits apply. Deterministic outcome (no `if`
+    // guard on status, unlike the previously loose assertion this replaces).
+    vi.advanceTimersByTime(31_000);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().confidence).toBe('low');
+  });
+
+  it('age-tier boundaries are strict less-than: exact threshold age is NOT within the tier', async () => {
+    const mgr = makeManager();
+    // Wide, easily distinguishable thresholds so the default IDLE_DELAY_MS
+    // (5s) idle-timer tick can't coincide with either checkpoint.
+    setConfidenceThresholds(10_000, 20_000);
+    try {
+      // Edit is exempt (no permission timer) and stays active with no
+      // tool_result, so the session holds 'running' for the whole test —
+      // isolates the age-tier math from any timer-driven status flip.
+      await feed(mgr, [{
+        type: 'assistant', timestamp: ts(),
+        message: { content: [{ type: 'tool_use', name: 'Edit', id: 'e1' }] },
+      }]);
+      expect(mgr.getStatus()).toBe('running');
+
+      // age === 10_000 exactly: `age < CONFIDENCE_HIGH_MS` is false, so this
+      // must NOT read 'high'.
+      vi.advanceTimersByTime(10_000);
+      expect(mgr.getStatus()).toBe('running');
+      expect(mgr.getSnapshot().confidence).toBe('medium');
+
+      // age === 20_000 exactly: `age < CONFIDENCE_MEDIUM_MS` is false, so this
+      // must NOT read 'medium'.
+      vi.advanceTimersByTime(10_000);
+      expect(mgr.getStatus()).toBe('running');
+      expect(mgr.getSnapshot().confidence).toBe('low');
+    } finally {
+      // Restore defaults so global state doesn't bleed into other tests.
+      setConfidenceThresholds(5_000, 30_000);
+    }
   });
 });
