@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parseWorkflowSidecar } from './workflowSidecar.js';
+import { parseWorkflowSidecar, parseSidecarCompletedAt } from './workflowSidecar.js';
 
 function loadFixture(name: string): string {
   return fs.readFileSync(path.resolve(__dirname, '__fixtures__', 'workflows', name), 'utf8');
@@ -215,5 +215,36 @@ describe('parseWorkflowSidecar', () => {
     expect(snap!.phases).toEqual([{ index: 1, title: 'Recovered', detail: '' }]);
     expect(snap!.agents[0].phaseTitle).toBe('Recovered');
     expect(snap!.counts.running).toBe(1);
+  });
+});
+
+describe('parseSidecarCompletedAt', () => {
+  // Discovery-internal completion evidence used by workflowDiscovery.ts to
+  // tell a genuinely finished run from one relaunched under the same runId
+  // (resumeFromRunId) — production's exclusive path (692/692 real sidecars
+  // observed carry `timestamp`), so it needs its own direct coverage rather
+  // than only being exercised indirectly through the mtime fallback.
+
+  it('returns null when the timestamp field is absent', () => {
+    expect(parseSidecarCompletedAt(JSON.stringify({ runId: 'wf_x' }))).toBeNull();
+  });
+
+  it('returns null for an unparseable ISO string', () => {
+    expect(parseSidecarCompletedAt(JSON.stringify({ runId: 'wf_x', timestamp: 'not-a-date' }))).toBeNull();
+    expect(parseSidecarCompletedAt(JSON.stringify({ runId: 'wf_x', timestamp: '' }))).toBeNull();
+  });
+
+  it('returns null for malformed JSON, non-object content, or a non-string timestamp', () => {
+    expect(parseSidecarCompletedAt('not json')).toBeNull();
+    expect(parseSidecarCompletedAt('[]')).toBeNull();
+    expect(parseSidecarCompletedAt('"a string"')).toBeNull();
+    expect(parseSidecarCompletedAt(JSON.stringify({ runId: 'wf_x', timestamp: 1784807699204 }))).toBeNull();
+  });
+
+  it('parses a valid ISO 8601 timestamp to epoch ms', () => {
+    // Real repro value (session 0d045c02-…, wf_64c6bbb3-4e2's first
+    // completion) — 2026-07-23T11:30:44.320Z.
+    const ms = parseSidecarCompletedAt(JSON.stringify({ runId: 'wf_x', timestamp: '2026-07-23T11:30:44.320Z' }));
+    expect(ms).toBe(Date.parse('2026-07-23T11:30:44.320Z'));
   });
 });

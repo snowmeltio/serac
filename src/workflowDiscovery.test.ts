@@ -911,5 +911,172 @@ describe('WorkflowDiscovery', () => {
         vi.useRealTimers();
       }
     });
+
+    it('does NOT self-heal to the live tier while a resumed-abandoned run stays genuinely quiet (adversarial review #1)', async () => {
+      // The abandoned-resume fallback's own change tracking must not be
+      // fooled by the run-level `status` flip the unconfirmed-liveness
+      // ceiling itself causes — comparing against the wrong signature would
+      // refresh the inactivity clock from nothing but that flip, and the
+      // classification would flip straight back to 'running' on the very
+      // next scan with zero real journal growth. Pin several quiet cycles.
+      vi.useFakeTimers();
+      try {
+        const runId = 'wf_resume-quiet-001';
+        const sidecarFile = writeSidecar(runId, validSidecar(runId));
+        const t0 = Date.now();
+        setMtimeMs(sidecarFile, t0);
+
+        const runDir = liveRunDir(runId);
+        fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+          JSON.stringify({ type: 'started', key: 'v2:r', agentId: 'resumedagt' }) + '\n', 'utf-8');
+        setMtimeMs(path.join(runDir, 'journal.jsonl'), t0 + 10_000);
+
+        const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+        await d.scan();
+        expect(d.getWorkflowSnapshots(emptyMeta())[0].source).toBe('live');
+
+        vi.setSystemTime(t0 + 31 * 60 * 1000);
+        await d.scan();
+        expect(d.getWorkflowSnapshots(emptyMeta())[0].source).toBe('sidecar'); // classified abandoned
+
+        // Several more scans at the SAME instant, with no journal change at
+        // all — must stay pinned on the sidecar tree throughout, never flip
+        // back to 'live'/'running' on its own.
+        for (let i = 0; i < 4; i++) {
+          await d.scan();
+          const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+          expect(snap.source).toBe('sidecar');
+          expect(snap.status).toBe('completed');
+        }
+        d.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('recovers to the live tier when a resumed-abandoned run wakes back up (finding 1 — sig/lastChangedAt update in the fallback branch)', async () => {
+      vi.useFakeTimers();
+      try {
+        const runId = 'wf_resume-recover-001';
+        const sidecarFile = writeSidecar(runId, validSidecar(runId));
+        const t0 = Date.now();
+        setMtimeMs(sidecarFile, t0);
+
+        const runDir = liveRunDir(runId);
+        const journalFile = path.join(runDir, 'journal.jsonl');
+        fs.writeFileSync(journalFile,
+          JSON.stringify({ type: 'started', key: 'v2:r', agentId: 'resumedagt' }) + '\n', 'utf-8');
+        setMtimeMs(journalFile, t0 + 10_000); // resumed
+
+        const d = new WorkflowDiscovery(projectsDir, WS_KEY, log); // no liveness probe
+        await d.scan();
+        expect(d.getWorkflowSnapshots(emptyMeta())[0].source).toBe('live'); // re-engaged
+
+        // Gone quiet past UNCONFIRMED_LIVENESS_CEILING_MS → classified as an
+        // abandoned resume, falls back to the sidecar tree (same as above).
+        vi.setSystemTime(t0 + 31 * 60 * 1000);
+        await d.scan();
+        expect(d.getWorkflowSnapshots(emptyMeta())[0].source).toBe('sidecar');
+        // One quiet cycle at the same instant to establish there is no false
+        // heal before the genuine wake-up (mirrors the test above).
+        await d.scan();
+        expect(d.getWorkflowSnapshots(emptyMeta())[0].source).toBe('sidecar');
+
+        // The run genuinely wakes back up: a new agent starts.
+        fs.appendFileSync(journalFile,
+          JSON.stringify({ type: 'started', key: 'v2:w', agentId: 'wokeupagt' }) + '\n');
+        setMtimeMs(journalFile, Date.now());
+
+        // First post-wake-up scan: buildLiveSnapshot still computes
+        // 'incomplete' (the clock hasn't cleared yet this cycle) but the
+        // fallback branch now records the content change.
+        await d.scan();
+        // Second post-wake-up scan: the cleared clock lets status recompute
+        // to 'running' and the run re-enters the live tier.
+        await d.scan();
+        const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+        expect(snap.source).toBe('live');
+        expect(snap.status).toBe('running');
+        expect(snap.agents.map(a => a.agentId).sort()).toEqual(['resumedagt', 'wokeupagt']);
+        d.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('an oversized rewritten sidecar (post-resume completion) does not pin the card on running forever (finding 2)', async () => {
+      const runId = 'wf_resume-oversized-001';
+      const sidecarFile = writeSidecar(runId, validSidecar(runId, { agentCount: 1 }));
+      const now = Date.now();
+      setMtimeMs(sidecarFile, now - 20_000);
+
+      const runDir = liveRunDir(runId);
+      const journalFile = path.join(runDir, 'journal.jsonl');
+      fs.writeFileSync(journalFile,
+        JSON.stringify({ type: 'started', key: 'v2:r', agentId: 'resumedagt' }) + '\n', 'utf-8');
+      setMtimeMs(journalFile, now - 10_000); // resumed, still live
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].source).toBe('live'); // re-engaged
+
+      // The resumed run completes, but its rewritten sidecar lands oversized
+      // (resumes strictly grow the tree — a large fan-out can plausibly push
+      // it past the cap even after raising it to match the journal's 4MB
+      // tolerance). scanSidecars can never successfully reparse this file.
+      const oversizedBody = JSON.stringify({
+        ...validSidecar(runId, { agentCount: 2 }),
+        _pad: 'x'.repeat(4 * 1024 * 1024 + 16), // push past SIDECAR_MAX_BYTES
+      });
+      fs.writeFileSync(sidecarFile, oversizedBody, 'utf-8');
+      setMtimeMs(sidecarFile, now); // newer than the journal — a genuine completion rewrite
+
+      await d.scan();
+      const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+      // Must settle back to the (stale-content, but no longer misclassified
+      // live) sidecar tier rather than riding 'running' forever because the
+      // oversized rewrite can never be reparsed.
+      expect(snap.source).toBe('sidecar');
+      expect(snap.status).toBe('completed');
+      expect(snap.agents.map(a => a.agentId)).toEqual(['aaa111']); // the last tree we COULD parse
+      expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('exceeds size cap'));
+
+      // And it stays settled on later scans too — not just a one-cycle blip.
+      await d.scan();
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].source).toBe('sidecar');
+      d.dispose();
+    });
+
+    it("prefers the sidecar's content `timestamp` over its file mtime when the two diverge (finding 3)", async () => {
+      // File mtime says "written long ago" (would misread as resumed if
+      // mtime alone were trusted); the sidecar's own `timestamp` field says
+      // "written after the journal's last activity" — the genuinely
+      // authoritative signal, since it's the runtime's own record of when it
+      // completed, not a filesystem artefact that can be skewed by copies,
+      // syncs, or clock jitter. completedAtMs must win.
+      const runId = 'wf_resume-precedence-001';
+      const t0 = Date.now();
+      const contentTimestampMs = t0 + 5_000; // AFTER the journal
+      const sidecarFile = writeSidecar(runId, validSidecar(runId, {
+        timestamp: new Date(contentTimestampMs).toISOString(),
+      }));
+      setMtimeMs(sidecarFile, t0 - 100_000); // file mtime says "long ago"
+
+      const runDir = liveRunDir(runId);
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify({ type: 'started', key: 'v2:r', agentId: 'resumedagt' }) + '\n', 'utf-8');
+      setMtimeMs(path.join(runDir, 'journal.jsonl'), t0); // between the two — the discriminator
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+      // If mtime (t0-100_000) were used, the journal (t0) would read as
+      // resumed (live tier). Using the content timestamp (t0+5_000, after
+      // the journal) correctly reads as NOT resumed — completed sidecar tier.
+      expect(snap.source).toBe('sidecar');
+      expect(snap.status).toBe('completed');
+      expect(snap.agents.map(a => a.agentId)).toEqual(['aaa111']);
+      d.dispose();
+    });
   });
 });

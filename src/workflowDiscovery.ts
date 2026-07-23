@@ -58,6 +58,19 @@ interface LiveRunState {
    *  for the unconfirmed-liveness ceiling below. Initialised to first-sight,
    *  not run start, so a just-discovered run is never born "stale". */
   lastChangedAt: number;
+  /** Content-only signature (run `status` excluded) tracked while a resumed
+   *  run sits in scanLiveRuns' abandoned-resume fallback — deliberately
+   *  separate from `sig`, which embeds `status` and is used by the plain
+   *  live path. `status` is itself DERIVED from `lastChangedAt` via the
+   *  unconfirmed-liveness ceiling, so comparing against `sig` there would be
+   *  circular: the very act of the ceiling flipping status to 'incomplete'
+   *  changes `sig`, which would read as "real activity" and refresh
+   *  `lastChangedAt`, which un-flips status back to 'running' on the very
+   *  next scan — a false wake-up with zero actual journal growth (verified
+   *  empirically; the plain live path has the identical latent quirk,
+   *  out of scope for this fix). null until the fallback is first entered,
+   *  so establishing the baseline is never itself mistaken for a change. */
+  fallbackContentSig: string | null;
 }
 
 /** Derive the live-tier display fields for one agent from its record-0
@@ -327,6 +340,21 @@ export class WorkflowDiscovery {
 
       if (stat.size > WorkflowDiscovery.SIDECAR_MAX_BYTES) {
         this.log.warn(`[workflows] Sidecar exceeds size cap, skipping: ${file}`);
+        // The content is never read here, so completedAtMs (parsed from it)
+        // can't be refreshed — but leaving the OLD evidence in place would
+        // pin isResumed true forever once a resume's completion rewrite
+        // happens to land oversized (resumes strictly grow the tree, so this
+        // is exactly the shape that rewrite takes). Refresh mtimeMs from the
+        // stat (the one thing readable without parsing) and null out
+        // completedAtMs so the `completedAtMs ?? mtimeMs` fallback in
+        // scanLiveRuns uses it — a genuinely-just-rewritten sidecar's mtime
+        // is at least as fresh as the journal's, which is enough to flip
+        // isResumed false and let the run settle back to the (stale-content
+        // but no-longer-misclassified-live) sidecar tier.
+        const existing = this.sidecarEvidence.get(runId);
+        if (existing) {
+          this.sidecarEvidence.set(runId, { ...existing, mtimeMs: stat.mtimeMs, completedAtMs: null });
+        }
         continue;
       }
 
@@ -418,7 +446,19 @@ export class WorkflowDiscovery {
       const sidecarEvidence = this.sidecarEvidence.get(runId);
       const isResumed = !!sidecarEvidence
         && lastActivityMs > (sidecarEvidence.completedAtMs ?? sidecarEvidence.mtimeMs) + WorkflowDiscovery.RESUME_JOURNAL_TOLERANCE_MS;
-      if (sidecarEvidence && !isResumed) { continue; } // sidecar tier owns it, unchanged
+      if (sidecarEvidence && !isResumed) {
+        // Sidecar tier owns it. Normally scanSidecars already wrote this
+        // cycle's `this.snapshots` entry to the same object — but when the
+        // sidecar was skipped for exceeding the size cap (never reparsed),
+        // that write never happened; assert it here too so a run doesn't
+        // ride a frozen, stale 'running' live snapshot forever once its
+        // (oversized, unreadable) completion evidence says otherwise.
+        if (this.snapshots.get(runId) !== sidecarEvidence.snap) {
+          this.snapshots.set(runId, sidecarEvidence.snap);
+          this.changedSincePoll = true;
+        }
+        continue;
+      }
 
       // A run dir with no sidecar (or a resumed one) that has shown no
       // activity past the age gate is an abandoned/killed run — drop it
@@ -452,6 +492,38 @@ export class WorkflowDiscovery {
         // necessarily partial (and would otherwise flash the card from its
         // settled completed state to an alarming "incomplete" for a resume
         // nobody is watching anymore).
+        //
+        // Still record whether THIS cycle's rebuild actually changed vs the
+        // last one, even though we're displaying the sidecar instead of it —
+        // buildLiveSnapshot's unconfirmed-liveness ceiling reads
+        // `state.lastChangedAt` to decide `inactiveTooLong`, and that clock
+        // only ever advances on a real content change. Skipping this update
+        // here (because we `continue` before the plain live path's own
+        // state.sig/lastChangedAt write below) would freeze the clock the
+        // instant a resume is first classified incomplete — journal growth
+        // folded into state.started on every later cycle, but never
+        // recorded as activity, so `inactiveTooLong` stays true forever and
+        // a genuine wake-up could never clear it.
+        //
+        // Uses `fallbackContentSig`, NOT `sig`: `sig` embeds the run's
+        // `status`, which is itself derived from `lastChangedAt` via the
+        // ceiling above — comparing against it here would be circular, since
+        // the very act of the ceiling flipping status to 'incomplete' changes
+        // `sig` and would misread as "real activity", refreshing
+        // `lastChangedAt` and un-flipping status back to 'running' on the
+        // very next scan even with zero actual journal growth (confirmed
+        // empirically against a fixed sig; the plain live path has the
+        // identical latent quirk, out of scope here). A truly quiet
+        // abandoned run's CONTENT is unaffected, so `fallbackContentSig`
+        // stays put and the clock stays frozen.
+        const state = this.liveRuns.get(runId);
+        if (state) {
+          const contentSig = liveSnapshotSig({ ...snap, status: 'incomplete' });
+          if (state.fallbackContentSig !== null && state.fallbackContentSig !== contentSig) {
+            state.lastChangedAt = now;
+          }
+          state.fallbackContentSig = contentSig;
+        }
         if (this.snapshots.get(runId) !== sidecarEvidence.snap) {
           this.snapshots.set(runId, sidecarEvidence.snap);
           this.changedSincePoll = true;
@@ -460,6 +532,11 @@ export class WorkflowDiscovery {
       }
 
       const state = this.liveRuns.get(runId);
+      // Confirmed live again (not the abandoned-resume fallback above) —
+      // clear any fallback-tracking baseline so a LATER abandonment episode
+      // for this same run starts fresh rather than diffing against a
+      // now-ancient content signature from a previous quiet spell.
+      if (state) { state.fallbackContentSig = null; }
       const sig = liveSnapshotSig(snap);
       if (!state || state.sig !== sig) {
         if (state) { state.sig = sig; state.lastChangedAt = now; }
@@ -532,6 +609,7 @@ export class WorkflowDiscovery {
         corr: new Map(),
         sig: '',
         lastChangedAt: now,
+        fallbackContentSig: null,
       };
       this.liveRuns.set(runId, state);
     }
@@ -744,8 +822,15 @@ export class WorkflowDiscovery {
    *  is that every on-disk read path is size-capped — see teamDiscovery). The
    *  harness caps scripts at 512KB; sidecar is JSON we parse whole. The
    *  journal cap bounds the tailer's lifetime offset, not a single read —
-   *  the tailer itself caps each cycle's read. */
-  private static readonly SIDECAR_MAX_BYTES = 1024 * 1024;
+   *  the tailer itself caps each cycle's read.
+   *
+   *  Matched to JOURNAL_MAX_BYTES (4MB, not the original 1MB): a resumed run
+   *  strictly grows the sidecar on its next completion (10→46 agents in the
+   *  2026-07-23 repro; the largest real sidecar observed was 881KB) — a cap
+   *  too close to typical sizes risks a permanently-oversized rewrite that
+   *  can never be reparsed (see the scanSidecars size-skip path below, which
+   *  still refreshes freshness evidence from the stat for exactly this case). */
+  private static readonly SIDECAR_MAX_BYTES = 4 * 1024 * 1024;
   private static readonly SCRIPT_MAX_BYTES = 1024 * 1024;
   private static readonly JOURNAL_MAX_BYTES = 4 * 1024 * 1024;
 
