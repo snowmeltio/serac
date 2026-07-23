@@ -150,6 +150,18 @@ const TASK_NOTIFICATION_PATTERN = /<task-notification>([\s\S]*?)(?:<\/task-notif
  *  dormant sweep force-completes it (missed/never-written task-notification,
  *  e.g. killed CC). A working agent writes far more often than this. */
 const BACKGROUND_AGENT_CEILING_MS = 15 * 60 * 1000;
+
+/** Clamp a record's own timestamp to wall-clock "now". JSONL timestamps are
+ *  trusted for replay accuracy (see updateSubagentActivity's docstring), but a
+ *  corrupt or clock-skewed record must never be allowed to stamp lastActivity
+ *  ahead of the present — that pins computeDemotion's age negative and
+ *  permanently defeats the hard-ceiling demotion. Shared by both lastActivity
+ *  stamping sites (main-thread and subagent). */
+function clampToNow(timestamp: Date): Date {
+  const nowMs = Date.now();
+  return timestamp.getTime() > nowMs ? new Date(nowMs) : timestamp;
+}
+
 /** Transient "blocked" activity strings set while a session waits on user input
  *  or permission. They become stale the instant the session resumes, so they're
  *  cleared on the waiting→running transition (and on a done card) rather than
@@ -780,9 +792,13 @@ export class SessionManager {
    *  (CC killed, harness crash). Registry-confirmed death completes them all at
    *  once — a dead parent has no detached children. Otherwise an agent whose
    *  own JSONL has sat unmodified past the ceiling is force-completed. The
-   *  agent FILE's mtime is the liveness source: it stays accurate even when a
-   *  dormant parent's tailers aren't being pumped, and survives replay (unlike
-   *  subagent.lastActivity, which is re-stamped to ~now on every reload). */
+   *  agent FILE's mtime is the preferred liveness source: it stays accurate
+   *  even when a dormant parent's tailers aren't being pumped. When the mtime
+   *  is unavailable (no agentId yet), the fallback is subagent.lastActivity —
+   *  now itself replay-accurate (it stamps to the record's own timestamp, not
+   *  wall-clock; same replay reasoning as the background-shell launch anchor
+   *  above), so a stale agent past its ceiling force-completes on the first
+   *  sweep after reopen rather than getting a fresh 15-min grace. */
   private sweepBackgroundAgents(now: number): boolean {
     const dead = this.isConfirmedDeadByRegistry();
     let changed = false;
@@ -991,7 +1007,7 @@ export class SessionManager {
 
     // Only update lastActivity for meaningful records (user/assistant turns).
     if (isMeaningfulRecord(record)) {
-      this.state.lastActivity = timestamp;
+      this.state.lastActivity = clampToNow(timestamp);
     }
 
     switch (record.type) {
@@ -1585,11 +1601,14 @@ export class SessionManager {
    *  without needing a loop. Takes the record's own timestamp rather than wall-clock:
    *  a reload replays the whole JSONL, so `new Date()` would re-stamp every historical
    *  subagent record to ~now, pinning lastActivity to whenever the window last opened
-   *  instead of the session's true last touch. */
+   *  instead of the session's true last touch. Clamped to now (see clampToNow): a
+   *  corrupt or clock-skewed future record must not pin lastActivity ahead of the
+   *  present, which would stall demoteIfStale indefinitely. */
   private updateSubagentActivity(subagent: SubagentInfo, timestamp: Date): void {
-    subagent.lastActivity = timestamp;
-    if (timestamp.getTime() > this.state.lastActivity.getTime()) {
-      this.state.lastActivity = timestamp;
+    const clamped = clampToNow(timestamp);
+    subagent.lastActivity = clamped;
+    if (clamped.getTime() > this.state.lastActivity.getTime()) {
+      this.state.lastActivity = clamped;
     }
   }
 
