@@ -625,7 +625,11 @@ export class DetailPanel {
         && typeof msg.containerId === 'string'
         && typeof msg.groupKey === 'string'
         && typeof msg.agentId === 'string') {
-      this.enqueueTranscript(msg.source, msg.containerId, msg.groupKey, msg.agentId, msg.full === true);
+      // Returns (rather than voids) the queue promise so real vscode — which
+      // never awaits this handler either — is unaffected, but the test
+      // mock's _fireMessage (Promise.all over every handler) can await the
+      // actual async transcript I/O instead of guessing settle-tick counts.
+      await this.enqueueTranscript(msg.source, msg.containerId, msg.groupKey, msg.agentId, msg.full === true);
     } else if (msg.type === 'selectDetailView'
         && (msg.kind === 'workflow' || msg.kind === 'subagents' || msg.kind === 'team')
         && typeof msg.id === 'string') {
@@ -866,14 +870,19 @@ export class DetailPanel {
     return onRoster ? { teamDir: teamId.slice(3), member: memberName } : null;
   }
 
-  /** Serialise transcript requests (see transcriptQueue). */
-  private enqueueTranscript(source: DetailSource, containerId: string, groupKey: string, agentId: string, wantFull: boolean): void {
-    if (!wantFull && this.transcriptQueueDepth > 0) { return; }
+  /** Serialise transcript requests (see transcriptQueue). Returns the queue
+   *  promise (rather than voiding it) purely so callers that DO want to
+   *  observe completion — the test mock's _fireMessage, notably — can await
+   *  it; production's onDidReceiveMessage never awaits its handler, so this
+   *  changes nothing about real runtime behaviour. */
+  private enqueueTranscript(source: DetailSource, containerId: string, groupKey: string, agentId: string, wantFull: boolean): Promise<void> {
+    if (!wantFull && this.transcriptQueueDepth > 0) { return this.transcriptQueue; }
     this.transcriptQueueDepth++;
     this.transcriptQueue = this.transcriptQueue
       .then(() => this.sendAgentTranscript(source, containerId, groupKey, agentId, wantFull))
       .catch(() => { /* errors are posted in-band; never break the chain */ })
       .finally(() => { this.transcriptQueueDepth--; });
+    return this.transcriptQueue;
   }
 
   /** Hard cap on the initial window read of a huge transcript: start the tail

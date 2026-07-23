@@ -159,13 +159,14 @@ describe('SessionDiscovery', () => {
     await discovery.start(() => {});
 
     discovery.dismissSession('session-1');
-    // Wait for fire-and-forget saveMeta to complete
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    // Read meta file directly
+    // Wait for fire-and-forget saveMeta to complete (poll, don't assume a
+    // fixed sleep beats disk I/O — under full-suite parallel load a flat
+    // 100ms sleep is not always enough and this flaked intermittently [F-flake]).
     const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    expect(meta.sessions['session-1'].dismissed).toBe(true);
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(meta.sessions['session-1'].dismissed).toBe(true);
+    });
     discovery.stop();
   });
 
@@ -175,8 +176,12 @@ describe('SessionDiscovery', () => {
     createJsonlFile('session-1');
     await d1.start(() => {});
     d1.dismissSession('session-1');
-    // Wait for fire-and-forget saveMeta
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Wait for fire-and-forget saveMeta [F-flake]
+    const d1MetaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(d1MetaPath, 'utf-8'));
+      expect(meta.sessions['session-1'].dismissed).toBe(true);
+    });
     d1.stop();
 
     // Second instance: should load dismissed state
@@ -201,12 +206,12 @@ describe('SessionDiscovery', () => {
     await discovery.start(() => {});
 
     discovery.dismissSession('session-done');
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    expect(meta.sessions['session-done'].dismissed).toBe(true);
-    expect(meta.sessions['session-done'].acknowledged).toBe(true);
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json'); // [F-flake]
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(meta.sessions['session-done'].dismissed).toBe(true);
+      expect(meta.sessions['session-done'].acknowledged).toBe(true);
+    });
     discovery.stop();
   });
 
@@ -218,12 +223,12 @@ describe('SessionDiscovery', () => {
     await discovery.start(() => {});
 
     discovery.dismissSession('session-active');
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    expect(meta.sessions['session-active'].dismissed).toBe(true);
-    expect(meta.sessions['session-active'].acknowledged).toBeFalsy();
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json'); // [F-flake]
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(meta.sessions['session-active'].dismissed).toBe(true);
+      expect(meta.sessions['session-active'].acknowledged).toBeFalsy();
+    });
     discovery.stop();
   });
 
@@ -264,11 +269,12 @@ describe('SessionDiscovery', () => {
     expect(discovery.getWorkflowSnapshots().find(w => w.runId === runId)?.dismissed).toBe(true);
     expect(discovery.getSnapshots().find(s => s.sessionId === 'session-wf')?.dismissed).toBe(false);
 
-    // Persisted under the workflow: key (fire-and-forget save).
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Persisted under the workflow: key (fire-and-forget save). [F-flake]
     const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    expect(meta.sessions[`workflow:${runId}`].dismissed).toBe(true);
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(meta.sessions[`workflow:${runId}`].dismissed).toBe(true);
+    });
 
     // Undismiss → back to visible.
     discovery.undismissWorkflow(runId);
@@ -359,13 +365,13 @@ describe('SessionDiscovery', () => {
     discovery.dismissSession('session-1');
     discovery.undismissSession('session-1');
 
-    // Wait for queued saves to complete
-    await new Promise(resolve => setTimeout(resolve, 200));
-
+    // Wait for queued saves to complete [F-flake]
     const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    // Final state should be undismissed (false)
-    expect(meta.sessions['session-1'].dismissed).toBe(false);
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      // Final state should be undismissed (false)
+      expect(meta.sessions['session-1'].dismissed).toBe(false);
+    });
     discovery.stop();
   });
 
@@ -380,13 +386,13 @@ describe('SessionDiscovery', () => {
     discovery.dismissSession('session-2');
     discovery.dismissSession('session-3');
 
-    await new Promise(resolve => setTimeout(resolve, 200));
-
-    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    expect(meta.sessions['session-1'].dismissed).toBe(true);
-    expect(meta.sessions['session-2'].dismissed).toBe(true);
-    expect(meta.sessions['session-3'].dismissed).toBe(true);
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json'); // [F-flake]
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(meta.sessions['session-1'].dismissed).toBe(true);
+      expect(meta.sessions['session-2'].dismissed).toBe(true);
+      expect(meta.sessions['session-3'].dismissed).toBe(true);
+    });
     discovery.stop();
   });
 
@@ -630,11 +636,14 @@ describe('SessionDiscovery', () => {
     const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
     expect(snap?.aiTitle).toBe('Refactor worktree grouping');
 
-    // Persisted to session-meta.json so subsequent scans don't re-read the JSONL
-    await new Promise(r => setTimeout(r, 100));
+    // Persisted to session-meta.json so subsequent scans don't re-read the
+    // JSONL. Fire-and-forget save — poll, don't assume a fixed sleep beats
+    // disk I/O [F-flake].
     const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    expect(meta.sessions[sessionId].aiTitle).toBe('Refactor worktree grouping');
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(meta.sessions[sessionId].aiTitle).toBe('Refactor worktree grouping');
+    });
 
     discovery.stop();
   });
@@ -701,12 +710,13 @@ describe('SessionDiscovery', () => {
     await discovery.start(() => {});
     await discovery.setArchiveRange(0);
 
-    await new Promise(r => setTimeout(r, 100));
-    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-    // Scanned marker: empty string, not undefined
-    expect(meta.sessions[sessionId].aiTitle).toBe('');
-    expect(meta.sessions[sessionId].customTitle).toBe('');
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json'); // [F-flake]
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      // Scanned marker: empty string, not undefined
+      expect(meta.sessions[sessionId].aiTitle).toBe('');
+      expect(meta.sessions[sessionId].customTitle).toBe('');
+    });
 
     discovery.stop();
   });
@@ -1779,20 +1789,24 @@ describe('SessionDiscovery', () => {
       await discovery.start(() => {});
 
       discovery.acknowledgeSession('acked-then-dismissed');
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Fire-and-forget save — poll, don't assume a fixed sleep beats disk
+      // I/O [F-flake].
       const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
-      const before = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-      const firstAckedAt = before.sessions['acked-then-dismissed'].acknowledgedAt;
-      expect(typeof firstAckedAt).toBe('number');
+      const firstAckedAt = await vi.waitFor(() => {
+        const before = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+        const acked = before.sessions['acked-then-dismissed'].acknowledgedAt;
+        expect(typeof acked).toBe('number');
+        return acked;
+      });
 
       // Small real delay so a regression that re-stamps would produce a
       // strictly later timestamp, not one that happens to coincide.
       await new Promise(resolve => setTimeout(resolve, 20));
       discovery.dismissSession('acked-then-dismissed');
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      const after = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-      expect(after.sessions['acked-then-dismissed'].acknowledgedAt).toBe(firstAckedAt);
+      await vi.waitFor(() => {
+        const after = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+        expect(after.sessions['acked-then-dismissed'].acknowledgedAt).toBe(firstAckedAt);
+      });
       discovery.stop();
     });
   });
