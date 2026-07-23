@@ -782,4 +782,134 @@ describe('WorkflowDiscovery', () => {
     expect(snaps[0].status).toBe('completed');
     d.dispose();
   });
+
+  describe('resumed run liveness (resumeFromRunId)', () => {
+    // Real repro (2026-07-23, session 0d045c02-…): Claude Code's Workflow
+    // tool supports relaunching an already-COMPLETED run under the SAME
+    // runId (resumeFromRunId), replaying cached agents and running new ones.
+    // The completion sidecar is written once more only when the resumed run
+    // itself finishes — until then it sits stale while journal.jsonl and the
+    // per-agent transcripts keep growing. The old code treated sidecar-exists
+    // as terminal, so a resumed run's new agents (dozens, in the real repro)
+    // were invisible: the card kept showing the original, now-stale,
+    // completed tree.
+
+    function liveRunDir(runId: string): string {
+      const dir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    }
+
+    function setMtimeMs(file: string, ms: number): void {
+      fs.utimesSync(file, ms / 1000, ms / 1000);
+    }
+
+    it("re-enters the live tier when a completed run's journal is written to after the sidecar", async () => {
+      const runId = 'wf_resume-live-001';
+      const sidecarFile = writeSidecar(runId, validSidecar(runId));
+      const now = Date.now();
+      setMtimeMs(sidecarFile, now - 20_000); // sidecar written 20s ago
+
+      const runDir = liveRunDir(runId);
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify({ type: 'started', key: 'v2:r', agentId: 'resumedagt' }) + '\n', 'utf-8');
+      setMtimeMs(path.join(runDir, 'journal.jsonl'), now); // journal fresh — well past tolerance
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+      expect(snap.source).toBe('live');
+      expect(snap.status).toBe('running');
+      expect(snap.agents.map(a => a.agentId)).toContain('resumedagt');
+      d.dispose();
+    });
+
+    it('stays on the completed sidecar tier when the journal is no newer than the sidecar (no regression)', async () => {
+      const runId = 'wf_resume-equal-001';
+      const sidecarFile = writeSidecar(runId, validSidecar(runId));
+      const now = Date.now();
+      setMtimeMs(sidecarFile, now);
+
+      const runDir = liveRunDir(runId);
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify({ type: 'started', key: 'v2:r', agentId: 'resumedagt' }) + '\n', 'utf-8');
+      setMtimeMs(path.join(runDir, 'journal.jsonl'), now); // exactly equal — must NOT read as resumed
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+      expect(snap.source).toBe('sidecar');
+      expect(snap.status).toBe('completed');
+      expect(snap.agents.map(a => a.agentId)).toEqual(['aaa111']);
+      d.dispose();
+    });
+
+    it('settles back to the rewritten (larger) sidecar tree once the resumed run itself completes', async () => {
+      const runId = 'wf_resume-settle-001';
+      const sidecarFile = writeSidecar(runId, validSidecar(runId, { agentCount: 1 }));
+      const now = Date.now();
+      setMtimeMs(sidecarFile, now - 20_000);
+
+      const runDir = liveRunDir(runId);
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+        JSON.stringify({ type: 'started', key: 'v2:r', agentId: 'resumedagt' }) + '\n', 'utf-8');
+      setMtimeMs(path.join(runDir, 'journal.jsonl'), now - 10_000); // resumed, still live
+
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      expect(d.getWorkflowSnapshots(emptyMeta())[0].source).toBe('live'); // re-engaged
+
+      // The resumed run completes: Claude Code rewrites the sidecar with a
+      // larger tree and a newer mtime than the (now-quiet) journal.
+      fs.writeFileSync(sidecarFile, JSON.stringify(validSidecar(runId, {
+        agentCount: 2,
+        workflowProgress: [
+          { type: 'workflow_phase', index: 1, title: 'Only' },
+          { type: 'workflow_agent', index: 1, agentId: 'aaa111', phaseIndex: 1, phaseTitle: 'Only', state: 'done', label: 'lab' },
+          { type: 'workflow_agent', index: 2, agentId: 'resumedagt', phaseIndex: 1, phaseTitle: 'Only', state: 'done', label: 'lab2' },
+        ],
+      })), 'utf-8');
+      setMtimeMs(sidecarFile, now); // newer than the journal again
+
+      await d.scan();
+      const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+      expect(snap.source).toBe('sidecar');
+      expect(snap.status).toBe('completed');
+      expect(snap.agentCount).toBe(2);
+      expect(snap.agents.map(a => a.agentId).sort()).toEqual(['aaa111', 'resumedagt']);
+      d.dispose();
+    });
+
+    it('falls back to the last completed sidecar tree when a resumed run goes quiet and is never confirmed live (abandoned resume)', async () => {
+      vi.useFakeTimers();
+      try {
+        const runId = 'wf_resume-abandon-001';
+        const sidecarFile = writeSidecar(runId, validSidecar(runId));
+        const t0 = Date.now();
+        setMtimeMs(sidecarFile, t0);
+
+        const runDir = liveRunDir(runId);
+        fs.writeFileSync(path.join(runDir, 'journal.jsonl'),
+          JSON.stringify({ type: 'started', key: 'v2:r', agentId: 'resumedagt' }) + '\n', 'utf-8');
+        setMtimeMs(path.join(runDir, 'journal.jsonl'), t0 + 10_000); // resumed
+
+        const d = new WorkflowDiscovery(projectsDir, WS_KEY, log); // no liveness probe
+        await d.scan();
+        expect(d.getWorkflowSnapshots(emptyMeta())[0].source).toBe('live'); // re-engaged
+
+        // Gone quiet past UNCONFIRMED_LIVENESS_CEILING_MS with no registry to
+        // vouch for it — the same abandonment classification a never-completed
+        // live run gets.
+        vi.setSystemTime(t0 + 31 * 60 * 1000);
+        await d.scan();
+        const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+        expect(snap.source).toBe('sidecar');
+        expect(snap.status).toBe('completed');
+        expect(snap.agents.map(a => a.agentId)).toEqual(['aaa111']); // sidecar's tree, not the abandoned live one
+        d.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });
