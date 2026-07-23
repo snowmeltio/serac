@@ -497,6 +497,8 @@ body {
   cursor: pointer;
   color: var(--vscode-foreground);
   white-space: nowrap;
+  min-width: 0; /* label ellipsis engages at the row edge, not the pill's content width */
+  max-width: 100%;
 }
 .wf-agent-pill:hover { background: var(--vscode-list-hoverBackground); }
 .wf-agent-pill:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
@@ -506,7 +508,12 @@ body {
   color: var(--vscode-list-activeSelectionForeground, inherit);
   font-weight: 600;
 }
-.wf-agent-pill-label { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+/* Expanded strip: the label takes whatever width its row actually has — the
+ * old fixed 160px cap truncated names while the rest of the row sat empty
+ * (Murray, 2026-07-23). The collapsed strip keeps a hard cap: its single
+ * clipped line has to fit several pills plus the "+N" chip. */
+.wf-agent-pill-label { overflow: hidden; text-overflow: ellipsis; }
+.wf-agentstrip.collapsed .wf-agent-pill-label { max-width: 160px; }
 /* The collapsed strip's overflow chip — same dashed register as the views
  * row's "+N" chip. */
 .wf-agent-pill.more { border-style: dashed; color: var(--vscode-descriptionForeground); }
