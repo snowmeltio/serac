@@ -8,6 +8,9 @@
  * premature firing) was untested. Both groups live here now.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 import type { JsonlRecord } from './types.js';
 import { HookEventRouter } from './hookEventRouter.js';
 
@@ -470,6 +473,73 @@ describe('Stale-waiting reconciliation', () => {
 
     mgr.demoteIfStale(30_000);
     expect(mgr.getStatus()).toBe('waiting');
+  });
+
+  // [L6 — H-7] Reconcile-only return path: computeDemotion returns null (age
+  // still under threshold) after the stale-'waiting' reconciliation flips
+  // waiting→running. `demoteIfStale` must still report `true` — the
+  // reconciliation itself is a real status change the poll loop has to push
+  // to the webview — even though no further demotion (done/waiting) fires.
+  // Unlike the sibling test above (which advances the clock 16 minutes so
+  // BOTH the subagent AND the parent go stale, landing on the hard-ceiling
+  // 'done' branch), this forces the subagent stale via a BACKDATED FILE
+  // MTIME while the fake clock only moves the ~6s needed to fire the
+  // permission bubble — keeping the parent's own lastActivity fresh and
+  // well under the 30s threshold, so computeDemotion falls through to null.
+  it('reconcile-only branch: stale-waiting reopens to running with no further demotion when lastActivity is still fresh', async () => {
+    // Isolated temp session dir (not the shared '/tmp/test.jsonl' used by
+    // makeManager()) so writing a real, backdated subagent file can't collide
+    // with any other test in this file or run in parallel.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'serac-bubble-l6-'));
+    const jsonlPath = path.join(tmpDir, 'test.jsonl');
+    const mgr = new SessionManager('test-session-id-l6', jsonlPath, 'test-workspace');
+    const AGENT_ID = 'agent-bg-l6';
+    const BANNER = 'Async agent launched successfully.\n'
+      + `agentId: ${AGENT_ID} (internal ID - do not mention to user. Use SendMessage with to: '${AGENT_ID}' to continue this agent.)\n`
+      + 'The agent is working in the background. You will be notified automatically when it completes.';
+
+    try {
+      await feed(mgr, [user('go')]);
+      await feed(mgr, [{ type: 'assistant', timestamp: new Date().toISOString(),
+        message: { content: [{ type: 'tool_use', name: 'Agent', id: AGENT_ID,
+          input: { description: 'bg', prompt: 'go', run_in_background: true } }] } }]);
+      await feed(mgr, [bgToolResult(AGENT_ID, BANNER)]);
+      expect(mgr.getSnapshot().subagents[0].background).toBe(true);
+
+      // Subagent blocks → bubbles the parent to waiting (recency-doubled 3s → 6s,
+      // same as the launch-banner recency window in the sibling test above).
+      await feed(mgr, [sidechainToolUse('SomeTool', 'sc-1', AGENT_ID)]);
+      vi.advanceTimersByTime(6_001);
+      expect(mgr.getStatus()).toBe('waiting');
+      expect(mgr.getSnapshot().activity).toBe('Subagent waiting for permission');
+
+      // Force-complete the subagent via its JSONL file's mtime, NOT the clock —
+      // the parent's lastActivity (anchored to the sidechain record above) stays
+      // ~6s old throughout, unlike the sibling test which advances the clock
+      // 16 minutes and stales BOTH the subagent and the parent.
+      const subagentFile = path.join(tmpDir, 'test', 'subagents', `agent-${AGENT_ID}.jsonl`);
+      fs.mkdirSync(path.dirname(subagentFile), { recursive: true });
+      fs.writeFileSync(subagentFile, '');
+      const staleMtime = new Date(Date.now() - 16 * 60 * 1000); // past the 15-min sweep ceiling
+      fs.utimesSync(subagentFile, staleMtime, staleMtime);
+
+      mgr.sweepBackgroundWork(Date.now());
+      expect(mgr.getSnapshot().subagents[0].running).toBe(false);
+
+      // Age here is ~6s (well under the 30s threshold), so once reconciliation
+      // flips waiting→running, computeDemotion has nothing left to do and
+      // returns null — demoteIfStale must still report the reconciliation.
+      const changed = mgr.demoteIfStale(30_000);
+      expect(changed).toBe(true);
+      expect(mgr.getStatus()).toBe('running');
+      expect(mgr.getSnapshot().activity).toBe('Processing');
+
+      // A second, immediate call has nothing left to reconcile (already
+      // 'running') and is still well under threshold — must return false.
+      expect(mgr.demoteIfStale(30_000)).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
