@@ -362,8 +362,11 @@ describe('DetailPanel', () => {
   });
 
   describe('viewAgent message', () => {
-    /** The transcript queue's file I/O spans several event-loop turns. */
-    const settleIo = async () => { for (let i = 0; i < 10; i++) { await new Promise(r => setTimeout(r, 0)); } };
+    // The transcript queue's file I/O spans several event-loop turns, but
+    // onMessage() now awaits enqueueTranscript()'s queue promise (see
+    // detailPanel.ts), and the mock webview's _fireMessage() awaits every
+    // handler — so `await _fireMessage(...)` alone waits for the real async
+    // work to finish. No more guessing a fixed settle-tick count [F-flake].
 
     it('resolves the transcript and posts agentTranscript', async () => {
       const file = writeAgentJsonl('a1.jsonl', [userRecord('hi')]);
@@ -371,7 +374,6 @@ describe('DetailPanel', () => {
       const h = setup({ resolveAgentFile });
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
-      await settleIo();
       expect(resolveAgentFile).toHaveBeenCalledWith('workflow', 'sess-1', 'wf_abc', 'a1');
       const msg = h.posted().find(m => m.type === 'agentTranscript');
       expect(msg).toBeTruthy();
@@ -395,7 +397,6 @@ describe('DetailPanel', () => {
       const h = setup({ resolveAgentFile: vi.fn(() => file) });
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
-      await settleIo();
       const msg = h.posted().find(m => m.type === 'agentTranscript');
       expect(msg.evidence.commandsRun).toEqual([{ command: 'npm run build', exitOk: true }]);
       expect(msg.evidence.testsRun).toBe(false);
@@ -410,7 +411,6 @@ describe('DetailPanel', () => {
       h.panel.show('workflow', 'sess-1', 'sess-1');
       const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
       await h.webview._fireMessage(req);
-      await settleIo();
 
       fs.appendFileSync(
         file,
@@ -418,7 +418,6 @@ describe('DetailPanel', () => {
           .map(r => JSON.stringify(r)).join('\n') + '\n',
       );
       await h.webview._fireMessage(req);
-      await settleIo();
       const append = h.posted().find(m => m.type === 'agentTranscriptAppend');
       expect(append).toBeTruthy();
       expect(append.evidence.commandsRun).toEqual([{ command: 'npm run lint', exitOk: false }]);
@@ -435,18 +434,15 @@ describe('DetailPanel', () => {
       h.panel.show('workflow', 'sess-1', 'sess-1');
       const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
       await h.webview._fireMessage(req);
-      await settleIo();
 
       fs.appendFileSync(file, JSON.stringify(assistantToolUseRecord('Bash', 'toolu_3', { command: 'npm test' })) + '\n');
       await h.webview._fireMessage(req);
-      await settleIo();
       const firstAppend = h.posted().filter(m => m.type === 'agentTranscriptAppend').pop();
       expect(firstAppend.evidence.commandsRun).toEqual([{ command: 'npm test', exitOk: null }]);
       expect(firstAppend.evidence.testsRun).toBe(true); // command recognised as a test runner regardless of outcome
 
       fs.appendFileSync(file, JSON.stringify(toolResultRecord('toolu_3', 'ok', false)) + '\n');
       await h.webview._fireMessage(req);
-      await settleIo();
       const secondAppend = h.posted().filter(m => m.type === 'agentTranscriptAppend').pop();
       expect(secondAppend.evidence.commandsRun).toEqual([{ command: 'npm test', exitOk: true }]);
     });
@@ -457,18 +453,15 @@ describe('DetailPanel', () => {
       h.panel.show('workflow', 'sess-1', 'sess-1');
       const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
       await h.webview._fireMessage(req);
-      await settleIo();
       const baseline = h.posted().filter(m => m.type === 'agentTranscript' || m.type === 'agentTranscriptAppend').length;
 
       // Unchanged file → no transcript message at all (audit perf-io-4).
       await h.webview._fireMessage(req);
-      await settleIo();
       expect(h.posted().filter(m => m.type === 'agentTranscript' || m.type === 'agentTranscriptAppend')).toHaveLength(baseline);
 
       // Appended record → an append delta carrying ONLY the new entry.
       fs.appendFileSync(file, JSON.stringify({ type: 'assistant', timestamp: 't2', message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] } }) + '\n');
       await h.webview._fireMessage(req);
-      await settleIo();
       const append = h.posted().find(m => m.type === 'agentTranscriptAppend');
       expect(append).toBeTruthy();
       expect(append.entries).toHaveLength(1);
@@ -481,11 +474,9 @@ describe('DetailPanel', () => {
       h.panel.show('workflow', 'sess-1', 'sess-1');
       const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
       await h.webview._fireMessage(req);
-      await settleIo();
 
       fs.writeFileSync(file, JSON.stringify(userRecord('rewritten')) + '\n');
       await h.webview._fireMessage(req);
-      await settleIo();
       const fulls = h.posted().filter(m => m.type === 'agentTranscript');
       expect(fulls).toHaveLength(2);
       expect(fulls[1].entries.map((e: any) => e.content)).toEqual(['rewritten']);
@@ -497,11 +488,9 @@ describe('DetailPanel', () => {
       h.panel.show('workflow', 'sess-1', 'sess-1');
       const req = { type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' };
       await h.webview._fireMessage(req);
-      await settleIo();
 
       // Same key, unchanged file, but the webview asks for a full snapshot.
       await h.webview._fireMessage({ ...req, full: true });
-      await settleIo();
       const fulls = h.posted().filter(m => m.type === 'agentTranscript');
       expect(fulls).toHaveLength(2);
       expect(fulls[1].entries).toHaveLength(1);
@@ -511,7 +500,6 @@ describe('DetailPanel', () => {
       const h = setup({ resolveAgentFile: vi.fn(() => null) });
       h.panel.show('subagents', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'subagents', containerId: 'sess-1', groupKey: '', agentId: 'sa1' });
-      await settleIo();
       const msg = h.posted().find(m => m.type === 'agentTranscriptError');
       expect(msg).toBeTruthy();
       expect(msg.key).toBe('subagents:sess-1||sa1');
@@ -522,7 +510,6 @@ describe('DetailPanel', () => {
       const h = setup();
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
-      await settleIo();
       const msg = h.posted().find(m => m.type === 'agentTranscriptError');
       expect(msg).toBeTruthy();
       expect(String(msg.message)).toContain('boom');
@@ -541,7 +528,6 @@ describe('DetailPanel', () => {
       h.panel.show('team', 'at:my-team', 'orch-1');
       const req = { type: 'viewAgent', source: 'team', containerId: 'at:my-team', groupKey: '', agentId: 'lyrebird' };
       await h.webview._fireMessage(req);
-      await settleIo();
       const msg = h.posted().find(m => m.type === 'agentTranscript');
       // Inbox turns are a suffix, never folded into the append-only entries.
       expect(msg.entries.some((e: any) => e.content.includes('hello bird'))).toBe(false);
@@ -551,7 +537,6 @@ describe('DetailPanel', () => {
       // must produce an append post with the (now empty) suffix.
       peek.mockReturnValue([]);
       await h.webview._fireMessage(req);
-      await settleIo();
       const append = h.posted().find(m => m.type === 'agentTranscriptAppend');
       expect(append).toBeTruthy();
       expect(append.entries).toHaveLength(0);
@@ -568,7 +553,6 @@ describe('DetailPanel', () => {
       });
       h.panel.show('team', 'at:my-team', 'orch-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'team', containerId: 'at:my-team', groupKey: '', agentId: 'not-a-member' });
-      await settleIo();
       expect(peek).not.toHaveBeenCalled();
     });
 
@@ -576,7 +560,6 @@ describe('DetailPanel', () => {
       const h = setup();
       h.panel.show('workflow', 'sess-1', 'sess-1');
       await h.webview._fireMessage({ type: 'viewAgent', source: 'nope', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
-      await settleIo();
       expect(h.deps.resolveAgentFile).not.toHaveBeenCalled();
     });
 
@@ -586,11 +569,15 @@ describe('DetailPanel', () => {
         .mockReturnValue(new Promise<never[]>(r => { resolveRead = r; }) as unknown as ReturnType<JsonlTailer['readNewRecords']>);
       const h = setup();
       h.panel.show('workflow', 'sess-1', 'sess-1');
-      await h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
+      // Don't await yet — onMessage now awaits the whole transcript queue
+      // (so _fireMessage can be awaited instead of guessing settle ticks),
+      // and readNewRecords() is deliberately still pending here. Fire, THEN
+      // dispose + resolve the read, THEN await the in-flight message.
+      const fired = h.webview._fireMessage({ type: 'viewAgent', source: 'workflow', containerId: 'sess-1', groupKey: 'wf_abc', agentId: 'a1' });
       // Dispose the panel before the read resolves, then resolve.
       h.mockPanel._fireDispose();
       resolveRead([]);
-      await settleIo();
+      await fired;
       expect(h.posted().find(m => m.type === 'agentTranscript')).toBeUndefined();
       spy.mockRestore();
     });
