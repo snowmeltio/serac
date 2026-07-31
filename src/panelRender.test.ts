@@ -344,6 +344,20 @@ describe('renderCardInner', () => {
     expect(on).toContain('2 shared files');
   });
 
+  it('card-detail preview line is gated on show.previewText', () => {
+    const s = makeSession({ activity: 'Running Bash' });
+    const on = renderCardInner(makeCtx(), s, NOW, false);
+    expect(on).toContain('card-detail');
+    expect(on).toContain('Running Bash');
+    const settings = {
+      ...DEFAULT_PANEL_SETTINGS,
+      show: { ...DEFAULT_PANEL_SETTINGS.show, previewText: false },
+    };
+    const off = renderCardInner(makeCtx({ settings }), s, NOW, false);
+    expect(off).not.toContain('card-detail');
+    expect(off).not.toContain('Running Bash');
+  });
+
   it('external-writer badge names the state explicitly, not just via opacity', () => {
     const off = renderCardInner(makeCtx(), makeSession(), NOW, false);
     expect(off).not.toContain('external-writer-badge');

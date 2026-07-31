@@ -160,6 +160,7 @@ export interface PanelSettings {
     subagents: boolean;
     workflows: boolean;
     fileCollisions: boolean;
+    previewText: boolean;
   };
   archive: { defaultRange: string; maxDoneShown: number };
   refresh: { intervalSeconds: number };
@@ -175,7 +176,7 @@ export interface PanelSettings {
  *  initial value before the first SettingsMessage arrives — kept in sync
  *  with the package.json `default` declarations. */
 export const DEFAULT_PANEL_SETTINGS: PanelSettings = {
-  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: false, workflows: true, fileCollisions: false },
+  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: false, workflows: true, fileCollisions: false, previewText: true },
   archive: { defaultRange: '1d', maxDoneShown: 20 },
   refresh: { intervalSeconds: 5 },
   discovery: { ageGateDays: 7 },
@@ -537,7 +538,9 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
   const isTerminal = s.status === 'done' || s.status === 'stale';
   const activityText = stripMarkdown(
     (isTerminal && s.lastAssistantText ? s.lastAssistantText : s.activity) || 'No recent activity');
-  const detailHtml = '<div class="card-detail">' + escapeHtml(activityText) + '</div>';
+  const detailHtml = ctx.settings.show.previewText
+    ? '<div class="card-detail">' + escapeHtml(activityText) + '</div>'
+    : '';
 
   // Branch / worktree line — its own row beneath the meta, rendered ONLY when
   // the session has a git branch (no branch ⇒ no line, no wasted height). The
