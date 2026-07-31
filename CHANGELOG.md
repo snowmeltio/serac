@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.17.4 (2026-07-31) — Session card preview line can be hidden
+
+### Added
+- **New setting `serac.show.previewText`** (default on) gates the activity/preview line under each session card — the line showing the last tool activity while running, or the last assistant reply once done. Turn it off for a denser card with just the status pill and meta row.
+
 ## v1.17.3 (2026-07-23) — Status-machine audit gaps closed, resumed workflow runs stay live
 
 ### Fixed
