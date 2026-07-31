@@ -158,6 +158,11 @@
             "default": true,
             "description": "Surface Claude Code Workflow runs on their session cards (tag, roll-up, and detail panel)."
           },
+          "serac.show.previewText": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the activity/preview line under each session card (last tool activity while running, last assistant reply once done). Off hides the line and shows just the status pill and meta row."
+          },
           "serac.animations.enabled": {
             "type": "boolean",
             "default": true,

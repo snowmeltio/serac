@@ -18,6 +18,10 @@ export interface SeracSettings {
      *  worktree-parallel workflows never trip it; opt in when running
      *  multiple agents against one checkout. */
     fileCollisions: boolean;
+    /** The activity/preview line under each session card (last tool
+     *  activity while running, last assistant reply once done/stale).
+     *  Default on. */
+    previewText: boolean;
   };
   archive: {
     defaultRange: '1d' | '3d' | '7d' | '30d' | 'all';
@@ -113,6 +117,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     subagents: false,
     workflows: true,
     fileCollisions: false,
+    previewText: true,
   },
   archive: { defaultRange: '1d', maxDoneShown: 20 },
   sessions: { highConfidenceSeconds: 5, mediumConfidenceSeconds: 30 },
@@ -149,6 +154,7 @@ export function readSettings(): SeracSettings {
       subagents: cfg.get<boolean>('show.subagents', d.show.subagents),
       workflows: cfg.get<boolean>('show.workflows', d.show.workflows),
       fileCollisions: cfg.get<boolean>('show.fileCollisions', d.show.fileCollisions),
+      previewText: cfg.get<boolean>('show.previewText', d.show.previewText),
     },
     archive: {
       defaultRange: cfg.get<SeracSettings['archive']['defaultRange']>('archive.defaultRange', d.archive.defaultRange),
