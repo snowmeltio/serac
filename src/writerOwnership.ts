@@ -173,13 +173,21 @@ export function aggregateWriterOwnership(verdicts: readonly (boolean | undefined
  * window either.
  */
 export function resolveParentPid(pid: number): Promise<number | null> {
+  return execPs('ppid=', pid).then(stdout => {
+    if (stdout === null) { return null; }
+    const ppid = parseInt(stdout.trim(), 10);
+    return isNaN(ppid) || ppid <= 0 ? null : ppid;
+  });
+}
+
+/** One ps field for one pid — the single home of the invocation contract
+ *  (timeout, encoding, error/empty-to-null mapping) shared by both public
+ *  probes above/below. */
+function execPs(field: string, pid: number): Promise<string | null> {
   return new Promise(resolve => {
-    execFile('ps', ['-o', 'ppid=', '-p', String(pid)], { timeout: PS_TIMEOUT_MS, encoding: 'utf-8' },
+    execFile('ps', ['-o', field, '-p', String(pid)], { timeout: PS_TIMEOUT_MS, encoding: 'utf-8' },
       (err, stdout) => {
-        if (err || !stdout) { resolve(null); return; }
-        const ppid = parseInt(stdout.trim(), 10);
-        if (isNaN(ppid) || ppid <= 0) { resolve(null); return; }
-        resolve(ppid);
+        resolve(err || !stdout || !stdout.trim() ? null : stdout);
       });
   });
 }
@@ -206,11 +214,6 @@ export function classifyProcessArgs(argsLine: string): 'extension-host' | 'other
  *  addressable. */
 export function isExtensionHostPid(pid: number): Promise<boolean | null> {
   if (process.platform === 'win32') { return Promise.resolve(null); }
-  return new Promise(resolve => {
-    execFile('ps', ['-o', 'args=', '-p', String(pid)], { timeout: PS_TIMEOUT_MS, encoding: 'utf-8' },
-      (err, stdout) => {
-        if (err || !stdout || !stdout.trim()) { resolve(null); return; }
-        resolve(classifyProcessArgs(stdout) === 'extension-host');
-      });
-  });
+  return execPs('args=', pid).then(stdout =>
+    stdout === null ? null : classifyProcessArgs(stdout) === 'extension-host');
 }
