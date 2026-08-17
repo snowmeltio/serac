@@ -5,7 +5,7 @@ vi.mock('child_process', () => ({
 }));
 
 import { execFile } from 'child_process';
-import { WriterOwnership, isOwnWindowWriter, aggregateWriterOwnership } from './writerOwnership.js';
+import { WriterOwnership, resolveParentPid, aggregateWriterOwnership, classifyProcessArgs, isExtensionHostPid } from './writerOwnership.js';
 import type { LiveProcess } from './processRegistry.js';
 
 /** Mock execFile to invoke its callback with the given stdout. */
@@ -45,30 +45,70 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('isOwnWindowWriter', () => {
-  it('resolves true when the pid\'s parent is this process', async () => {
-    mockPs(`${process.pid}\n`);
-    await expect(isOwnWindowWriter(1234)).resolves.toBe(true);
-  });
-
-  it('resolves false when the pid\'s parent is a different process', async () => {
-    mockPs('1\n'); // pid 1 is never this test process
-    await expect(isOwnWindowWriter(1234)).resolves.toBe(false);
+describe('resolveParentPid', () => {
+  it('resolves the parent pid from ps output', async () => {
+    mockPs('4321\n');
+    await expect(resolveParentPid(1234)).resolves.toBe(4321);
   });
 
   it('resolves null when ps errors (timeout, missing binary, etc.)', async () => {
     mockPsError();
-    await expect(isOwnWindowWriter(1234)).resolves.toBeNull();
+    await expect(resolveParentPid(1234)).resolves.toBeNull();
   });
 
   it('resolves null on empty stdout', async () => {
     mockPs('');
-    await expect(isOwnWindowWriter(1234)).resolves.toBeNull();
+    await expect(resolveParentPid(1234)).resolves.toBeNull();
   });
 
   it('resolves null on unparseable stdout', async () => {
     mockPs('not-a-number\n');
-    await expect(isOwnWindowWriter(1234)).resolves.toBeNull();
+    await expect(resolveParentPid(1234)).resolves.toBeNull();
+  });
+});
+
+describe('classifyProcessArgs', () => {
+  it('recognises the macOS Extension Host argv shape', () => {
+    expect(classifyProcessArgs(
+      '/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin) --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-AU',
+    )).toBe('extension-host');
+  });
+
+  it('recognises the Linux Extension Host argv shape', () => {
+    expect(classifyProcessArgs(
+      '/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService --lang=en-US',
+    )).toBe('extension-host');
+  });
+
+  it('classifies shells as other — the terminal-started false-positive guard', () => {
+    expect(classifyProcessArgs('-zsh')).toBe('other');
+    expect(classifyProcessArgs('/bin/bash')).toBe('other');
+  });
+
+  it('classifies an empty line as other', () => {
+    expect(classifyProcessArgs('')).toBe('other');
+  });
+});
+
+describe('isExtensionHostPid', () => {
+  it('resolves true for an Extension Host argv line', async () => {
+    mockPs('/usr/share/code/code --type=utility --utility-sub-type=node.mojom.NodeService\n');
+    await expect(isExtensionHostPid(999)).resolves.toBe(true);
+  });
+
+  it('resolves false for a shell', async () => {
+    mockPs('-zsh\n');
+    await expect(isExtensionHostPid(999)).resolves.toBe(false);
+  });
+
+  it('resolves null when ps fails — never addressable on unknown', async () => {
+    mockPsError();
+    await expect(isExtensionHostPid(999)).resolves.toBeNull();
+  });
+
+  it('resolves null on empty stdout', async () => {
+    mockPs('\n');
+    await expect(isExtensionHostPid(999)).resolves.toBeNull();
   });
 });
 
@@ -273,5 +313,40 @@ describe('WriterOwnership', () => {
     await wo.refresh([liveProcess({ pid: 1234 })]);
     wo.dispose();
     expect(wo.getInfo(1234)).toBeUndefined();
+  });
+
+  it('getOwnerPid returns the resolved parent pid for an external process', async () => {
+    mockPs('4321\n');
+    const wo = new WriterOwnership();
+    await wo.refresh([liveProcess({ pid: 1234 })]);
+    expect(wo.getOwnerPid(1234)).toBe(4321);
+  });
+
+  it('getOwnerPid is undefined before resolution and after ps failure', async () => {
+    const wo = new WriterOwnership();
+    expect(wo.getOwnerPid(1234)).toBeUndefined();
+    mockPsError();
+    await wo.refresh([liveProcess({ pid: 1234 })]);
+    expect(wo.getOwnerPid(1234)).toBeUndefined();
+  });
+
+  it('getOwnerPid re-resolves alongside the verdict on startedAt mismatch — pid reuse never serves a stale owner', async () => {
+    mockPs('4321\n');
+    const wo = new WriterOwnership();
+    await wo.refresh([liveProcess({ pid: 1234, startedAt: 1000 })]);
+    expect(wo.getOwnerPid(1234)).toBe(4321);
+
+    mockPs('8765\n');
+    await wo.refresh([liveProcess({ pid: 1234, startedAt: 2000 })]);
+    expect(wo.getOwnerPid(1234)).toBe(8765);
+  });
+
+  it('getOwnerPid drops with the entry when re-resolution after pid reuse fails', async () => {
+    mockPs('4321\n');
+    const wo = new WriterOwnership();
+    await wo.refresh([liveProcess({ pid: 1234, startedAt: 1000 })]);
+    mockPsError();
+    await wo.refresh([liveProcess({ pid: 1234, startedAt: 2000 })]);
+    expect(wo.getOwnerPid(1234)).toBeUndefined();
   });
 });
