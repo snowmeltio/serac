@@ -1097,6 +1097,21 @@ describe('DetailPanel', () => {
       expect(a).toMatchObject({ teammate: true, alive: false });
     });
 
+    it('keeps a teammate alive when the lead is externally owned but its process is live — alive elsewhere is still alive', () => {
+      // A lead driven from ANOTHER VS Code window shares its on-disk state
+      // with this one (symlink farm), so its detail view must render live,
+      // current, read-only — externalWriter once fed the gone check here and
+      // froze the panel ("viewed from another profile" read as dead).
+      const h = setup({
+        getTeams: vi.fn(() => [inProcessTeam()]),
+        getSession: vi.fn(() => makeSession({ subagents: [], processLive: true, externalWriter: true })),
+        listSubagents: lyrebirdOnDisk(),
+      });
+      h.panel.show('subagents', 'orch-1', 'orch-1');
+      const a = h.lastModel().groups[0].agents[0];
+      expect(a).toMatchObject({ teammate: true, alive: true });
+    });
+
     it('still roster-matches tmux members via the agents list', () => {
       const h = setup({
         getSession: vi.fn(() => makeSession({ subagents: [] })),

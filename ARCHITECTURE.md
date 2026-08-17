@@ -39,7 +39,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `workflowDiscovery.ts` | Two-tier workflow discovery, parallel to `teamDiscovery`. Scans each session dir for sidecars (Tier 1) and live run dirs (Tier 2), caches by mtime, prunes, applies the 7-day age gate and dismiss overlay. |
 | `processRegistry.ts` | Reads Claude Code's live process registry (`~/.claude/sessions/<pid>.json`) and confirms each pid with `kill(pid, 0)`. The one source of *actual* process liveness in an otherwise disk-tailing monitor. Owned by `SessionDiscovery` (scanned on a relaxed cadence); exposes `getLiveProcesses()` / `isSessionLive()` / `isActive()`. Injected into each `SessionManager` as a tri-state `livenessProbe` that powers the permission-false-positive gate (a registry-confirmed-dead session can't be `waiting` — see Status inference §6). A hit is a strong positive, a miss is "unknown" (not every session class is guaranteed to register), and an inactive registry disables the gate. `isScanClean()` distinguishes a degraded scan (a non-ENOENT read error or unparseable content on a *present* file) from genuine absence, so a transient disk error on a live session's file degrades the probe to "unknown" rather than "dead" — only a clean scan's absence is trusted as death. |
 | `writerOwnership.ts` | Resolves, per live registered pid, whether it's a child of THIS VS Code window's Extension Host or a different window's — the account-agnostic `externalWriter` signal (see Status inference § Writer ownership). Async `ps`-based resolution refreshed alongside `processRegistry`'s rescan; exposes a synchronous `getInfo(pid)` for the per-session probe. |
-| `writerActivity.ts` | Pure recency helpers layered on top of `writerOwnership.ts`'s tri-state verdict (see Status inference § Writer ownership). `getSessionLastWriteMtime()` stats a session's own JSONL plus every file under its `subagents/` tree (recursing into nested `workflows/<runId>/` dirs, so Task subagents and Workflow-run agents both count). `isWithinActivityWindow()` compares the later of that mtime and the writer's `startedAt` against `EXTERNAL_WRITER_QUIET_MS` (10 min), failing toward "still active" when both inputs are null. |
+| `writerActivity.ts` | Pure recency helpers layered on top of `writerOwnership.ts`'s tri-state verdict, consumed ONLY by the hard open/send gate (`isExternalWriterFresh()`) — the cosmetic mark is ownership-only (see Status inference § Writer ownership). `getSessionLastWriteMtime()` stats a session's own JSONL plus every file under its `subagents/` tree (recursing into nested `workflows/<runId>/` dirs, so Task subagents and Workflow-run agents both count). `isWithinActivityWindow()` compares the later of that mtime and the writer's `startedAt` against `EXTERNAL_WRITER_QUIET_MS` (10 min), failing toward "still active" when both inputs are null. |
 | `detailPanel.ts` | Source-keyed editor-area webview host (`createWebviewPanel`, `ViewColumn.Beside`). One reused instance serves three drill-ins (workflow / team / subagents); builds a normalised `DetailModel` per source (with a cross-source view switcher for session-card sources) and resolves agent transcripts on demand via injected deps. Dedups re-pushes (`lastPushed` JSON compare). |
 | `detailView.ts` | Detail-panel webview frontend. Default **log view** (v1.16.0): zone rows on a shared 64px label rail (session view row → header strip → agent strip → agent detail bar → pinned permission row → Result strip → display bar → the log), prose as flowing clamped blocks, tool/error rows as greyed one-liners behind kind filters, wall-clock/offset time column. The agent strip's pills carry no per-agent model tag (2026-07-10) — that surfaces in the agent detail bar (model/tokens/runtime/tool-calls for whichever pill is selected, absent when the agent has none of these to report yet) directly beneath the strip, distinct from the header strip's workflow-wide roll-up above. The log view is the only mode — the pre-v2 two-pane "classic" reader was removed in v1.17.0. The log scroll container is keyboard-focusable, with a jump-to-latest pill (same at-bottom threshold as the auto-follow) once the reader scrolls up. Renders any `DetailModel` generically; redeclares its own view types (separate bundle). Clears its transcript cache when the drill-in identity (source + container) changes. |
 | `detailShared.ts` | The vscode-free rendering contract compiled into BOTH bundles (extension + webview): `TranscriptEntry` (+ `kind`/`toolName`/`rawInput`/`rawOutput`/`isError`), duplicated Evidence/Mismatch wire types, `formatModelLabel`, `parseEditInput`. The webview must never transitively import `types.ts` (its extension-side imports reach `vscode`). |
@@ -260,8 +260,8 @@ and `isExternalWriterFresh()` both return before touching the process
 registry, `writerOwnership.ts`, or `writerActivity.ts` at all — a no-op, not
 just hidden in the UI — so every snapshot's `externalWriter` is `undefined`
 and every open/send decision passes through unblocked. The poll loop's
-`writerOwnership.refresh()` call and `recencyCache` sweep are gated the same
-way; `processRegistry.scan()` itself still always runs (it also feeds the
+`writerOwnership.refresh()` call is gated the same way;
+`processRegistry.scan()` itself still always runs (it also feeds the
 unrelated permission-false-positive liveness gate). Everything below this
 paragraph only applies when the setting is on.
 
@@ -269,33 +269,112 @@ paragraph only applies when the setting is on.
 process (`~/.claude/sessions/<pid>.json`) is confirmed to be a child of a
 *different* VS Code window's Extension Host than this one, detected by
 `writerOwnership.ts` comparing the process's parent pid against this window's
-own `process.pid`. Used to block re-opening a session's live editor
-(`openClaudeEditor` in `extension.ts`) from a window that isn't already
-driving it, and to gate the experimental teammate composer — both prevent two
-processes appending to the same JSONL file. Live-only by design: nothing on
-disk identifies a session's writer once that process has exited, and
-`undefined` (not yet resolved, or ownership couldn't be determined) is always
-treated as "don't flag".
+own `process.pid` (the parent pid itself is retained as `getOwnerPid()` — for
+a confirmed-external process it is the owning window's Extension Host pid).
+Used to block re-opening a session's live editor (`openClaudeEditor` in
+`extension.ts`) from a window that isn't already driving it, and to gate the
+experimental teammate composer — both prevent two processes appending to the
+same JSONL file. Live-only by design: nothing on disk identifies a session's
+writer once that process has exited, and `undefined` (not yet resolved, or
+ownership couldn't be determined) is always treated as "don't flag".
 
-A confirmed-external verdict is also gated on recent activity
-(`writerActivity.ts`), not just liveness: a session sitting idle at a prompt
-in another window for `EXTERNAL_WRITER_QUIET_MS` (10 min) clears back to
-not-flagged even though the owning process is still alive — otherwise a
-session left open for hours in another window blocks indefinitely for no
-practical reason. "Activity" is the later of the writer's `startedAt` and the
-newest mtime across the session's own JSONL *and* everything under its
-`subagents/` tree (Task subagents and Workflow-run agents write their own
-separate per-agent JSONLs there, so the top-level JSONL alone can look
-dormant for the entire duration of an orchestration run). `startedAt` is
-included as a floor so a process that just attached to an old, otherwise
-quiet session gets a grace period rather than unlocking immediately.
-`SessionDiscovery.resolveWriterOwnership()` (the cosmetic, per-snapshot path)
-TTL-caches this recency check for a few seconds so a flagged card doesn't
-re-walk its subagents tree on every poll tick; `isExternalWriterFresh()` (the
-authoritative open/send-decision path) always recomputes it fresh, matching
-its existing uncached contract. The fs-touching recency check only ever runs
-once ownership itself has resolved `true` — the own-window and unresolved
-cases stay pure in-memory lookups with zero fs cost.
+The cosmetic mark and the hard gate have **different freshness rules**:
+
+- **The mark** (`resolveWriterOwnership()`, feeding `SessionSnapshot.externalWriter`)
+  is **ownership-only**: marked ⇔ an owner process for the session is alive in
+  another window. It never consults recency, never touches the filesystem on
+  the render path, and unmarks on the registry rescan that drops the dead pid
+  (`writerOwnership.refresh()` prunes the verdict; the next snapshot build
+  aggregates over zero processes). One shared probe closure serves local,
+  foreign, sibling-worktree, and team-lead sessions, so unmarking is uniform
+  across categories by construction — there is no per-category cache to evict.
+  (A previous design decayed the mark after a 10-minute quiet window through a
+  TTL cache; its eviction paths missed session categories twice — the
+  "still tagged after the session wrapped" bug — and it made an idle-elsewhere
+  session look openable here when it wasn't. Deleted, not patched.)
+- **The gate** (`isExternalWriterFresh()`, the authoritative open/send
+  decision) additionally requires recent activity (`writerActivity.ts`): a
+  confirmed-external session quiet past `EXTERNAL_WRITER_QUIET_MS` (10 min)
+  no longer blocks, so a session left open for hours in another window can
+  still be reclaimed. "Activity" is the later of the writer's `startedAt` and
+  the newest mtime across the session's own JSONL *and* everything under its
+  `subagents/` tree (Task subagents and Workflow-run agents write their own
+  per-agent JSONLs there, so the top-level JSONL alone can look dormant for an
+  entire orchestration run). `startedAt` is a floor so a process that just
+  attached to an old, quiet session gets a grace period. Always computed
+  fresh — the gate forces its own registry scan and scoped
+  `WriterOwnership.resolveFor()` at the point of decision and never trusts a
+  cached verdict.
+
+`externalWriter` marks a session as alive-elsewhere, not gone: the detail
+panel's liveness checks (`teamSubagentRows`, in-process member rows) key off
+`processLive === false` only, so an externally-driven session still renders
+live, current, read-only state from its shared on-disk JSONL.
+
+#### Cross-window handoff (click-to-switch)
+
+Clicking a marked card switches to the owning window instead of opening the
+session here. The gate exposes the full verdict as
+`SessionDiscovery.resolveOpenGate()` (`isExternalWriterFresh()` is a facade
+over it): for a confirmed-external session it carries the owner's Extension
+Host pid (the claude process's parent, from `WriterOwnership.getOwnerPid()`)
+and whether that pid verified as an extension host just now
+(`isExtensionHostPid()`, a `ps -o args=` classification). Only a verified
+owner is **addressable**; a shell parent — the terminal-started false
+positive — never is, and falls back to the legacy warn/quiet-unlock.
+
+The handoff itself is an **addressed focus hint**,
+`projects/<ownerWsKey>/focus-hint-<ownerPid>.json` (`workspaceOpener.ts`).
+Keyed by the **owner's** workspace key — derived from the external process's
+registered cwd, not the sender's folder — because a sibling-worktree owner
+watches a different key than the window the card was clicked in. Addressed
+**by filename, not by a payload field**: the projects dir is shared across
+profile symlink farms, every window on the folder watches it, and the legacy
+`consumeFocusHint()` deletes unconditionally — a field couldn't stop an older
+window stealing the hint, a distinct basename does. Each window watches only
+`focus-hint-<its own extension-host pid>.json`; on pickup it **foregrounds
+itself** by spawning its own bundled CLI with its own `--user-data-dir`
+(derived exactly from `context.globalStorageUri` via `deriveUserDataDir()` —
+three segments up), then focuses the card and editor. `cliOnly` suppresses
+the `vscode.openFolder` fallback on this path (a self-raise must degrade to a
+no-op, never a duplicate window).
+
+Robustness details, each covering a distinct failure the naive flow has:
+
+- **Atomic writes.** Hints land via write-to-temp-then-`rename()`
+  (`writeHintFile()`): the receiver's live FileSystemWatcher can fire on
+  create before a plain `writeFile` flushes, and the always-delete consume
+  contract would destroy the torn hint.
+- **Delivery ack.** An addressable ext-host may not be running Serac (Cursor,
+  an older Serac). The sender checks 2.5s after writing whether the hint file
+  still exists; if so it withdraws the hint and warns instead of silently
+  doing nothing.
+- **Double-consume guard.** The receiver watches create *and* change; an
+  in-flight flag makes the pair idempotent.
+- **Startup consume.** A hint can predate Serac's activation in the owning
+  window (the ext-host pid exists before the extension loads), so the
+  receiver also attempts one consume shortly after activation.
+- **GC.** Unconsumed hints (the addressee died first) are swept by
+  `sweepStaleAddressedHints()` on window activation. Only `ESRCH` from
+  `process.kill(pid, 0)` counts as dead — `EPERM` means the pid is alive
+  under another OS user, and the 60s TTL bounds those. Orphaned
+  `.tmp-<pid>` files from a crashed writer age out on the same TTL. The
+  legacy `focus-hint.json` is never touched.
+- **Ordering.** Addressability is checked *before* the quiet-window unlock,
+  deliberately: a click on a card whose owner window is addressable means
+  "take me there", even if the session has been idle long enough that
+  opening locally would also be safe.
+
+*Rejected alternative:* the sender resolving the owner's `--user-data-dir`
+from its process tree. `ps -o args=` space-joins argv, so on macOS
+`--user-data-dir /Users/…/Application Support/Code-<name> /path/to/folder`
+has no recoverable boundary between the dir value and the folder argument —
+receiver-side self-identification needs no parsing at all.
+
+Ordinary workspace/worktree row opens are the inverse case: they pass this
+window's OWN `userDataDir` to `openWorkspaceFolder()` so they always open in
+the current profile's instance — the session-card handoff is the only
+cross-profile affordance.
 
 ## Hook consumption
 

@@ -20,6 +20,11 @@ const PS_TIMEOUT_MS = 2000;
  */
 interface CacheEntry {
   ownWindow: boolean;
+  /** The claude process's parent pid at resolution time. When `ownWindow` is
+   *  false this is (usually) the OWNING window's Extension Host pid — the
+   *  address a cross-window handoff needs. It shares this entry with the
+   *  verdict so the startedAt pid-reuse guard covers both. */
+  ownerPid: number;
   /** The LiveProcess's `startedAt` this verdict was resolved against — see
    *  refresh()'s re-resolve check below. */
   startedAt: number | null;
@@ -94,9 +99,9 @@ export class WriterOwnership {
 
   private async resolveAll(pending: readonly LiveProcess[]): Promise<void> {
     await Promise.all(pending.map(async p => {
-      const ownWindow = await isOwnWindowWriter(p.pid);
-      if (ownWindow !== null) {
-        this.cache.set(p.pid, { ownWindow, startedAt: p.startedAt });
+      const ppid = await resolveParentPid(p.pid);
+      if (ppid !== null) {
+        this.cache.set(p.pid, { ownWindow: ppid === process.pid, ownerPid: ppid, startedAt: p.startedAt });
         return;
       }
       // null = unknown (ps failed/timed out). If this pid had no prior entry,
@@ -118,6 +123,13 @@ export class WriterOwnership {
   getInfo(pid: number): boolean | undefined {
     const entry = this.cache.get(pid);
     return entry === undefined ? undefined : !entry.ownWindow;
+  }
+
+  /** The parent pid recorded when `pid`'s ownership was resolved — for a
+   *  confirmed-external process, the owning window's Extension Host pid.
+   *  undefined when unresolved, same tri-state discipline as getInfo(). */
+  getOwnerPid(pid: number): number | undefined {
+    return this.cache.get(pid)?.ownerPid;
   }
 
   dispose(): void {
@@ -142,31 +154,66 @@ export function aggregateWriterOwnership(verdicts: readonly (boolean | undefined
 }
 
 /**
- * Is `pid` a direct child of this window's own Extension Host process (i.e.
- * of `process.pid`)? Every VS Code window runs its extensions in one shared
- * Extension Host OS process, and a `claude` process opened via the
- * claude-vscode editor integration is spawned as a direct child of that same
- * process — so comparing parent pids distinguishes "this window already owns
- * this session" from "a different VS Code window/instance is driving it",
- * without inspecting Claude account/profile identity at all.
+ * Resolve `pid`'s parent pid via `ps`. Every VS Code window runs its
+ * extensions in one shared Extension Host OS process, and a `claude` process
+ * opened via the claude-vscode editor integration is spawned as a direct
+ * child of that same process — so the parent pid distinguishes "this window
+ * already owns this session" (ppid === process.pid) from "a different VS Code
+ * window/instance is driving it", without inspecting Claude account/profile
+ * identity at all. For a confirmed-external process the ppid is the owning
+ * window's Extension Host pid — the address a cross-window handoff targets.
  *
- * Returns `true` (same window), `false` (confirmed a different window's
- * process), or `null` (ps failed/timed out/unparseable — unknown, treated
- * conservatively as "don't flag").
+ * Returns the parent pid, or `null` (ps failed/timed out/unparseable —
+ * unknown, treated conservatively as "don't flag").
  *
  * Known limitation: a session started via a plain terminal command within
  * this same window is a child of a shell process, not the Extension Host
- * directly, so it would be misclassified as `false` here. Accepted gap —
- * see the plan this shipped under.
+ * directly, so it reads as external here. Accepted gap — the shell parent
+ * fails isExtensionHostPid(), so it is never treated as an addressable
+ * window either.
  */
-export function isOwnWindowWriter(pid: number): Promise<boolean | null> {
+export function resolveParentPid(pid: number): Promise<number | null> {
+  return execPs('ppid=', pid).then(stdout => {
+    if (stdout === null) { return null; }
+    const ppid = parseInt(stdout.trim(), 10);
+    return isNaN(ppid) || ppid <= 0 ? null : ppid;
+  });
+}
+
+/** One ps field for one pid — the single home of the invocation contract
+ *  (timeout, encoding, error/empty-to-null mapping) shared by both public
+ *  probes above/below. */
+function execPs(field: string, pid: number): Promise<string | null> {
   return new Promise(resolve => {
-    execFile('ps', ['-o', 'ppid=', '-p', String(pid)], { timeout: PS_TIMEOUT_MS, encoding: 'utf-8' },
+    execFile('ps', ['-o', field, '-p', String(pid)], { timeout: PS_TIMEOUT_MS, encoding: 'utf-8' },
       (err, stdout) => {
-        if (err || !stdout) { resolve(null); return; }
-        const ppid = parseInt(stdout.trim(), 10);
-        if (isNaN(ppid) || ppid <= 0) { resolve(null); return; }
-        resolve(ppid === process.pid);
+        resolve(err || !stdout || !stdout.trim() ? null : stdout);
       });
   });
+}
+
+/** Does this `ps -o args=` line look like an editor Extension Host process?
+ *  The Extension Host is an Electron utility process of sub-type
+ *  node.mojom.NodeService — on macOS it also carries the "Code Helper
+ *  (Plugin)" helper-bundle name. A shell (`-zsh`, `/bin/bash`) or any other
+ *  ancestor matches neither. Deliberately permissive across VS Code, Cursor,
+ *  and Windsurf: every Electron editor uses the same utility-process argv
+ *  shape. A false positive here is benign — an addressed focus hint written
+ *  to a non-Serac pid is simply never consumed and gets swept. */
+export function classifyProcessArgs(argsLine: string): 'extension-host' | 'other' {
+  if (argsLine.includes('utility-sub-type=node.mojom.NodeService')) { return 'extension-host'; }
+  if (argsLine.includes('Code Helper (Plugin)')) { return 'extension-host'; }
+  return 'other';
+}
+
+/** Is `pid` plausibly a VS Code Extension Host process? Guards the swap path:
+ *  an addressed focus hint is only written for an owner pid that looks like a
+ *  window's Extension Host, never for a shell (the terminal-started
+ *  false-positive case). Returns `null` when it cannot be determined (ps
+ *  failed, or a platform without ps) — callers treat null as not
+ *  addressable. */
+export function isExtensionHostPid(pid: number): Promise<boolean | null> {
+  if (process.platform === 'win32') { return Promise.resolve(null); }
+  return execPs('args=', pid).then(stdout =>
+    stdout === null ? null : classifyProcessArgs(stdout) === 'extension-host');
 }

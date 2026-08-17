@@ -6,15 +6,24 @@ vi.mock('vscode', async () => {
   return { ...mock, default: mock };
 });
 
+// Passthrough wrapper so individual resolveOpenGate tests can force the
+// addressable classification (a real extension-host parent can't be
+// fabricated from a test runner); every other export, and the default
+// behaviour, is the real module.
+vi.mock('./writerOwnership.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./writerOwnership.js')>();
+  return { ...mod, isExtensionHostPid: vi.fn(mod.isExtensionHostPid) };
+});
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SessionDiscovery } from './sessionDiscovery.js';
 import type { SessionSnapshot } from './types.js';
 import { EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
+import { isExtensionHostPid } from './writerOwnership.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
-import { DEFAULT_SETTINGS } from './settings.js';
 
 /**
  * Tests for SessionDiscovery.
@@ -593,16 +602,6 @@ describe('SessionDiscovery', () => {
     discovery.stop();
   });
 
-  it('recency cache TTL exceeds the default refresh interval', () => {
-    // The recency cache exists to coalesce isRecentlyActiveElsewhere disk
-    // probes across poll cycles. If the TTL ever drops below the refresh
-    // interval, every poll misses the cache and probes disk — the same
-    // TTL-vs-refresh-interval trap that bit the v1.16.7 externalWriter
-    // cache (entries expired between refreshes, silently disabling it).
-    expect(SessionDiscovery.RECENCY_CACHE_TTL_MS)
-      .toBeGreaterThan(DEFAULT_SETTINGS.refresh.intervalSeconds * 1000);
-  });
-
   it('setArchiveRange(0) converts to Infinity internally', async () => {
     createJsonlFile('test-session');
     const discovery = makeDiscovery();
@@ -1001,7 +1000,129 @@ describe('SessionDiscovery', () => {
     });
   });
 
-  describe('resolveWriterOwnership() gating on recent activity (via getSnapshots().externalWriter)', () => {
+  describe('resolveOpenGate() — the verdict behind the open/send gate and the swap handoff', () => {
+    it("is 'clear' with no live registered process", async () => {
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      await expect(discovery.resolveOpenGate('no-such-session')).resolves.toEqual({ kind: 'clear' });
+      discovery.stop();
+    });
+
+    it("is 'clear' for a confirmed own-window process", async () => {
+      const { spawn } = await import('child_process');
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']);
+      try {
+        writeRegistryEntryWithCwd(child.pid!, 'gate-own');
+        const discovery = makeDiscovery();
+        await expect(discovery.resolveOpenGate('gate-own')).resolves.toEqual({ kind: 'clear' });
+      } finally {
+        child.kill();
+      }
+    });
+
+    it("is 'external' with a non-null ownerPid but NOT addressable when the owner is not an extension host (terminal false-positive parity)", async () => {
+      // The grandchild fixture's parent is a plain node process — ownerPid
+      // resolves, but its ps args classify 'other', exactly like a shell
+      // parent for a terminal-started session. No handoff may be attempted.
+      const sessionId = 'gate-not-addressable';
+      createJsonlFile(sessionId); // fresh — inside the quiet window
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const verdict = await discovery.resolveOpenGate(sessionId, { classifyOwner: true });
+        expect(verdict.kind).toBe('external');
+        if (verdict.kind === 'external') {
+          expect(verdict.ownerPid).toBeGreaterThan(0);
+          expect(verdict.addressable).toBe(false);
+          expect(verdict.quietUnlocked).toBe(false);
+        }
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it("is 'external' and addressable, carrying the owner's registered cwd, when the owner pid verifies as an extension host", async () => {
+      const sessionId = 'gate-addressable';
+      createJsonlFile(sessionId);
+      const ext = await spawnExternalProcess();
+      try {
+        // The registered cwd is what the sender must key the addressed hint
+        // by — the owning window watches ITS folder's key (a sibling-worktree
+        // owner's key differs from the clicking window's).
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { cwd: '/owner/worktree-b' });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        vi.mocked(isExtensionHostPid).mockResolvedValueOnce(true);
+        const verdict = await discovery.resolveOpenGate(sessionId, { classifyOwner: true });
+        expect(verdict).toMatchObject({ kind: 'external', addressable: true, ownerCwd: '/owner/worktree-b' });
+        if (verdict.kind === 'external') {
+          // The pid handed to the handoff must be the verified one.
+          expect(vi.mocked(isExtensionHostPid)).toHaveBeenCalledWith(verdict.ownerPid);
+        }
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('never pays the ps classification without classifyOwner — the facade (composer sends) stays classification-free', async () => {
+      const sessionId = 'gate-lazy-classify';
+      createJsonlFile(sessionId);
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        vi.mocked(isExtensionHostPid).mockClear();
+        const verdict = await discovery.resolveOpenGate(sessionId);
+        expect(verdict).toMatchObject({ kind: 'external', addressable: false });
+        await discovery.isExternalWriterFresh(sessionId);
+        expect(vi.mocked(isExtensionHostPid)).not.toHaveBeenCalled();
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it("reports quietUnlocked for a confirmed-external session past the quiet window — the legacy unlock, now explicit", async () => {
+      const sessionId = 'gate-quiet-unlocked';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: old });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const verdict = await discovery.resolveOpenGate(sessionId);
+        expect(verdict).toMatchObject({ kind: 'external', quietUnlocked: true });
+        // And the facade preserves today's exact gate semantics on top of it.
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it("is 'clear' when the feature setting is off", async () => {
+      _resetConfig();
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, 'gate-setting-off');
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.resolveOpenGate('gate-setting-off')).resolves.toEqual({ kind: 'clear' });
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+  });
+
+  describe('resolveWriterOwnership() is ownership-only (via getSnapshots().externalWriter)', () => {
     function writeRegistryEntry(pid: number, sessionId: string, startedAt: number = Date.now()): void {
       const sessionsDir = path.join(tmpDir, 'sessions');
       fs.mkdirSync(sessionsDir, { recursive: true });
@@ -1027,7 +1148,15 @@ describe('SessionDiscovery', () => {
       }
     });
 
-    it('confirmed external + quiet past the threshold -> externalWriter flips to false', async () => {
+    it('confirmed external + quiet past the threshold -> externalWriter STAYS true while the owner is alive', async () => {
+      // The mark means "an owner process is alive in another window", nothing
+      // about recent activity — an idle-at-prompt session in another window
+      // stays visibly marked (its card hands off on click). The quiet window
+      // applies only to the hard gate (isExternalWriterFresh), which the
+      // sibling test in that describe block pins as false for this same
+      // shape. This is the inverse of the pre-rework recency-gated
+      // expectation — the "still tagged after it wrapped" bug was fixed by
+      // making unmark track process death, not quiet time.
       const sessionId = 'gate-quiet';
       const filePath = createJsonlFile(sessionId);
       const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
@@ -1038,7 +1167,7 @@ describe('SessionDiscovery', () => {
         const discovery = makeDiscovery();
         await discovery.start(() => {});
         const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
-        expect(snap?.externalWriter).toBe(false);
+        expect(snap?.externalWriter).toBe(true);
         discovery.stop();
       } finally {
         ext.cleanup();
@@ -1076,9 +1205,32 @@ describe('SessionDiscovery', () => {
       discovery.stop();
     });
 
-    it('caches the recency verdict briefly so a flagged session does not re-walk its subagents dir on every tick', async () => {
-      const sessionId = 'gate-cache';
-      createJsonlFile(sessionId); // fresh -> within the activity window
+    it('isMarkedExternalWriter mirrors the mark for any registry-known id, without a snapshot rebuild', async () => {
+      // The public probe the click handlers use for the metadata/ack skips —
+      // must answer for ids that never appear in getSnapshots() (foreign,
+      // sibling, team-lead categories all share the registry).
+      const sessionId = 'marked-probe';
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { cwd: '/some/other/workspace' });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        expect(discovery.isMarkedExternalWriter(sessionId)).toBe(true);
+        expect(discovery.isMarkedExternalWriter('never-registered')).toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('never invokes the fs-touching recency check on the render path, even for a confirmed-external flagged session', async () => {
+      // Ownership-only means the cosmetic path is pure in-memory on every
+      // snapshot build — the recency walk belongs exclusively to the hard
+      // gate. (The pre-rework TTL cache this replaces was itself a fix for
+      // the walk running per-tick; removing the walk removes the cache and
+      // its v1.16.7-class eviction bugs with it.)
+      const sessionId = 'gate-no-recency';
+      createJsonlFile(sessionId);
       const ext = await spawnExternalProcess();
       try {
         writeRegistryEntry(ext.pid, sessionId);
@@ -1088,9 +1240,7 @@ describe('SessionDiscovery', () => {
         expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
         expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
         expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
-        // Three snapshot builds, one fs-touching recency resolution — the rest
-        // were served from the TTL cache.
-        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy).not.toHaveBeenCalled();
         discovery.stop();
       } finally {
         ext.cleanup();
@@ -1231,14 +1381,14 @@ describe('SessionDiscovery', () => {
     });
   });
 
-  describe('externalWriter transitions from true to false purely as quiet time elapses', () => {
-    it('flips false once EXTERNAL_WRITER_QUIET_MS and the recency cache TTL have both elapsed, with ownership unchanged', async () => {
+  describe('externalWriter is untouched by elapsed quiet time — only ownership moves it', () => {
+    it('stays true past EXTERNAL_WRITER_QUIET_MS while the owner process is still alive', async () => {
       const sessionId = 'quiet-transition';
       const t0 = Date.now();
       vi.useFakeTimers({ toFake: ['Date'] });
       try {
         vi.setSystemTime(t0);
-        const filePath = createJsonlFile(sessionId); // real fs mtime ~ t0
+        createJsonlFile(sessionId); // real fs mtime ~ t0
         const ext = await spawnExternalProcess();
         try {
           writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: t0 });
@@ -1247,12 +1397,12 @@ describe('SessionDiscovery', () => {
 
           expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
 
-          // Jump well past both the quiet threshold and the recency cache
-          // TTL, with NO change to ownership (same registry entry, same pid
-          // still alive) — proves the cache actually re-evaluates rather
-          // than sticking on its first verdict forever.
+          // Jump well past the quiet threshold with NO change to ownership
+          // (same registry entry, same pid still alive) — the mark must NOT
+          // decay on time. Unmarking is pinned to process death (see the
+          // "unmarks on owner-process death" describe block below).
           vi.setSystemTime(t0 + EXTERNAL_WRITER_QUIET_MS + 60_000);
-          expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(false);
+          expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
           discovery.stop();
         } finally {
           ext.cleanup();
@@ -1285,66 +1435,68 @@ describe('SessionDiscovery', () => {
     });
   });
 
-  describe('recencyCache pruning', () => {
-    it('removes the recency cache entry when a session is pruned (JSONL deleted)', async () => {
-      const sessionId = 'prune-recency-cache';
-      const filePath = createJsonlFile(sessionId);
+  describe('externalWriter unmarks on owner-process death — the "still tagged after it wrapped" bug', () => {
+    // The unmark path is: registry rescan drops the dead pid →
+    // writerOwnership.refresh() prunes its verdict → the next snapshot
+    // build's resolveWriterOwnership() aggregates over zero processes →
+    // undefined. One shared probe closure serves local, foreign,
+    // sibling-worktree, and team-lead sessions alike, so both category
+    // shapes below must clear on the same cadence — the v1.16.7 regression
+    // was exactly a per-category eviction gap in the (now deleted) cache
+    // layer this replaced.
+    it('clears the mark for a local session within one registry-rescan cadence of the owner dying', async () => {
+      const sessionId = 'unmark-on-death-local';
+      createJsonlFile(sessionId);
       const ext = await spawnExternalProcess();
       try {
         writeRegistryEntryWithCwd(ext.pid, sessionId);
         const discovery = makeDiscovery();
         await discovery.start(() => {});
-        // Populate the cache via a confirmed-external, fresh resolution.
         expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
-        const cache = (discovery as unknown as { recencyCache: Map<string, unknown> }).recencyCache;
-        expect(cache.has(sessionId)).toBe(true);
-
-        // Delete the JSONL and run a poll cycle so the prune pass (which
-        // scans lastScanSessionIds from THIS cycle's readdir) evicts the
-        // session.
-        fs.rmSync(filePath);
-        await (discovery as unknown as { poll: () => Promise<void> }).poll();
-
-        expect(cache.has(sessionId)).toBe(false);
-        discovery.stop();
-      } finally {
-        ext.cleanup();
-      }
-    });
-
-    it('removes the recency cache entry for a foreign/sibling/team-lead id (never in this.sessions) once its process dies', async () => {
-      // This id is deliberately never created via createJsonlFile, so it can
-      // never appear in `this.sessions` / `lastScanSessionIds` — simulating
-      // a session only ever reached via the shared writerOwnershipProbeFactory
-      // (ForeignWorkspaceManager / SiblingWorktreeManager / TeamDiscovery),
-      // which is exactly the category the local-scan prune loop above cannot
-      // see. Eviction here must come from the processRegistry-driven sweep.
-      const sessionId = 'foreign-recency-prune';
-      const ext = await spawnExternalProcess();
-      try {
-        writeRegistryEntryWithCwd(ext.pid, sessionId, { cwd: '/some/other/foreign/workspace' });
-        const discovery = makeDiscovery();
-        await discovery.start(() => {});
-
-        // Populate the cache the same way the foreign/sibling/team probe
-        // factory would, without ever touching `this.sessions`.
-        const resolve = (discovery as unknown as { resolveWriterOwnership: (id: string) => boolean | undefined }).resolveWriterOwnership.bind(discovery);
-        expect(resolve(sessionId)).toBe(true);
-        const cache = (discovery as unknown as { recencyCache: Map<string, unknown> }).recencyCache;
-        expect(cache.has(sessionId)).toBe(true);
 
         ext.cleanup();
         // kill(pid, 0) can still report a just-SIGKILL'd pid as alive for a
-        // few ms until the OS finishes tearing it down (same allowance the
-        // other process-death tests in this file give — see the 100ms waits
-        // above); without it, isPidAlive() below races the kernel and flakes.
+        // few ms until the OS finishes tearing it down — same allowance the
+        // other process-death tests in this file give; without it the next
+        // scan's isPidAlive() races the kernel and flakes.
         await new Promise(r => setTimeout(r, 100));
         // processRegistry.shouldRescan() only fires every REGISTRY_SCAN_INTERVAL
         // (4) poll cycles — drive enough cycles to force it.
         const poll = (discovery as unknown as { poll: () => Promise<void> }).poll.bind(discovery);
         for (let i = 0; i < 4; i++) { await poll(); }
 
-        expect(cache.has(sessionId)).toBe(false);
+        expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBeUndefined();
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('clears the mark for a foreign/sibling/team-lead id (never in this.sessions) once its process dies', async () => {
+      // This id is deliberately never created via createJsonlFile, so it can
+      // never appear in `this.sessions` / `lastScanSessionIds` — simulating
+      // a session only ever reached via the shared writerOwnershipProbeFactory
+      // (ForeignWorkspaceManager / SiblingWorktreeManager / TeamDiscovery).
+      // The unmark must come purely from the registry-driven verdict prune,
+      // with no dependency on the local workspace scan.
+      const sessionId = 'unmark-on-death-foreign';
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { cwd: '/some/other/foreign/workspace' });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+
+        // Probe the same way the foreign/sibling/team factory would, without
+        // ever touching `this.sessions`.
+        const resolve = (discovery as unknown as { resolveWriterOwnership: (id: string) => boolean | undefined }).resolveWriterOwnership.bind(discovery);
+        expect(resolve(sessionId)).toBe(true);
+
+        ext.cleanup();
+        await new Promise(r => setTimeout(r, 100));
+        const poll = (discovery as unknown as { poll: () => Promise<void> }).poll.bind(discovery);
+        for (let i = 0; i < 4; i++) { await poll(); }
+
+        expect(resolve(sessionId)).toBeUndefined();
         discovery.stop();
       } finally {
         ext.cleanup();

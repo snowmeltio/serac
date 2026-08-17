@@ -504,7 +504,11 @@ export class DetailPanel {
     const roster = new Set([...team.agents.map(a => a.name), ...team.inProcessMembers]);
     const typeById = new Map(this.subagentFilesOnce(sessionId).map(d => [d.agentId, d.agentType]));
     const leadSnapshot = this.sessionOnce(sessionId);
-    const leadGone = leadSnapshot?.processLive === false || leadSnapshot?.externalWriter === true;
+    // externalWriter deliberately does NOT mean gone: it means the lead is
+    // alive in ANOTHER window, and its shared-on-disk state is current —
+    // teammate rows must render live, not frozen ("viewed from another
+    // profile" once read as dead here, Murray's stale-state complaint).
+    const leadGone = leadSnapshot?.processLive === false;
     const byName = new Map<string, DetailAgentView>();
     const plain: DetailAgentView[] = [];
     for (const a of subs.agents) {
@@ -844,7 +848,8 @@ export class DetailPanel {
     const modelByType = new Map<string, string>();
     for (const d of files) { if (d.agentType && d.model) { modelByType.set(d.agentType, d.model); } }
     const tracked = orchSession?.subagents ?? [];
-    const leadAlive = orchSession?.processLive !== false && orchSession?.externalWriter !== true;
+    // Alive-elsewhere is still alive — see teamSubagentRows' leadGone note.
+    const leadAlive = orchSession?.processLive !== false;
     return team.inProcessMembers.map(name => ({
       agentId: name,
       label: name,

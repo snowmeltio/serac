@@ -398,11 +398,10 @@ let FOREIGN_SLIDE_MS = 220;
     // click always opens the Claude Code companion editor for that session.
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
     if (card) {
-      // Cosmetic guard only — a different VS Code window already owns this
-      // session's live process. The authoritative refusal is server-side
-      // (extension.ts's openClaudeEditor gate); this just avoids the round
-      // trip and the flash of a warning toast on an obviously-disabled card.
-      if (card.classList.contains('external-writer')) { return; }
+      // externally-owned cards post like any other: the host's openClaudeEditor
+      // gate decides between opening here and handing off to the owning window
+      // (the click-to-switch affordance) — a webview-side swallow would kill
+      // the swap.
       const sid = card.dataset.sessionId!;
       focusedSessionId = sid;
       vscode.postMessage({ type: 'focusSession', sessionId: sid });
@@ -870,9 +869,9 @@ let FOREIGN_SLIDE_MS = 220;
       // setAttribute takes a plain DOM string \u2014 do NOT HTML-escape, or a screen
       // reader announces literal entities ("A&amp;B"). s.status is a fixed enum.
       el.setAttribute('aria-label', stripMarkdown(getDisplayName(s)) + ' \u2014 ' + s.status
-        + (s.externalWriter ? ' \u2014 open in another VS Code window right now, not opening here to avoid a conflict' : ''));
+        + (s.externalWriter ? ' \u2014 active in another VS Code window, activate to switch to it' : ''));
       if (s.externalWriter) {
-        el.title = 'Open in another VS Code window right now \u2014 not opening here to avoid a conflict.';
+        el.title = 'Active in another VS Code window \u2014 click to switch to it.';
       } else if (el.title) {
         el.title = '';
       }

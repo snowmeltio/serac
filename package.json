@@ -370,7 +370,7 @@
             "type": "boolean",
             "default": false,
             "scope": "application",
-            "description": "Experimental, off by default. When on, a session confirmed to have a live writer process in a different VS Code window (and recently active within the last 10 minutes) dims on its card and refuses to open/message from here, to prevent two processes appending to the same session file. Off by default while this is still being tuned — with it off, Serac never checks or blocks on this at all."
+            "description": "Experimental, off by default. When on, a session confirmed to have a live writer process in a different VS Code window dims on its card with an 'Active elsewhere' badge, and clicking the card switches to the window running it instead of opening here (preventing two processes appending to the same session file). Messaging such a session from here is still refused. Off by default while this is still being tuned — with it off, Serac never checks, marks, or blocks on this at all."
           },
           "serac.experimental.operatorName": {
             "type": "string",
