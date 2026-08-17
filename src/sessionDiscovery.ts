@@ -10,7 +10,7 @@ import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeIn
 import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
-import { WriterOwnership, aggregateWriterOwnership } from './writerOwnership.js';
+import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { readSettings } from './settings.js';
 import { claudeStateDir, sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath } from './paths.js';
@@ -22,6 +22,11 @@ import type { SessionSnapshot, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot } 
 import type { HookEventRouter } from './hookEventRouter.js';
 
 /** Minimal log interface matching VS Code's LogOutputChannel */
+/** Verdict from resolveOpenGate() — see its docstring for field semantics. */
+export type OpenGateVerdict =
+  | { kind: 'clear' }
+  | { kind: 'external'; ownerPid: number | null; addressable: boolean; quietUnlocked: boolean };
+
 export interface Logger {
   info(message: string, ...args: unknown[]): void;
   warn(message: string, ...args: unknown[]): void;
@@ -950,15 +955,39 @@ export class SessionDiscovery {
    *  off, resolves `false` (never blocks) before even scanning the process
    *  registry — see `resolveWriterOwnership`'s docstring for the same gate. */
   async isExternalWriterFresh(sessionId: string): Promise<boolean> {
-    if (!readSettings().experimental.externalWriterBlock) { return false; }
+    const verdict = await this.resolveOpenGate(sessionId);
+    return verdict.kind === 'external' && !verdict.quietUnlocked;
+  }
+
+  /** The full open-gate verdict behind isExternalWriterFresh(), for callers
+   *  that hand off instead of merely blocking (openClaudeEditor's swap
+   *  branch). Same fresh scan-and-resolve contract as the facade above —
+   *  every field is computed at the moment of decision, never cached:
+   *
+   *  - 'clear' — no live external writer (or feature off): open locally.
+   *  - 'external' — a confirmed-external process holds the session.
+   *    `ownerPid` is that process's parent (the owning window's Extension
+   *    Host) when known. `addressable` means the ownerPid additionally
+   *    verified as a live extension-host process just now — the only state in
+   *    which a cross-window handoff may be attempted; a shell parent (the
+   *    terminal-started false positive) or an unverifiable pid never
+   *    qualifies. `quietUnlocked` mirrors the legacy 10-minute quiet-window
+   *    unlock, retained as the fallback for non-addressable owners. */
+  async resolveOpenGate(sessionId: string): Promise<OpenGateVerdict> {
+    if (!readSettings().experimental.externalWriterBlock) { return { kind: 'clear' }; }
     await this.processRegistry.scan();
     const procs = this.processRegistry.getProcessesForSession(sessionId);
-    if (procs.length === 0) { return false; }
+    if (procs.length === 0) { return { kind: 'clear' }; }
     await this.writerOwnership.resolveFor(procs);
-    const ownership = aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === true;
-    if (!ownership) { return false; }
+    const external = aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === true;
+    if (!external) { return { kind: 'clear' }; }
     const externalProcs = procs.filter(p => this.writerOwnership.getInfo(p.pid) === true);
-    return this.isRecentlyActiveElsewhere(sessionId, externalProcs);
+    const ownerPid = externalProcs
+      .map(p => this.writerOwnership.getOwnerPid(p.pid))
+      .find(pid => pid !== undefined) ?? null;
+    const addressable = ownerPid !== null && (await isExtensionHostPid(ownerPid)) === true;
+    const quietUnlocked = !this.isRecentlyActiveElsewhere(sessionId, externalProcs);
+    return { kind: 'external', ownerPid, addressable, quietUnlocked };
   }
 
   /** Filesystem-touching recency check: is ANY of the given live processes

@@ -214,14 +214,20 @@ describe('panel.ts integration', () => {
     expect((focusMsg as any).sessionId).toBe(sess.sessionId);
   });
 
-  it('does not post focusSession when a different VS Code window owns the session', () => {
+  it('posts focusSession for an externally-owned card too — the host decides open vs hand-off', () => {
+    // Clicking an "Active elsewhere" card is the switch-to-that-window
+    // affordance: the webview must NOT swallow the click (the old cosmetic
+    // guard); extension.ts's openClaudeEditor gate routes it to the swap.
     const sess = makeSession({ externalWriter: true });
     sendUpdate({ sessions: [sess] });
     const card = document.querySelector('.card') as HTMLElement;
     expect(card.classList.contains('external-writer')).toBe(true);
+    expect(card.title).toContain('click to switch');
+    expect(card.getAttribute('aria-label')).toContain('active in another VS Code window');
     card.click();
     const focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
-    expect(focusMsg).toBeUndefined();
+    expect(focusMsg).toBeTruthy();
+    expect((focusMsg as any).sessionId).toBe(sess.sessionId);
   });
 
   it('scrolls a newly auto-focused card into view (focusSession from the extension)', () => {

@@ -6,12 +6,22 @@ vi.mock('vscode', async () => {
   return { ...mock, default: mock };
 });
 
+// Passthrough wrapper so individual resolveOpenGate tests can force the
+// addressable classification (a real extension-host parent can't be
+// fabricated from a test runner); every other export, and the default
+// behaviour, is the real module.
+vi.mock('./writerOwnership.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('./writerOwnership.js')>();
+  return { ...mod, isExtensionHostPid: vi.fn(mod.isExtensionHostPid) };
+});
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SessionDiscovery } from './sessionDiscovery.js';
 import type { SessionSnapshot } from './types.js';
 import { EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
+import { isExtensionHostPid } from './writerOwnership.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
 import { DEFAULT_SETTINGS } from './settings.js';
@@ -984,6 +994,106 @@ describe('SessionDiscovery', () => {
         const discovery = makeDiscovery();
         await discovery.start(() => {});
         await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(true);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+  });
+
+  describe('resolveOpenGate() — the verdict behind the open/send gate and the swap handoff', () => {
+    it("is 'clear' with no live registered process", async () => {
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      await expect(discovery.resolveOpenGate('no-such-session')).resolves.toEqual({ kind: 'clear' });
+      discovery.stop();
+    });
+
+    it("is 'clear' for a confirmed own-window process", async () => {
+      const { spawn } = await import('child_process');
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']);
+      try {
+        writeRegistryEntryWithCwd(child.pid!, 'gate-own');
+        const discovery = makeDiscovery();
+        await expect(discovery.resolveOpenGate('gate-own')).resolves.toEqual({ kind: 'clear' });
+      } finally {
+        child.kill();
+      }
+    });
+
+    it("is 'external' with a non-null ownerPid but NOT addressable when the owner is not an extension host (terminal false-positive parity)", async () => {
+      // The grandchild fixture's parent is a plain node process — ownerPid
+      // resolves, but its ps args classify 'other', exactly like a shell
+      // parent for a terminal-started session. No handoff may be attempted.
+      const sessionId = 'gate-not-addressable';
+      createJsonlFile(sessionId); // fresh — inside the quiet window
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const verdict = await discovery.resolveOpenGate(sessionId);
+        expect(verdict.kind).toBe('external');
+        if (verdict.kind === 'external') {
+          expect(verdict.ownerPid).toBeGreaterThan(0);
+          expect(verdict.addressable).toBe(false);
+          expect(verdict.quietUnlocked).toBe(false);
+        }
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it("is 'external' and addressable when the owner pid verifies as an extension host", async () => {
+      const sessionId = 'gate-addressable';
+      createJsonlFile(sessionId);
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId);
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        vi.mocked(isExtensionHostPid).mockResolvedValueOnce(true);
+        const verdict = await discovery.resolveOpenGate(sessionId);
+        expect(verdict).toMatchObject({ kind: 'external', addressable: true, quietUnlocked: false });
+        if (verdict.kind === 'external') {
+          // The pid handed to the handoff must be the verified one.
+          expect(vi.mocked(isExtensionHostPid)).toHaveBeenCalledWith(verdict.ownerPid);
+        }
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it("reports quietUnlocked for a confirmed-external session past the quiet window — the legacy unlock, now explicit", async () => {
+      const sessionId = 'gate-quiet-unlocked';
+      const filePath = createJsonlFile(sessionId);
+      const old = Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000;
+      fs.utimesSync(filePath, new Date(old), new Date(old));
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: old });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const verdict = await discovery.resolveOpenGate(sessionId);
+        expect(verdict).toMatchObject({ kind: 'external', quietUnlocked: true });
+        // And the facade preserves today's exact gate semantics on top of it.
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it("is 'clear' when the feature setting is off", async () => {
+      _resetConfig();
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, 'gate-setting-off');
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.resolveOpenGate('gate-setting-off')).resolves.toEqual({ kind: 'clear' });
         discovery.stop();
       } finally {
         ext.cleanup();

@@ -88,11 +88,13 @@ export interface SeracSettings {
     /** The honest sender label written as the inbox entry's `from`. Synthesized
      *  server-side (never accepted from the webview) and validated. */
     operatorName: string;
-    /** Master gate for the externalWriter block (a session with a confirmed
-     *  live writer in a different VS Code window dims and refuses to
-     *  open/message from here). Default off while still being tuned — off
-     *  means SessionDiscovery never runs the ownership/recency checks at
-     *  all, not just that the UI hides them. */
+    /** Master gate for the externalWriter guard (a session with a confirmed
+     *  live writer in a different VS Code window dims with an "Active
+     *  elsewhere" badge; clicking its card switches to the owning window
+     *  instead of opening here; messaging it from here is refused). Default
+     *  off while still being tuned — off means SessionDiscovery never runs
+     *  the ownership/recency checks at all, not just that the UI hides
+     *  them. */
     externalWriterBlock: boolean;
   };
   hooks: {

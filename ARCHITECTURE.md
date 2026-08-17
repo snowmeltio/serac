@@ -311,6 +311,44 @@ panel's liveness checks (`teamSubagentRows`, in-process member rows) key off
 `processLive === false` only, so an externally-driven session still renders
 live, current, read-only state from its shared on-disk JSONL.
 
+#### Cross-window handoff (click-to-switch)
+
+Clicking a marked card switches to the owning window instead of opening the
+session here. The gate exposes the full verdict as
+`SessionDiscovery.resolveOpenGate()` (`isExternalWriterFresh()` is a facade
+over it): for a confirmed-external session it carries the owner's Extension
+Host pid (the claude process's parent, from `WriterOwnership.getOwnerPid()`)
+and whether that pid verified as an extension host just now
+(`isExtensionHostPid()`, a `ps -o args=` classification). Only a verified
+owner is **addressable**; a shell parent — the terminal-started false
+positive — never is, and falls back to the legacy warn/quiet-unlock.
+
+The handoff itself is an **addressed focus hint**,
+`projects/<wsKey>/focus-hint-<ownerPid>.json` (`workspaceOpener.ts`).
+Addressed **by filename, not by a payload field**: the projects dir is shared
+across profile symlink farms, every window on the folder watches it, and the
+legacy `consumeFocusHint()` deletes unconditionally — a field couldn't stop
+an older window stealing the hint, a distinct basename does. Each window
+watches only `focus-hint-<its own extension-host pid>.json`; on pickup it
+**foregrounds itself** by spawning its own bundled CLI with its own
+`--user-data-dir` (derived exactly from `context.globalStorageUri` via
+`deriveUserDataDir()` — three segments up), then focuses the card and editor.
+`cliOnly` suppresses the `vscode.openFolder` fallback on this path (a
+self-raise must degrade to a no-op, never a duplicate window). Unconsumed
+hints (the addressee died first) are GC'd by `sweepStaleAddressedHints()` on
+every window activation, plus the shared 60s TTL on consume.
+
+*Rejected alternative:* the sender resolving the owner's `--user-data-dir`
+from its process tree. `ps -o args=` space-joins argv, so on macOS
+`--user-data-dir /Users/…/Application Support/Code-<name> /path/to/folder`
+has no recoverable boundary between the dir value and the folder argument —
+receiver-side self-identification needs no parsing at all.
+
+Ordinary workspace/worktree row opens are the inverse case: they pass this
+window's OWN `userDataDir` to `openWorkspaceFolder()` so they always open in
+the current profile's instance — the session-card handoff is the only
+cross-profile affordance.
+
 ## Hook consumption
 
 > Status: **implemented 2026-06-01** — `TurnLifecycleTracker`,

@@ -14,7 +14,10 @@ import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from './claudeSettings.js';
 import { sanitiseWorkspaceKey, applyWorkflowLiveStatus, normPath, computeWaitingCount } from './panelUtils.js';
 import { buildWorktreeRows } from './worktreeRows.js';
-import { openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath } from './workspaceOpener.js';
+import {
+  openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath,
+  addressedFocusHintPath, writeAddressedFocusHint, sweepStaleAddressedHints, deriveUserDataDir,
+} from './workspaceOpener.js';
 import { wireHookIngress } from './hookWiring.js';
 import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
 import { appendInboxMessage, peekInboxMessages } from './teammateInbox.js';
@@ -54,14 +57,25 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
 
   const discovery = new SessionDiscovery(wsPath, { log, hookRouter });
 
+  // This window's own VS Code instance dir (--user-data-dir), derived exactly
+  // from globalStorage — null when the layout is unrecognised (portable mode),
+  // in which case instance-targeted spawns are skipped rather than guessed.
+  const ownUserDataDir: string | null =
+    context.globalStorageUri ? deriveUserDataDir(context.globalStorageUri.fsPath) : null;
+
   /** Open (or reveal) a Claude Code editor tab via the companion extension's
-   *  command. `sessionId` undefined opens a new chat. Refuses (with a warning,
-   *  no side effects) when a *different* VS Code window is confirmed to be
-   *  this session's live writer right now — opening here too would let two
-   *  processes append to the same JSONL file. Failure otherwise usually means
-   *  the Claude Code extension isn't installed — callers choose how loudly to
-   *  say so. `onSettled` fires on success AND failure (the undismiss flows
-   *  re-render either way). */
+   *  command. `sessionId` undefined opens a new chat. When a *different* VS
+   *  Code window is confirmed to be this session's live writer right now,
+   *  opening here would let two processes append to the same JSONL file — so
+   *  instead of opening, this HANDS OFF: it drops a focus hint addressed to
+   *  the owning window's extension-host pid, and that window foregrounds
+   *  itself with the session revealed. When the owner can't be addressed (a
+   *  terminal-parent false positive, or ps couldn't verify it), the legacy
+   *  behaviour remains: blocked with a warning while recently active,
+   *  reclaimable after the 10-minute quiet window. Failure otherwise usually
+   *  means the Claude Code extension isn't installed — callers choose how
+   *  loudly to say so. `onSettled` fires on every settled path (the undismiss
+   *  flows re-render either way). */
   function openClaudeEditor(sessionId: string | undefined, opts: {
     onSettled?: () => void;
     failMessage?: string;
@@ -70,13 +84,35 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     void (async () => {
       // Fresh, not cached — the poll loop's registry snapshot is exactly stale
       // during the highest-risk window (a session that just started, or just
-      // finished, elsewhere). See isExternalWriterFresh()'s own doc comment.
-      if (sessionId !== undefined && await discovery.isExternalWriterFresh(sessionId)) {
-        void vscode.window.showWarningMessage(
-          'This session is open in another VS Code window right now — not opening here to avoid a conflict.',
-        );
-        opts.onSettled?.();
-        return;
+      // finished, elsewhere). See resolveOpenGate()'s own doc comment.
+      if (sessionId !== undefined) {
+        const verdict = await discovery.resolveOpenGate(sessionId);
+        if (verdict.kind === 'external') {
+          if (verdict.addressable && verdict.ownerPid !== null) {
+            // Both windows hold this same folder (that's the scenario), so
+            // the sender's own workspace key addresses the shared hint dir.
+            try {
+              await writeAddressedFocusHint(projectsDir, sanitiseWorkspaceKey(wsPath), verdict.ownerPid, sessionId);
+            } catch (err) {
+              log.warn('Failed to write addressed focus hint:', err);
+              void vscode.window.showWarningMessage('Could not hand off to the other VS Code window.');
+              opts.onSettled?.();
+              return;
+            }
+            vscode.window.setStatusBarMessage('Switching to the window running this session…', 3000);
+            opts.onSettled?.();
+            return;
+          }
+          if (!verdict.quietUnlocked) {
+            void vscode.window.showWarningMessage(
+              'This session is open in another VS Code window right now — not opening here to avoid a conflict.',
+            );
+            opts.onSettled?.();
+            return;
+          }
+          // Non-addressable owner past the quiet window: legacy unlock —
+          // fall through and open locally.
+        }
       }
       vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
         () => opts.onSettled?.(),
@@ -185,9 +221,13 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     }
     previouslyFocusedSessionId = sessionId;
     // Ensure the JSONL has summary metadata so the Claude extension can discover it.
-    // Skip for running sessions to avoid concurrent write risk.
+    // Skip for running sessions to avoid concurrent write risk — and for
+    // externally-owned sessions: the JSONL is shared on disk across windows
+    // (profile symlink farms), so a mere click here must never write into a
+    // file another window's process owns.
     const isRunning = discovery.isSessionRunning(sessionId) || discovery.isTeamSessionRunning(sessionId);
-    if (!isRunning) {
+    const ownedElsewhere = discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter === true;
+    if (!isRunning && !ownedElsewhere) {
       const jsonlPath = discovery.getSessionFilePath(sessionId)
         ?? discovery.getTeamSessionFilePath(sessionId);
       if (jsonlPath) { void ensureSessionMetadata(sessionId, jsonlPath); }
@@ -264,8 +304,10 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // Handle session undismiss — restores card to list, then focuses the editor
   panelProvider.setUndismissHandler((sessionId: string) => {
     discovery.undismissSession(sessionId);
-    // Ensure metadata before opening (same as focus handler)
-    if (!discovery.isSessionRunning(sessionId)) {
+    // Ensure metadata before opening (same as focus handler, including the
+    // externally-owned skip — see there).
+    if (!discovery.isSessionRunning(sessionId)
+      && discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter !== true) {
       const jsonlPath = discovery.getSessionFilePath(sessionId);
       if (jsonlPath) { void ensureSessionMetadata(sessionId, jsonlPath); }
     }
@@ -387,7 +429,12 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       }
     }
     try {
-      await openWorkspaceFolder(cwd);
+      // Pinned to THIS window's own instance: with several profile instances
+      // running, a bare CLI call routes by its own default-instance
+      // resolution, which may be a different profile's window. Workspace and
+      // worktree rows always open in the current profile — the session-card
+      // swap (openClaudeEditor) is the only cross-profile affordance.
+      await openWorkspaceFolder(cwd, { userDataDir: ownUserDataDir ?? undefined });
     } catch (err) {
       log.warn('Failed to open workspace folder:', err);
       vscode.window.showWarningMessage(`Failed to open workspace at ${cwd}.`);
@@ -416,6 +463,40 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   hintWatcher.onDidCreate(() => { void applyFocusHint(); });
   hintWatcher.onDidChange(() => { void applyFocusHint(); });
   context.subscriptions.push(hintWatcher);
+
+  // Addressed hints — the cross-window session handoff. Another window that
+  // found US to be a clicked session's owner (via the claude process's parent
+  // pid) drops focus-hint-<our extension-host pid>.json in the shared hint
+  // dir; only this window watches that basename, so there is no consume race
+  // with other windows on the same folder (profile symlink farms share the
+  // projects dir) and legacy windows never see it. On pickup: raise our own
+  // OS window by asking our own instance for our own folder — the one
+  // --user-data-dir we know exactly (derived from globalStorage, never parsed
+  // from ps) — then reveal the session. cliOnly: degrading to a duplicate
+  // window of a folder we already have open would be worse than not raising.
+  const addressedHintPath = addressedFocusHintPath(projectsDir, localWorkspaceKey, process.pid);
+  async function applyAddressedFocusHint() {
+    const hint = await consumeFocusHint(addressedHintPath);
+    if (!hint) { return; }
+    if (ownUserDataDir) {
+      try {
+        await openWorkspaceFolder(wsPath, { userDataDir: ownUserDataDir, cliOnly: true });
+      } catch (err) {
+        log.warn('Self-foreground failed (continuing with in-window focus):', err);
+      }
+    }
+    panelProvider.focusSession(hint.sessionId);
+    openClaudeEditor(hint.sessionId);
+  }
+  const addressedHintWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(path.dirname(addressedHintPath)), path.basename(addressedHintPath)),
+  );
+  addressedHintWatcher.onDidCreate(() => { void applyAddressedFocusHint(); });
+  addressedHintWatcher.onDidChange(() => { void applyAddressedFocusHint(); });
+  context.subscriptions.push(addressedHintWatcher);
+  // GC hints addressed to windows that died before consuming them — our own
+  // fresh pid can't have a pending hint (nobody could have addressed it yet).
+  void sweepStaleAddressedHints(projectsDir, localWorkspaceKey);
 
   // Register refresh command
   context.subscriptions.push(

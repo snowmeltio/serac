@@ -57,6 +57,7 @@ vi.mock('vscode', () => {
       showWarningMessage: vi.fn(),
       showErrorMessage: vi.fn(),
       showTextDocument: vi.fn(),
+      setStatusBarMessage: vi.fn(),
       tabGroups,
     },
     commands: {
@@ -83,6 +84,7 @@ const mockDiscovery = {
   acknowledgeSubagents: vi.fn(),
   isSessionRunning: vi.fn().mockReturnValue(false),
   isExternalWriterFresh: vi.fn().mockResolvedValue(false),
+  resolveOpenGate: vi.fn().mockResolvedValue({ kind: 'clear' }),
   getSessionFilePath: vi.fn().mockReturnValue(null),
   setArchiveRange: vi.fn().mockResolvedValue(true),
   getTeamSnapshots: vi.fn().mockReturnValue([]),
@@ -160,6 +162,10 @@ vi.mock('./workspaceOpener.js', () => ({
   writeFocusHint: vi.fn().mockResolvedValue(undefined),
   consumeFocusHint: vi.fn().mockResolvedValue(null),
   focusHintPath: vi.fn().mockReturnValue('/test/hints/focus-hint.json'),
+  addressedFocusHintPath: vi.fn((_dir: string, _key: string, pid: number) => `/test/hints/focus-hint-${pid}.json`),
+  writeAddressedFocusHint: vi.fn().mockResolvedValue(undefined),
+  sweepStaleAddressedHints: vi.fn().mockResolvedValue(undefined),
+  deriveUserDataDir: vi.fn().mockReturnValue('/test/user-data'),
 }));
 
 vi.mock('./claudeEnvSignals.js', () => ({
@@ -172,13 +178,18 @@ import { renderTranscript } from './transcriptRenderer.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 
 describe('extension', () => {
-  let context: { extensionUri: { scheme: string; fsPath: string }; subscriptions: Array<{ dispose: () => void }> };
+  let context: {
+    extensionUri: { scheme: string; fsPath: string };
+    globalStorageUri: { scheme: string; fsPath: string };
+    subscriptions: Array<{ dispose: () => void }>;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     context = {
       extensionUri: { scheme: 'file', fsPath: '/test/ext' },
+      globalStorageUri: { scheme: 'file', fsPath: '/test/data/User/globalStorage/snowmeltio.serac' },
       subscriptions: [],
     };
     (vscode.window.tabGroups as any).all = [];
@@ -245,10 +256,30 @@ describe('extension', () => {
       expect(ensureSessionMetadata).not.toHaveBeenCalled();
     });
 
-    it('refuses to open the editor when a different VS Code window is the confirmed live writer', async () => {
+    it('hands off (writes an addressed hint, never opens here) when the external owner is addressable', async () => {
       activate(context as any);
       const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
-      mockDiscovery.isExternalWriterFresh.mockResolvedValueOnce(true);
+      mockDiscovery.resolveOpenGate.mockResolvedValueOnce(
+        { kind: 'external', ownerPid: 4321, addressable: true, quietUnlocked: false });
+
+      focusHandler('test-session');
+
+      const opener = await import('./workspaceOpener.js');
+      await vi.waitFor(() => {
+        expect(vi.mocked(opener.writeAddressedFocusHint)).toHaveBeenCalledWith(
+          expect.any(String), expect.any(String), 4321, 'test-session');
+      });
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything(),
+      );
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    });
+
+    it('refuses with a warning when the external owner is not addressable and still recently active', async () => {
+      activate(context as any);
+      const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
+      mockDiscovery.resolveOpenGate.mockResolvedValueOnce(
+        { kind: 'external', ownerPid: null, addressable: false, quietUnlocked: false });
 
       focusHandler('test-session');
 
@@ -260,6 +291,36 @@ describe('extension', () => {
       expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
         'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything(),
       );
+    });
+
+    it('opens locally when a non-addressable owner has been quiet past the window (legacy unlock)', async () => {
+      activate(context as any);
+      const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
+      mockDiscovery.resolveOpenGate.mockResolvedValueOnce(
+        { kind: 'external', ownerPid: null, addressable: false, quietUnlocked: true });
+
+      focusHandler('test-session');
+
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+          'claude-vscode.editor.open', 'test-session', undefined, 1,
+        );
+      });
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    });
+
+    it('skips the ensureSessionMetadata write for an externally-owned session — viewing must never claim', () => {
+      activate(context as any);
+      const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
+      mockDiscovery.isSessionRunning.mockReturnValue(false);
+      mockDiscovery.getSessionFilePath.mockReturnValue('/test/session.jsonl');
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'test-session', externalWriter: true } as any,
+      ]);
+
+      focusHandler('test-session');
+
+      expect(ensureSessionMetadata).not.toHaveBeenCalled();
     });
 
     it('acknowledges previous session when focus changes', () => {
@@ -435,7 +496,9 @@ describe('extension', () => {
       ]);
       await handler('/foreign/repo');
       const opener = await import('./workspaceOpener.js');
-      expect(vi.mocked(opener.openWorkspaceFolder)).toHaveBeenCalledWith('/foreign/repo');
+      // Pinned to this window's own instance (multi-profile: a bare CLI call
+      // could route to a different profile's window).
+      expect(vi.mocked(opener.openWorkspaceFolder)).toHaveBeenCalledWith('/foreign/repo', { userDataDir: '/test/user-data' });
     });
 
     it('opens a discovered worktree path from the picker', async () => {
@@ -445,7 +508,7 @@ describe('extension', () => {
       ]);
       await handler('/foreign/repo-wt');
       const opener = await import('./workspaceOpener.js');
-      expect(vi.mocked(opener.openWorkspaceFolder)).toHaveBeenCalledWith('/foreign/repo-wt');
+      expect(vi.mocked(opener.openWorkspaceFolder)).toHaveBeenCalledWith('/foreign/repo-wt', { userDataDir: '/test/user-data' });
     });
 
     it('rejects a path outside the discovered workspace set', async () => {
