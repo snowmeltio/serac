@@ -21,12 +21,12 @@ import { makeSessionMetaStore, type SessionMetaStore } from './sessionMetaStore.
 import type { SessionSnapshot, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 
-/** Minimal log interface matching VS Code's LogOutputChannel */
 /** Verdict from resolveOpenGate() — see its docstring for field semantics. */
 export type OpenGateVerdict =
   | { kind: 'clear' }
-  | { kind: 'external'; ownerPid: number | null; addressable: boolean; quietUnlocked: boolean };
+  | { kind: 'external'; ownerPid: number | null; ownerCwd: string | null; addressable: boolean; quietUnlocked: boolean };
 
+/** Minimal log interface matching VS Code's LogOutputChannel */
 export interface Logger {
   info(message: string, ...args: unknown[]): void;
   warn(message: string, ...args: unknown[]): void;
@@ -934,8 +934,10 @@ export class SessionDiscovery {
    *  race this decision — that used to be possible when both went through
    *  plain, unserialized `refresh()` calls. Checked directly against the
    *  process registry rather than a merged snapshot list, so it answers
-   *  correctly for any session id — including team orchestrators and
-   *  workflow-owning sessions, which don't appear in getSnapshots().
+   *  correctly for ANY session id regardless of snapshot-list membership
+   *  (native Agent Teams leads do appear in getSnapshots() — only legacy
+   *  sidecar manifests could claim them out — but nothing here depends on
+   *  that either way).
    *  Account-agnostic: see WriterOwnership. Resolves false (never blocks)
    *  when there's no live process or ownership can't be determined.
    *
@@ -967,13 +969,20 @@ export class SessionDiscovery {
    *  - 'clear' — no live external writer (or feature off): open locally.
    *  - 'external' — a confirmed-external process holds the session.
    *    `ownerPid` is that process's parent (the owning window's Extension
-   *    Host) when known. `addressable` means the ownerPid additionally
-   *    verified as a live extension-host process just now — the only state in
-   *    which a cross-window handoff may be attempted; a shell parent (the
-   *    terminal-started false positive) or an unverifiable pid never
-   *    qualifies. `quietUnlocked` mirrors the legacy 10-minute quiet-window
-   *    unlock, retained as the fallback for non-addressable owners. */
-  async resolveOpenGate(sessionId: string): Promise<OpenGateVerdict> {
+   *    Host) when known; `ownerCwd` is the external process's own registered
+   *    cwd — the workspace key an addressed hint must be filed under (the
+   *    owning window watches ITS folder's key, which for sibling-worktree and
+   *    cross-cwd sessions is not the clicking window's). `addressable` means
+   *    the ownerPid additionally verified as a live extension-host process
+   *    just now — the only state in which a cross-window handoff may be
+   *    attempted; a shell parent (the terminal-started false positive) or an
+   *    unverifiable pid never qualifies. Computed ONLY when
+   *    `opts.classifyOwner` is passed: it costs a ps subprocess (up to
+   *    PS_TIMEOUT_MS), and the isExternalWriterFresh facade — every composer
+   *    send — discards it. `quietUnlocked` mirrors the legacy 10-minute
+   *    quiet-window unlock, retained as the fallback for non-addressable
+   *    owners. */
+  async resolveOpenGate(sessionId: string, opts: { classifyOwner?: boolean } = {}): Promise<OpenGateVerdict> {
     if (!readSettings().experimental.externalWriterBlock) { return { kind: 'clear' }; }
     await this.processRegistry.scan();
     const procs = this.processRegistry.getProcessesForSession(sessionId);
@@ -982,12 +991,23 @@ export class SessionDiscovery {
     const external = aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === true;
     if (!external) { return { kind: 'clear' }; }
     const externalProcs = procs.filter(p => this.writerOwnership.getInfo(p.pid) === true);
-    const ownerPid = externalProcs
-      .map(p => this.writerOwnership.getOwnerPid(p.pid))
-      .find(pid => pid !== undefined) ?? null;
-    const addressable = ownerPid !== null && (await isExtensionHostPid(ownerPid)) === true;
+    const ownerProc = externalProcs.find(p => this.writerOwnership.getOwnerPid(p.pid) !== undefined) ?? null;
+    const ownerPid = ownerProc ? this.writerOwnership.getOwnerPid(ownerProc.pid) ?? null : null;
+    const ownerCwd = ownerProc?.cwd ?? null;
+    const addressable = opts.classifyOwner === true
+      && ownerPid !== null && (await isExtensionHostPid(ownerPid)) === true;
     const quietUnlocked = !this.isRecentlyActiveElsewhere(sessionId, externalProcs);
-    return { kind: 'external', ownerPid, addressable, quietUnlocked };
+    return { kind: 'external', ownerPid, ownerCwd, addressable, quietUnlocked };
+  }
+
+  /** Is this session currently marked "active elsewhere"? The same cached,
+   *  registry-backed verdict the card mark renders — O(this session's live
+   *  procs), no snapshot rebuild, and category-independent (local, foreign,
+   *  sibling, team lead: any id registered in the process registry answers).
+   *  Cosmetic-tier freshness: for an actual open/send decision use
+   *  resolveOpenGate()/isExternalWriterFresh(). */
+  isMarkedExternalWriter(sessionId: string): boolean {
+    return this.resolveWriterOwnership(sessionId) === true;
   }
 
   /** Filesystem-touching recency check: is ANY of the given live processes

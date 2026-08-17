@@ -85,6 +85,7 @@ const mockDiscovery = {
   isSessionRunning: vi.fn().mockReturnValue(false),
   isExternalWriterFresh: vi.fn().mockResolvedValue(false),
   resolveOpenGate: vi.fn().mockResolvedValue({ kind: 'clear' }),
+  isMarkedExternalWriter: vi.fn().mockReturnValue(false),
   getSessionFilePath: vi.fn().mockReturnValue(null),
   setArchiveRange: vi.fn().mockResolvedValue(true),
   getTeamSnapshots: vi.fn().mockReturnValue([]),
@@ -256,19 +257,25 @@ describe('extension', () => {
       expect(ensureSessionMetadata).not.toHaveBeenCalled();
     });
 
-    it('hands off (writes an addressed hint, never opens here) when the external owner is addressable', async () => {
+    it('hands off (writes an addressed hint under the OWNER\'s workspace key, never opens here) when the external owner is addressable', async () => {
       activate(context as any);
       const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
       mockDiscovery.resolveOpenGate.mockResolvedValueOnce(
-        { kind: 'external', ownerPid: 4321, addressable: true, quietUnlocked: false });
+        { kind: 'external', ownerPid: 4321, ownerCwd: '/owner/worktree-b', addressable: true, quietUnlocked: false });
 
       focusHandler('test-session');
 
       const opener = await import('./workspaceOpener.js');
+      const { sanitiseWorkspaceKey } = await import('./panelUtils.js');
       await vi.waitFor(() => {
+        // Keyed by the owner's registered cwd — a sibling-worktree owner
+        // watches its own folder's key, not the clicking window's.
         expect(vi.mocked(opener.writeAddressedFocusHint)).toHaveBeenCalledWith(
-          expect.any(String), expect.any(String), 4321, 'test-session');
+          expect.any(String), sanitiseWorkspaceKey('/owner/worktree-b'), 4321, 'test-session');
       });
+      // The gate ran with owner classification requested (the facade path
+      // never pays that ps cost; the handoff must).
+      expect(mockDiscovery.resolveOpenGate).toHaveBeenCalledWith('test-session', { classifyOwner: true });
       expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
         'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything(),
       );
@@ -279,7 +286,7 @@ describe('extension', () => {
       activate(context as any);
       const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
       mockDiscovery.resolveOpenGate.mockResolvedValueOnce(
-        { kind: 'external', ownerPid: null, addressable: false, quietUnlocked: false });
+        { kind: 'external', ownerPid: null, ownerCwd: null, addressable: false, quietUnlocked: false });
 
       focusHandler('test-session');
 
@@ -297,7 +304,7 @@ describe('extension', () => {
       activate(context as any);
       const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
       mockDiscovery.resolveOpenGate.mockResolvedValueOnce(
-        { kind: 'external', ownerPid: null, addressable: false, quietUnlocked: true });
+        { kind: 'external', ownerPid: null, ownerCwd: null, addressable: false, quietUnlocked: true });
 
       focusHandler('test-session');
 
@@ -314,13 +321,29 @@ describe('extension', () => {
       const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
       mockDiscovery.isSessionRunning.mockReturnValue(false);
       mockDiscovery.getSessionFilePath.mockReturnValue('/test/session.jsonl');
-      mockDiscovery.getSnapshots.mockReturnValue([
-        { sessionId: 'test-session', externalWriter: true } as any,
-      ]);
+      mockDiscovery.isMarkedExternalWriter.mockReturnValueOnce(true);
 
       focusHandler('test-session');
 
       expect(ensureSessionMetadata).not.toHaveBeenCalled();
+    });
+
+    it('does not run acknowledge bookkeeping for an externally-owned click — hand-off, not a view', () => {
+      activate(context as any);
+      const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
+
+      focusHandler('session-a');
+      // External card click: must neither acknowledge session-a nor become
+      // the "previously focused" session itself.
+      mockDiscovery.isMarkedExternalWriter.mockReturnValueOnce(true);
+      focusHandler('session-b');
+      expect(mockDiscovery.acknowledgeIfDone).not.toHaveBeenCalled();
+
+      // A later normal focus still acknowledges session-a, proving the
+      // external click never overwrote the tracked previous session.
+      focusHandler('session-c');
+      expect(mockDiscovery.acknowledgeIfDone).toHaveBeenCalledWith('session-a');
+      expect(mockDiscovery.acknowledgeIfDone).not.toHaveBeenCalledWith('session-b');
     });
 
     it('acknowledges previous session when focus changes', () => {

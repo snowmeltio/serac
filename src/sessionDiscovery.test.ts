@@ -24,7 +24,6 @@ import { EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { isExtensionHostPid } from './writerOwnership.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
-import { DEFAULT_SETTINGS } from './settings.js';
 
 /**
  * Tests for SessionDiscovery.
@@ -1032,7 +1031,7 @@ describe('SessionDiscovery', () => {
         writeRegistryEntryWithCwd(ext.pid, sessionId);
         const discovery = makeDiscovery();
         await discovery.start(() => {});
-        const verdict = await discovery.resolveOpenGate(sessionId);
+        const verdict = await discovery.resolveOpenGate(sessionId, { classifyOwner: true });
         expect(verdict.kind).toBe('external');
         if (verdict.kind === 'external') {
           expect(verdict.ownerPid).toBeGreaterThan(0);
@@ -1045,21 +1044,43 @@ describe('SessionDiscovery', () => {
       }
     });
 
-    it("is 'external' and addressable when the owner pid verifies as an extension host", async () => {
+    it("is 'external' and addressable, carrying the owner's registered cwd, when the owner pid verifies as an extension host", async () => {
       const sessionId = 'gate-addressable';
+      createJsonlFile(sessionId);
+      const ext = await spawnExternalProcess();
+      try {
+        // The registered cwd is what the sender must key the addressed hint
+        // by — the owning window watches ITS folder's key (a sibling-worktree
+        // owner's key differs from the clicking window's).
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { cwd: '/owner/worktree-b' });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        vi.mocked(isExtensionHostPid).mockResolvedValueOnce(true);
+        const verdict = await discovery.resolveOpenGate(sessionId, { classifyOwner: true });
+        expect(verdict).toMatchObject({ kind: 'external', addressable: true, ownerCwd: '/owner/worktree-b' });
+        if (verdict.kind === 'external') {
+          // The pid handed to the handoff must be the verified one.
+          expect(vi.mocked(isExtensionHostPid)).toHaveBeenCalledWith(verdict.ownerPid);
+        }
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
+    it('never pays the ps classification without classifyOwner — the facade (composer sends) stays classification-free', async () => {
+      const sessionId = 'gate-lazy-classify';
       createJsonlFile(sessionId);
       const ext = await spawnExternalProcess();
       try {
         writeRegistryEntryWithCwd(ext.pid, sessionId);
         const discovery = makeDiscovery();
         await discovery.start(() => {});
-        vi.mocked(isExtensionHostPid).mockResolvedValueOnce(true);
+        vi.mocked(isExtensionHostPid).mockClear();
         const verdict = await discovery.resolveOpenGate(sessionId);
-        expect(verdict).toMatchObject({ kind: 'external', addressable: true, quietUnlocked: false });
-        if (verdict.kind === 'external') {
-          // The pid handed to the handoff must be the verified one.
-          expect(vi.mocked(isExtensionHostPid)).toHaveBeenCalledWith(verdict.ownerPid);
-        }
+        expect(verdict).toMatchObject({ kind: 'external', addressable: false });
+        await discovery.isExternalWriterFresh(sessionId);
+        expect(vi.mocked(isExtensionHostPid)).not.toHaveBeenCalled();
         discovery.stop();
       } finally {
         ext.cleanup();
@@ -1182,6 +1203,24 @@ describe('SessionDiscovery', () => {
       expect(snap?.externalWriter).toBeUndefined();
       expect(spy).not.toHaveBeenCalled();
       discovery.stop();
+    });
+
+    it('isMarkedExternalWriter mirrors the mark for any registry-known id, without a snapshot rebuild', async () => {
+      // The public probe the click handlers use for the metadata/ack skips —
+      // must answer for ids that never appear in getSnapshots() (foreign,
+      // sibling, team-lead categories all share the registry).
+      const sessionId = 'marked-probe';
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { cwd: '/some/other/workspace' });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        expect(discovery.isMarkedExternalWriter(sessionId)).toBe(true);
+        expect(discovery.isMarkedExternalWriter('never-registered')).toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
     });
 
     it('never invokes the fs-touching recency check on the render path, even for a confirmed-external flagged session', async () => {

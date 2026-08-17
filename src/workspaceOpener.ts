@@ -126,19 +126,29 @@ export function focusHintPath(projectsDir: string, workspaceKey: string): string
   return path.join(projectsDir, workspaceKey, 'focus-hint.json');
 }
 
+/** Single producer of the FocusHint wire format, shared by both hint writers.
+ *  Write-to-temp-then-rename: the addressed hint's receiver watches the exact
+ *  destination basename with a live FileSystemWatcher, and a plain writeFile
+ *  can fire onDidCreate before the content flushes — the consumer would read
+ *  a torn/empty file and (by consumeFocusHint's always-delete contract)
+ *  destroy the hint. rename() makes the full payload appear atomically. */
+async function writeHintFile(hintPath: string, sessionId: string): Promise<void> {
+  try {
+    await fs.promises.mkdir(path.dirname(hintPath), { recursive: true });
+  } catch { /* directory may already exist */ }
+  const hint: FocusHint = { sessionId, requestedAt: Date.now() };
+  const tmpPath = `${hintPath}.tmp-${process.pid}`;
+  await fs.promises.writeFile(tmpPath, JSON.stringify(hint), 'utf-8');
+  await fs.promises.rename(tmpPath, hintPath);
+}
+
 /** Drop a focus hint into the foreign workspace's projects directory. */
-export async function writeFocusHint(
+export function writeFocusHint(
   projectsDir: string,
   workspaceKey: string,
   sessionId: string,
 ): Promise<void> {
-  const hintPath = focusHintPath(projectsDir, workspaceKey);
-  const dir = path.dirname(hintPath);
-  try {
-    await fs.promises.mkdir(dir, { recursive: true });
-  } catch { /* directory may already exist */ }
-  const hint: FocusHint = { sessionId, requestedAt: Date.now() };
-  await fs.promises.writeFile(hintPath, JSON.stringify(hint), 'utf-8');
+  return writeHintFile(focusHintPath(projectsDir, workspaceKey), sessionId);
 }
 
 /** Path to the ADDRESSED focus-hint file for a target extension-host pid.
@@ -150,19 +160,16 @@ export function addressedFocusHintPath(projectsDir: string, workspaceKey: string
 
 /** Drop a focus hint addressed to one specific window (by its extension-host
  *  pid). Same payload shape and TTL as the legacy hint — the receiver reuses
- *  consumeFocusHint on the addressed path. */
-export async function writeAddressedFocusHint(
+ *  consumeFocusHint on the addressed path. `workspaceKey` must be the OWNING
+ *  window's key (derive it from the external process's registered cwd, not
+ *  the sender's folder — a sibling-worktree owner watches a different key). */
+export function writeAddressedFocusHint(
   projectsDir: string,
   workspaceKey: string,
   targetPid: number,
   sessionId: string,
 ): Promise<void> {
-  const hintPath = addressedFocusHintPath(projectsDir, workspaceKey, targetPid);
-  try {
-    await fs.promises.mkdir(path.dirname(hintPath), { recursive: true });
-  } catch { /* directory may already exist */ }
-  const hint: FocusHint = { sessionId, requestedAt: Date.now() };
-  await fs.promises.writeFile(hintPath, JSON.stringify(hint), 'utf-8');
+  return writeHintFile(addressedFocusHintPath(projectsDir, workspaceKey, targetPid), sessionId);
 }
 
 /** Best-effort GC for addressed hints whose target window is gone — a hint
@@ -179,14 +186,28 @@ export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey
     return;
   }
   for (const name of entries) {
+    // Orphaned temp files from a writer that crashed between writeFile and
+    // rename — age out on the same TTL.
+    if (/^focus-hint-.*\.tmp-\d+$/.test(name)) {
+      try {
+        const stat = await fs.promises.stat(path.join(dir, name));
+        if (Date.now() - stat.mtimeMs > FOCUS_HINT_TTL_MS) {
+          await fs.promises.unlink(path.join(dir, name)).catch(() => { /* best effort */ });
+        }
+      } catch { /* vanished mid-sweep */ }
+      continue;
+    }
     const m = /^focus-hint-(\d+)\.json$/.exec(name);
     if (!m) { continue; }
     const pid = parseInt(m[1], 10);
     let dead = false;
     try {
       process.kill(pid, 0);
-    } catch {
-      dead = true; // ESRCH (or EPERM for a foreign-user pid — never ours)
+    } catch (err) {
+      // Only ESRCH proves death. EPERM means the pid EXISTS under another OS
+      // user — deleting its fresh hint would kill a live handoff; the TTL
+      // branch below still bounds how long such a hint can linger.
+      dead = (err as NodeJS.ErrnoException).code === 'ESRCH';
     }
     let stale = false;
     if (!dead) {

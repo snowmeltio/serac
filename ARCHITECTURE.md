@@ -324,19 +324,46 @@ owner is **addressable**; a shell parent — the terminal-started false
 positive — never is, and falls back to the legacy warn/quiet-unlock.
 
 The handoff itself is an **addressed focus hint**,
-`projects/<wsKey>/focus-hint-<ownerPid>.json` (`workspaceOpener.ts`).
-Addressed **by filename, not by a payload field**: the projects dir is shared
-across profile symlink farms, every window on the folder watches it, and the
-legacy `consumeFocusHint()` deletes unconditionally — a field couldn't stop
-an older window stealing the hint, a distinct basename does. Each window
-watches only `focus-hint-<its own extension-host pid>.json`; on pickup it
-**foregrounds itself** by spawning its own bundled CLI with its own
-`--user-data-dir` (derived exactly from `context.globalStorageUri` via
-`deriveUserDataDir()` — three segments up), then focuses the card and editor.
-`cliOnly` suppresses the `vscode.openFolder` fallback on this path (a
-self-raise must degrade to a no-op, never a duplicate window). Unconsumed
-hints (the addressee died first) are GC'd by `sweepStaleAddressedHints()` on
-every window activation, plus the shared 60s TTL on consume.
+`projects/<ownerWsKey>/focus-hint-<ownerPid>.json` (`workspaceOpener.ts`).
+Keyed by the **owner's** workspace key — derived from the external process's
+registered cwd, not the sender's folder — because a sibling-worktree owner
+watches a different key than the window the card was clicked in. Addressed
+**by filename, not by a payload field**: the projects dir is shared across
+profile symlink farms, every window on the folder watches it, and the legacy
+`consumeFocusHint()` deletes unconditionally — a field couldn't stop an older
+window stealing the hint, a distinct basename does. Each window watches only
+`focus-hint-<its own extension-host pid>.json`; on pickup it **foregrounds
+itself** by spawning its own bundled CLI with its own `--user-data-dir`
+(derived exactly from `context.globalStorageUri` via `deriveUserDataDir()` —
+three segments up), then focuses the card and editor. `cliOnly` suppresses
+the `vscode.openFolder` fallback on this path (a self-raise must degrade to a
+no-op, never a duplicate window).
+
+Robustness details, each covering a distinct failure the naive flow has:
+
+- **Atomic writes.** Hints land via write-to-temp-then-`rename()`
+  (`writeHintFile()`): the receiver's live FileSystemWatcher can fire on
+  create before a plain `writeFile` flushes, and the always-delete consume
+  contract would destroy the torn hint.
+- **Delivery ack.** An addressable ext-host may not be running Serac (Cursor,
+  an older Serac). The sender checks 2.5s after writing whether the hint file
+  still exists; if so it withdraws the hint and warns instead of silently
+  doing nothing.
+- **Double-consume guard.** The receiver watches create *and* change; an
+  in-flight flag makes the pair idempotent.
+- **Startup consume.** A hint can predate Serac's activation in the owning
+  window (the ext-host pid exists before the extension loads), so the
+  receiver also attempts one consume shortly after activation.
+- **GC.** Unconsumed hints (the addressee died first) are swept by
+  `sweepStaleAddressedHints()` on window activation. Only `ESRCH` from
+  `process.kill(pid, 0)` counts as dead — `EPERM` means the pid is alive
+  under another OS user, and the 60s TTL bounds those. Orphaned
+  `.tmp-<pid>` files from a crashed writer age out on the same TTL. The
+  legacy `focus-hint.json` is never touched.
+- **Ordering.** Addressability is checked *before* the quiet-window unlock,
+  deliberately: a click on a card whose owner window is addressable means
+  "take me there", even if the session has been idle long enough that
+  opening locally would also be safe.
 
 *Rejected alternative:* the sender resolving the owner's `--user-data-dir`
 from its process tree. `ps -o args=` space-joins argv, so on macOS

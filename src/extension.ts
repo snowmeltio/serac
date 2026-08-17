@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { SessionDiscovery } from './sessionDiscovery.js';
@@ -86,13 +87,21 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       // during the highest-risk window (a session that just started, or just
       // finished, elsewhere). See resolveOpenGate()'s own doc comment.
       if (sessionId !== undefined) {
-        const verdict = await discovery.resolveOpenGate(sessionId);
+        const verdict = await discovery.resolveOpenGate(sessionId, { classifyOwner: true });
         if (verdict.kind === 'external') {
+          // Addressable is checked BEFORE the quiet unlock, deliberately: a
+          // session sitting idle in another live window is still that
+          // window's session — the click means "take me there", not "reclaim
+          // it here". Local reclaim happens once the owner process is gone
+          // (verdict clears), or via the quiet unlock for owners that can't
+          // be addressed at all.
           if (verdict.addressable && verdict.ownerPid !== null) {
-            // Both windows hold this same folder (that's the scenario), so
-            // the sender's own workspace key addresses the shared hint dir.
+            // File the hint under the OWNING window's workspace key — its
+            // watcher covers the folder IT has open, which for a
+            // sibling-worktree or cross-cwd session is not this window's.
+            const ownerKey = sanitiseWorkspaceKey(verdict.ownerCwd ?? wsPath);
             try {
-              await writeAddressedFocusHint(projectsDir, sanitiseWorkspaceKey(wsPath), verdict.ownerPid, sessionId);
+              await writeAddressedFocusHint(projectsDir, ownerKey, verdict.ownerPid, sessionId);
             } catch (err) {
               log.warn('Failed to write addressed focus hint:', err);
               void vscode.window.showWarningMessage('Could not hand off to the other VS Code window.');
@@ -100,6 +109,20 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
               return;
             }
             vscode.window.setStatusBarMessage('Switching to the window running this session…', 3000);
+            // Delivery check: an extension-host owner isn't necessarily a
+            // Serac-running owner (Cursor/Windsurf, a profile without Serac,
+            // an older Serac with no addressed watcher). Consumption deletes
+            // the file; if it still exists shortly, nobody is listening —
+            // withdraw it and say so instead of leaving a dead click.
+            const hintPath = addressedFocusHintPath(projectsDir, ownerKey, verdict.ownerPid);
+            setTimeout(() => {
+              fs.promises.stat(hintPath).then(() => {
+                fs.promises.unlink(hintPath).catch(() => { /* consumed after all, or GC'd */ });
+                void vscode.window.showWarningMessage(
+                  'The window running this session did not respond — it may not be running Serac. Not opening here to avoid a conflict.',
+                );
+              }, () => { /* gone = consumed: the handoff landed */ });
+            }, 2500);
             opts.onSettled?.();
             return;
           }
@@ -215,22 +238,28 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   }
 
   panelProvider.setFocusHandler((sessionId: string) => {
-    // Acknowledge the previously focused session now that the user has moved off it
-    if (previouslyFocusedSessionId && previouslyFocusedSessionId !== sessionId) {
-      acknowledgePrevious();
-    }
-    previouslyFocusedSessionId = sessionId;
-    // Ensure the JSONL has summary metadata so the Claude extension can discover it.
-    // Skip for running sessions to avoid concurrent write risk — and for
-    // externally-owned sessions: the JSONL is shared on disk across windows
-    // (profile symlink farms), so a mere click here must never write into a
-    // file another window's process owns.
-    const isRunning = discovery.isSessionRunning(sessionId) || discovery.isTeamSessionRunning(sessionId);
-    const ownedElsewhere = discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter === true;
-    if (!isRunning && !ownedElsewhere) {
-      const jsonlPath = discovery.getSessionFilePath(sessionId)
-        ?? discovery.getTeamSessionFilePath(sessionId);
-      if (jsonlPath) { void ensureSessionMetadata(sessionId, jsonlPath); }
+    // A click on an externally-owned card is a hand-off, not a view: skip the
+    // acknowledge bookkeeping (the ack-only unseen contract means a session
+    // never actually opened here must keep its done-but-unseen state) and
+    // never write metadata into a JSONL another window's process owns (the
+    // files are shared on disk across profile symlink farms). The mark probe
+    // answers for every category — local, sibling, team lead — unlike a
+    // getSnapshots() lookup.
+    const ownedElsewhere = discovery.isMarkedExternalWriter(sessionId);
+    if (!ownedElsewhere) {
+      // Acknowledge the previously focused session now that the user has moved off it
+      if (previouslyFocusedSessionId && previouslyFocusedSessionId !== sessionId) {
+        acknowledgePrevious();
+      }
+      previouslyFocusedSessionId = sessionId;
+      // Ensure the JSONL has summary metadata so the Claude extension can
+      // discover it. Skip for running sessions to avoid concurrent write risk.
+      const isRunning = discovery.isSessionRunning(sessionId) || discovery.isTeamSessionRunning(sessionId);
+      if (!isRunning) {
+        const jsonlPath = discovery.getSessionFilePath(sessionId)
+          ?? discovery.getTeamSessionFilePath(sessionId);
+        if (jsonlPath) { void ensureSessionMetadata(sessionId, jsonlPath); }
+      }
     }
     openClaudeEditor(sessionId, { failMessage: 'Could not focus Claude Code session. Is the Claude Code extension installed?' });
   });
@@ -306,8 +335,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     discovery.undismissSession(sessionId);
     // Ensure metadata before opening (same as focus handler, including the
     // externally-owned skip — see there).
-    if (!discovery.isSessionRunning(sessionId)
-      && discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter !== true) {
+    if (!discovery.isSessionRunning(sessionId) && !discovery.isMarkedExternalWriter(sessionId)) {
       const jsonlPath = discovery.getSessionFilePath(sessionId);
       if (jsonlPath) { void ensureSessionMetadata(sessionId, jsonlPath); }
     }
@@ -475,18 +503,29 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // from ps) — then reveal the session. cliOnly: degrading to a duplicate
   // window of a folder we already have open would be worse than not raising.
   const addressedHintPath = addressedFocusHintPath(projectsDir, localWorkspaceKey, process.pid);
+  // A single hint write fires both onDidCreate and onDidChange milliseconds
+  // apart, and consumeFocusHint's unlink is fire-and-forget — without a
+  // gate, both invocations read the hint before either delete lands and the
+  // whole handoff (CLI spawn + editor open) runs twice.
+  let addressedHintInFlight = false;
   async function applyAddressedFocusHint() {
-    const hint = await consumeFocusHint(addressedHintPath);
-    if (!hint) { return; }
-    if (ownUserDataDir) {
-      try {
-        await openWorkspaceFolder(wsPath, { userDataDir: ownUserDataDir, cliOnly: true });
-      } catch (err) {
-        log.warn('Self-foreground failed (continuing with in-window focus):', err);
+    if (addressedHintInFlight) { return; }
+    addressedHintInFlight = true;
+    try {
+      const hint = await consumeFocusHint(addressedHintPath);
+      if (!hint) { return; }
+      if (ownUserDataDir) {
+        try {
+          await openWorkspaceFolder(wsPath, { userDataDir: ownUserDataDir, cliOnly: true });
+        } catch (err) {
+          log.warn('Self-foreground failed (continuing with in-window focus):', err);
+        }
       }
+      panelProvider.focusSession(hint.sessionId);
+      openClaudeEditor(hint.sessionId);
+    } finally {
+      addressedHintInFlight = false;
     }
-    panelProvider.focusSession(hint.sessionId);
-    openClaudeEditor(hint.sessionId);
   }
   const addressedHintWatcher = vscode.workspace.createFileSystemWatcher(
     new vscode.RelativePattern(vscode.Uri.file(path.dirname(addressedHintPath)), path.basename(addressedHintPath)),
@@ -494,8 +533,12 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   addressedHintWatcher.onDidCreate(() => { void applyAddressedFocusHint(); });
   addressedHintWatcher.onDidChange(() => { void applyAddressedFocusHint(); });
   context.subscriptions.push(addressedHintWatcher);
-  // GC hints addressed to windows that died before consuming them — our own
-  // fresh pid can't have a pending hint (nobody could have addressed it yet).
+  // Startup consume, mirroring the legacy path above: the extension-host pid
+  // exists (and is addressable) from window launch, well before Serac
+  // activates — a hint written during a reload predates the watcher, whose
+  // onDidCreate never fires for a pre-existing file. Also GC hints addressed
+  // to windows that died before consuming.
+  setTimeout(() => { void applyAddressedFocusHint(); }, 800);
   void sweepStaleAddressedHints(projectsDir, localWorkspaceKey);
 
   // Register refresh command
