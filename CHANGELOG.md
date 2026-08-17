@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.18.0 (2026-08-18) — Click an Active-elsewhere card to switch to its window
+
+All externalWriter behaviour remains gated behind `serac.experimental.externalWriterBlock` (default off).
+
+### Added
+- **Clicking a card marked "Active elsewhere" now switches to the VS Code window that owns the session** instead of refusing to open it here. The click writes an addressed focus hint into the shared projects directory; the owning window picks it up, raises itself (spawning its own bundled CLI with its own `--user-data-dir`), and reveals the session's card and editor. If the owning window is not running Serac (Cursor, an older Serac), the hint is withdrawn after 2.5 seconds and a warning explains why nothing happened. Terminal-started sessions, whose owner is not an addressable window, keep the previous warning and 10-minute quiet unlock.
+- **"Other workspaces" and worktree rows now always open in the current profile's VS Code instance**, even when another profile already has that folder open — session cards are the only cross-profile affordance.
+
+### Fixed
+- **Stale "Active elsewhere" marks are gone.** The cosmetic mark is now ownership-only: marked exactly while an owner process is alive in another window, cleared within seconds of that process ending, uniformly across local, foreign-workspace, sibling-worktree, and team-lead sessions. The previous design decayed the mark through a recency cache whose eviction paths twice missed session categories — deleted, not patched. The 10-minute quiet window survives only in the hard open/send gate.
+- **Viewing an externally-owned card no longer claims the session for other profiles.** Opening a card used to write metadata into the shared session file and run acknowledge bookkeeping; both are now skipped for externally-owned sessions, so a mere look never causes a cross-profile collision and never clears a done-but-unseen highlight for a session that was never actually opened here.
+- **Externally-owned sessions now render live, current state.** The detail panel previously treated "owned by another window" as "process gone" and downgraded teammate rows and transcripts to a dead-session rendering; alive-elsewhere now renders the current on-disk state read-only.
+
 ## v1.17.4 (2026-07-31) — Session card preview line can be hidden
 
 ### Added
