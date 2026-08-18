@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.18.1 (2026-08-18) — Detail pane holds up under 100-agent workflow runs
+
+### Fixed
+- **A big agent roster can no longer push the transcript out of the detail pane.** The expanded AGENTS zone is now a bounded internal scroller (capped at half the pane, never shrinking below one row), and the transcript keeps a minimum height instead of collapsing to 0px. Few agents render exactly as before; a 130-agent workflow run scrolls its roster inside the zone while the DISPLAY bar and transcript stay visible.
+- **The detail pane no longer flickers agent-by-agent during a live workflow.** Each model update used to rebuild the whole pane; renders now patch only the zones whose content changed, so an agent renaming or a token tick repaints just the roster strip — the transcript node, its scroll position, and any text selection survive untouched. The roster's own scroll position is also restored when it does repaint.
+- **Running-agent durations in a resumed run are quantised to 5-second steps** so the elapsed-time counter can't defeat the host's duplicate-push suppression and stream no-op updates.
+
 ## v1.18.0 (2026-08-18) — Click an Active-elsewhere card to switch to its window
 
 All externalWriter behaviour remains gated behind `serac.experimental.externalWriterBlock` (default off).
