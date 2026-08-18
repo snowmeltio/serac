@@ -177,10 +177,12 @@ body {
 /* ============================================================
  * Log view. DESIGN-DETAIL-PANE-V2.md §4a forensic-log skeleton: view row →
  * agent strip → header strip → permission row → Result strip → facet bar →
- * log (Phase 2.2 zone order — pickers stack at the top). Only `.wf-log-
- * scroll` scrolls — everything above it is a static flow sibling, so it
- * reads as "pinned" without needing position:sticky (the panel itself never
- * scrolls; #wf-root is a display:flex column).
+ * log (Phase 2.2 zone order — pickers stack at the top). Two internal
+ * scrollers: `.wf-log-scroll` (the log) and the expanded agent strip, which
+ * shrinks and scrolls once its pills would crush the log below its floor.
+ * Every other zone is a static flow sibling, so the stack reads as "pinned"
+ * without needing position:sticky (the panel itself never scrolls; #wf-root
+ * is a display:flex column).
  * ============================================================ */
 
 /* ── Shared zone label cell (Phase 2.2) ──
@@ -461,6 +463,19 @@ body {
   align-items: stretch;
   gap: 6px;
 }
+/* A big run's pill grid (100+ agents) must never push the facet bar and log
+ * out of the pane: the expanded strip shrinks and scrolls internally instead.
+ * The explicit min-height overrides the flex min-content floor (the whole
+ * wrapped grid) — that's what lets it shrink at all. Same move as the
+ * sidebar's .ws-foreign-rows cap. Collapsed strips keep their one-line clip. */
+.wf-agentstrip:not(.collapsed) {
+  flex-shrink: 1;
+  min-height: 64px;
+  max-height: 50vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
 /* Collapsed strip (Phase 2.3): one line, same clip rule as the views row. */
 .wf-agentstrip.collapsed .wf-agentstrip-pillwrap { flex-wrap: nowrap; overflow: hidden; }
 /* In a phase header the count already owns margin-left:auto — a second auto
@@ -627,7 +642,10 @@ body {
 .wf-facet-search-input:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 
 /* ── 6. The log ── */
-.wf-log-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+/* The floor (not 0) keeps the log readable when the zones above are tall —
+ * a full agent strip shrinks against it rather than squeezing it to 0px.
+ * min() degrades gracefully when the whole panel is dragged short. */
+.wf-log-scroll { flex: 1; min-height: min(140px, 30vh); overflow-y: auto; }
 /* The container carries tabindex="0" so keyboard users can scroll the log;
  * inset outline so it doesn't collide with the pane edges. */
 .wf-log-scroll:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: -1px; }

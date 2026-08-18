@@ -1245,6 +1245,55 @@ declare function acquireVsCodeApi(): VsCodeApi;
     pill.classList.toggle('visible', show);
   }
 
+  // ── Zone reconciliation ──
+  // The pane renders as an ordered list of zone-sized HTML strings. It used to
+  // land as ONE root.innerHTML write, so every model push (an agent renaming
+  // as its label correlates, a token tick) rebuilt all 100+ pills and re-ran
+  // the markdown pipeline over the whole log — a visible whole-pane flicker.
+  // Instead each zone's HTML is memoised and only zones whose string changed
+  // get their node replaced (the sidebar's cardHtmlCache move, panel.ts).
+  // Event handling is delegated on #wf-root, so kept nodes need no rebinding.
+  const zoneHtml = new Map<string, string>();
+  const zoneEls = new Map<string, Element>();
+
+  /** Patch #wf-root's children to match the given zones (in order). An empty
+   *  html string means the zone is absent. Returns the keys whose DOM was
+   *  replaced this pass — scroll restores only apply to those. */
+  function applyZones(zones: Array<[key: string, html: string]>): Set<string> {
+    // First zone render (or after a webview reload) — drop any shell content.
+    if (zoneEls.size === 0) { root.textContent = ''; }
+    const replaced = new Set<string>();
+    let prev: Element | null = null;
+    for (const [key, html] of zones) {
+      let el = zoneEls.get(key);
+      if (el && el.parentElement !== root) { el = undefined; } // stale reference
+      if (html === '') {
+        if (el) { el.remove(); }
+        zoneEls.delete(key);
+        zoneHtml.delete(key);
+        continue;
+      }
+      if (el && zoneHtml.get(key) === html) { prev = el; continue; }
+      const tpl = document.createElement('template');
+      tpl.innerHTML = html;
+      const next = tpl.content.firstElementChild;
+      if (!next) { // renderer emitted no element — treat as absent
+        if (el) { el.remove(); }
+        zoneEls.delete(key);
+        zoneHtml.delete(key);
+        continue;
+      }
+      if (el) { el.replaceWith(next); }
+      else if (prev) { prev.after(next); }
+      else { root.prepend(next); }
+      zoneEls.set(key, next);
+      zoneHtml.set(key, html);
+      replaced.add(key);
+      prev = next;
+    }
+    return replaced;
+  }
+
   function renderLogMode(): void {
     const refocus = captureFocus();
     const prevScroll = root.querySelector('.wf-log-scroll') as HTMLElement | null;
@@ -1252,6 +1301,11 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const wasAtBottom = prevScroll
       ? isNearBottom(prevScroll.scrollTop, prevScroll.clientHeight, prevScroll.scrollHeight, STICK_THRESHOLD_PX)
       : false;
+    // The expanded agent strip scrolls internally too (it shrinks against the
+    // log's floor) — capture its position so a pill rename doesn't yank the
+    // roster back to the top.
+    const prevStrip = root.querySelector('.wf-agentstrip') as HTMLElement | null;
+    const prevStripTop = prevStrip ? prevStrip.scrollTop : 0;
     const selKey = (selectedGroupKey !== null && selectedAgentId !== null) ? tkey(selectedGroupKey, selectedAgentId) : null;
     if (selKey !== lastRenderedKey) {
       pendingTopOnSettle = true;
@@ -1262,34 +1316,45 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     const isAgentChange = pendingTopOnSettle;
 
-    if (!model || model.groups.every(g => g.agents.length === 0)) {
-      root.innerHTML = renderViewRow() + renderHeaderStrip() + renderEmptyBody();
+    const empty = !model || model.groups.every(g => g.agents.length === 0);
+    const agent = empty ? undefined : findAgent(selectedGroupKey, selectedAgentId);
+    // Zone order (Murray, 2026-07-10): view row first (what am I in), then its
+    // summary (header strip — the workflow-wide roll-up), THEN the agent
+    // strip (pick which agent) with its own detail bar directly beneath it,
+    // then the banners (permission, Result), then the log's own controls.
+    const replaced = applyZones([
+      ['views', renderViewRow()],
+      ['header', renderHeaderStrip()],
+      ['empty', empty ? renderEmptyBody() : ''],
+      ['agents', empty ? '' : renderAgentStrip()],
+      ['astrip', empty ? '' : renderAgentDetailBar(agent)],
+      ['perm', empty ? '' : renderPermRow()],
+      ['result', agent ? renderResultStrip(agent) : ''],
+      ['facets', agent ? renderFacets(agent) : ''],
+      ['log', empty ? '' : '<div class="wf-log-scroll" tabindex="0">'
+        + (agent ? renderLogRows(agent) : '<div class="wf-log-empty">Select an agent to view its transcript.</div>')
+        + '</div>'],
+      ['jump', empty ? '' : '<div class="wf-jump-latest" role="button" tabindex="0" title="Jump to the latest entry">↓ latest</div>'],
+    ]);
+
+    if (empty) {
       lastRenderedKey = null;
       refocus?.();
       updateComposer();
       return;
     }
 
-    const agent = findAgent(selectedGroupKey, selectedAgentId);
-    // Zone order (Murray, 2026-07-10): view row first (what am I in), then its
-    // summary (header strip — the workflow-wide roll-up), THEN the agent
-    // strip (pick which agent) with its own detail bar directly beneath it,
-    // then the banners (permission, Result), then the log's own controls.
-    root.innerHTML = renderViewRow()
-      + renderHeaderStrip()
-      + renderAgentStrip()
-      + renderAgentDetailBar(agent)
-      + renderPermRow()
-      + (agent ? renderResultStrip(agent) : '')
-      + (agent ? renderFacets(agent) : '')
-      + '<div class="wf-log-scroll" tabindex="0">'
-      + (agent ? renderLogRows(agent) : '<div class="wf-log-empty">Select an agent to view its transcript.</div>')
-      + '</div>'
-      + '<div class="wf-jump-latest" role="button" tabindex="0" title="Jump to the latest entry">↓ latest</div>';
-
-    const newScroll = root.querySelector('.wf-log-scroll') as HTMLElement | null;
-    if (newScroll) {
-      newScroll.scrollTop = chooseReaderScrollTop({ isAgentChange, wasAtBottom, prevTop, scrollHeight: newScroll.scrollHeight });
+    // Scroll restores only when the zone's DOM was actually replaced — a kept
+    // node keeps its own scroll position (and the reader's text selection).
+    if (replaced.has('log')) {
+      const newScroll = root.querySelector('.wf-log-scroll') as HTMLElement | null;
+      if (newScroll) {
+        newScroll.scrollTop = chooseReaderScrollTop({ isAgentChange, wasAtBottom, prevTop, scrollHeight: newScroll.scrollHeight });
+      }
+    }
+    if (replaced.has('agents')) {
+      const strip = root.querySelector('.wf-agentstrip') as HTMLElement | null;
+      if (strip) { strip.scrollTop = prevStripTop; } // clamped by the browser
     }
     updateJumpPill();
     const st = selKey ? transcripts.get(selKey) : undefined;
