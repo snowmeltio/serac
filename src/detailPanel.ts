@@ -414,8 +414,10 @@ export class DetailPanel {
   private workflowAgentView(a: WorkflowSnapshot['agents'][number]): DetailAgentView {
     // A running agent has no final duration yet — show elapsed-so-far instead
     // (UX-1). The webview's steady refresh keeps it current; no new timers.
+    // Quantised to 5s buckets: a raw Date.now() delta changes on every build,
+    // which defeats postRender's whole-model dedup and streams no-op pushes.
     const durationMs = a.durationMs ?? (a.status === 'running' && a.startedAt > 0
-      ? Date.now() - a.startedAt
+      ? Math.floor((Date.now() - a.startedAt) / 5000) * 5000
       : null);
     return {
       agentId: a.agentId,

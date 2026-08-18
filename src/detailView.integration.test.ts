@@ -1820,3 +1820,84 @@ describe('detailView.ts — native escape hatches (Phase 4, DESIGN-DETAIL-PANE-V
     expect((postedMessages as any[]).some(m => m.type === 'showFileChanges')).toBe(true);
   });
 });
+
+describe('detailView.ts — zone reconciliation (flicker fix)', () => {
+  beforeEach(async () => {
+    postedMessages = [];
+    webviewState = undefined;
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
+    await import('./detailView.js');
+  });
+
+  const KEY = 'workflow:wf_run1|wf_run1|agent001';
+  const T1 = [
+    { timestamp: '2026-06-10T01:00:00Z', role: 'user', content: 'brief' },
+    { timestamp: '2026-06-10T01:00:05Z', role: 'assistant', content: 'first reply', kind: 'text' },
+  ];
+
+  it('an identical model push keeps every zone node (no innerHTML churn)', () => {
+    sendRender(twoSourceModel());
+    sendTranscript(KEY, T1);
+    const stripBefore = q('.wf-agentstrip');
+    const scrollBefore = q('.wf-log-scroll');
+    expect(stripBefore).not.toBeNull();
+    expect(scrollBefore).not.toBeNull();
+    sendRender(twoSourceModel()); // fresh but identical model
+    expect(q('.wf-agentstrip')).toBe(stripBefore);
+    expect(q('.wf-log-scroll')).toBe(scrollBefore);
+  });
+
+  it('an agent rename replaces the agent strip but keeps the log node', () => {
+    sendRender(twoSourceModel());
+    sendTranscript(KEY, T1);
+    const stripBefore = q('.wf-agentstrip');
+    const scrollBefore = q('.wf-log-scroll');
+    const m = twoSourceModel();
+    // Live-tier label correlation lands: hash placeholder → real label.
+    (m.groups[0].agents[1] as { label: string }).label = 'audit:security-renamed';
+    sendRender(m);
+    expect(q('.wf-agentstrip')).not.toBe(stripBefore);
+    expect(root().textContent).toContain('audit:security-renamed');
+    expect(q('.wf-log-scroll')).toBe(scrollBefore); // transcript untouched
+  });
+
+  it('the agent strip restores its internal scroll across a replacement', () => {
+    sendRender(twoSourceModel());
+    sendTranscript(KEY, T1);
+    const strip = q('.wf-agentstrip')!;
+    strip.scrollTop = 42; // the expanded strip is a scroller (CSS max-height)
+    const m = twoSourceModel();
+    (m.groups[0].agents[1] as { label: string }).label = 'audit:security-renamed';
+    sendRender(m);
+    const after = q('.wf-agentstrip')!;
+    expect(after).not.toBe(strip); // genuinely replaced…
+    expect(after.scrollTop).toBe(42); // …with its reading position restored
+  });
+
+  it('a transcript append replaces the log but keeps the agent strip node', () => {
+    sendRender(twoSourceModel());
+    sendTranscript(KEY, T1);
+    const stripBefore = q('.wf-agentstrip');
+    const scrollBefore = q('.wf-log-scroll');
+    sendTranscriptAppend(KEY, [{ timestamp: '2026-06-10T01:00:10Z', role: 'assistant', content: 'second reply', kind: 'text' }]);
+    expect(q('.wf-log-scroll')).not.toBe(scrollBefore);
+    expect(q('.wf-agentstrip')).toBe(stripBefore);
+    expect(root().textContent).toContain('second reply');
+  });
+
+  it('transitioning to an empty roster and back rebuilds cleanly (no stale zones)', () => {
+    sendRender(twoSourceModel());
+    expect(q('.wf-agentstrip')).not.toBeNull();
+    const emptyModel = { ...twoSourceModel(), groups: [] };
+    sendRender(emptyModel);
+    expect(q('.wf-agentstrip')).toBeNull();
+    expect(q('.wf-log-scroll')).toBeNull();
+    expect(q('.wf-empty')).not.toBeNull();
+    sendRender(twoSourceModel());
+    expect(q('.wf-empty')).toBeNull();
+    expect(q('.wf-agentstrip')).not.toBeNull();
+    expect(q('.wf-log-scroll')).not.toBeNull();
+  });
+});
