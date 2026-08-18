@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.18.2 (2026-08-18) — Click-to-switch actually raises the owning window
 
 ### Fixed
 - **Click-to-switch now actually raises the owning window.** The v1.18.0 handoff delivered its focus hint correctly, but the receiving window's self-foreground located the editor CLI relative to `process.execPath` — which inside an extension host is the helper binary, not the app — so the CLI was never found and the raise silently no-oped in every extension host. The CLI is now resolved from `vscode.env.appRoot` (with the old probes as fallbacks), and the spawn strips `ELECTRON_RUN_AS_NODE`, `VSCODE_IPC_HOOK_CLI`, and `NODE_OPTIONS` so the inherited extension-host environment can't derail the launch.
