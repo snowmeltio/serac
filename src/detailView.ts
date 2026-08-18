@@ -7,7 +7,7 @@
 // so the contract is compiler-enforced rather than comment-mirrored.
 
 import { isNearBottom, chooseReaderScrollTop, STICK_THRESHOLD_PX } from './detailViewScroll.js';
-import { escapeHtml } from './panelUtils.js';
+import { escapeHtml, clickEndsSelection } from './panelUtils.js';
 import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey, parseEditInput } from './detailShared.js';
 import type {
   DetailAgentView, DetailGroupView, DetailViewChoice, DetailModel, TranscriptEntry,
@@ -1649,8 +1649,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       // selection); a click that ENDS a text selection is a copy gesture,
       // not a toggle — prose rows exist to be read and copied from.
       if (!logRow.classList.contains('expandable')) { return; }
-      const sel = typeof window.getSelection === 'function' ? window.getSelection() : null;
-      if (sel && sel.toString().length > 0) { return; }
+      if (clickEndsSelection(logRow, e.detail)) { return; }
       const idx = Number(logRow.dataset.idx);
       if (!Number.isNaN(idx)) {
         if (expandedRows.has(idx)) { expandedRows.delete(idx); } else { expandedRows.add(idx); }

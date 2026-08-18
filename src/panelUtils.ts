@@ -97,6 +97,23 @@ export function sanitiseWorkspaceKey(workspacePath: string): string {
 
 // ===== HTML escaping =====
 
+/** True when this click is the tail of a text-selection drag touching
+ *  `target` — a copy gesture, not an activation. Scoped: a selection living
+ *  elsewhere in the document never blocks activation. Synthetic clicks
+ *  (keyboard Enter/Space routed through el.click(), detail === 0) never
+ *  count — a stale selection must not turn the keyboard dead. Shared by the
+ *  sidebar cards and the detail panel's log rows. */
+export function clickEndsSelection(target: Node, detail: number): boolean {
+  if (detail === 0) { return false; }
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) { return false; }
+  try {
+    return sel.containsNode(target, true);
+  } catch {
+    return true; // containsNode unavailable/odd node — err toward preserving the selection
+  }
+}
+
 export function escapeHtml(str: string | undefined | null): string {
   if (!str) return '';
   return str

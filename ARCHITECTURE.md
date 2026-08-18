@@ -323,6 +323,15 @@ and whether that pid verified as an extension host just now
 owner is **addressable**; a shell parent — the terminal-started false
 positive — never is, and falls back to the legacy warn/quiet-unlock.
 
+`aggregateWriterOwnership()` gives a confirmed own-window process precedence
+over everything else: a session with live processes in this window AND
+another is **not** external (no mark, gate clear). Without that precedence
+the dual-process case classifies as external in *both* windows and a
+consumed hint bounces back and forth indefinitely — which is also why hint
+receivers re-run this same gate rather than bypassing it: a receiver that
+owns the session opens it locally, one that watched ownership drift away
+forwards the handoff to the new owner, and a genuine conflict still blocks.
+
 The handoff itself is an **addressed focus hint**,
 `projects/<ownerWsKey>/focus-hint-<ownerPid>.json` (`workspaceOpener.ts`).
 Keyed by the **owner's** workspace key — derived from the external process's
@@ -335,9 +344,17 @@ window stealing the hint, a distinct basename does. Each window watches only
 `focus-hint-<its own extension-host pid>.json`; on pickup it **foregrounds
 itself** by spawning its own bundled CLI with its own `--user-data-dir`
 (derived exactly from `context.globalStorageUri` via `deriveUserDataDir()` —
-three segments up), then focuses the card and editor. `cliOnly` suppresses
-the `vscode.openFolder` fallback on this path (a self-raise must degrade to a
-no-op, never a duplicate window).
+three segments up), then focuses the card and editor. The CLI is resolved
+from `vscode.env.appRoot` (`locateCli()`) — `process.execPath` inside an
+extension host is the *helper* binary, whose bundle holds no CLI, which is
+how v1.18.0 shipped with a self-raise that never fired — and the spawn env
+is scrubbed by `cliSpawnEnv()` (drop `CLAUDE_CONFIG_DIR`,
+`ELECTRON_RUN_AS_NODE`, `NODE_OPTIONS`, and every `VSCODE_*` var — the
+companion's launcherEnv rule; an inherited env re-profiles or re-routes the
+launched editor). `cliOnly` suppresses the `vscode.openFolder` fallback on
+this path (a self-raise must degrade to a no-op, never a duplicate window),
+and `openWorkspaceFolder()` returns its outcome so the receiver logs what
+actually happened rather than predicting it.
 
 Robustness details, each covering a distinct failure the naive flow has:
 
@@ -348,9 +365,22 @@ Robustness details, each covering a distinct failure the naive flow has:
 - **Delivery ack.** An addressable ext-host may not be running Serac (Cursor,
   an older Serac). The sender checks 2.5s after writing whether the hint file
   still exists; if so it withdraws the hint and warns instead of silently
-  doing nothing.
+  doing nothing. The check is **content-verified**: the basename carries the
+  owner pid, not the session, so a second handoff to the same window
+  overwrites the file — a click's timer withdraws only its *own* still-fresh
+  hint, never a successor's.
 - **Double-consume guard.** The receiver watches create *and* change; an
-  in-flight flag makes the pair idempotent.
+  in-flight flag makes the pair idempotent, and an event landing mid-process
+  (the self-raise spawn alone takes 200ms+) queues one re-check instead of
+  being dropped.
+- **Canonical paths.** The projects dir is realpath'd once
+  (`claudeProjectsDir()` in `paths.ts` — shared with discovery and usage) so
+  account-farm symlink aliases of `CLAUDE_CONFIG_DIR` can't leave one window
+  watching a spelling nobody writes to; the receiver's workspace key is
+  derived from the *resolved* folder path for the same reason (writers key by
+  a claude process's `getcwd`, which is symlink-free — `/tmp` vs
+  `/private/tmp`). Hint payload `sessionId`s are validated
+  (`isValidSessionId`) before use.
 - **Startup consume.** A hint can predate Serac's activation in the owning
   window (the ext-host pid exists before the extension loads), so the
   receiver also attempts one consume shortly after activation.
@@ -364,6 +394,15 @@ Robustness details, each covering a distinct failure the naive flow has:
   deliberately: a click on a card whose owner window is addressable means
   "take me there", even if the session has been idle long enough that
   opening locally would also be safe.
+
+Webview side, every session-activating gesture (card body, drill-in chip,
+inline agent row) funnels through one `activateSession()`: an
+externally-owned card posts `focusSession` like any other — the host gate
+decides — but takes no *local* focus highlight (the click means "take me
+there"), and its drill-in affordances hand off instead of opening the local
+detail panel. When the host ends up opening such a session locally after all
+(stale mark, quiet unlock), it drives the highlight back through
+`panelProvider.focusSession()`.
 
 *Rejected alternative:* the sender resolving the owner's `--user-data-dir`
 from its process tree. `ps -o args=` space-joins argv, so on macOS
@@ -670,7 +709,7 @@ The extension exposes a `serac.*` namespace via `package.json#contributes.config
 
 - **Reading:** `readSettings(): SeracSettings` returns a complete snapshot, falling back to `DEFAULT_SETTINGS` for any unset key. Defaults match the historical hardcoded constants so an upgrade with no `serac.*` keys behaves identically.
 - **Reactivity:** `onSettingsChanged(cb)` wraps `vscode.workspace.onDidChangeConfiguration` and fires the callback with a fresh snapshot whenever any `serac.*` key changes. `extension.ts` posts a new `settings` message to the webview and (when `serac.refresh.intervalSeconds` changed) rebuilds the refresh timer.
-- **Webview side:** `panel.ts` caches the last received `SettingsMessage` in `currentSettings` and snapshots it into the `RenderContext` each pass. The pure builders in `panelRender.ts` consult it for visibility gates (`show.foreignWorkspaces`, `show.worktrees`, `show.usage`, `show.subagents`, `show.previewText`), thresholds (`usage.warnAtPercent`, `usage.criticalAtPercent`), and limits (`archive.maxDoneShown`, `worktrees.autoCollapseAfterSeconds`).
+- **Webview side:** `panel.ts` caches the last received `SettingsMessage` in `currentSettings` and snapshots it into the `RenderContext` each pass. The pure builders in `panelRender.ts` consult it for visibility gates (`show.foreignWorkspaces`, `show.worktrees`, `show.usage`, `show.subagents`, `show.fileCollisions`, `show.previewText`, `show.gitBranch`), thresholds (`usage.warnAtPercent`, `usage.criticalAtPercent`), and limits (`archive.maxDoneShown`, `worktrees.autoCollapseAfterSeconds`).
 - **Discovery managers** (`foreignWorkspaceManager`, `siblingWorktreeManager`, `teamDiscovery`, `workflowDiscovery`) call `readSettings()` at the top of `scan()` / `poll()` to:
   - Short-circuit when the corresponding `show.*` setting is false (no background work for hidden sections).
   - Resolve their section's age gate via `ageGateDaysFor(section)`. `discovery.ageGateDays` is the inherited base; each section (`foreignWorkspaces`, `worktrees`, `teams`, `workflows`) may override it with `discovery.<section>AgeGateDays` (null = inherit). The resolver is the only supported read path, so the inherit-when-unset rule lives in one place; a non-positive or absent override falls back to the base rather than disabling the gate.

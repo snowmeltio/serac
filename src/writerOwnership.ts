@@ -140,16 +140,19 @@ export class WriterOwnership {
 
 /** Aggregates per-process ownership verdicts (WriterOwnership.getInfo, one
  *  per live process registered under a session id — usually one, but two can
- *  coexist) into a single verdict for that session. Any one confirmed
- *  (`true`) is enough to flag the whole session — fail toward flagging, not
- *  away from it, when more than one live process shares a session id. Every
- *  process must be confirmed own-window (`false`) to clear it. Anything else
- *  (a mix including `undefined`, or an empty list) falls back to "don't
- *  flag", matching getInfo()'s own tri-state contract. */
+ *  coexist) into a single verdict for that session. A confirmed own-window
+ *  process (`false`) clears the session outright: a session THIS window is
+ *  running is never "elsewhere", however many other windows also hold it.
+ *  Without that precedence a session live in two windows classifies as
+ *  external in BOTH — each window offers a handoff to the other, and a
+ *  consumed focus hint bounces back and forth indefinitely. With no
+ *  own-window process, any one confirmed-external (`true`) flags the
+ *  session; a mix of only `undefined`s, or an empty list, falls back to
+ *  "don't flag", matching getInfo()'s own tri-state contract. */
 export function aggregateWriterOwnership(verdicts: readonly (boolean | undefined)[]): boolean | undefined {
   if (verdicts.length === 0) { return undefined; }
+  if (verdicts.some(v => v === false)) { return false; }
   if (verdicts.some(v => v === true)) { return true; }
-  if (verdicts.every(v => v === false)) { return false; }
   return undefined;
 }
 

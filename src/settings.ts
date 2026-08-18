@@ -22,6 +22,9 @@ export interface SeracSettings {
      *  activity while running, last assistant reply once done/stale).
      *  Default on. */
     previewText: boolean;
+    /** The git branch / worktree row (⎇ branch) on session cards.
+     *  Default on. */
+    gitBranch: boolean;
   };
   archive: {
     defaultRange: '1d' | '3d' | '7d' | '30d' | 'all';
@@ -120,6 +123,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     workflows: true,
     fileCollisions: false,
     previewText: true,
+    gitBranch: true,
   },
   archive: { defaultRange: '1d', maxDoneShown: 20 },
   sessions: { highConfidenceSeconds: 5, mediumConfidenceSeconds: 30 },
@@ -157,6 +161,7 @@ export function readSettings(): SeracSettings {
       workflows: cfg.get<boolean>('show.workflows', d.show.workflows),
       fileCollisions: cfg.get<boolean>('show.fileCollisions', d.show.fileCollisions),
       previewText: cfg.get<boolean>('show.previewText', d.show.previewText),
+      gitBranch: cfg.get<boolean>('show.gitBranch', d.show.gitBranch),
     },
     archive: {
       defaultRange: cfg.get<SeracSettings['archive']['defaultRange']>('archive.defaultRange', d.archive.defaultRange),

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Click-to-switch now actually raises the owning window.** The v1.18.0 handoff delivered its focus hint correctly, but the receiving window's self-foreground located the editor CLI relative to `process.execPath` — which inside an extension host is the helper binary, not the app — so the CLI was never found and the raise silently no-oped in every extension host. The CLI is now resolved from `vscode.env.appRoot` (with the old probes as fallbacks), and the spawn strips `ELECTRON_RUN_AS_NODE`, `VSCODE_IPC_HOOK_CLI`, and `NODE_OPTIONS` so the inherited extension-host environment can't derail the launch.
+- **The handoff path now logs.** Hint written, hint consumed, self-foreground outcome (reported from what the spawn actually did, not predicted), delivery-check outcome, and the not-addressable block all emit to the "Serac" output channel — a failed handoff is no longer silent.
+- **A session alive in two windows is no longer "Active elsewhere" in both.** Ownership aggregation now gives a confirmed own-window process precedence: a session this window runs is never marked or gated as elsewhere, which also removes the handoff ping-pong that symmetric misclassification produced. Hint receivers re-run the open gate (safe now, and it forwards a handoff whose ownership drifted to a third window); hint payloads are validated before use.
+- **Two quick handoffs to the same window no longer destroy each other.** The sender's 2.5-second delivery check verifies the hint file's content before withdrawing it, and the receiver re-checks for a hint that arrived while it was busy processing the previous one.
+- **An "Active elsewhere" card no longer takes the local focus highlight when clicked.** The click hands off to the owning window; the card stays unhighlighted here — and if the owner turns out to be gone and the session opens locally after all, the host applies the highlight itself. The drill-in chip and inline agent rows on such a card hand off too instead of opening the local detail panel. A mouse click that ends a text selection on a card (or a detail-panel log row) is a copy gesture and no longer activates it; keyboard activation is never blocked by a stale selection.
+- **Symlinked paths can no longer strand the hint exchange.** The projects directory is canonicalised once in `paths.ts` (shared by discovery and usage tracking), and the receive-side workspace key is derived from the resolved folder path — a workspace opened via `/tmp` (really `/private/tmp`) or an account-farm alias now watches the same key writers use.
+- **Windows: the editor CLI (`code.cmd`) is spawned through a shell**, required on current Node for `.cmd` files; without it the self-foreground was a silent no-op on win32. The candidate list also gains `code-insiders`, `windsurf`, and `codium`.
+
+### Added
+- **New setting `serac.show.gitBranch`** (default on) gates the git branch / worktree row (`⎇ branch`) on session cards. Turn it off to reclaim the row's height.
+
 ## v1.18.1 (2026-08-18) — Detail pane holds up under 100-agent workflow runs
 
 ### Fixed

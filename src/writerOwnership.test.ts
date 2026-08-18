@@ -129,17 +129,28 @@ describe('aggregateWriterOwnership', () => {
     expect(aggregateWriterOwnership([undefined])).toBeUndefined();
   });
 
-  it('is true when ANY of several processes is confirmed external — fails toward flagging', () => {
-    expect(aggregateWriterOwnership([false, true])).toBe(true);
-    expect(aggregateWriterOwnership([undefined, true, false])).toBe(true);
+  it('is true when any process is confirmed external and none is own-window', () => {
+    expect(aggregateWriterOwnership([undefined, true])).toBe(true);
+    expect(aggregateWriterOwnership([true, true])).toBe(true);
   });
 
-  it('is false only when EVERY process is confirmed own-window', () => {
+  it('an own-window process clears the session even when another window also holds it', () => {
+    // The dual-proc case: a session live in two windows used to classify as
+    // external in BOTH (each offered a handoff to the other — an infinite
+    // hint ping-pong). A session THIS window runs is never "elsewhere".
+    expect(aggregateWriterOwnership([false, true])).toBe(false);
+    expect(aggregateWriterOwnership([undefined, true, false])).toBe(false);
+  });
+
+  it('is false when every process is confirmed own-window', () => {
     expect(aggregateWriterOwnership([false, false, false])).toBe(false);
   });
 
-  it('is undefined (never falsely "safe") when own-window mixes with unresolved', () => {
-    expect(aggregateWriterOwnership([false, undefined])).toBeUndefined();
+  it('own-window precedence also applies over unresolved verdicts', () => {
+    // Pre-change this was undefined ("never falsely safe") — but an
+    // own-window process is a direct proof the session is usable here,
+    // whatever the unresolved sibling turns out to be.
+    expect(aggregateWriterOwnership([false, undefined])).toBe(false);
   });
 });
 

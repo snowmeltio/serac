@@ -358,6 +358,20 @@ describe('renderCardInner', () => {
     expect(off).not.toContain('Running Bash');
   });
 
+  it('branch row is gated on show.gitBranch', () => {
+    const s = makeSession({ gitBranch: 'main' });
+    const on = renderCardInner(makeCtx(), s, NOW, false);
+    expect(on).toContain('card-branch');
+    expect(on).toContain('⎇ main');
+    const settings = {
+      ...DEFAULT_PANEL_SETTINGS,
+      show: { ...DEFAULT_PANEL_SETTINGS.show, gitBranch: false },
+    };
+    const off = renderCardInner(makeCtx({ settings }), s, NOW, false);
+    expect(off).not.toContain('card-branch');
+    expect(off).not.toContain('⎇ main');
+  });
+
   it('external-writer badge names the state explicitly, not just via opacity', () => {
     const off = renderCardInner(makeCtx(), makeSession(), NOW, false);
     expect(off).not.toContain('external-writer-badge');
