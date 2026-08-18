@@ -5,7 +5,7 @@ import * as https from 'https';
 import * as cp from 'child_process';
 import type { UsageSnapshot } from './types.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
-import { claudeStateDir, claudeKeychainService, claudeAccountId } from './paths.js';
+import { claudeStateDir, claudeProjectsDir, claudeKeychainService, claudeAccountId } from './paths.js';
 
 /** One entry in the API's generic `limits[]` array — the server's current
  *  mechanism for per-model weekly quotas (e.g. Fable), superseding the flat
@@ -84,7 +84,7 @@ export class UsageProvider {
 
   constructor(workspacePath: string, opts?: { cachePath?: string; configFile?: string }) {
     const stateDir = claudeStateDir();
-    this.projectsDir = path.join(stateDir, 'projects');
+    this.projectsDir = claudeProjectsDir();
     this.workspaceKey = sanitiseWorkspaceKey(workspacePath);
     this.cachePath = opts?.cachePath ?? path.join(stateDir, 'usage-cache.json');
     this.configFileOverride = opts?.configFile;

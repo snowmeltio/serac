@@ -163,6 +163,11 @@
             "default": true,
             "description": "Show the activity/preview line under each session card (last tool activity while running, last assistant reply once done). Off hides the line and shows just the status pill and meta row."
           },
+          "serac.show.gitBranch": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show the git branch / worktree row (⎇ branch) on session cards. Off hides the row on every card."
+          },
           "serac.animations.enabled": {
             "type": "boolean",
             "default": true,

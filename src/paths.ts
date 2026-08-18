@@ -17,6 +17,26 @@ export function claudeStateDir(): string {
   return path.join(os.homedir(), '.claude');
 }
 
+/** Canonicalised projects directory: `<claudeStateDir()>/projects`, resolved
+ *  through symlinks. Account symlink farms alias the state dir (a window
+ *  launched with CLAUDE_CONFIG_DIR=~/.claude-<account> would otherwise derive
+ *  hint/watch paths via the symlink while other windows use the real path,
+ *  and a FileSystemWatcher on the aliased spelling never fires for canonical
+ *  writes). The dir is created first so canonicalisation succeeds on a fresh
+ *  machine too — an early-activating window must not diverge from later ones.
+ *  Deliberately NOT folded into claudeStateDir(): account identity
+ *  (claudeAccountId) keys off the alias, and canonicalising there would
+ *  collapse every farmed account into one. */
+export function claudeProjectsDir(): string {
+  const raw = path.join(claudeStateDir(), 'projects');
+  try {
+    fs.mkdirSync(raw, { recursive: true });
+    return fs.realpathSync(raw);
+  } catch {
+    return raw;
+  }
+}
+
 /** Path to the Claude Code config file, or null if not found. */
 export function claudeConfigFile(): string | null {
   const dir = claudeStateDir();

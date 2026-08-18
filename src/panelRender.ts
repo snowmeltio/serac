@@ -161,6 +161,7 @@ export interface PanelSettings {
     workflows: boolean;
     fileCollisions: boolean;
     previewText: boolean;
+    gitBranch: boolean;
   };
   archive: { defaultRange: string; maxDoneShown: number };
   refresh: { intervalSeconds: number };
@@ -176,7 +177,7 @@ export interface PanelSettings {
  *  initial value before the first SettingsMessage arrives — kept in sync
  *  with the package.json `default` declarations. */
 export const DEFAULT_PANEL_SETTINGS: PanelSettings = {
-  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: false, workflows: true, fileCollisions: false, previewText: true },
+  show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: false, workflows: true, fileCollisions: false, previewText: true, gitBranch: true },
   archive: { defaultRange: '1d', maxDoneShown: 20 },
   refresh: { intervalSeconds: 5 },
   discovery: { ageGateDays: 7 },
@@ -547,7 +548,7 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
   // branch is the widest, most variable item in the meta row; lifting it out
   // keeps that row short enough that the action buttons stop wrapping up beside
   // the status pill, and the branch gets the full card width to itself.
-  const branchHtml = s.gitBranch
+  const branchHtml = ctx.settings.show.gitBranch && s.gitBranch
     ? '<div class="card-branch"><span class="branch-pill" title="Git branch: ' + escapeHtml(s.gitBranch) + '">' + escapeHtml('⎇ ' + s.gitBranch) + '</span></div>'
     : '';
 

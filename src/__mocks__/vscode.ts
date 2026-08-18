@@ -210,6 +210,9 @@ export const env = {
     writeText: vi.fn(),
   },
   language: 'en-AU',
+  // Empty by default (no appRoot-derived CLI candidates); tests that exercise
+  // locateCli() point this at a temp layout and reset it after.
+  appRoot: '',
 };
 
 // --- ExtensionContext ---

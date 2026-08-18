@@ -13,7 +13,7 @@ import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
 import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { readSettings } from './settings.js';
-import { claudeStateDir, sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath } from './paths.js';
+import { claudeProjectsDir, sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath } from './paths.js';
 import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
 import { SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
@@ -136,7 +136,7 @@ export class SessionDiscovery {
   private readonly defaultModelGuess: string;
 
   constructor(workspacePath: string, opts?: { projectsDir?: string; log?: Logger; hookRouter?: HookEventRouter; defaultModelGuess?: string }) {
-    this.projectsDir = opts?.projectsDir ?? path.join(claudeStateDir(), 'projects');
+    this.projectsDir = opts?.projectsDir ?? claudeProjectsDir();
     this.workspaceKey = sanitiseWorkspaceKey(workspacePath);
     this.metaFilePath = path.join(this.projectsDir, this.workspaceKey, 'session-meta.json');
     this.log = opts?.log ?? nullLogger;

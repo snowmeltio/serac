@@ -40,30 +40,57 @@ export interface FocusHint {
   requestedAt: number;
 }
 
-/** Locate the `code`/`cursor` CLI shipped with the running editor.
- *  Derived from process.execPath so it works for VS Code, Cursor, Windsurf, etc. */
-function locateCli(): string | null {
+/** Locate the CLI script shipped with the running editor.
+ *  vscode.env.appRoot is the authoritative source: inside an extension host,
+ *  process.execPath is the HELPER binary (`Code Helper (Plugin)` on macOS),
+ *  whose bundle has no Resources/ — an execPath-derived probe can never hit
+ *  from an extension host. appRoot is the installed `resources/app` dir in
+ *  every layout: macOS keeps the CLI inside it (`<appRoot>/bin/<cli>`),
+ *  Windows and Linux keep it beside it (`<appRoot>/../../bin/<cli>`). The
+ *  execPath-derived directory remains as a trailing fallback for embedders
+ *  whose appRoot matches neither shape. */
+export function locateCli(): string | null {
   try {
-    const execDir = path.dirname(process.execPath);
-    const candidates: string[] = [];
-    if (process.platform === 'darwin') {
-      // /Applications/<App>.app/Contents/MacOS/Electron → ../Resources/app/bin/code
-      candidates.push(path.join(execDir, '..', 'Resources', 'app', 'bin', 'code'));
-      candidates.push(path.join(execDir, '..', 'Resources', 'app', 'bin', 'cursor'));
-    } else if (process.platform === 'win32') {
-      candidates.push(path.join(execDir, 'bin', 'code.cmd'));
-      candidates.push(path.join(execDir, 'bin', 'cursor.cmd'));
-    } else {
-      candidates.push(path.join(execDir, 'bin', 'code'));
-      candidates.push(path.join(execDir, 'bin', 'cursor'));
+    const suffix = process.platform === 'win32' ? '.cmd' : '';
+    const names = ['code', 'code-insiders', 'cursor', 'windsurf', 'codium'].map(n => n + suffix);
+    const dirs: string[] = [];
+    const appRoot = vscode.env.appRoot;
+    if (appRoot) {
+      dirs.push(path.join(appRoot, 'bin'));
+      dirs.push(path.join(appRoot, '..', '..', 'bin'));
     }
-    for (const c of candidates) {
-      try {
-        if (fs.statSync(c).isFile()) { return c; }
-      } catch { /* try next */ }
+    const execDir = path.dirname(process.execPath);
+    dirs.push(process.platform === 'darwin'
+      ? path.join(execDir, '..', 'Resources', 'app', 'bin')
+      : path.join(execDir, 'bin'));
+    for (const dir of dirs) {
+      for (const name of names) {
+        const c = path.join(dir, name);
+        try {
+          if (fs.statSync(c).isFile()) { return c; }
+        } catch { /* try next */ }
+      }
     }
   } catch { /* fall through */ }
   return null;
+}
+
+/** Env for the editor-CLI spawn — this process's env minus everything that
+ *  would re-profile or re-route the launched editor. Mirrors the companion's
+ *  launcherEnv() rule: a cold-started instance inheriting CLAUDE_CONFIG_DIR
+ *  authenticates as the WRONG account; ELECTRON_RUN_AS_NODE makes the app run
+ *  as plain node; VSCODE_* plumbing (IPC sockets, cache paths — including
+ *  VSCODE_IPC_HOOK_CLI, which reroutes `bin/code` to a remote CLI) belongs to
+ *  this instance, not the target. NODE_OPTIONS is stripped too: the POSIX CLI
+ *  script unsets it itself, the win32 .cmd wrapper does not. */
+export function cliSpawnEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (key === 'CLAUDE_CONFIG_DIR' || key === 'ELECTRON_RUN_AS_NODE' || key === 'NODE_OPTIONS') { continue; }
+    if (key.startsWith('VSCODE_')) { continue; }
+    env[key] = value;
+  }
+  return env;
 }
 
 /** Open a folder in VS Code, focusing an existing matching window where possible.
@@ -76,25 +103,39 @@ function locateCli(): string | null {
  *  vscode.openFolder fallback: a self-foreground call (raising a window on a
  *  folder it ALREADY has open) must degrade to a no-op, never to a forced
  *  duplicate window. */
-export async function openWorkspaceFolder(cwd: string, opts: { userDataDir?: string; cliOnly?: boolean } = {}): Promise<void> {
+/** What openWorkspaceFolder actually did — callers log the outcome rather
+ *  than predicting it (a pre-spawn log line can claim a raise that never
+ *  happened; the v1.18.0 CLI-resolution bug hid behind exactly that). */
+export type OpenWorkspaceOutcome =
+  | { kind: 'spawned'; cli: string }
+  | { kind: 'no-cli' }
+  | { kind: 'fallback' }
+  | { kind: 'refused' };
+
+export async function openWorkspaceFolder(cwd: string, opts: { userDataDir?: string; cliOnly?: boolean } = {}): Promise<OpenWorkspaceOutcome> {
   // Sanity: the folder must exist. Refuse to silently open a phantom folder.
   try {
     const stat = await fs.promises.stat(cwd);
     if (!stat.isDirectory()) {
       vscode.window.showWarningMessage(`Cannot open workspace: ${cwd} is not a directory.`);
-      return;
+      return { kind: 'refused' };
     }
   } catch {
     vscode.window.showWarningMessage(`Cannot open workspace: ${cwd} no longer exists.`);
-    return;
+    return { kind: 'refused' };
   }
 
   const cli = locateCli();
   if (cli) {
-    const args = buildCliArgs(cwd, opts.userDataDir);
+    // On Windows the CLI is a .cmd, which Node ≥20.12 refuses to spawn
+    // without a shell (CVE-2024-27980 hardening) — and with a shell, argv is
+    // joined into one command line, so space-containing paths need quoting.
+    const shell = process.platform === 'win32';
+    const quote = (s: string) => (shell && /\s/.test(s) ? `"${s}"` : s);
+    const args = buildCliArgs(cwd, opts.userDataDir).map(quote);
     const launched = await new Promise<boolean>((resolve) => {
       try {
-        const child = spawn(cli, args, { detached: true, stdio: 'ignore' });
+        const child = spawn(quote(cli), args, { detached: true, stdio: 'ignore', env: cliSpawnEnv(), shell });
         child.on('error', () => resolve(false));
         child.unref();
         // Spawn errors fire asynchronously; assume success after a short grace period.
@@ -103,9 +144,9 @@ export async function openWorkspaceFolder(cwd: string, opts: { userDataDir?: str
         resolve(false);
       }
     });
-    if (launched) { return; }
+    if (launched) { return { kind: 'spawned', cli }; }
   }
-  if (opts.cliOnly) { return; }
+  if (opts.cliOnly) { return { kind: 'no-cli' }; }
 
   // Fallback: opens a new window every time (no focus-existing behaviour).
   await vscode.commands.executeCommand(
@@ -113,6 +154,7 @@ export async function openWorkspaceFolder(cwd: string, opts: { userDataDir?: str
     vscode.Uri.file(cwd),
     { forceNewWindow: true },
   );
+  return { kind: 'fallback' };
 }
 
 /** Argv for the editor CLI spawn. An array all the way to spawn() — spaces in

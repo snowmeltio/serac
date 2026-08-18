@@ -8,11 +8,11 @@ vi.mock('vscode', async () => {
   return { ...mock, default: mock };
 });
 
-import { window, commands } from './__mocks__/vscode.js';
+import { window, commands, env as mockEnv } from './__mocks__/vscode.js';
 import {
   openWorkspaceFolder, focusHintPath, writeFocusHint, consumeFocusHint, FOCUS_HINT_TTL_MS,
   addressedFocusHintPath, writeAddressedFocusHint, sweepStaleAddressedHints,
-  deriveUserDataDir, buildCliArgs,
+  deriveUserDataDir, buildCliArgs, locateCli, cliSpawnEnv,
 } from './workspaceOpener.js';
 
 let tmpDir: string;
@@ -22,6 +22,7 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wso-'));
 });
 afterEach(() => {
+  mockEnv.appRoot = '';
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -161,6 +162,67 @@ describe('buildCliArgs', () => {
   });
 });
 
+describe('locateCli — appRoot-derived resolution', () => {
+  const cliName = process.platform === 'win32' ? 'code.cmd' : 'code';
+
+  it('returns null with no appRoot — the exact state of a pre-fix extension host', () => {
+    // Under vitest process.execPath is the node binary, so the execPath-derived
+    // probes find nothing. In a real extension host process.execPath is the
+    // HELPER binary (no Resources/ in its bundle) — same outcome. Only the
+    // appRoot candidates can rescue either case.
+    expect(locateCli()).toBeNull();
+  });
+
+  it('finds the CLI inside appRoot (macOS layout: Resources/app/bin)', () => {
+    const appRoot = path.join(tmpDir, 'Contents', 'Resources', 'app');
+    fs.mkdirSync(path.join(appRoot, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(appRoot, 'bin', cliName), '#!/bin/sh\n');
+    mockEnv.appRoot = appRoot;
+    expect(locateCli()).toBe(path.join(appRoot, 'bin', cliName));
+  });
+
+  it('finds the CLI beside appRoot (Windows/Linux layout: <install>/bin)', () => {
+    const install = path.join(tmpDir, 'install');
+    const appRoot = path.join(install, 'resources', 'app');
+    fs.mkdirSync(appRoot, { recursive: true });
+    fs.mkdirSync(path.join(install, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(install, 'bin', cliName), '#!/bin/sh\n');
+    mockEnv.appRoot = appRoot;
+    expect(locateCli()).toBe(path.join(install, 'bin', cliName));
+  });
+});
+
+describe('cliSpawnEnv — editor-CLI spawn environment', () => {
+  it('strips re-profiling and re-routing vars (companion launcherEnv rule), leaves the rest', () => {
+    const env = cliSpawnEnv({
+      PATH: '/usr/bin',
+      HOME: '/Users/m',
+      CLAUDE_CONFIG_DIR: '/Users/m/.claude-other',
+      ELECTRON_RUN_AS_NODE: '1',
+      NODE_OPTIONS: '--max-old-space-size=4096',
+      VSCODE_IPC_HOOK_CLI: '/tmp/vscode-ipc.sock',
+      VSCODE_PID: '123',
+      VSCODE_CWD: '/somewhere',
+      VSCODE_FUTURE_VAR: 'anything', // prefix rule, not a name list
+    });
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.HOME).toBe('/Users/m');
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
+    expect(env.NODE_OPTIONS).toBeUndefined();
+    expect(env.VSCODE_IPC_HOOK_CLI).toBeUndefined();
+    expect(env.VSCODE_PID).toBeUndefined();
+    expect(env.VSCODE_CWD).toBeUndefined();
+    expect(env.VSCODE_FUTURE_VAR).toBeUndefined();
+  });
+
+  it('does not mutate the base env', () => {
+    const base = { ELECTRON_RUN_AS_NODE: '1' };
+    cliSpawnEnv(base);
+    expect(base.ELECTRON_RUN_AS_NODE).toBe('1');
+  });
+});
+
 describe('openWorkspaceFolder — refusal and fallback paths', () => {
   it('refuses a non-existent folder with a warning (no phantom window)', async () => {
     await openWorkspaceFolder(path.join(tmpDir, 'gone'));
@@ -185,4 +247,14 @@ describe('openWorkspaceFolder — refusal and fallback paths', () => {
     expect(commands.executeCommand).toHaveBeenCalledWith(
       'vscode.openFolder', expect.anything(), { forceNewWindow: true });
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'spawns the appRoot-resolved CLI instead of the openFolder fallback', async () => {
+      const appRoot = path.join(tmpDir, 'app');
+      fs.mkdirSync(path.join(appRoot, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(appRoot, 'bin', 'code'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      mockEnv.appRoot = appRoot;
+      await openWorkspaceFolder(tmpDir);
+      expect(commands.executeCommand).not.toHaveBeenCalled();
+    });
 });

@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  claudeStateDir, claudeConfigFile, claudeKeychainService, claudeAccountId,
+  claudeStateDir, claudeProjectsDir, claudeConfigFile, claudeKeychainService, claudeAccountId,
   sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath, subagentMetaPath,
 } from './paths.js';
 
@@ -35,6 +35,33 @@ describe('claudeStateDir', () => {
   it('falls back to ~/.claude when CLAUDE_CONFIG_DIR is empty string', () => {
     process.env.CLAUDE_CONFIG_DIR = '';
     expect(claudeStateDir()).toBe(path.join(os.homedir(), '.claude'));
+  });
+});
+
+describe('claudeProjectsDir', () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cpd-'));
+  });
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('resolves a symlinked state dir to the canonical projects path (account farms)', () => {
+    const real = path.join(tmpDir, 'real-claude');
+    fs.mkdirSync(path.join(real, 'projects'), { recursive: true });
+    const alias = path.join(tmpDir, '.claude-account');
+    fs.symlinkSync(real, alias);
+    process.env.CLAUDE_CONFIG_DIR = alias;
+    expect(claudeProjectsDir()).toBe(fs.realpathSync(path.join(real, 'projects')));
+  });
+
+  it('creates the projects dir when missing, so canonicalisation never diverges by activation order', () => {
+    const stateDir = path.join(tmpDir, 'fresh-claude');
+    process.env.CLAUDE_CONFIG_DIR = stateDir;
+    const result = claudeProjectsDir();
+    expect(fs.existsSync(path.join(stateDir, 'projects'))).toBe(true);
+    expect(result).toBe(fs.realpathSync(path.join(stateDir, 'projects')));
   });
 });
 

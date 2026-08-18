@@ -159,7 +159,7 @@ vi.mock('./claudeSettings.js', () => ({
 // Deterministic env signals: the real module reads ~/.claude on THIS machine —
 // tests must control it.
 vi.mock('./workspaceOpener.js', () => ({
-  openWorkspaceFolder: vi.fn().mockResolvedValue(undefined),
+  openWorkspaceFolder: vi.fn().mockResolvedValue({ kind: 'spawned', cli: '/mock/cli' }),
   writeFocusHint: vi.fn().mockResolvedValue(undefined),
   consumeFocusHint: vi.fn().mockResolvedValue(null),
   focusHintPath: vi.fn().mockReturnValue('/test/hints/focus-hint.json'),
@@ -314,6 +314,43 @@ describe('extension', () => {
         );
       });
       expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    });
+
+    it('addressed-hint receiver: self-foregrounds, reveals the card, and re-runs the gate (no bypass)', async () => {
+      const opener = await import('./workspaceOpener.js');
+      // Only the ADDRESSED hint (basename carries our pid) yields — the legacy
+      // focus-hint.json consume shares the mock and must stay empty.
+      vi.mocked(opener.consumeFocusHint).mockImplementation(async (p: string) =>
+        p.includes(`focus-hint-${process.pid}`) ? { sessionId: 'handoff-sess', requestedAt: Date.now() } : null);
+      activate(context as any);
+
+      await vi.advanceTimersByTimeAsync(900); // past the 800ms startup consume
+
+      expect(vi.mocked(opener.openWorkspaceFolder)).toHaveBeenCalledWith(
+        expect.any(String), { userDataDir: '/test/user-data', cliOnly: true });
+      expect(mockPanelProvider.focusSession).toHaveBeenCalledWith('handoff-sess');
+      // The receiver re-runs the open gate: own-window precedence in
+      // aggregateWriterOwnership makes that safe (no hint ping-pong), and it
+      // keeps forwarding/blocking behaviour for drifted ownership.
+      expect(mockDiscovery.resolveOpenGate).toHaveBeenCalledWith('handoff-sess', { classifyOwner: true });
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+          'claude-vscode.editor.open', 'handoff-sess', undefined, 1,
+        );
+      });
+    });
+
+    it('addressed-hint receiver: rejects a hint whose sessionId fails validation', async () => {
+      const opener = await import('./workspaceOpener.js');
+      vi.mocked(opener.consumeFocusHint).mockImplementation(async (p: string) =>
+        p.includes(`focus-hint-${process.pid}`) ? { sessionId: '../../evil', requestedAt: Date.now() } : null);
+      activate(context as any);
+
+      await vi.advanceTimersByTimeAsync(900);
+
+      expect(vi.mocked(opener.openWorkspaceFolder)).not.toHaveBeenCalledWith(
+        expect.any(String), expect.objectContaining({ cliOnly: true }));
+      expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
     });
 
     it('skips the ensureSessionMetadata write for an externally-owned session — viewing must never claim', () => {

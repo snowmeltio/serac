@@ -32,7 +32,7 @@ function sendUpdate(data: Record<string, unknown>): void {
  *  unspecified sections fall back to the defaults. */
 function sendSettings(overrides: any = {}): void {
   const defaults = {
-    show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: false, workflows: true },
+    show: { foreignWorkspaces: true, worktrees: true, usage: true, subagents: false, workflows: true, fileCollisions: false, previewText: true, gitBranch: true },
     archive: { defaultRange: '1d', maxDoneShown: 20 },
     refresh: { intervalSeconds: 5 },
     discovery: { ageGateDays: 7 },
@@ -228,6 +228,61 @@ describe('panel.ts integration', () => {
     const focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
     expect(focusMsg).toBeTruthy();
     expect((focusMsg as any).sessionId).toBe(sess.sessionId);
+  });
+
+  it('an externally-owned card never takes the local focus highlight on click', () => {
+    // The click means "take me there", not "select it here" — the handoff
+    // happens host-side; locally the card must not light up as focused.
+    const sess = makeSession({ externalWriter: true });
+    sendUpdate({ sessions: [sess] });
+    let card = document.querySelector('.card') as HTMLElement;
+    card.click();
+    expect(card.classList.contains('focused')).toBe(false);
+    // A later render must not resurrect it either (focusedSessionId unset).
+    sendUpdate({ sessions: [sess] });
+    card = document.querySelector('.card') as HTMLElement;
+    expect(card.classList.contains('focused')).toBe(false);
+  });
+
+  it('a local card takes the focus highlight on click', () => {
+    const sess = makeSession();
+    sendUpdate({ sessions: [sess] });
+    (document.querySelector('.card') as HTMLElement).click();
+    expect((document.querySelector('.card') as HTMLElement).classList.contains('focused')).toBe(true);
+  });
+
+  it('a mouse click that ends a text selection on the card is a copy gesture — nothing posts', () => {
+    const sess = makeSession();
+    sendUpdate({ sessions: [sess] });
+    const orig = window.getSelection;
+    (window as unknown as { getSelection: unknown }).getSelection =
+      () => ({ isCollapsed: false, containsNode: () => true });
+    try {
+      const card = document.querySelector('.card') as HTMLElement;
+      // detail: 1 — a real mouse click; el.click() is detail 0 (synthetic).
+      card.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      expect(postedMessages.filter((m: any) => m.type === 'focusSession').length).toBe(0);
+      // The same selection must NOT block keyboard activation (synthetic click).
+      card.click();
+      expect(postedMessages.filter((m: any) => m.type === 'focusSession').length).toBe(1);
+    } finally {
+      (window as unknown as { getSelection: typeof orig }).getSelection = orig;
+    }
+  });
+
+  it('a selection elsewhere in the panel does not block card activation', () => {
+    const sess = makeSession();
+    sendUpdate({ sessions: [sess] });
+    const orig = window.getSelection;
+    (window as unknown as { getSelection: unknown }).getSelection =
+      () => ({ isCollapsed: false, containsNode: () => false });
+    try {
+      const card = document.querySelector('.card') as HTMLElement;
+      card.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      expect(postedMessages.filter((m: any) => m.type === 'focusSession').length).toBe(1);
+    } finally {
+      (window as unknown as { getSelection: typeof orig }).getSelection = orig;
+    }
   });
 
   it('scrolls a newly auto-focused card into view (focusSession from the extension)', () => {
@@ -778,6 +833,18 @@ describe('panel.ts integration', () => {
         type: 'openDetail', source: 'workflow', containerId: 'wf-sess', sessionId: 'wf-sess',
       });
       expect(postedMessages.filter((m: any) => m.type === 'focusSession')).toEqual([{ type: 'focusSession', sessionId: 'wf-sess' }]);
+    });
+
+    it('the drill-in chip on an externally-owned card hands off instead of opening the local subpanel', () => {
+      sendUpdate({
+        sessions: [makeSession({ sessionId: 'wf-sess', externalWriter: true })],
+        workflows: [makeWorkflow({ sessionId: 'wf-sess' })],
+      });
+      postedMessages = [];
+      (document.querySelector('.wf-view-chip') as HTMLElement).click();
+      expect(postedMessages.filter((m: any) => m.type === 'openDetail')).toEqual([]);
+      expect(postedMessages.filter((m: any) => m.type === 'focusSession')).toEqual([{ type: 'focusSession', sessionId: 'wf-sess' }]);
+      expect((document.querySelector('.card') as HTMLElement).classList.contains('focused')).toBe(false);
     });
 
     it('Enter on the focused chip posts openDetail', () => {

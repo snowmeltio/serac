@@ -13,6 +13,7 @@ import {
   normPath,
   escapeHtml,
   stripMarkdown,
+  clickEndsSelection,
   getDisplayName,
   isGhost,
   computeFileCollisions,
@@ -234,6 +235,28 @@ let FOREIGN_SLIDE_MS = 220;
   }
 
   // ===== DELEGATED EVENT HANDLERS =====
+  /** Typed external-writer lookup: behavioural decisions read the session
+   *  data, never the `external-writer` presentation class back off the DOM
+   *  (a restyle must not silently change click behaviour). */
+  function isExternalSession(sessionId: string): boolean {
+    return lastSessions?.find(s => s.sessionId === sessionId)?.externalWriter === true;
+  }
+
+  /** Shared activation tail for every session-activating gesture (card body,
+   *  detail chip, inline agent row): post focusSession — the host's gate
+   *  decides open-here vs hand-off — and take the LOCAL focus highlight only
+   *  for a session this window owns. An externally-owned session's click
+   *  means "take me there", not "select it here"; if the host opens it
+   *  locally after all (stale mark, quiet unlock), it drives the highlight
+   *  back through a focusSession message. */
+  function activateSession(sessionId: string): void {
+    vscode.postMessage({ type: 'focusSession', sessionId });
+    if (!isExternalSession(sessionId)) {
+      focusedSessionId = sessionId;
+      if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+    }
+  }
+
   root.addEventListener('click', (e: MouseEvent) => {
     const target = e.target as HTMLElement;
 
@@ -247,15 +270,18 @@ let FOREIGN_SLIDE_MS = 220;
       const containerId = detailChip.dataset.detailContainer;
       const sessionId = detailChip.dataset.detailSession;
       if (source && containerId && sessionId) {
+        // Externally-owned card: the drill-in shows state another window is
+        // driving — the chip hands off like the card body instead of opening
+        // the local subpanel.
+        if (isExternalSession(sessionId)) {
+          activateSession(sessionId);
+          return;
+        }
         vscode.postMessage({ type: 'openDetail', source, containerId, sessionId });
         // Opening the drill-in also focuses the invoking conversation — the
         // detail panel docks beside it, so you keep talking to the parent on
-        // the left and read its agents on the right. Mirrors a card-body click
-        // (focusedSessionId + re-render for the focused state, plus focusSession
-        // to reveal the conversation editor).
-        focusedSessionId = sessionId;
-        vscode.postMessage({ type: 'focusSession', sessionId });
-        if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+        // the left and read its agents on the right. Mirrors a card-body click.
+        activateSession(sessionId);
       }
       return;
     }
@@ -271,13 +297,17 @@ let FOREIGN_SLIDE_MS = 220;
       const sessionId = agentRow.dataset.detailSession;
       const agentId = agentRow.dataset.agent;
       if (source && containerId && sessionId) {
+        // Same externally-owned rule as the detail chip: hand off, no local
+        // drill-in.
+        if (isExternalSession(sessionId)) {
+          activateSession(sessionId);
+          return;
+        }
         const detailMsg: Record<string, unknown> = { type: 'openDetail', source, containerId, sessionId };
         if (agentId) { detailMsg.agentId = agentId; detailMsg.groupKey = agentRow.dataset.group ?? ''; }
         vscode.postMessage(detailMsg);
         // Mirror the detail chip: dock beside + focus the parent conversation.
-        focusedSessionId = sessionId;
-        vscode.postMessage({ type: 'focusSession', sessionId });
-        if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+        activateSession(sessionId);
       }
       return;
     }
@@ -398,14 +428,10 @@ let FOREIGN_SLIDE_MS = 220;
     // click always opens the Claude Code companion editor for that session.
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
     if (card) {
-      // externally-owned cards post like any other: the host's openClaudeEditor
-      // gate decides between opening here and handing off to the owning window
-      // (the click-to-switch affordance) — a webview-side swallow would kill
-      // the swap.
-      const sid = card.dataset.sessionId!;
-      focusedSessionId = sid;
-      vscode.postMessage({ type: 'focusSession', sessionId: sid });
-      if (lastSessions) render(lastSessions, lastNeedsInputCount, workspacePath);
+      // A click that ENDS a text selection on this card is a copy gesture,
+      // not an activation — same rule as the detail view's log rows.
+      if (clickEndsSelection(card, e.detail)) { return; }
+      activateSession(card.dataset.sessionId!);
       return;
     }
   });
