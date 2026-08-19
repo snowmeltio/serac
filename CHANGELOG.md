@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.19.0 (2026-08-19) — Dual-writer sessions get a ⚠ chip and a resolve picker
+
+All externalWriter behaviour remains gated behind `serac.experimental.externalWriterBlock` (default off).
+
+### Added
+- **A session live in TWO windows at once is now flagged in both.** v1.18.2 made the dual-owner case silent (own-window precedence cleared the mark everywhere); it now surfaces as a distinct state — a ⚠ chip on the card in both windows, because two interactive processes able to append the same conversation file is the exact hazard this feature exists to flag.
+- **Clicking the ⚠ chip resolves the conflict.** A picker offers "Keep here" (asks the other window to close its copy via an addressed release hint — same delivery-checked, TTL-bounded channel as click-to-switch) or "Release here" (closes this window's tab). Guard rails: the verdict is re-verified fresh after the picker and again at hint pickup, so a stale request can neither close the last live copy nor open the session in a window whose copy is already gone; and if both windows pick "Keep here", the race is refused with a warning instead of closing both tabs.
+
+### Changed
+- **The "Active elsewhere" text badge is now a compact ⛔ chip**, rightmost in the card's pill row — the wide badge no longer wraps the row into the hidden hover buttons. Clicking or pressing Enter on the chip hands off to the owning window, same as the card body.
+- **Active-elsewhere cards show less detail:** the activity preview line is suppressed (it describes work another window is driving), and the card dim now spares the ⛔ chip so the one actionable affordance stays full-strength.
+
 ## v1.18.2 (2026-08-18) — Click-to-switch actually raises the owning window
 
 ### Fixed
