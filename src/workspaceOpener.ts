@@ -214,11 +214,34 @@ export function writeAddressedFocusHint(
   return writeHintFile(addressedFocusHintPath(projectsDir, workspaceKey, targetPid), sessionId);
 }
 
+/** Path to the ADDRESSED release-hint file for a target extension-host pid.
+ *  Same addressing scheme as the focus hint, distinct basename: a release
+ *  hint asks its addressee to CLOSE its copy of the session (the dual-writer
+ *  resolve flow), where a focus hint asks it to foreground it. Keeping the
+ *  kinds in the filename (not a payload field) means an old receiver simply
+ *  never consumes a release hint rather than misreading it as a focus. */
+export function addressedReleaseHintPath(projectsDir: string, workspaceKey: string, targetPid: number): string {
+  return path.join(projectsDir, workspaceKey, `release-hint-${targetPid}.json`);
+}
+
+/** Drop a release hint addressed to one specific window (by its extension-host
+ *  pid) — "close your copy of this session". Same payload shape, TTL, and
+ *  owner-key addressing rule as writeAddressedFocusHint. */
+export function writeAddressedReleaseHint(
+  projectsDir: string,
+  workspaceKey: string,
+  targetPid: number,
+  sessionId: string,
+): Promise<void> {
+  return writeHintFile(addressedReleaseHintPath(projectsDir, workspaceKey, targetPid), sessionId);
+}
+
 /** Best-effort GC for addressed hints whose target window is gone — a hint
  *  written moments before its addressee died is consumed by nobody and would
  *  otherwise sit in the shared projects dir forever. Removes files whose pid
- *  is no longer alive or whose payload is past the TTL. Never touches the
- *  legacy focus-hint.json, and never this window's own fresh hint. */
+ *  is no longer alive or whose payload is past the TTL. Covers both addressed
+ *  kinds (focus + release). Never touches the legacy focus-hint.json, and
+ *  never this window's own fresh hint. */
 export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey: string): Promise<void> {
   const dir = path.join(projectsDir, workspaceKey);
   let entries: string[];
@@ -230,7 +253,7 @@ export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey
   for (const name of entries) {
     // Orphaned temp files from a writer that crashed between writeFile and
     // rename — age out on the same TTL.
-    if (/^focus-hint-.*\.tmp-\d+$/.test(name)) {
+    if (/^(?:focus|release)-hint-.*\.tmp-\d+$/.test(name)) {
       try {
         const stat = await fs.promises.stat(path.join(dir, name));
         if (Date.now() - stat.mtimeMs > FOCUS_HINT_TTL_MS) {
@@ -239,7 +262,7 @@ export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey
       } catch { /* vanished mid-sweep */ }
       continue;
     }
-    const m = /^focus-hint-(\d+)\.json$/.exec(name);
+    const m = /^(?:focus|release)-hint-(\d+)\.json$/.exec(name);
     if (!m) { continue; }
     const pid = parseInt(m[1], 10);
     let dead = false;

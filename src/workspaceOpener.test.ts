@@ -12,6 +12,7 @@ import { window, commands, env as mockEnv } from './__mocks__/vscode.js';
 import {
   openWorkspaceFolder, focusHintPath, writeFocusHint, consumeFocusHint, FOCUS_HINT_TTL_MS,
   addressedFocusHintPath, writeAddressedFocusHint, sweepStaleAddressedHints,
+  addressedReleaseHintPath, writeAddressedReleaseHint,
   deriveUserDataDir, buildCliArgs, locateCli, cliSpawnEnv,
 } from './workspaceOpener.js';
 
@@ -94,7 +95,42 @@ describe('addressed focus hints — the cross-window handoff', () => {
   });
 });
 
+describe('addressed release hints — the dual-writer resolve channel', () => {
+  it('names the file by target pid with the release- basename, distinct from focus hints', () => {
+    expect(addressedReleaseHintPath(tmpDir, 'ws-key', 4321))
+      .toBe(path.join(tmpDir, 'ws-key', 'release-hint-4321.json'));
+    expect(path.basename(addressedReleaseHintPath(tmpDir, 'ws-key', 4321)))
+      .not.toBe(path.basename(addressedFocusHintPath(tmpDir, 'ws-key', 4321)));
+  });
+
+  it('round-trips through the same consumeFocusHint the receiver uses, deleting on read', async () => {
+    await writeAddressedReleaseHint(tmpDir, 'ws-key', 4321, 'sess-rel');
+    const hintPath = addressedReleaseHintPath(tmpDir, 'ws-key', 4321);
+    const hint = await consumeFocusHint(hintPath);
+    expect(hint?.sessionId).toBe('sess-rel');
+    await new Promise(r => setTimeout(r, 20));
+    expect(fs.existsSync(hintPath)).toBe(false);
+  });
+
+  it('a release hint past the TTL is rejected on consume', async () => {
+    const hintPath = addressedReleaseHintPath(tmpDir, 'k', 4321);
+    fs.mkdirSync(path.dirname(hintPath), { recursive: true });
+    fs.writeFileSync(hintPath, JSON.stringify({ sessionId: 's', requestedAt: Date.now() - FOCUS_HINT_TTL_MS - 1000 }));
+    expect(await consumeFocusHint(hintPath)).toBeNull();
+  });
+});
+
 describe('sweepStaleAddressedHints — GC for unconsumed hints', () => {
+  it('removes a release hint addressed to a dead pid, keeps a fresh live-pid one', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const deadPid = spawnSync(process.execPath, ['-e', '']).pid!;
+    await writeAddressedReleaseHint(tmpDir, 'k', deadPid, 's1');
+    await writeAddressedReleaseHint(tmpDir, 'k', process.pid, 's2');
+    await sweepStaleAddressedHints(tmpDir, 'k');
+    expect(fs.existsSync(addressedReleaseHintPath(tmpDir, 'k', deadPid))).toBe(false);
+    expect(fs.existsSync(addressedReleaseHintPath(tmpDir, 'k', process.pid))).toBe(true);
+  });
+
   it('removes a hint addressed to a dead pid', async () => {
     // Spawn-and-reap a real child so the pid is known-dead (not a guess that
     // could collide with a live process).

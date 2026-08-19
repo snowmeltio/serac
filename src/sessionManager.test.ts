@@ -929,21 +929,28 @@ describe('SessionManager.sweepBackgroundAgents — mtime-unavailable fallback (L
   });
 });
 
-describe('SessionManager.getSnapshot — externalWriter (writerOwnershipProbe)', () => {
+describe('SessionManager.getSnapshot — externalWriter/dualWriter (writerOwnershipProbe)', () => {
   it('is undefined when no writerOwnershipProbe is injected', () => {
     const mgr = makeManager();
     expect(mgr.getSnapshot().externalWriter).toBeUndefined();
+    expect(mgr.getSnapshot().dualWriter).toBeUndefined();
   });
 
-  it('reflects the probe\'s current value', () => {
-    let external: boolean | undefined = true;
+  it('maps the probe aggregate onto the two mutually exclusive flags', () => {
+    let aggregate: 'own' | 'external' | 'dual' | undefined = 'external';
     const mgr = new SessionManager('ext-sess', '/tmp/ext.jsonl', 'ws', {
-      writerOwnershipProbe: () => external,
+      writerOwnershipProbe: () => aggregate,
     });
     expect(mgr.getSnapshot().externalWriter).toBe(true);
-    external = false;
-    expect(mgr.getSnapshot().externalWriter).toBe(false);
-    external = undefined;
+    expect(mgr.getSnapshot().dualWriter).toBeUndefined();
+    aggregate = 'dual';
     expect(mgr.getSnapshot().externalWriter).toBeUndefined();
+    expect(mgr.getSnapshot().dualWriter).toBe(true);
+    aggregate = 'own';
+    expect(mgr.getSnapshot().externalWriter).toBe(false);
+    expect(mgr.getSnapshot().dualWriter).toBeUndefined();
+    aggregate = undefined;
+    expect(mgr.getSnapshot().externalWriter).toBeUndefined();
+    expect(mgr.getSnapshot().dualWriter).toBeUndefined();
   });
 });

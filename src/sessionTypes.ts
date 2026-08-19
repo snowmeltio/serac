@@ -207,6 +207,12 @@ export interface SessionSnapshot {
    *  determined. Gates the live-editor hand-off (openClaudeEditor) to prevent two
    *  processes appending to the same JSONL. */
   externalWriter?: boolean;
+  /** True when the session has live registered processes confirmed in BOTH
+   *  this window AND a different one at once — two interactive processes able
+   *  to append the same JSONL. Mutually exclusive with externalWriter (each
+   *  window sees the same 'dual' verdict and surfaces the resolve chip).
+   *  Live-only; undefined when not confirmed. */
+  dualWriter?: boolean;
   /** Paths from the latest file-history-snapshot record — the files this
    *  session has edited. Feeds the same-file collision badge (two active
    *  sessions touching one file). Capped at 200; absent when none. */

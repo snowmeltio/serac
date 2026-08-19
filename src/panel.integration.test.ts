@@ -230,6 +230,62 @@ describe('panel.ts integration', () => {
     expect((focusMsg as any).sessionId).toBe(sess.sessionId);
   });
 
+  it('the ⛔ switch chip on an external card posts focusSession without the local highlight', () => {
+    const sess = makeSession({ externalWriter: true });
+    sendUpdate({ sessions: [sess] });
+    const chip = document.querySelector('.external-writer-chip') as HTMLElement;
+    expect(chip).toBeTruthy();
+    expect(chip.dataset.switchSession).toBe(sess.sessionId);
+    chip.click();
+    const focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
+    expect(focusMsg).toBeTruthy();
+    expect((focusMsg as any).sessionId).toBe(sess.sessionId);
+    expect((document.querySelector('.card') as HTMLElement).classList.contains('focused')).toBe(false);
+  });
+
+  it('the ⛔ switch chip activates on Enter', () => {
+    const sess = makeSession({ externalWriter: true });
+    sendUpdate({ sessions: [sess] });
+    const chip = document.querySelector('.external-writer-chip') as HTMLElement;
+    chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    const focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
+    expect(focusMsg).toBeTruthy();
+    expect((focusMsg as any).sessionId).toBe(sess.sessionId);
+  });
+
+  it('an external card hides the preview line and dims chrome per-child, chip exempt', () => {
+    sendUpdate({ sessions: [makeSession({ externalWriter: true, activity: 'Running Bash' })] });
+    const card = document.querySelector('.card') as HTMLElement;
+    expect(card.classList.contains('external-writer')).toBe(true);
+    expect(card.querySelector('.card-detail')).toBeNull();
+    // The chip lives in .card-meta so the CSS child-dim can exempt it.
+    expect(card.querySelector('.card-meta > .external-writer-chip')).toBeTruthy();
+  });
+
+  it('the ⚠ dual-writer chip posts resolveDualWriter and never dims or hands off the card', () => {
+    const sess = makeSession({ dualWriter: true, activity: 'Running Bash' });
+    sendUpdate({ sessions: [sess] });
+    const card = document.querySelector('.card') as HTMLElement;
+    // Dual is not "elsewhere": no dim class, preview line intact.
+    expect(card.classList.contains('external-writer')).toBe(false);
+    expect(card.querySelector('.card-detail')).toBeTruthy();
+    const chip = card.querySelector('.dual-writer-chip') as HTMLElement;
+    expect(chip).toBeTruthy();
+    chip.click();
+    const resolveMsg = postedMessages.find((m: any) => m.type === 'resolveDualWriter');
+    expect(resolveMsg).toBeTruthy();
+    expect((resolveMsg as any).sessionId).toBe(sess.sessionId);
+    expect(postedMessages.find((m: any) => m.type === 'focusSession')).toBeUndefined();
+  });
+
+  it('the ⚠ dual-writer chip activates on Enter', () => {
+    const sess = makeSession({ dualWriter: true });
+    sendUpdate({ sessions: [sess] });
+    const chip = document.querySelector('.dual-writer-chip') as HTMLElement;
+    chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(postedMessages.find((m: any) => m.type === 'resolveDualWriter')).toBeTruthy();
+  });
+
   it('an externally-owned card never takes the local focus highlight on click', () => {
     // The click means "take me there", not "select it here" — the handoff
     // happens host-side; locally the card must not light up as focused.

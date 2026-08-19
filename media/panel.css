@@ -391,13 +391,14 @@ body {
  * target: clicking hands off to the owning window (extension.ts's
  * openClaudeEditor gate) rather than opening the editor here (which would let
  * two processes append to the same JSONL). Normal hover stays so the card
- * feels clickable. */
-.card.external-writer { opacity: 0.6; }
-/* .card.focused sets `opacity: 1 !important` (below) to keep focus reading as
- * background-only — but that would silently defeat this card's one visual
- * "elsewhere" cue if a session is both focused and flagged. Higher-specificity
- * !important wins the tie, so the dimming survives even when focused. */
-.card.focused.external-writer { opacity: 0.6 !important; }
+ * feels clickable.
+ * The dim sits on the card's CHILDREN, not the card itself: parent opacity
+ * caps every descendant, and the one thing on an external card that should
+ * stay full-strength is the ⛔ switch chip (the actionable affordance).
+ * Child-level dim also sidesteps .card.focused's `opacity: 1 !important`
+ * (which targets the card element only), so no focused override is needed. */
+.card.external-writer > *:not(.card-meta),
+.card.external-writer .card-meta > *:not(.external-writer-chip) { opacity: 0.6; }
 .card.stale .status-pill { color: #cccccc; background: rgba(153, 153, 153, 0.3); }
 
 .card-top {
@@ -573,21 +574,6 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
   border-radius: 7px;
   padding: 0 5px;
   flex-shrink: 0;
-}
-
-/* Named cue for .card.external-writer — the opacity dim alone (which already
- * fades via .card's own transition) doesn't say why, so spell it out. Same
- * "conflict" tone as .tool-error-badge, not the running-tinted quiet chips. */
-.external-writer-badge {
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: var(--accent-failed-text);
-  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
-  border-radius: 7px;
-  padding: 0 5px;
-  flex-shrink: 0;
-  white-space: nowrap;
 }
 
 /* Background-shell badge — quiet outlined chip in the meta row, tinted with the
@@ -974,6 +960,17 @@ body.vscode-light .wf-badge { background: rgba(var(--sm-arctic-teal-rgb), 0.12);
 .wf-view-chip.wf-chip-done:hover    { background: rgba(var(--sm-arctic-teal-rgb), 0.14); }
 .wf-view-chip.wf-chip-failed:hover  { background: rgba(var(--sm-salmon-red-rgb), 0.14); }
 .wf-view-chip.wf-chip-incomplete:hover { background: rgba(var(--sm-orange-rgb), 0.14); }
+/* ⛔ switch chip on an externally-owned card — same "conflict" tone as
+ * .tool-error-badge, on the .wf-view-chip recipe. Deliberately exempt from
+ * the .card.external-writer child dim (see that rule) so it reads as the
+ * card's one live control. */
+.external-writer-chip { color: var(--accent-failed-text); }
+.external-writer-chip:hover { background: rgba(var(--sm-salmon-red-rgb), 0.14); }
+/* ⚠ dual-writer chip — the session is live in THIS window and another at
+ * once (two interactive processes, one JSONL). Same conflict tint as the ⛔
+ * chip; the card itself stays undimmed (this window's claim is real too). */
+.dual-writer-chip { color: var(--accent-failed-text); }
+.dual-writer-chip:hover { background: rgba(var(--sm-salmon-red-rgb), 0.14); }
 .wf-view-chip:focus-visible {
   outline: 1px solid currentColor;
   outline-offset: 1px;

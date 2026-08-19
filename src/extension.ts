@@ -13,12 +13,14 @@ import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from './claudeSettings.js';
-import { sanitiseWorkspaceKey, applyWorkflowLiveStatus, normPath, computeWaitingCount } from './panelUtils.js';
+import { sanitiseWorkspaceKey, applyWorkflowLiveStatus, normPath, computeWaitingCount, formatAge } from './panelUtils.js';
 import { buildWorktreeRows } from './worktreeRows.js';
 import {
   openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath,
   addressedFocusHintPath, writeAddressedFocusHint, sweepStaleAddressedHints, deriveUserDataDir,
+  addressedReleaseHintPath, writeAddressedReleaseHint,
 } from './workspaceOpener.js';
+import { isExtensionHostPid } from './writerOwnership.js';
 import { isValidSessionId } from './validation.js';
 import { wireHookIngress } from './hookWiring.js';
 import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
@@ -300,6 +302,163 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       }
     }
     openClaudeEditor(sessionId, { failMessage: 'Could not focus Claude Code session. Is the Claude Code extension installed?' });
+  });
+
+  /** Close THIS window's editor tab for `sessionId`. Claude tabs carry no
+   *  per-session identity in their viewType, so: first look for the session id
+   *  in any string of the tab input (some builds encode it in the uri); else
+   *  fall back to focus-then-close — `claude-vscode.editor.open` reveals the
+   *  session's EXISTING tab, and the now-active tab is closed only after
+   *  verifying it is a Claude tab. Never closes a non-Claude tab. */
+  function isClaudeTab(tab: vscode.Tab): boolean {
+    const input = tab.input;
+    return !!input && typeof input === 'object' && 'viewType' in input
+      && (input as { viewType: string }).viewType.includes('claudeVSCode');
+  }
+  function allClaudeTabs(): vscode.Tab[] {
+    return vscode.window.tabGroups.all.flatMap(g => g.tabs).filter(isClaudeTab);
+  }
+  function findSessionTab(tabs: readonly vscode.Tab[], sessionId: string): vscode.Tab | undefined {
+    return tabs.find(tab => {
+      const input = tab.input as Record<string, unknown>;
+      return Object.values(input).some(v =>
+        (typeof v === 'string' && v.includes(sessionId))
+        || (!!v && typeof v === 'object' && 'toString' in v && String(v).includes(sessionId)));
+    });
+  }
+  async function closeOwnSessionTab(sessionId: string): Promise<boolean> {
+    const byId = findSessionTab(allClaudeTabs(), sessionId);
+    if (byId) {
+      log.info(`Dual-writer release: closing session tab for ${sessionId} (matched by tab input)`);
+      return vscode.window.tabGroups.close(byId);
+    }
+    // Focus-then-close fallback. The open command reveals the existing tab
+    // for this session — or CREATES one when none exists, so the before-set
+    // is captured to guarantee anything the open added gets closed even when
+    // the active-tab check misses (focus can land elsewhere; leaving a
+    // freshly created tab open would ADD a writer on a release request).
+    const before = new Set(allClaudeTabs());
+    try {
+      await vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One);
+    } catch {
+      return false;
+    }
+    const after = allClaudeTabs();
+    // Best evidence first: an id match (the reveal may have made the input
+    // identifiable), then any tab the open created, then the active tab.
+    const active = vscode.window.tabGroups.activeTabGroup.activeTab;
+    const target = findSessionTab(after, sessionId)
+      ?? after.find(t => !before.has(t))
+      ?? (active && isClaudeTab(active) ? active : undefined);
+    if (target) {
+      log.info(`Dual-writer release: closing session tab for ${sessionId} (focus-then-close)`);
+      return vscode.window.tabGroups.close(target);
+    }
+    return false;
+  }
+
+  // Sessions this window recently asked the OTHER window to release ("keep
+  // here"). Guards the mutual-keep race: if both windows pick "keep here"
+  // within the hint TTL, each receives the other's release hint — without
+  // this, both tabs close and the session ends everywhere, the inverse of
+  // both intents. A receiver that recently requested keep refuses instead.
+  const keepRequestedAt = new Map<string, number>();
+  const KEEP_GUARD_MS = 60_000; // ≥ the hint TTL, so a live hint never bypasses it
+
+  // ⚠ dual-writer resolve: the session has live interactive processes in
+  // this window AND another. The picker lets the user choose which window
+  // keeps it; the loser's tab is closed (locally, or via an addressed
+  // release hint the other window's Serac consumes).
+  panelProvider.setResolveDualWriterHandler((sessionId: string) => {
+    void (async () => {
+      // Fresh re-verify at the moment of decision — the chip renders off the
+      // cached poll tier and the conflict may already be gone.
+      if (!(await discovery.isDualWriterFresh(sessionId))) {
+        vscode.window.setStatusBarMessage('This session is no longer live in two windows.', 4000);
+        sendUpdate();
+        return;
+      }
+      const procs = discovery.getProcessesForSession(sessionId);
+      const externalProc = procs.find(p => discovery.getOwnershipOf(p.pid) === true
+        && discovery.getOwnerPidOf(p.pid) !== undefined);
+      const ownerPid = externalProc ? discovery.getOwnerPidOf(externalProc.pid) : undefined;
+      const otherLabel = externalProc?.cwd ? path.basename(externalProc.cwd) : 'another window';
+      const age = (startedAt: number | null): string =>
+        startedAt === null ? '' : ` (running ${formatAge(Date.now() - startedAt)})`;
+      const ownProc = procs.find(p => discovery.getOwnershipOf(p.pid) === false);
+      const picked = await vscode.window.showQuickPick([
+        {
+          label: '$(check) Keep here',
+          description: `ask the window on ${otherLabel} to close its copy${age(externalProc?.startedAt ?? null)}`,
+          action: 'keep' as const,
+        },
+        {
+          label: '$(close) Release here',
+          description: `close this window's copy${age(ownProc?.startedAt ?? null)}`,
+          action: 'release' as const,
+        },
+      ], { title: 'Session is live in two windows', placeHolder: 'Two processes can write the same conversation file — pick the window that keeps it' });
+      if (!picked) { return; }
+      // Re-verify AFTER the picker too — it can sit open for minutes, and
+      // acting on a stale verdict here closes the last live copy (release)
+      // or asks a window that no longer holds the session (keep).
+      if (!(await discovery.isDualWriterFresh(sessionId))) {
+        vscode.window.setStatusBarMessage('This session is no longer live in two windows.', 4000);
+        sendUpdate();
+        return;
+      }
+
+      if (picked.action === 'release') {
+        const closed = await closeOwnSessionTab(sessionId);
+        if (!closed) {
+          void vscode.window.showWarningMessage(
+            'Could not identify this session’s tab — close it manually to resolve the conflict.');
+        }
+        return;
+      }
+
+      // Keep here: address a release hint to the other window, mirroring the
+      // focus-hint handoff (addressability check, owner-key filing, 2.5s
+      // delivery check with withdraw-and-warn).
+      if (ownerPid === undefined || (await isExtensionHostPid(ownerPid)) !== true) {
+        void vscode.window.showWarningMessage(
+          'The other window could not be addressed — close the session’s tab there manually to resolve the conflict.');
+        return;
+      }
+      const ownerKey = sanitiseWorkspaceKey(externalProc?.cwd ?? canonicalWsPath);
+      keepRequestedAt.set(sessionId, Date.now()); // arm the mutual-keep guard before the hint lands
+      try {
+        await writeAddressedReleaseHint(projectsDir, ownerKey, ownerPid, sessionId);
+      } catch (err) {
+        log.warn('Failed to write addressed release hint:', err);
+        void vscode.window.showWarningMessage('Could not ask the other VS Code window to release the session.');
+        return;
+      }
+      vscode.window.setStatusBarMessage('Asked the other window to release this session…', 3000);
+      const hintPath = addressedReleaseHintPath(projectsDir, ownerKey, ownerPid);
+      log.info(`Dual-writer: wrote addressed release hint for session ${sessionId} → pid ${ownerPid} at ${hintPath}`);
+      setTimeout(() => {
+        void (async () => {
+          let raw: string;
+          try {
+            raw = await fs.promises.readFile(hintPath, 'utf-8');
+          } catch {
+            log.info(`Dual-writer: release hint for pid ${ownerPid} consumed — the other window released`);
+            return;
+          }
+          try {
+            const parsed = JSON.parse(raw) as { sessionId?: unknown; requestedAt?: unknown };
+            const superseded = parsed?.sessionId !== sessionId
+              || (typeof parsed?.requestedAt === 'number' && Date.now() - parsed.requestedAt < 2400);
+            if (superseded) { return; }
+          } catch { /* torn or foreign content — withdraw it below */ }
+          fs.promises.unlink(hintPath).catch(() => { /* consumed after all, or GC'd */ });
+          log.warn(`Dual-writer: release hint for pid ${ownerPid} not consumed within 2.5s — withdrawn`);
+          void vscode.window.showWarningMessage(
+            'The other window did not respond — it may not be running Serac. Close the session’s tab there manually.');
+        })();
+      }, 2500);
+    })();
   });
 
   // Auto-focus the card of a newly started session (ui-focus-1). Seeded on the
@@ -598,11 +757,67 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   addressedHintWatcher.onDidCreate(() => { void applyAddressedFocusHint(); });
   addressedHintWatcher.onDidChange(() => { void applyAddressedFocusHint(); });
   context.subscriptions.push(addressedHintWatcher);
+  // Addressed RELEASE hints — the dual-writer resolve. Another window whose
+  // user chose "keep here" asks US to close our copy of the session. Same
+  // addressing, watcher, and in-flight discipline as the focus hint; the
+  // payload shape is identical so consumeFocusHint serves both.
+  const releaseHintPath = addressedReleaseHintPath(projectsDir, localWorkspaceKey, process.pid);
+  let releaseHintInFlight = false;
+  let releaseHintRecheck = false;
+  async function applyAddressedReleaseHint() {
+    if (releaseHintInFlight) { releaseHintRecheck = true; return; }
+    releaseHintInFlight = true;
+    try {
+      do {
+        releaseHintRecheck = false;
+        const hint = await consumeFocusHint(releaseHintPath);
+        if (!hint || !isValidSessionId(hint.sessionId)) { continue; }
+        log.info(`Dual-writer: consumed addressed release hint for session ${hint.sessionId}`);
+        // Mutual-keep guard: if THIS window recently asked the other to
+        // release the same session, both users chose "keep" — refuse rather
+        // than let both tabs close (the inverse of both intents).
+        if (Date.now() - (keepRequestedAt.get(hint.sessionId) ?? -Infinity) < KEEP_GUARD_MS) {
+          log.warn(`Dual-writer: refusing release for ${hint.sessionId} — this window requested keep moments ago (both windows chose keep)`);
+          void vscode.window.showWarningMessage(
+            'Both windows chose to keep this session — nothing was closed. Pick "Release here" in the window giving it up.');
+          continue;
+        }
+        // Fresh re-verify before acting: the session must STILL be dual.
+        // Covers both stale-hint cases — our copy already gone (the
+        // focus-then-close fallback would otherwise OPEN the session here,
+        // adding a writer instead of removing one), and the sender's copy
+        // gone (closing ours would kill the last live copy).
+        if (!(await discovery.isDualWriterFresh(hint.sessionId))) {
+          log.info(`Dual-writer: ignoring release hint for ${hint.sessionId} — no longer dual at pickup`);
+          continue;
+        }
+        const closed = await closeOwnSessionTab(hint.sessionId);
+        if (closed) {
+          vscode.window.setStatusBarMessage('Released a session to another window (its tab here was closed).', 5000);
+        } else {
+          void vscode.window.showWarningMessage(
+            'Another window asked to take over a session, but its tab here could not be identified — close it manually.');
+        }
+      } while (releaseHintRecheck);
+    } finally {
+      releaseHintInFlight = false;
+    }
+  }
+  const releaseHintWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(path.dirname(releaseHintPath)), path.basename(releaseHintPath)),
+  );
+  releaseHintWatcher.onDidCreate(() => { void applyAddressedReleaseHint(); });
+  releaseHintWatcher.onDidChange(() => { void applyAddressedReleaseHint(); });
+  context.subscriptions.push(releaseHintWatcher);
+
   // Startup consume, mirroring the legacy path above: the extension-host pid
   // exists (and is addressable) from window launch, well before Serac
   // activates — a hint written during a reload predates the watcher, whose
   // onDidCreate never fires for a pre-existing file. Also GC hints addressed
-  // to windows that died before consuming.
+  // to windows that died before consuming. (The release hint deliberately has
+  // NO startup consume: closing a tab is destructive, and a hint written
+  // while this window was reloading is best treated as expired intent —
+  // the sender's 2.5s delivery check will have withdrawn it and warned.)
   setTimeout(() => { void applyAddressedFocusHint(); }, 800);
   void sweepStaleAddressedHints(projectsDir, localWorkspaceKey);
 

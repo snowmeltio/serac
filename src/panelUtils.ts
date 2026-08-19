@@ -40,6 +40,9 @@ export interface PanelSession {
   /** True when a *different* VS Code window's process is confirmed to be the
    *  live writer of this session right now (see SessionSnapshot.externalWriter). */
   externalWriter?: boolean;
+  /** Live in BOTH this window and another at once — the two-writers hazard
+   *  (see SessionSnapshot.dualWriter). Mutually exclusive with externalWriter. */
+  dualWriter?: boolean;
   /** Files this session has edited (latest file-history-snapshot). Feeds the
    *  same-file collision badge. */
   trackedFiles?: string[];

@@ -116,6 +116,7 @@ import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProg
 import { computeDemotion, getToolProfile, isAutoAcceptPermissionMode, MAX_ACTIVE_TOOLS } from './toolProfiles.js';
 import { sessionDirFromJsonl, subagentJsonlPath } from './paths.js';
 import { formatModelLabel } from './detailShared.js';
+import type { WriterAggregate } from './writerOwnership.js';
 import { makeCwdTracker, type CwdTracker } from './trackers/cwdTracker.js';
 import { makePermissionTracker, type PermissionTracker } from './trackers/permissionTracker.js';
 import { makeSubagentLifecycleTracker, type SubagentLifecycleTracker } from './trackers/subagentLifecycleTracker.js';
@@ -227,11 +228,13 @@ export class SessionManager {
    *  has no entry for it, null = registry inactive/unknown. Distinct from the
    *  fuser-based isProcessAlive(); see isConfirmedDeadByRegistry(). */
   private readonly livenessProbe?: () => boolean | null;
-  /** True when this session's live registered process is confirmed to belong
-   *  to a *different* VS Code window's extension host than this one (injected
-   *  by SessionDiscovery). Undefined when there's no live process or ownership
-   *  can't be determined — never flagged in that case. See SessionSnapshot.externalWriter. */
-  private readonly writerOwnershipProbe?: () => boolean | undefined;
+  /** Who owns this session's live registered process(es) right now (injected
+   *  by SessionDiscovery): 'external' = a different VS Code window's extension
+   *  host, 'own' = this window's, 'dual' = both at once (two live interactive
+   *  processes on one JSONL). Undefined when there's no live process or
+   *  ownership can't be determined — never flagged in that case. See
+   *  SessionSnapshot.externalWriter / .dualWriter. */
+  private readonly writerOwnershipProbe?: () => WriterAggregate;
   /** Latch: have we ever observed this session live in the registry? Only then
    *  does a later "not live" reading mean it genuinely died (vs a session class
    *  the registry never tracked). Guards against muting a real prompt. Seeded
@@ -317,9 +320,9 @@ export class SessionManager {
       onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
       hookRouter?: HookEventRouter;
       livenessProbe?: () => boolean | null;
-      /** Reports whether a *different* VS Code window's process is confirmed
-       *  to be this session's live writer right now. See writerOwnershipProbe field. */
-      writerOwnershipProbe?: () => boolean | undefined;
+      /** Reports which window(s) confirmed-own this session's live writer
+       *  process(es) right now. See writerOwnershipProbe field. */
+      writerOwnershipProbe?: () => WriterAggregate;
       /** Seed for the seen-live-in-registry latch, persisted across window
        *  reloads via session-meta.json — without it every reload disarmed the
        *  registry death gate until the session was re-observed live. */
@@ -532,6 +535,8 @@ export class SessionManager {
 
   /** Get a serialisable snapshot for the webview */
   getSnapshot(): SessionSnapshot {
+    // One probe read per snapshot so the two derived flags can't disagree.
+    const writerAggregate = this.writerOwnershipProbe?.();
     return {
       sessionId: this.state.sessionId,
       slug: this.state.slug,
@@ -574,7 +579,11 @@ export class SessionManager {
       compacting: this.state.compacting,
       backgroundShellCount: this.backgroundShellTracker.count() || undefined,
       processLive: this.registryLiveness(),
-      externalWriter: this.writerOwnershipProbe?.(),
+      // Tri-state preserved: true = elsewhere, false = confirmed here,
+      // undefined = unknown (or dual — which carries its own flag instead).
+      externalWriter: writerAggregate === undefined || writerAggregate === 'dual'
+        ? undefined : writerAggregate === 'external',
+      dualWriter: writerAggregate === 'dual' || undefined,
       ...this.glance.snapshotFields(),
       ...this.loopSnapshotFields(),
     };

@@ -192,7 +192,9 @@ export type WebviewCommand =
   | { type: 'footerSlotClick'; slotId: string }
   | { type: 'openDetail'; source: DetailSource; containerId: string; sessionId: string; agentId?: string; groupKey?: string }
   | { type: 'dismissWorkflow'; runId: string }
-  | { type: 'undismissWorkflow'; runId: string };
+  | { type: 'undismissWorkflow'; runId: string }
+  /** ⚠ dual-writer chip: ask the host to run the keep-here/release-here picker. */
+  | { type: 'resolveDualWriter'; sessionId: string };
 
 // ─── Public extension API surface (returned by activate()) ──────────────
 
