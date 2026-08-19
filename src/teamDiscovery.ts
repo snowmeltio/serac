@@ -12,6 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
+import type { WriterAggregate } from './writerOwnership.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { parseAgentTeamsConfig } from './teamManifest.js';
 import { claudeStateDir, subagentsDirFor, subagentMetaPath } from './paths.js';
@@ -52,13 +53,13 @@ export class TeamDiscovery {
   /** Per-session writer-ownership probe factory, injected by SessionDiscovery —
    *  reports whether a *different* VS Code window is confirmed to be a
    *  session's live writer right now. Account-agnostic; see WriterOwnership. */
-  private writerOwnershipProbeFactory?: (sessionId: string) => () => boolean | undefined;
+  private writerOwnershipProbeFactory?: (sessionId: string) => () => WriterAggregate;
 
   setLivenessProbeFactory(factory: (sessionId: string) => () => boolean | null): void {
     this.probeFactory = factory;
   }
 
-  setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => boolean | undefined): void {
+  setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => WriterAggregate): void {
     this.writerOwnershipProbeFactory = factory;
   }
 

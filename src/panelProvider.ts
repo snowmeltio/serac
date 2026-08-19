@@ -26,6 +26,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private olderSessionCount = 0;
   private worktrees: WorktreeRow[] | undefined;
   private onFocusSession: ((sessionId: string) => void) | undefined;
+  private onResolveDualWriter: ((sessionId: string) => void) | undefined;
   private onDismissSession: ((sessionId: string) => void) | undefined;
   private onUndismissSession: ((sessionId: string) => void) | undefined;
   private onViewTranscript: ((sessionId: string) => void) | undefined;
@@ -47,6 +48,10 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
   setFocusHandler(handler: (sessionId: string) => void): void {
     this.onFocusSession = handler;
+  }
+
+  setResolveDualWriterHandler(handler: (sessionId: string) => void): void {
+    this.onResolveDualWriter = handler;
   }
 
   setDismissHandler(handler: (sessionId: string) => void): void {
@@ -144,6 +149,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
       if (message.type === 'focusSession' && this.onFocusSession) {
         this.onFocusSession(message.sessionId);
+      } else if (message.type === 'resolveDualWriter' && this.onResolveDualWriter) {
+        this.onResolveDualWriter(message.sessionId);
       } else if (message.type === 'dismissSession' && this.onDismissSession) {
         this.onDismissSession(message.sessionId);
       } else if (message.type === 'undismissSession' && this.onUndismissSession) {

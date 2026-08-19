@@ -10,7 +10,7 @@ import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeIn
 import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
-import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid } from './writerOwnership.js';
+import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid, type WriterAggregate } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { readSettings } from './settings.js';
 import { claudeProjectsDir, sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath } from './paths.js';
@@ -187,10 +187,11 @@ export class SessionDiscovery {
       : null;
   }
 
-  /** Parallel probe: is a *different* VS Code window the confirmed live
-   *  writer of this session right now? Account-agnostic by design — see
-   *  WriterOwnership's header comment. */
-  private writerOwnershipProbeFor(sessionId: string): () => boolean | undefined {
+  /** Parallel probe: who is the confirmed live writer of this session right
+   *  now — this window ('own'), a different one ('external'), or both at once
+   *  ('dual', the two-windows-one-JSONL hazard)? Account-agnostic by design —
+   *  see WriterOwnership's header comment. */
+  private writerOwnershipProbeFor(sessionId: string): () => WriterAggregate {
     return () => this.resolveWriterOwnership(sessionId);
   }
 
@@ -911,10 +912,30 @@ export class SessionDiscovery {
    *  experimental-gate read in this codebase (see e.g. `getMessagingSettings`
    *  in extension.ts) — cheap, and this function already runs on every
    *  snapshot build. */
-  private resolveWriterOwnership(sessionId: string): boolean | undefined {
+  private resolveWriterOwnership(sessionId: string): WriterAggregate {
     if (!readSettings().experimental.externalWriterBlock) { return undefined; }
     const procs = this.processRegistry.getProcessesForSession(sessionId);
     return aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid)));
+  }
+
+  /** Per-process detail (pid, startedAt, cwd) for every live process
+   *  registered under `sessionId` — last scan's cache, same tier as the
+   *  cosmetic mark. The dual-writer resolve flow uses it to name the other
+   *  window and address the release hint. */
+  getProcessesForSession(sessionId: string): LiveProcess[] {
+    return this.processRegistry.getProcessesForSession(sessionId);
+  }
+
+  /** The resolved parent (extension-host) pid of `pid`, when known — see
+   *  WriterOwnership.getOwnerPid. */
+  getOwnerPidOf(pid: number): number | undefined {
+    return this.writerOwnership.getOwnerPid(pid);
+  }
+
+  /** Ownership verdict for one live pid — true = confirmed another window's,
+   *  false = confirmed this window's, undefined = unresolved. */
+  getOwnershipOf(pid: number): boolean | undefined {
+    return this.writerOwnership.getInfo(pid);
   }
 
   /** Authoritative, UNCACHED check for the exact moment of an actual
@@ -988,7 +1009,10 @@ export class SessionDiscovery {
     const procs = this.processRegistry.getProcessesForSession(sessionId);
     if (procs.length === 0) { return { kind: 'clear' }; }
     await this.writerOwnership.resolveFor(procs);
-    const external = aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === true;
+    // 'dual' deliberately resolves 'clear': this window has its own live
+    // claim, so opening locally is correct — the hazard is surfaced by the
+    // card's dual-writer chip, not by blocking the open.
+    const external = aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === 'external';
     if (!external) { return { kind: 'clear' }; }
     const externalProcs = procs.filter(p => this.writerOwnership.getInfo(p.pid) === true);
     const ownerProc = externalProcs.find(p => this.writerOwnership.getOwnerPid(p.pid) !== undefined) ?? null;
@@ -1007,7 +1031,25 @@ export class SessionDiscovery {
    *  Cosmetic-tier freshness: for an actual open/send decision use
    *  resolveOpenGate()/isExternalWriterFresh(). */
   isMarkedExternalWriter(sessionId: string): boolean {
-    return this.resolveWriterOwnership(sessionId) === true;
+    return this.resolveWriterOwnership(sessionId) === 'external';
+  }
+
+  /** Is this session marked live in TWO windows at once (own + external
+   *  confirmed processes)? Same cached cosmetic tier as
+   *  isMarkedExternalWriter; the resolve flow re-verifies fresh. */
+  isMarkedDualWriter(sessionId: string): boolean {
+    return this.resolveWriterOwnership(sessionId) === 'dual';
+  }
+
+  /** Fresh dual-writer check for the moment of a resolve decision — same
+   *  scan-and-resolveFor contract as resolveOpenGate. */
+  async isDualWriterFresh(sessionId: string): Promise<boolean> {
+    if (!readSettings().experimental.externalWriterBlock) { return false; }
+    await this.processRegistry.scan();
+    const procs = this.processRegistry.getProcessesForSession(sessionId);
+    if (procs.length === 0) { return false; }
+    await this.writerOwnership.resolveFor(procs);
+    return aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === 'dual';
   }
 
   /** Filesystem-touching recency check: is ANY of the given live processes

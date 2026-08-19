@@ -10,6 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
+import type { WriterAggregate } from './writerOwnership.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
@@ -41,13 +42,13 @@ export class SiblingWorktreeManager {
   /** Per-session writer-ownership probe factory, injected by SessionDiscovery —
    *  reports whether a *different* VS Code window is confirmed to be a
    *  session's live writer right now. Account-agnostic; see WriterOwnership. */
-  private writerOwnershipProbeFactory?: (sessionId: string) => () => boolean | undefined;
+  private writerOwnershipProbeFactory?: (sessionId: string) => () => WriterAggregate;
 
   setLivenessProbeFactory(factory: (sessionId: string) => () => boolean | null): void {
     this.probeFactory = factory;
   }
 
-  setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => boolean | undefined): void {
+  setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => WriterAggregate): void {
     this.writerOwnershipProbeFactory = factory;
   }
 

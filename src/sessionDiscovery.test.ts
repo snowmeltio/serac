@@ -1359,6 +1359,55 @@ describe('SessionDiscovery', () => {
     });
   });
 
+  describe('dual-writer marking: own + external confirmed processes on one sessionId', () => {
+    it('getSnapshots() carries dualWriter=true with externalWriter unset, and the open gate stays clear', async () => {
+      const sessionId = 'dual-owner-sess';
+      createJsonlFile(sessionId);
+      const ext = await spawnExternalProcess(); // confirmed different window
+      const { spawn } = await import('child_process');
+      const ownChild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']); // confirmed own window
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: Date.now() });
+        writeRegistryEntryWithCwd(ownChild.pid!, sessionId, { startedAt: Date.now() });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+        expect(snap?.dualWriter).toBe(true);
+        expect(snap?.externalWriter).toBeUndefined();
+        expect(discovery.isMarkedDualWriter(sessionId)).toBe(true);
+        expect(discovery.isMarkedExternalWriter(sessionId)).toBe(false);
+        // Fresh tiers agree: dual is confirmed, and the open gate does NOT
+        // block (this window has its own live claim — the chip, not the
+        // gate, surfaces the hazard).
+        await expect(discovery.isDualWriterFresh(sessionId)).resolves.toBe(true);
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+        ownChild.kill();
+      }
+    });
+
+    it('isDualWriterFresh is false for a single-owner session and when the feature is off', async () => {
+      const sessionId = 'single-owner-sess';
+      createJsonlFile(sessionId);
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { startedAt: Date.now() });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isDualWriterFresh(sessionId)).resolves.toBe(false);
+        _resetConfig(); // gate off (the production default)
+        await expect(discovery.isDualWriterFresh(sessionId)).resolves.toBe(false);
+        expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.dualWriter).toBeUndefined();
+        _setConfigValues({ 'serac.experimental.externalWriterBlock': true });
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+  });
+
   describe('grace period: a freshly-attached process on an old, otherwise-quiet session', () => {
     it('is true end-to-end through isExternalWriterFresh() and getSnapshots().externalWriter', async () => {
       const sessionId = 'grace-period-fresh-attach';
@@ -1488,8 +1537,8 @@ describe('SessionDiscovery', () => {
 
         // Probe the same way the foreign/sibling/team factory would, without
         // ever touching `this.sessions`.
-        const resolve = (discovery as unknown as { resolveWriterOwnership: (id: string) => boolean | undefined }).resolveWriterOwnership.bind(discovery);
-        expect(resolve(sessionId)).toBe(true);
+        const resolve = (discovery as unknown as { resolveWriterOwnership: (id: string) => string | undefined }).resolveWriterOwnership.bind(discovery);
+        expect(resolve(sessionId)).toBe('external');
 
         ext.cleanup();
         await new Promise(r => setTimeout(r, 100));

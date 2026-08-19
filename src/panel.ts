@@ -286,6 +286,26 @@ let FOREIGN_SLIDE_MS = 220;
       return;
     }
 
+    // ⛔ switch chip on an externally-owned card — same handoff as the card
+    // body, kept as an explicit affordance. Checked before the generic card
+    // handler that nests it.
+    const switchChip = target.closest<HTMLElement>('[data-switch-session]');
+    if (switchChip) {
+      e.stopPropagation();
+      activateSession(switchChip.dataset.switchSession!);
+      return;
+    }
+
+    // ⚠ dual-writer chip — the session is live in two windows at once; the
+    // host shows the resolve picker (keep here / release here). Deliberately
+    // NOT the switch handoff: neither window is "elsewhere".
+    const dualChip = target.closest<HTMLElement>('[data-resolve-dual]');
+    if (dualChip) {
+      e.stopPropagation();
+      vscode.postMessage({ type: 'resolveDualWriter', sessionId: dualChip.dataset.resolveDual });
+      return;
+    }
+
     // Inline agent row (not-done teammate / subagent / workflow agent) — opens
     // the detail panel deep-linked to that agent. Checked before the generic
     // card-body handler (focusSession) that would otherwise swallow it.
@@ -449,6 +469,20 @@ let FOREIGN_SLIDE_MS = 220;
     if (detailChip) {
       e.preventDefault();
       detailChip.click();
+      return;
+    }
+    // ⛔ switch chip — role=button span, same click routing as above.
+    const switchChip = target.closest<HTMLElement>('[data-switch-session]');
+    if (switchChip) {
+      e.preventDefault();
+      switchChip.click();
+      return;
+    }
+    // ⚠ dual-writer chip — role=button span, same click routing as above.
+    const dualChip = target.closest<HTMLElement>('[data-resolve-dual]');
+    if (dualChip) {
+      e.preventDefault();
+      dualChip.click();
       return;
     }
     // Companion footer slots — role=button rows, need Enter/Space wiring

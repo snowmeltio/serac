@@ -117,40 +117,42 @@ describe('aggregateWriterOwnership', () => {
     expect(aggregateWriterOwnership([])).toBeUndefined();
   });
 
-  it('is true when the single verdict is confirmed external', () => {
-    expect(aggregateWriterOwnership([true])).toBe(true);
+  it("is 'external' when the single verdict is confirmed external", () => {
+    expect(aggregateWriterOwnership([true])).toBe('external');
   });
 
-  it('is false when the single verdict is confirmed own-window', () => {
-    expect(aggregateWriterOwnership([false])).toBe(false);
+  it("is 'own' when the single verdict is confirmed own-window", () => {
+    expect(aggregateWriterOwnership([false])).toBe('own');
   });
 
   it('is undefined when the single verdict is unresolved', () => {
     expect(aggregateWriterOwnership([undefined])).toBeUndefined();
   });
 
-  it('is true when any process is confirmed external and none is own-window', () => {
-    expect(aggregateWriterOwnership([undefined, true])).toBe(true);
-    expect(aggregateWriterOwnership([true, true])).toBe(true);
+  it("is 'external' when any process is confirmed external and none is own-window", () => {
+    expect(aggregateWriterOwnership([undefined, true])).toBe('external');
+    expect(aggregateWriterOwnership([true, true])).toBe('external');
   });
 
-  it('an own-window process clears the session even when another window also holds it', () => {
-    // The dual-proc case: a session live in two windows used to classify as
-    // external in BOTH (each offered a handoff to the other — an infinite
-    // hint ping-pong). A session THIS window runs is never "elsewhere".
-    expect(aggregateWriterOwnership([false, true])).toBe(false);
-    expect(aggregateWriterOwnership([undefined, true, false])).toBe(false);
+  it("own + external at once is 'dual' — surfaced, never silently cleared or bounced", () => {
+    // A session live in two windows used to classify as external in BOTH
+    // (each offered a handoff to the other — an infinite hint ping-pong),
+    // then from v1.18.2 as own in both (silent about two processes sharing
+    // one JSONL). 'dual' names the hazard so both windows can surface the
+    // resolve chip; neither treats the other as "elsewhere".
+    expect(aggregateWriterOwnership([false, true])).toBe('dual');
+    expect(aggregateWriterOwnership([undefined, true, false])).toBe('dual');
   });
 
-  it('is false when every process is confirmed own-window', () => {
-    expect(aggregateWriterOwnership([false, false, false])).toBe(false);
+  it("is 'own' when every process is confirmed own-window", () => {
+    expect(aggregateWriterOwnership([false, false, false])).toBe('own');
   });
 
   it('own-window precedence also applies over unresolved verdicts', () => {
-    // Pre-change this was undefined ("never falsely safe") — but an
-    // own-window process is a direct proof the session is usable here,
-    // whatever the unresolved sibling turns out to be.
-    expect(aggregateWriterOwnership([false, undefined])).toBe(false);
+    // An own-window process is a direct proof the session is usable here;
+    // an unresolved sibling proves nothing (dual requires a CONFIRMED
+    // external alongside).
+    expect(aggregateWriterOwnership([false, undefined])).toBe('own');
   });
 });
 

@@ -138,21 +138,36 @@ export class WriterOwnership {
   }
 }
 
+/** Session-level ownership verdict, aggregated across every live process
+ *  registered under one session id. `'own'` — this window holds the only
+ *  confirmed process(es); `'external'` — another window does; `'dual'` — BOTH
+ *  at once: two live interactive processes appending the same JSONL, the
+ *  exact hazard the externalWriterBlock feature exists to flag; `undefined`
+ *  — nothing confirmed either way (treat as "don't flag"). */
+export type WriterAggregate = 'own' | 'external' | 'dual' | undefined;
+
 /** Aggregates per-process ownership verdicts (WriterOwnership.getInfo, one
  *  per live process registered under a session id — usually one, but two can
- *  coexist) into a single verdict for that session. A confirmed own-window
- *  process (`false`) clears the session outright: a session THIS window is
- *  running is never "elsewhere", however many other windows also hold it.
- *  Without that precedence a session live in two windows classifies as
- *  external in BOTH — each window offers a handoff to the other, and a
- *  consumed focus hint bounces back and forth indefinitely. With no
- *  own-window process, any one confirmed-external (`true`) flags the
- *  session; a mix of only `undefined`s, or an empty list, falls back to
- *  "don't flag", matching getInfo()'s own tri-state contract. */
-export function aggregateWriterOwnership(verdicts: readonly (boolean | undefined)[]): boolean | undefined {
-  if (verdicts.length === 0) { return undefined; }
-  if (verdicts.some(v => v === false)) { return false; }
-  if (verdicts.some(v => v === true)) { return true; }
+ *  coexist) into a single verdict for that session.
+ *
+ *  A confirmed own-window process alongside a confirmed-external one is
+ *  `'dual'` — the two-windows-one-JSONL hazard, surfaced in BOTH windows so
+ *  either can resolve it. When no external process coexists, a confirmed
+ *  own-window process clears the session to `'own'`: a session only THIS
+ *  window is running is never "elsewhere". (`'dual'` deliberately does NOT
+ *  fall back to `'external'` anywhere downstream — v1.18.2's ping-pong bug
+ *  class, where both windows offer a handoff to each other and a consumed
+ *  focus hint bounces indefinitely, only existed because dual used to
+ *  classify as external.) With no own-window process, any one
+ *  confirmed-external flags `'external'`; a mix of only `undefined`s, or an
+ *  empty list, falls back to `undefined`, matching getInfo()'s own tri-state
+ *  contract. */
+export function aggregateWriterOwnership(verdicts: readonly (boolean | undefined)[]): WriterAggregate {
+  const own = verdicts.some(v => v === false);
+  const external = verdicts.some(v => v === true);
+  if (own && external) { return 'dual'; }
+  if (own) { return 'own'; }
+  if (external) { return 'external'; }
   return undefined;
 }
 

@@ -5,7 +5,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('vscode', () => {
   const tabGroups = {
     all: [] as Array<{ tabs: Array<{ input: unknown; isActive: boolean }> }>,
-    close: vi.fn(),
+    activeTabGroup: { activeTab: undefined as unknown },
+    close: vi.fn().mockResolvedValue(true),
   };
   return {
     Uri: {
@@ -54,6 +55,7 @@ vi.mock('vscode', () => {
       registerWebviewViewProvider: vi.fn(() => ({ dispose: vi.fn() })),
       onDidChangeWindowState: vi.fn(() => ({ dispose: vi.fn() })),
       showInformationMessage: vi.fn(),
+      showQuickPick: vi.fn().mockResolvedValue(undefined),
       showWarningMessage: vi.fn(),
       showErrorMessage: vi.fn(),
       showTextDocument: vi.fn(),
@@ -86,6 +88,11 @@ const mockDiscovery = {
   isExternalWriterFresh: vi.fn().mockResolvedValue(false),
   resolveOpenGate: vi.fn().mockResolvedValue({ kind: 'clear' }),
   isMarkedExternalWriter: vi.fn().mockReturnValue(false),
+  isMarkedDualWriter: vi.fn().mockReturnValue(false),
+  isDualWriterFresh: vi.fn().mockResolvedValue(false),
+  getProcessesForSession: vi.fn().mockReturnValue([]),
+  getOwnershipOf: vi.fn().mockReturnValue(undefined),
+  getOwnerPidOf: vi.fn().mockReturnValue(undefined),
   getSessionFilePath: vi.fn().mockReturnValue(null),
   setArchiveRange: vi.fn().mockResolvedValue(true),
   getTeamSnapshots: vi.fn().mockReturnValue([]),
@@ -114,6 +121,7 @@ const mockPanelProvider = {
   updateSessions: vi.fn(),
   focusSession: vi.fn(),
   setFocusHandler: vi.fn(),
+  setResolveDualWriterHandler: vi.fn(),
   setDismissHandler: vi.fn(),
   setUndismissHandler: vi.fn(),
   setTranscriptHandler: vi.fn(),
@@ -165,12 +173,20 @@ vi.mock('./workspaceOpener.js', () => ({
   focusHintPath: vi.fn().mockReturnValue('/test/hints/focus-hint.json'),
   addressedFocusHintPath: vi.fn((_dir: string, _key: string, pid: number) => `/test/hints/focus-hint-${pid}.json`),
   writeAddressedFocusHint: vi.fn().mockResolvedValue(undefined),
+  addressedReleaseHintPath: vi.fn((_dir: string, _key: string, pid: number) => `/test/hints/release-hint-${pid}.json`),
+  writeAddressedReleaseHint: vi.fn().mockResolvedValue(undefined),
   sweepStaleAddressedHints: vi.fn().mockResolvedValue(undefined),
   deriveUserDataDir: vi.fn().mockReturnValue('/test/user-data'),
 }));
 
 vi.mock('./claudeEnvSignals.js', () => ({
   readIdeOpenFolders: vi.fn(() => new Set<string>()),
+}));
+
+// extension.ts imports only isExtensionHostPid from here (the dual-writer
+// keep-here addressability check); the real one spawns `ps`.
+vi.mock('./writerOwnership.js', () => ({
+  isExtensionHostPid: vi.fn().mockResolvedValue(true),
 }));
 
 import { activate, deactivate } from './extension.js';
@@ -402,6 +418,200 @@ describe('extension', () => {
       focusHandler('session-a');
 
       expect(mockDiscovery.acknowledgeIfDone).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('dual-writer resolve handler', () => {
+    const claudeTab = (uri: string, isActive = false) =>
+      ({ input: { viewType: 'mainThreadWebview-claudeVSCode.editor', uri }, isActive });
+    const getHandler = () =>
+      vi.mocked(mockPanelProvider.setResolveDualWriterHandler).mock.calls[0][0] as (id: string) => void;
+
+    it('bails with a status message (no picker) when the fresh check says the conflict is gone', async () => {
+      activate(context as any);
+      mockDiscovery.isDualWriterFresh.mockResolvedValueOnce(false);
+      getHandler()('dual-sess');
+      await vi.waitFor(() => {
+        expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+          expect.stringContaining('no longer live in two windows'), expect.any(Number));
+      });
+      expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    });
+
+    it('release-here closes this window\'s session tab, matched by session id in the tab input', async () => {
+      activate(context as any);
+      mockDiscovery.isDualWriterFresh.mockResolvedValue(true);
+      mockDiscovery.getProcessesForSession.mockReturnValue([
+        { pid: 111, sessionId: 'dual-sess', cwd: '/owner/dir', startedAt: Date.now() },
+        { pid: 222, sessionId: 'dual-sess', cwd: '/test/ws', startedAt: Date.now() },
+      ]);
+      mockDiscovery.getOwnershipOf.mockImplementation((pid: number) => pid === 111 ? true : false);
+      mockDiscovery.getOwnerPidOf.mockImplementation((pid: number) => pid === 111 ? 4321 : undefined);
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'release'));
+      const tab = claudeTab('claude-chat://dual-sess');
+      (vscode.window.tabGroups as any).all = [{ tabs: [claudeTab('claude-chat://other-sess'), tab] }];
+
+      getHandler()('dual-sess');
+
+      await vi.waitFor(() => {
+        expect(vscode.window.tabGroups.close).toHaveBeenCalledWith(tab);
+      });
+    });
+
+    it('keep-here writes an addressed release hint under the OTHER window\'s workspace key', async () => {
+      activate(context as any);
+      mockDiscovery.isDualWriterFresh.mockResolvedValue(true);
+      mockDiscovery.getProcessesForSession.mockReturnValue([
+        { pid: 111, sessionId: 'dual-sess', cwd: '/owner/dir', startedAt: Date.now() },
+        { pid: 222, sessionId: 'dual-sess', cwd: '/test/ws', startedAt: Date.now() },
+      ]);
+      mockDiscovery.getOwnershipOf.mockImplementation((pid: number) => pid === 111 ? true : false);
+      mockDiscovery.getOwnerPidOf.mockImplementation((pid: number) => pid === 111 ? 4321 : undefined);
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'keep'));
+
+      getHandler()('dual-sess');
+
+      const opener = await import('./workspaceOpener.js');
+      const { sanitiseWorkspaceKey } = await import('./panelUtils.js');
+      await vi.waitFor(() => {
+        expect(vi.mocked(opener.writeAddressedReleaseHint)).toHaveBeenCalledWith(
+          expect.any(String), sanitiseWorkspaceKey('/owner/dir'), 4321, 'dual-sess');
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('keep-here warns instead of writing when the other window is not addressable', async () => {
+      activate(context as any);
+      const { isExtensionHostPid } = await import('./writerOwnership.js');
+      vi.mocked(isExtensionHostPid).mockResolvedValueOnce(false);
+      mockDiscovery.isDualWriterFresh.mockResolvedValue(true);
+      mockDiscovery.getProcessesForSession.mockReturnValue([
+        { pid: 111, sessionId: 'dual-sess', cwd: '/owner/dir', startedAt: Date.now() },
+      ]);
+      mockDiscovery.getOwnershipOf.mockReturnValue(true);
+      mockDiscovery.getOwnerPidOf.mockReturnValue(4321);
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'keep'));
+
+      getHandler()('dual-sess');
+
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+          expect.stringContaining('could not be addressed'));
+      });
+      const opener = await import('./workspaceOpener.js');
+      expect(vi.mocked(opener.writeAddressedReleaseHint)).not.toHaveBeenCalled();
+    });
+
+    it('release-hint receiver: consumes the addressed hint and closes the session tab', async () => {
+      mockDiscovery.isDualWriterFresh.mockResolvedValue(true);
+      const opener = await import('./workspaceOpener.js');
+      let armed = false;
+      vi.mocked(opener.consumeFocusHint).mockImplementation(async (p: string) =>
+        armed && p.includes(`release-hint-${process.pid}`)
+          ? { sessionId: 'released-sess', requestedAt: Date.now() } : null);
+      const tab = claudeTab('claude-chat://released-sess');
+      (vscode.window.tabGroups as any).all = [{ tabs: [tab] }];
+      activate(context as any);
+      armed = true; // after activation so the focus-hint startup consumes see null
+
+      // Fire the release watcher's onDidCreate — matched by its watched basename.
+      const watcherCalls = vi.mocked(vscode.workspace.createFileSystemWatcher).mock;
+      const idx = watcherCalls.calls.findIndex(c =>
+        (c[0] as { pattern?: string })?.pattern === `release-hint-${process.pid}.json`);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const watcher = watcherCalls.results[idx].value as { onDidCreate: ReturnType<typeof vi.fn> };
+      (watcher.onDidCreate.mock.calls[0][0] as () => void)();
+
+      await vi.waitFor(() => {
+        expect(vscode.window.tabGroups.close).toHaveBeenCalledWith(tab);
+      });
+      expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Released a session'), expect.any(Number));
+    });
+
+    it('release-hint receiver: ignores a hint when the session is no longer dual at pickup', async () => {
+      mockDiscovery.isDualWriterFresh.mockResolvedValue(false);
+      const opener = await import('./workspaceOpener.js');
+      let armed = false;
+      vi.mocked(opener.consumeFocusHint).mockImplementation(async (p: string) =>
+        armed && p.includes(`release-hint-${process.pid}`)
+          ? { sessionId: 'stale-sess', requestedAt: Date.now() } : null);
+      activate(context as any);
+      armed = true;
+
+      const watcherCalls = vi.mocked(vscode.workspace.createFileSystemWatcher).mock;
+      const idx = watcherCalls.calls.findIndex(c =>
+        (c[0] as { pattern?: string })?.pattern === `release-hint-${process.pid}.json`);
+      const watcher = watcherCalls.results[idx].value as { onDidCreate: ReturnType<typeof vi.fn> };
+      (watcher.onDidCreate.mock.calls[0][0] as () => void)();
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+      // The focus-then-close fallback must not run either — it would OPEN
+      // the session in a window whose copy is already gone.
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+    });
+
+    it('mutual keep: a release hint arriving after this window requested keep is refused', async () => {
+      mockDiscovery.isDualWriterFresh.mockResolvedValue(true);
+      mockDiscovery.getProcessesForSession.mockReturnValue([
+        { pid: 111, sessionId: 'dual-sess', cwd: '/owner/dir', startedAt: Date.now() },
+        { pid: 222, sessionId: 'dual-sess', cwd: '/test/ws', startedAt: Date.now() },
+      ]);
+      mockDiscovery.getOwnershipOf.mockImplementation((pid: number) => pid === 111 ? true : false);
+      mockDiscovery.getOwnerPidOf.mockImplementation((pid: number) => pid === 111 ? 4321 : undefined);
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'keep'));
+      const opener = await import('./workspaceOpener.js');
+      let armed = false;
+      vi.mocked(opener.consumeFocusHint).mockImplementation(async (p: string) =>
+        armed && p.includes(`release-hint-${process.pid}`)
+          ? { sessionId: 'dual-sess', requestedAt: Date.now() } : null);
+      activate(context as any);
+
+      // This window picks "keep here" (arming the guard)…
+      getHandler()('dual-sess');
+      await vi.waitFor(() => {
+        expect(vi.mocked(opener.writeAddressedReleaseHint)).toHaveBeenCalled();
+      });
+
+      // …then the OTHER window's mirror-image release hint arrives.
+      armed = true;
+      const watcherCalls = vi.mocked(vscode.workspace.createFileSystemWatcher).mock;
+      const idx = watcherCalls.calls.findIndex(c =>
+        (c[0] as { pattern?: string })?.pattern === `release-hint-${process.pid}.json`);
+      const watcher = watcherCalls.results[idx].value as { onDidCreate: ReturnType<typeof vi.fn> };
+      (watcher.onDidCreate.mock.calls[0][0] as () => void)();
+
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+          expect.stringContaining('Both windows chose to keep'));
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('release-hint receiver: rejects a hint whose sessionId fails validation', async () => {
+      const opener = await import('./workspaceOpener.js');
+      vi.mocked(opener.consumeFocusHint).mockImplementation(async (p: string) =>
+        p.includes(`release-hint-${process.pid}`)
+          ? { sessionId: '../../evil', requestedAt: Date.now() } : null);
+      activate(context as any);
+
+      const watcherCalls = vi.mocked(vscode.workspace.createFileSystemWatcher).mock;
+      const idx = watcherCalls.calls.findIndex(c =>
+        (c[0] as { pattern?: string })?.pattern === `release-hint-${process.pid}.json`);
+      const watcher = watcherCalls.results[idx].value as { onDidCreate: ReturnType<typeof vi.fn> };
+      (watcher.onDidCreate.mock.calls[0][0] as () => void)();
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+      // Never falls through to the focus-then-close fallback either.
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
     });
   });
 

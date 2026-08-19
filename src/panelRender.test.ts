@@ -372,12 +372,49 @@ describe('renderCardInner', () => {
     expect(off).not.toContain('⎇ main');
   });
 
-  it('external-writer badge names the state explicitly, not just via opacity', () => {
+  it('external-writer chip names the state explicitly, not just via opacity', () => {
     const off = renderCardInner(makeCtx(), makeSession(), NOW, false);
-    expect(off).not.toContain('external-writer-badge');
+    expect(off).not.toContain('external-writer-chip');
+    expect(off).not.toContain('data-switch-session');
     const on = renderCardInner(makeCtx(), makeSession({ externalWriter: true }), NOW, false);
-    expect(on).toContain('external-writer-badge');
-    expect(on).toContain('Active elsewhere');
+    expect(on).toContain('external-writer-chip');
+    expect(on).toContain('⛔');
+    expect(on).toContain('data-switch-session="sess-1234abcd"');
+  });
+
+  it('external-writer chip is the last chip in the meta row (before the hover actions)', () => {
+    const s = makeSession({
+      externalWriter: true,
+      subagents: [{ description: 'a', running: true }],
+    });
+    const html = renderCardInner(makeCtx(), s, NOW, false);
+    const chipIdx = html.indexOf('external-writer-chip');
+    expect(chipIdx).toBeGreaterThan(html.indexOf('detail-chip'));
+    expect(chipIdx).toBeLessThan(html.indexOf('card-actions'));
+  });
+
+  it('external-writer card suppresses the preview line even with previewText on', () => {
+    const s = makeSession({ externalWriter: true, activity: 'Running Bash' });
+    const html = renderCardInner(makeCtx(), s, NOW, false);
+    expect(html).not.toContain('card-detail');
+    expect(html).not.toContain('Running Bash');
+  });
+
+  it('dual-writer chip renders ⚠ with its own resolve attribute, not the switch handoff', () => {
+    const off = renderCardInner(makeCtx(), makeSession(), NOW, false);
+    expect(off).not.toContain('dual-writer-chip');
+    const on = renderCardInner(makeCtx(), makeSession({ dualWriter: true }), NOW, false);
+    expect(on).toContain('dual-writer-chip');
+    expect(on).toContain('⚠');
+    expect(on).toContain('data-resolve-dual="sess-1234abcd"');
+    expect(on).not.toContain('data-switch-session');
+  });
+
+  it('dual-writer card keeps its preview line — this window\'s claim is real', () => {
+    const s = makeSession({ dualWriter: true, activity: 'Running Bash' });
+    const html = renderCardInner(makeCtx(), s, NOW, false);
+    expect(html).toContain('card-detail');
+    expect(html).toContain('Running Bash');
   });
 
   it('permission-mode badge renders the glyph and label for a known mode', () => {

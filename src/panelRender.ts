@@ -446,12 +446,6 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
       + escapeHtml(modeBadge.label) + '"><span class="mode-badge-glyph">' + escapeHtml(modeBadge.glyph)
       + '</span>' + escapeHtml(modeBadge.label) + '</span>';
   }
-  // Another VS Code window is confirmed to be this session's live writer right
-  // now (see .card.external-writer in panel.css) — the dimmed card alone reads
-  // as unexplained greying, so name the state explicitly.
-  if (s.externalWriter) {
-    metaHtml += '<span class="external-writer-badge" title="Active in another VS Code window — click the card to switch to it">Active elsewhere</span>';
-  }
   // Background-shell badge — a detached `run_in_background` shell is still
   // going after the turn ended. Non-status (the card keeps its real status);
   // a quiet running-tinted chip so a `done` card still flags the live build.
@@ -513,6 +507,28 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     metaHtml += renderDetailChip(label, hasWf ? 'workflow' : 'subagents',
       s.sessionId, s.sessionId, chipState, agentsChipHtml(live));
   }
+  // Live in TWO windows at once — this window AND another both hold a live
+  // interactive process for the session (two writers, one JSONL). Worse than
+  // "active elsewhere", so it gets its own chip; clicking opens the resolve
+  // picker (keep here / release here). The card is NOT dimmed and keeps its
+  // preview line — this window's claim is as real as the other's.
+  if (s.dualWriter) {
+    metaHtml += '<span class="wf-tag wf-view-chip dual-writer-chip" data-resolve-dual="'
+      + escapeHtml(s.sessionId) + '" role="button" tabindex="0"'
+      + ' title="Live in TWO windows at once — click to pick which one keeps it"'
+      + ' aria-label="Session live in two windows; activate to resolve">⚠<span class="wf-arrow">→</span></span>';
+  }
+  // Another VS Code window is confirmed to be this session's live writer right
+  // now — the dimmed card alone reads as unexplained greying, so name the
+  // state with a compact ⛔ chip. Rightmost, and deliberately excluded from
+  // the card dim (see .card.external-writer in panel.css) so the one
+  // actionable affordance on an external card stays full-strength.
+  if (s.externalWriter) {
+    metaHtml += '<span class="wf-tag wf-view-chip external-writer-chip" data-switch-session="'
+      + escapeHtml(s.sessionId) + '" role="button" tabindex="0"'
+      + ' title="Active in another VS Code window — click to switch to it"'
+      + ' aria-label="Active in another window; activate to switch">⛔<span class="wf-arrow">→</span></span>';
+  }
   metaHtml += actionsHtml;
   metaHtml += '</div>';
 
@@ -539,7 +555,9 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
   const isTerminal = s.status === 'done' || s.status === 'stale';
   const activityText = stripMarkdown(
     (isTerminal && s.lastAssistantText ? s.lastAssistantText : s.activity) || 'No recent activity');
-  const detailHtml = ctx.settings.show.previewText
+  // Suppressed on external cards — the live activity of a session another
+  // window is driving isn't useful here and costs vertical space.
+  const detailHtml = ctx.settings.show.previewText && !s.externalWriter
     ? '<div class="card-detail">' + escapeHtml(activityText) + '</div>'
     : '';
 

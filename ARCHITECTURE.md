@@ -323,14 +323,36 @@ and whether that pid verified as an extension host just now
 owner is **addressable**; a shell parent — the terminal-started false
 positive — never is, and falls back to the legacy warn/quiet-unlock.
 
-`aggregateWriterOwnership()` gives a confirmed own-window process precedence
-over everything else: a session with live processes in this window AND
-another is **not** external (no mark, gate clear). Without that precedence
-the dual-process case classifies as external in *both* windows and a
-consumed hint bounces back and forth indefinitely — which is also why hint
-receivers re-run this same gate rather than bypassing it: a receiver that
-owns the session opens it locally, one that watched ownership drift away
-forwards the handoff to the new owner, and a genuine conflict still blocks.
+`aggregateWriterOwnership()` returns a session-level `WriterAggregate`:
+`'own'`, `'external'`, `'dual'`, or `undefined`. A confirmed own-window
+process alongside a confirmed-external one is **`'dual'`** — two live
+interactive processes able to append the same JSONL, the exact hazard this
+whole feature exists to flag. Dual is never treated as external (no ⛔ mark,
+open gate clear — this window has its own live claim, and classifying it
+external in both windows is how a consumed hint used to bounce back and
+forth indefinitely; hint receivers still re-run the gate for the same
+reason). Instead `SessionSnapshot.dualWriter` renders a ⚠ chip on the card
+in *both* windows; clicking it re-verifies fresh (`isDualWriterFresh()`)
+then offers a picker — **keep here** (writes an addressed
+`release-hint-<otherPid>.json`, same channel/TTL/atomic-write/delivery-check
+as the focus hint, asking the other window's Serac to close its copy) or
+**release here** (closes this window's tab: matched by session id in the tab
+input when the claude editor encodes it, else focus-then-close via
+`claude-vscode.editor.open` with a claudeVSCode viewType check before
+closing — never a non-Claude tab; the fallback also diffs the Claude-tab set
+around the open so a tab the reveal *created* is always closed, never left
+adding a writer). Guards on the destructive paths: the verdict is re-verified
+fresh both after the QuickPick (it can sit open for minutes; a stale release
+would close the last live copy) and at hint pickup (a stale hint must not
+open the session in a window whose copy is gone), and a receiver that itself
+requested "keep" within the last 60s refuses the incoming release — the
+mutual-keep race would otherwise close both tabs, the inverse of both
+intents. The release receiver deliberately has no startup consume: closing a
+tab is destructive, and a hint that predates a window reload is expired
+intent (the sender's delivery check withdraws it).
+With no external process at all, a confirmed own-window process resolves
+`'own'`; any confirmed-external without an own resolves `'external'`; only
+`undefined`s resolve `undefined`.
 
 The handoff itself is an **addressed focus hint**,
 `projects/<ownerWsKey>/focus-hint-<ownerPid>.json` (`workspaceOpener.ts`).
