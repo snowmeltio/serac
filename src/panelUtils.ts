@@ -19,6 +19,9 @@ export interface PanelSession {
   title?: string;
   /** Auto-generated title from Claude Code's `ai-title` JSONL records. */
   aiTitle?: string;
+  /** Absolute path to the JSONL transcript (copy-pill payload; falls back to
+   *  sessionId when absent). */
+  filePath?: string;
   slug?: string;
   cwd?: string;
   lastActivity: number;
