@@ -843,3 +843,87 @@ describe('renderFooterSlots', () => {
     expect(renderFooterSlots([])).toBe('');
   });
 });
+
+describe('worktree chip', () => {
+  const WS = '/Users/me/repos/proj';
+
+  it('renders a monogram chip for a sibling-worktree card', () => {
+    const html = renderCardInner(makeCtx(), makeSession({
+      worktreeRoot: '/Users/me/repos/proj-spike-detail-pane',
+    }), NOW, false);
+    expect(html).toContain('worktree-chip');
+    expect(html).toContain('>DP<'); // repo prefix "proj" stripped, tail initials
+    expect(html).toContain('--wt-hue:');
+    expect(html).toContain('proj-spike-detail-pane'); // full path in tooltip
+  });
+
+  it('suppresses the chip when the card is local (worktreeRoot === workspace root)', () => {
+    // Includes the RC server's pre-created main-checkout session — local by design.
+    const html = renderCardInner(makeCtx(), makeSession({ worktreeRoot: WS }), NOW, false);
+    expect(html).not.toContain('worktree-chip');
+  });
+
+  it('suppresses the chip when worktreeRoot is absent', () => {
+    const html = renderCardInner(makeCtx(), makeSession({}), NOW, false);
+    expect(html).not.toContain('worktree-chip');
+  });
+
+  it('gives remote-spawned (bridge-cse_) worktrees the fixed \u{1F4E1} mark, no monogram', () => {
+    const html = renderCardInner(makeCtx(), makeSession({
+      worktreeRoot: WS + '/.claude/worktrees/bridge-cse_014QrugKwCG6H7hdVzwYa2UV',
+    }), NOW, false);
+    expect(html).toContain('worktree-chip-remote');
+    expect(html).toContain('\u{1F4E1}');
+    expect(html).not.toContain('--wt-hue'); // no derived identity for a one-shot id
+  });
+});
+
+describe('renderWorktreeRow chips (4A′)', () => {
+  function makeRow(overrides: Partial<PanelWorktreeRow> = {}): PanelWorktreeRow {
+    return {
+      path: '/Users/me/repos/proj-spike-a',
+      branch: 'spike-a',
+      displayName: 'spike-a',
+      counts: {},
+      confidence: 'high',
+      isCurrent: false,
+      isMain: false,
+      ...overrides,
+    };
+  }
+
+  it('leads a non-main row with the identity chip', () => {
+    const html = renderWorktreeRow(makeCtx(), makeRow());
+    expect(html).toContain('worktree-chip');
+    expect(html).toContain('--wt-hue:');
+  });
+
+  it('keeps main and current rows chip-free', () => {
+    const main = renderWorktreeRow(makeCtx(), makeRow({ path: '/Users/me/repos/proj', displayName: 'main', isMain: true }));
+    expect(main).not.toContain('worktree-chip');
+    expect(main).toContain('ws-main-chip'); // existing marker untouched
+    const current = renderWorktreeRow(makeCtx(), makeRow({ isCurrent: true }));
+    expect(current).not.toContain('worktree-chip');
+  });
+
+  it('shows the session title on a remote-spawned row, with the \u{1F4E1} chip', () => {
+    const html = renderWorktreeRow(makeCtx(), makeRow({
+      path: '/Users/me/repos/proj/.claude/worktrees/bridge-cse_014Qrug',
+      branch: 'worktree-bridge-cse_014Qrug',
+      displayName: 'worktree-bridge-cse_014Qrug',
+      sessionName: 'Testing things',
+    }));
+    expect(html).toContain('worktree-chip-remote');
+    expect(html).toContain('Testing things');
+    expect(html).not.toContain('>worktree-bridge-cse_014Qrug<'); // raw branch not shown as the name
+  });
+
+  it('falls back to displayName on a remote row with no titled session', () => {
+    const html = renderWorktreeRow(makeCtx(), makeRow({
+      path: '/Users/me/repos/proj/.claude/worktrees/bridge-cse_014Qrug',
+      displayName: 'worktree-bridge-cse_014Qrug',
+      sessionName: null,
+    }));
+    expect(html).toContain('worktree-bridge-cse_014Qrug');
+  });
+});

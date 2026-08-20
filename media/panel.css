@@ -569,6 +569,41 @@ body.vscode-light .model-pill { color: hsl(var(--model-hue, 0) 55% 38%); }
 .model-pill.clickable { cursor: pointer; }
 .model-pill.clickable:hover { text-decoration: underline; }
 
+/* Worktree chip — which checkout a card sits on (meta row, after the mode
+ * badge). Filled variant of the quiet-chip recipe: low-alpha tinted fill so
+ * identity colour stays visually subordinate to status colour (washes, pills).
+ * Hue is per-worktree (--wt-hue, set inline from chipHue() in worktreeChip.ts,
+ * same djb2×golden-angle recipe as the model pill's fallback); sat/light fixed
+ * per theme with a light-theme clamp so yellows keep contrast. */
+.worktree-chip {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 0 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 13px;
+  letter-spacing: 0.3px;
+  color: hsl(var(--wt-hue, 0) 45% 72%);
+  border: 1px solid hsl(var(--wt-hue, 0) 45% 58% / 0.65);
+  background: hsl(var(--wt-hue, 0) 55% 60% / 0.14);
+}
+body.vscode-light .worktree-chip {
+  color: hsl(var(--wt-hue, 0) 55% 32%);
+  border-color: hsl(var(--wt-hue, 0) 50% 40% / 0.6);
+  background: hsl(var(--wt-hue, 0) 55% 50% / 0.12);
+}
+/* Remote-spawned (bridge-cse_*) worktree: fixed 📡, neutral tint — a hash id
+ * has no stable identity worth colouring. Hover carries the full path. */
+.worktree-chip-remote {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--vscode-descriptionForeground, #888888);
+  border-color: currentColor;
+  background: transparent;
+  opacity: 0.85;
+}
+
 /* Branch / worktree indicator — lives on its OWN line beneath the meta row
  * (.card-branch), present only when the session has a git branch. Off the
  * wrapping meta flow it keeps that row short, so the action buttons no longer
