@@ -32,6 +32,7 @@ import {
   renderUsageHtml,
   renderWorktreesPane,
   statusSummaryHtml,
+  rcIndicatorHtml,
   timeRangePillsHtml,
   type PanelCompactSettings,
   type PanelFooterSlot,
@@ -67,6 +68,9 @@ interface UpdateMessage {
   footerSlots?: PanelFooterSlot[];
   olderSessionCount?: number;
   worktrees?: PanelWorktreeRow[];
+  /** Remote Control server serving this workspace. Always sent by the host;
+   *  optional here only so an older host's payload still type-checks. */
+  rcServing?: boolean;
 }
 
 interface FocusMessage {
@@ -117,6 +121,7 @@ let FOREIGN_SLIDE_MS = 220;
   let lastUsage: UsageData | null = null;
   let lastForeignWorkspaces: WorkspaceGroup[] | null = null;
   let lastWorktrees: PanelWorktreeRow[] = [];
+  let lastRcServing = false;
   let lastWorktreesHtml = '';
   let lastForeignWaiting: PanelSession[] = [];
   let lastForeignRunning: PanelSession[] = [];
@@ -566,6 +571,7 @@ let FOREIGN_SLIDE_MS = 220;
         compactSettings = message.compactSettings ?? null;
         lastOlderSessionCount = message.olderSessionCount ?? 0;
         lastWorktrees = message.worktrees ?? [];
+        lastRcServing = message.rcServing ?? false;
         homeDir = message.home ?? '';
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         // Same-file collisions across every active session we can see —
@@ -696,11 +702,21 @@ let FOREIGN_SLIDE_MS = 220;
       root.innerHTML = '';
       topBar = document.createElement('div');
       topBar.className = 'top-bar';
-      topBar.innerHTML = '<div class="status-summary" aria-live="polite"></div>';
+      topBar.innerHTML = '<div class="status-summary" aria-live="polite"></div>'
+        + '<div class="rc-slot"></div>';
       root.appendChild(topBar);
     }
     const summaryEl = topBar.querySelector('.status-summary');
     if (summaryEl) { summaryEl.innerHTML = summaryHtml; }
+    // .status-summary has flex:1, so this sibling right-aligns for free.
+    let rcSlot = topBar.querySelector('.rc-slot');
+    if (!rcSlot) {
+      // Top bar built before this element existed (older cached DOM).
+      rcSlot = document.createElement('div');
+      rcSlot.className = 'rc-slot';
+      topBar.appendChild(rcSlot);
+    }
+    rcSlot.innerHTML = rcIndicatorHtml(lastRcServing);
 
     // === Scroll container ===
     let scrollWrap = root.querySelector('.card-archive-scroll') as HTMLElement | null;

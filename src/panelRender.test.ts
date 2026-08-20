@@ -27,6 +27,7 @@ import {
   renderWorktreeRow,
   renderWsRow,
   statusSummaryHtml,
+  rcIndicatorHtml,
   tildeAbbrev,
   timeRangePillsHtml,
   type PanelTeam,
@@ -661,6 +662,41 @@ describe('statusSummaryHtml', () => {
     expect(html).not.toContain('done</span>');
     expect(html).toContain('3 seen');
     expect(statusSummaryHtml({})).toContain('No active sessions');
+  });
+});
+
+describe('rcIndicatorHtml', () => {
+  it('marks the serving state with a filled dot and the dish', () => {
+    const html = rcIndicatorHtml(true);
+    expect(html).toContain('rc-indicator on');
+    expect(html).toContain('rc-dot');
+    expect(html).toContain('\u{1F4E1}');
+    expect(html).toContain('serving this workspace');
+  });
+
+  it('marks the off state distinctly, and says what to run', () => {
+    const html = rcIndicatorHtml(false);
+    expect(html).toContain('rc-indicator off');
+    expect(html).not.toContain('rc-indicator on');
+    expect(html).toContain('claude rc');
+  });
+
+  it('carries no visible text in either state — the words live in the tooltip', () => {
+    for (const html of [rcIndicatorHtml(true), rcIndicatorHtml(false)]) {
+      // Strip tags and attributes, leaving only rendered text.
+      const visible = html.replace(/<[^>]*>/g, '').trim();
+      expect(visible).toBe('\u{1F4E1}');
+    }
+  });
+
+  it('escapes the tooltip it builds', () => {
+    // The quoted command in the off tooltip must not break out of title="".
+    expect(rcIndicatorHtml(false)).not.toMatch(/title="[^"]*"claude/);
+    expect(rcIndicatorHtml(false)).toContain('&quot;claude rc&quot;');
+  });
+
+  it('always renders an indicator — off is a real state, not an absence', () => {
+    expect(rcIndicatorHtml(false).length).toBeGreaterThan(0);
   });
 });
 

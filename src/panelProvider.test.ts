@@ -295,6 +295,32 @@ describe('AgentPanelProvider', () => {
       );
     });
 
+    it('sends rcServing unconditionally — false is a state, not an absence', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview.postMessage.mockClear();
+
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: false });
+      const off = webview.postMessage.mock.calls.at(-1)![0];
+      // The empty-array-omission idiom used by the list fields would erase the
+      // off state; the webview must be able to tell "off" from "no data".
+      expect(off).toHaveProperty('rcServing', false);
+
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: true });
+      expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('rcServing', true);
+    });
+
+    it('defaults rcServing to false when the host omits it', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview.postMessage.mockClear();
+
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null });
+      expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('rcServing', false);
+    });
+
     it('includes workflows in the update payload when non-empty', () => {
       const webview = createMockWebview();
       const view = createMockWebviewView(webview);

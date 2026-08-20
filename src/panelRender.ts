@@ -229,6 +229,22 @@ export function statusSummaryHtml(counts: Record<string, number>): string {
   return summaryHtml;
 }
 
+/** Remote Control on/off mark for the top bar: a state dot plus a dish glyph.
+ *  Deliberately wordless — the top bar's job is the status counts, and RC is
+ *  ambient context, not a count. The two states differ by dot fill as well as
+ *  colour (a colour-only difference fails for colour-blind users), and the
+ *  tooltip carries the words plus what to do about it. */
+export function rcIndicatorHtml(serving: boolean): string {
+  const title = serving
+    ? 'Remote Control is serving this workspace — you can start new sessions here from your phone.'
+    : 'Remote Control is not serving this workspace. Run "claude rc" here to start new sessions from your phone.'
+      + ' Sessions started in this window stay reachable from the phone either way.';
+  const cls = serving ? 'rc-indicator on' : 'rc-indicator off';
+  return '<span class="' + cls + '" title="' + escapeHtml(title) + '"'
+    + ' aria-label="' + escapeHtml(serving ? 'Remote Control serving' : 'Remote Control off') + '">'
+    + '<span class="rc-dot"></span>\u{1F4E1}</span>';
+}
+
 /** Empty card-section placeholder; mentions older sessions when the 7-day
  *  window is the only thing hiding them. */
 export function emptyStateHtml(olderSessionCount: number): string {
