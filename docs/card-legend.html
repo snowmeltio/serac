@@ -188,9 +188,9 @@ h2 .count {
   border-radius: 10px;
   padding: 26px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 230px);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 350px);
   gap: 26px;
-  align-items: start;
+  align-items: center;
   overflow-x: auto;
 }
 @media (max-width: 720px) {
@@ -206,7 +206,8 @@ h2 .count {
 }
 .anatomy-key b { color: var(--panel-fg); font-weight: 600; display: block; }
 .anatomy-key li { margin-bottom: 12px; list-style: none; }
-.anatomy-key ol { margin: 0; padding: 0; counter-reset: k; }
+.anatomy-key ol { margin: 0; padding: 0; counter-reset: k; columns: 2; column-gap: 20px; }
+.anatomy-key li { break-inside: avoid; }
 .anatomy-key li::before {
   counter-increment: k;
   content: counter(k);
@@ -384,8 +385,8 @@ h2 .count {
 
 /* The real bar is absolutely positioned along the card's bottom edge; these
    specimens show the same 2px strip laid flat so it can sit in a swatch. */
-.context-bar { width: 180px; height: 2px; background: transparent; overflow: hidden; }
-.context-fill { height: 100%; background: #666666; }
+.context-bar { display: block; width: 180px; height: 2px; background: transparent; overflow: hidden; }
+.context-fill { display: block; height: 100%; background: #666666; }
 .context-fill.hot { background: #a8a8a8; }
 .ctx-demo { width: 180px; padding: 6px 0 0; border-bottom: 2px solid transparent; }
 
@@ -432,7 +433,7 @@ h2 .count {
 .mini-branch { margin-top: 4px; }
 .mini-detail { font-size: 10.5px; color: #9a9a9a; margin-top: 5px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini-spacer { flex: 1; }
-.mini-edge { height: 2px; margin: 7px -10px -8px; background: transparent; overflow: hidden; }
+.mini-edge { display: block; height: 2px; margin: 7px -10px -8px; background: transparent; overflow: hidden; }
 .edge-note { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--panel-muted); margin-top: 12px; }
 
 .callout {
