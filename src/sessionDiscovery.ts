@@ -584,6 +584,7 @@ export class SessionDiscovery {
             title: meta?.title ?? null,
             customTitle: meta?.customTitle ?? '',
             aiTitle: meta?.aiTitle ?? '',
+            filePath,
             confidence: 'high', // terminal status
             // Tagging invariant: EVERY local snapshot producer stamps its
             // origin (worktreeRoot === workspacePath for local). This literal

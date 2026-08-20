@@ -430,11 +430,15 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     // Strip a trailing "*" (unconfirmed-guess marker) first — "Opus*" (no
     // version yet) must hash to the same family as "Opus" / "Opus 4.8*".
     const family = s.modelLabel.replace(/\*$/, '').split(' ')[0];
-    // Doubles as the session-ID copy affordance — clicking the model name
-    // copies the full session ID (data-copy-id) and flashes "ID copied!"
-    // before reverting to data-model-label (panel.ts's copy-pill handler).
+    // Doubles as the copy affordance — clicking the model name copies the
+    // transcript path (data-copy-id) and flashes "Copied!" before reverting
+    // to data-model-label (panel.ts's copy-pill handler). The path rather
+    // than the bare session id: a path is self-identifying when pasted into
+    // another Claude session, where a bare UUID gets mistaken for other id
+    // kinds. Falls back to the id for producers that don't stamp filePath.
     metaHtml += '<span class="model-pill clickable" style="--model-hue:' + modelHue(family) + '" data-copy-id="'
-      + escapeHtml(s.sessionId) + '" data-model-label="' + escapeHtml(s.modelLabel) + '" title="Click to copy session ID">'
+      + escapeHtml(s.filePath || s.sessionId) + '" data-model-label="' + escapeHtml(s.modelLabel)
+      + '" title="Click to copy transcript path">'
       + escapeHtml(s.modelLabel) + '</span>';
   }
   // Permission-mode badge — glyph + word, same outlined-chip recipe as the
