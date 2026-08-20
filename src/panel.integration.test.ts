@@ -1437,6 +1437,54 @@ describe('panel.ts integration', () => {
     });
   });
 
+  describe('Remote Control top-bar indicator', () => {
+    it('renders the off state when the host reports no server', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-1' })], rcServing: false });
+      const ind = document.querySelector('.rc-indicator');
+      expect(ind).toBeTruthy();
+      expect(ind!.className).toContain('off');
+    });
+
+    it('flips to the on state when a server starts serving', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-2' })], rcServing: false });
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-2' })], rcServing: true });
+      const ind = document.querySelector('.rc-indicator')!;
+      expect(ind.className).toContain('on');
+      expect(ind.className).not.toContain('off');
+    });
+
+    it('flips back off when the server goes away', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-3' })], rcServing: true });
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-3' })], rcServing: false });
+      expect(document.querySelector('.rc-indicator')!.className).toContain('off');
+    });
+
+    it('defaults to off when the field is absent (older host)', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-4' })] });
+      expect(document.querySelector('.rc-indicator')!.className).toContain('off');
+    });
+
+    it('sits beside the status counts without displacing them', () => {
+      sendUpdate({
+        sessions: [makeSession({ sessionId: 'rc-5', status: 'running' })],
+        rcServing: true,
+      });
+      const topBar = document.querySelector('.top-bar')!;
+      expect(topBar.querySelector('.status-summary')).toBeTruthy();
+      expect(topBar.querySelector('.status-summary')!.textContent).toContain('running');
+      // Indicator is a sibling of the summary, inside the same top bar.
+      expect(topBar.querySelector('.rc-slot .rc-indicator')).toBeTruthy();
+    });
+
+    it('keeps exactly one indicator across many updates', () => {
+      for (const serving of [true, false, true, true, false]) {
+        sendUpdate({ sessions: [makeSession({ sessionId: 'rc-6' })], rcServing: serving });
+      }
+      expect(document.querySelectorAll('.rc-indicator').length).toBe(1);
+      expect(document.querySelectorAll('.rc-slot').length).toBe(1);
+    });
+  });
+
   describe('keyboard: native card buttons keep their own activation', () => {
     it('Enter on a card action button does not steal focus to the card', () => {
       sendUpdate({ sessions: [makeSession({ sessionId: 'kb-sess' })] });

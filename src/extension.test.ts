@@ -109,6 +109,7 @@ const mockDiscovery = {
   getOlderSessionCount: vi.fn().mockReturnValue(0),
   getLocalRepoRoot: vi.fn().mockReturnValue(null),
   getDiscoveredWorktrees: vi.fn().mockReturnValue([]),
+  getRcServing: vi.fn().mockReturnValue(false),
 };
 
 const mockUsageProvider = {

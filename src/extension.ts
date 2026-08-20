@@ -927,6 +927,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       sessions, waitingCount, workspacePath: wsPath, usage,
       foreignWorkspaces, compactSettings, teams, foreignWaiting,
       olderSessionCount, foreignRunning, worktrees, workflows,
+      rcServing: discovery.getRcServing(),
     });
     detailPanel.refresh();
 

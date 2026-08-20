@@ -135,6 +135,29 @@ body {
 .status-count.done-count { color: var(--accent-done-soft-text); }
 .status-count.stale-count { color: var(--chip-stale-text); }
 
+/* Remote Control indicator — right end of the top bar (.status-summary's
+ * flex:1 pushes it there). Wordless by design: a state dot plus a dish, with
+ * the words in the tooltip. On/off differ by dot FILL as well as colour, so
+ * the state survives a colour-blind read. */
+.rc-slot { display: flex; align-items: center; flex: 0 0 auto; }
+.rc-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  line-height: 1;
+  cursor: default;
+}
+.rc-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.rc-indicator.on .rc-dot { background: var(--sm-arctic-teal); border: 1px solid var(--sm-arctic-teal); }
+.rc-indicator.off .rc-dot { background: transparent; border: 1px solid var(--vscode-descriptionForeground, #888888); }
+.rc-indicator.off { opacity: 0.55; filter: grayscale(1); }
+
 /* Cross-workspace rows. max-height keeps a long workspace list from pushing
  * the rest of the panel offscreen — caps at ~12 rows then scrolls internally.
  * panel.ts reads this via getComputedStyle so the slide animation stays in

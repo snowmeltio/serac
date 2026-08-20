@@ -110,6 +110,10 @@ export interface PanelUpdate {
   foreignRunning?: SessionSnapshot[];
   worktrees?: WorktreeRow[];
   workflows?: WorkflowSnapshot[];
+  /** True when a `claude rc` server is hosting sessions in this workspace.
+   *  Not optional-by-omission like the array fields above — `false` is a real
+   *  state the top bar renders, so it is always sent. */
+  rcServing?: boolean;
 }
 
 /** A row in the Worktrees pane: one worktree of the current repo. Built in
@@ -174,6 +178,9 @@ export type WebviewMessage =
        *  linked worktree (even ones with no CC history). Empty/undefined when
        *  the workspace isn't a git repo or has no linked worktrees. */
       worktrees?: WorktreeRow[];
+      /** Whether a Remote Control server is serving this workspace — drives
+       *  the top-bar on/off indicator. Always sent; `false` is a real state. */
+      rcServing?: boolean;
     }
   | {
       type: 'focusSession';

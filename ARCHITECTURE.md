@@ -38,6 +38,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `workflowScript.ts` | Static (never-eval) extractors. `extractWorkflowMeta()` pulls `name`/`description`/`phases` from a workflow script's `meta` literal; `extractAgentCalls()` pulls each `agent(prompt, {label, phase})` call's static prompt segments + opts, plus the prompt/label split into ordered `TemplateParts` (statics + interpolation exprs); `matchAgentCall()` correlates a running agent's record-0 prompt back to its call; `recoverInterpolatedLabel()` rebuilds an interpolated label (`audit:${d.key}`) into its real per-agent value (`audit:privacy`) by aligning the prompt template's statics against the expanded prompt. All via brace/string matching. Used for the live tier. |
 | `workflowDiscovery.ts` | Two-tier workflow discovery, parallel to `teamDiscovery`. Scans each session dir for sidecars (Tier 1) and live run dirs (Tier 2), caches by mtime, prunes, applies the 7-day age gate and dismiss overlay. |
 | `processRegistry.ts` | Reads Claude Code's live process registry (`~/.claude/sessions/<pid>.json`) and confirms each pid with `kill(pid, 0)`. The one source of *actual* process liveness in an otherwise disk-tailing monitor. Owned by `SessionDiscovery` (scanned on a relaxed cadence); exposes `getLiveProcesses()` / `isSessionLive()` / `isActive()`. Injected into each `SessionManager` as a tri-state `livenessProbe` that powers the permission-false-positive gate (a registry-confirmed-dead session can't be `waiting` — see Status inference §6). A hit is a strong positive, a miss is "unknown" (not every session class is guaranteed to register), and an inactive registry disables the gate. `isScanClean()` distinguishes a degraded scan (a non-ENOENT read error or unparseable content on a *present* file) from genuine absence, so a transient disk error on a live session's file degrades the probe to "unknown" rather than "dead" — only a clean scan's absence is trusted as death. |
+| `rcDetector.ts` | Pure filter over the process registry answering one question: is a **Remote Control** (`claude rc`) server hosting sessions in this workspace? Each session such a server hosts registers with `entrypoint: "sdk-cli"` and a real cwd — the workspace root for the session pre-created in the serving directory, or `<workspace>/.claude/worktrees/bridge-cse_<id>` for each phone-spawned one. `isRcServing()` matches either, segment-wise (so a sibling path sharing our prefix never counts). Drives the top-bar on/off indicator only; nothing is gated on it. |
 | `writerOwnership.ts` | Resolves, per live registered pid, whether it's a child of THIS VS Code window's Extension Host or a different window's — the account-agnostic `externalWriter` signal (see Status inference § Writer ownership). Async `ps`-based resolution refreshed alongside `processRegistry`'s rescan; exposes a synchronous `getInfo(pid)` for the per-session probe. |
 | `writerActivity.ts` | Pure recency helpers layered on top of `writerOwnership.ts`'s tri-state verdict, consumed ONLY by the hard open/send gate (`isExternalWriterFresh()`) — the cosmetic mark is ownership-only (see Status inference § Writer ownership). `getSessionLastWriteMtime()` stats a session's own JSONL plus every file under its `subagents/` tree (recursing into nested `workflows/<runId>/` dirs, so Task subagents and Workflow-run agents both count). `isWithinActivityWindow()` compares the later of that mtime and the writer's `startedAt` against `EXTERNAL_WRITER_QUIET_MS` (10 min), failing toward "still active" when both inputs are null. |
 | `detailPanel.ts` | Source-keyed editor-area webview host (`createWebviewPanel`, `ViewColumn.Beside`). One reused instance serves three drill-ins (workflow / team / subagents); builds a normalised `DetailModel` per source (with a cross-source view switcher for session-card sources) and resolves agent transcripts on demand via injected deps. Dedups re-pushes (`lastPushed` JSON compare). |
@@ -251,6 +252,37 @@ seen live). Computed by `SessionManager.registryLiveness()`, the same helper
 Rendered only on terminal cards as a quiet `live`/`ended` qualifier inside the
 status pill (`panelUtils.ts:getStatusLabel`); active cards are never
 annotated, and the unknown state shows nothing rather than guessing.
+
+### Remote Control indicator
+
+The top bar carries a wordless on/off mark (state dot + 📡) for whether a
+`claude rc` server is serving this workspace — i.e. whether the mobile app can
+start a **new** session here right now. Sessions started in this window are
+reachable from the phone regardless; the server only enables the spawn
+direction, which is what the indicator is about.
+
+Detection (`rcDetector.ts`) is a filter over the existing process-registry
+snapshot, computed inside the registry's rescan block in `sessionDiscovery.ts`
+and exposed as `getRcServing()`. Like everything else in that block it is a
+render-time signal: it never sets `changed`, so the indicator rides the next
+update and can lag one poll cycle (~2s active / ~8s idle) behind a server
+starting or stopping. The value reaches the webview as `PanelUpdate.rcServing`
+and is sent **unconditionally** — `false` is a real state, so it must not use
+the empty-array-omission idiom the list fields use.
+
+Known blind spots, accepted in v1:
+
+- **The server process itself never registers.** Presence is inferred from the
+  sessions it hosts, so a server started with `--no-create-session-in-dir` that
+  has not yet spawned anything is invisible. The default invocation pre-creates
+  a session in the serving directory, so in practice server-up implies at least
+  one matching registry entry.
+- **No full process-table scan.** Closing the gap would mean a `ps -ax`
+  enumeration; the codebase has only ever queried `ps` by known pid
+  (`writerOwnership.ts`), and one ambient indicator doesn't justify starting.
+- **Serac never starts or stops a server.** It observes. Launching a
+  remote-access server is the user's explicit act (see `scripts/rc-headless/`
+  for the supported always-on setup).
 
 ### Writer ownership (externalWriter)
 
