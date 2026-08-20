@@ -58,6 +58,13 @@ Origin: a card showed `DONE · 49s` while the chat had launched `./deploy.sh` wi
 
 ---
 
+## Watch items — v1.21.0 (Murray, 2026-08-20: "let's see how we go")
+
+Both shipped as designed; both are judgement calls worth revisiting once there's real usage behind them, not defects.
+
+- **Spent-card dimming.** A phone-started (`bridge-cse_*`) card whose process is registry-dead fades to 62% (`.card-spent`). The reasoning holds — that worktree is one-shot, so nothing can resume the session — but faded things are easy to stop seeing altogether. **Watch for:** finished remote work being missed because the card receded. **If it bites:** drop the dim and let the existing `· ended` pill annotation carry it alone (one line in `panel.ts` + the CSS rule).
+- **Worktree chip letters take the folder-name TAIL.** `fix-workflow-resume-liveness` → `RL`, `silly-ptolemy` → `SP` (`worktreeChip.ts:chipMonogram`). Two worktrees sharing a tail collide on letters, leaving the tint to carry the distinction alone. **Watch for:** real worktree names that collide in practice. **If it bites:** switch the derivation to the leading word(s) after the repo-name strip, or widen to three characters. Tests in `worktreeChip.test.ts` pin the current behaviour, so a change is a deliberate edit there, not a silent drift.
+
 ## Shipped (was on this backlog)
 
 - **v1.13.0 — teammate messaging unbroken for its real audience (2026-06-10, dcfd5b6/4b3aec3, published).** The first live test team (aviary: three idle in-process birds built to receive messages) proved the 2026-06-09 feature dead on arrival for in-process teams: the parser dropped in-process member names, so the roster was empty — composer never shown, every server-side send refused — and the `status==='running'` gate would have hidden it from idle teammates anyway. Fixes: `TeamManifest.inProcessMembers` + union roster matching everywhere (badge, `resolveInboxTarget`, `getTeamAgentFilePath`); composer + transcript-streaming gates moved to liveness (`teammate && alive` = still in config + lead process not confirmed dead); Teammates view deduped to one row per current member; roster chip suppressed for all-in-process teams; transcript `tool` role (tool results were labelled "prompt"); workflow-live card override (below); violet team accent off the status palette; neutral selection highlight. Full detail in CHANGELOG v1.13.0. Lesson recorded in `[[project_detail_panel_sources]]`: the original tests only ever exercised synthetic tmux rosters — the feature's sole real audience was never covered until a live team ran.

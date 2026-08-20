@@ -726,7 +726,10 @@ body.vscode-light .worktree-chip {
   transition: width 300ms ease-out;
   border-radius: 0 1px 0 0;
 }
-.context-fill.hot { background: #3a3a3a; }
+/* "Hot" means MORE contrast against the card, not simply darker: on the dark
+   card (#252526) that is a lighter grey, on the light card a darker one. The
+   dark rule read #3a3a3a until v1.21.0 and was effectively invisible. */
+.context-fill.hot { background: #a8a8a8; }
 
 /* === ARCHIVE SECTION (seamless after cards) === */
 .archive-list { padding: 0 6px 4px 6px; }

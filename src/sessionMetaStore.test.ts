@@ -224,6 +224,51 @@ describe('interleaving hazards', () => {
     expect(readDisk().sessions.mine.dismissed).toBe(true);
   });
 
+  it('abandons the map swap even when the mutation\'s own save completed first — dirty is not a safe abandon signal [C1 x C2]', async () => {
+    store.getOrCreate('s1').title = 'ours';
+    store.markDirty();
+    await store.flush();
+    fs.writeFileSync(metaPath, JSON.stringify({ sessions: {} }));
+    fs.utimesSync(metaPath, new Date(), new Date(Date.now() + 5000));
+
+    let readStarted!: () => void;
+    const started = new Promise<void>(res => { readStarted = res; });
+    let releaseRead!: () => void;
+    const gate = new Promise<void>(res => { releaseRead = res; });
+    const realRead = fs.promises.readFile.bind(fs.promises);
+    vi.spyOn(fs.promises, 'readFile').mockImplementationOnce(
+      (async (...args: Parameters<typeof fs.promises.readFile>) => {
+        // The read genuinely COMPLETES against the external content, then its
+        // continuation is scheduled late — a loaded machine resuming a settled
+        // promise behind other work. The stale bytes are already in hand.
+        const content = await realRead(...args);
+        readStarted();
+        await gate;
+        return content;
+      }) as typeof fs.promises.readFile,
+    );
+
+    const reload = store.reloadIfChanged();  // read done, continuation parked
+    await started;
+    // Same dismiss-click window as the test above, but this time the user
+    // action's OWN save wins the race to completion while the reload is still
+    // parked. That clears `dirty` — so a post-read guard reading only `dirty`
+    // sees a clean store and commits the swap, silently reverting the dismiss.
+    // This is the interleaving CI hit on 2026-08-20; the generation counter is
+    // what actually distinguishes "no mutation happened" from "one happened
+    // and has since been persisted".
+    store.getOrCreate('mine').dismissed = true;
+    store.markDirty();
+    await store.flush();
+    expect(store.isDirty()).toBe(false);
+
+    releaseRead();
+    await reload;
+
+    expect(store.get('mine')?.dismissed).toBe(true);
+    expect(store.get('s1')).toBeDefined();
+  });
+
   it('a failed save leaves dirty set, unlinks its tmp file, and the queue recovers on the next flush', async () => {
     const errors: unknown[] = [];
     const log: Logger = { ...silentLog, error: (msg: unknown) => { errors.push(msg); } };

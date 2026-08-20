@@ -1,0 +1,896 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Serac card legend — every mark on a session card, rendered at real size.
+
+  GENERATED, not hand-edited. Chip recipes are copied from media/panel.css;
+  when a chip's styling changes there, update it here too. Open this file in
+  a browser — GitHub and the VS Code marketplace both strip the CSS, which is
+  why docs/CARD-LEGEND.md exists as the readable-anywhere version.
+-->
+<title>Serac Card Legend</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+
+</head>
+<body>
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   Page palette. Neutrals carry a slight blue bias toward Serac's own
+   blizzard-blue so the ground reads as part of the same world as the
+   specimens rather than a generic grey sheet.
+   ═══════════════════════════════════════════════════════════════════ */
+:root {
+  --ground: #f4f5f8;
+  --surface: #ffffff;
+  --surface-2: #eceef3;
+  --ink: #191d26;
+  --ink-2: #4a5262;
+  --ink-3: #757e8f;
+  --rule: #d9dde5;
+  --rule-strong: #b9c0cd;
+  --accent: #3f5fd0;
+  --accent-quiet: #e3e8f8;
+
+  /* Serac brand tokens, verbatim from media/panel.css. These do NOT flip
+     with the page theme — a specimen is a paint chip, it shows the real
+     colour. */
+  --sm-frozen-peach: #f5b087;
+  --sm-arctic-teal: #61c1c4;
+  --sm-blizzard-blue: #6185f7;
+  --sm-blizzard-light: #809df8;
+  --sm-salmon-red: #f76361;
+  --sm-teal-bright: #7acdd0;
+  --sm-team-violet: #b48ef0;
+  --sm-orange: #d9a23a;
+  --sm-slate-grey: #9a9fa6;
+  --sm-cyan: #5fb8c2;
+  --sm-salmon-red-rgb: 247, 99, 97;
+
+  /* Role tokens, as the panel maps them (dark theme values). */
+  --accent-running-text: var(--sm-blizzard-blue);
+  --accent-running-soft-text: var(--sm-blizzard-light);
+  --accent-waiting-text: var(--sm-frozen-peach);
+  --accent-done-text: var(--sm-arctic-teal);
+  --accent-done-soft-text: var(--sm-teal-bright);
+  --accent-failed-text: var(--sm-salmon-red);
+  --accent-incomplete-text: var(--sm-orange);
+  --accent-team-text: var(--sm-team-violet);
+  --mode-manual-text: var(--sm-slate-grey);
+  --mode-edit-text: var(--sm-cyan);
+  --chip-stale-text: #999999;
+
+  /* The sidebar's own surface — specimens sit on this in both themes. */
+  --panel-bg: #1e1e1e;
+  --panel-card: #252526;
+  --panel-fg: #cccccc;
+  --panel-muted: #888888;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #101319;
+    --surface: #171b22;
+    --surface-2: #1e232c;
+    --ink: #e7eaf1;
+    --ink-2: #aab3c2;
+    --ink-3: #7c8698;
+    --rule: #262c36;
+    --rule-strong: #39424f;
+    --accent: #8aa4ff;
+    --accent-quiet: #1c2436;
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #101319;
+  --surface: #171b22;
+  --surface-2: #1e232c;
+  --ink: #e7eaf1;
+  --ink-2: #aab3c2;
+  --ink-3: #7c8698;
+  --rule: #262c36;
+  --rule-strong: #39424f;
+  --accent: #8aa4ff;
+  --accent-quiet: #1c2436;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 0 28px 96px;
+}
+
+/* ── Masthead ───────────────────────────────────────────────────── */
+.masthead {
+  padding: 72px 0 34px;
+  border-bottom: 2px solid var(--ink);
+}
+.eyebrow {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  margin: 0 0 14px;
+}
+h1 {
+  font-family: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  font-size: clamp(2.4rem, 6vw, 3.9rem);
+  line-height: 0.98;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+  margin: 0 0 18px;
+}
+.standfirst {
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  max-width: 60ch;
+  margin: 0;
+}
+.standfirst strong { color: var(--ink); font-weight: 600; }
+
+/* ── Section scaffolding ────────────────────────────────────────── */
+section { padding-top: 56px; }
+h2 {
+  font-family: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 1.45rem;
+  letter-spacing: -0.015em;
+  margin: 0 0 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+h2 .count {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-3);
+  letter-spacing: 0.06em;
+}
+.section-note {
+  color: var(--ink-2);
+  max-width: 68ch;
+  margin: 0 0 24px;
+  font-size: 14.5px;
+}
+.section-note code, .inline-code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.87em;
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* ── Anatomy panel ──────────────────────────────────────────────── */
+.anatomy {
+  background: var(--panel-bg);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 26px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 350px);
+  gap: 26px;
+  align-items: center;
+  overflow-x: auto;
+}
+@media (max-width: 720px) {
+  .anatomy { grid-template-columns: minmax(0, 1fr); }
+}
+.anatomy-key {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: var(--panel-muted);
+  border-left: 1px solid #3a3a3a;
+  padding-left: 18px;
+}
+.anatomy-key b { color: var(--panel-fg); font-weight: 600; display: block; }
+.anatomy-key li { margin-bottom: 12px; list-style: none; }
+.anatomy-key ol { margin: 0; padding: 0; counter-reset: k; columns: 2; column-gap: 20px; }
+.anatomy-key li { break-inside: avoid; }
+.anatomy-key li::before {
+  counter-increment: k;
+  content: counter(k);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--sm-blizzard-blue);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 600;
+  margin-right: 7px;
+  vertical-align: 1px;
+}
+.marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px; height: 15px;
+  border-radius: 50%;
+  background: var(--sm-blizzard-blue);
+  color: #fff;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9px;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-right: 5px;
+}
+
+/* ── Specimen rows ──────────────────────────────────────────────── */
+.entries {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.entry {
+  display: grid;
+  grid-template-columns: minmax(0, 188px) minmax(0, 1fr);
+  gap: 22px;
+  background: var(--surface);
+  padding: 16px 20px;
+  align-items: start;
+}
+.entry.entry-card { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); }
+@media (max-width: 760px) {
+  .entry, .entry.entry-card { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+}
+.swatch {
+  background: var(--panel-card);
+  border-radius: 5px;
+  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-height: 34px;
+}
+.swatch.on-bg { background: var(--panel-bg); }
+.swatch.holds-card { display: block; padding: 12px; min-width: 0; }
+.entry-body { min-width: 0; }
+.entry-name {
+  font-family: "Bricolage Grotesque", ui-sans-serif, sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -0.008em;
+  margin: 0 0 3px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.entry-when {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.02em;
+  margin: 0 0 7px;
+}
+.entry-what { margin: 0; font-size: 14px; color: var(--ink-2); line-height: 1.55; }
+.entry-what strong { color: var(--ink); font-weight: 600; }
+.entry-what + .entry-what { margin-top: 7px; }
+
+.tag-new {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 15px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   SPECIMENS — recipes copied from media/panel.css so a chip here looks
+   exactly like a chip there. Sizes are the panel's real sizes (9px
+   chips); this page does not scale them up, because "can I read this
+   at a glance in a narrow sidebar" is part of what the legend answers.
+   ═══════════════════════════════════════════════════════════════════ */
+.spec {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--panel-fg);
+  font-size: 11px;
+}
+
+.status-pill {
+  font-size: 9px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.3px; padding: 1px 6px; border-radius: 8px;
+  white-space: nowrap; line-height: 13px; display: inline-block;
+}
+.status-pill .t { text-transform: none; letter-spacing: 0; }
+.pill-waiting { color: #1e1e1e; background: var(--sm-frozen-peach); }
+.pill-running { color: #1e1e1e; background: var(--sm-blizzard-blue); }
+.pill-done    { color: #1e1e1e; background: var(--sm-arctic-teal); }
+.pill-stale   { color: #cccccc; background: rgba(153,153,153,0.3); }
+
+.model-pill { font-size: 9px; font-weight: 600; color: hsl(var(--model-hue, 0) 45% 70%); }
+.model-pill.clickable { text-decoration: underline dotted; text-underline-offset: 2px; }
+
+.mode-badge {
+  font-size: 9px; line-height: 1.2; padding: 0 5px;
+  border: 1px solid currentColor; border-radius: 3px; opacity: 0.85;
+  white-space: nowrap; display: inline-flex; align-items: center; gap: 3px;
+}
+.mode-badge-glyph { font-size: 9.5px; }
+.mode-badge-manual { color: var(--mode-manual-text); }
+.mode-badge-edit   { color: var(--mode-edit-text); }
+.mode-badge-plan   { color: var(--accent-team-text); }
+.mode-badge-auto   { color: var(--accent-incomplete-text); }
+.mode-badge-bypass { color: var(--accent-failed-text); }
+
+.worktree-chip {
+  font-size: 9px; font-weight: 600; padding: 0 4px; border-radius: 3px;
+  white-space: nowrap; line-height: 13px; letter-spacing: 0.3px;
+  color: hsl(var(--wt-hue, 0) 45% 72%);
+  border: 1px solid hsl(var(--wt-hue, 0) 45% 58% / 0.65);
+  background: hsl(var(--wt-hue, 0) 55% 60% / 0.14);
+}
+.worktree-chip-remote {
+  font-size: 10px; color: var(--panel-muted);
+  background: transparent; border-color: transparent; opacity: 0.85;
+}
+
+.bg-shell-badge {
+  font-size: 9px; line-height: 1.2; padding: 0 5px;
+  border: 1px solid currentColor; border-radius: 3px;
+  color: var(--accent-running-text); opacity: 0.85; white-space: nowrap;
+}
+.tool-error-badge {
+  font-size: 9px; font-weight: 600; line-height: 1.2;
+  color: var(--accent-failed-text);
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: 7px; padding: 0 5px;
+}
+.wf-view-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 9px; font-weight: 600;
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: 7px; padding: 0 5px; line-height: 15px;
+}
+.wf-chip-running { color: var(--accent-running-text); }
+.wf-chip-done    { color: var(--accent-done-text); }
+.conflict-chip   { color: var(--accent-failed-text); }
+.wf-arrow { opacity: 0.7; font-size: 10px; line-height: 1; }
+.agent-live-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.branch-pill { font-size: 9px; color: var(--panel-muted); }
+
+/* The real bar is absolutely positioned along the card's bottom edge; these
+   specimens show the same 2px strip laid flat so it can sit in a swatch. */
+.context-bar { display: block; width: 180px; height: 2px; background: transparent; overflow: hidden; }
+.context-fill { display: block; height: 100%; background: #666666; }
+.context-fill.hot { background: #a8a8a8; }
+.ctx-demo { width: 180px; padding: 6px 0 0; border-bottom: 2px solid transparent; }
+
+.action-btn {
+  background: none; border: none; color: var(--panel-muted);
+  font-size: 11px; cursor: default; padding: 0 2px; line-height: 1;
+}
+
+.status-count { font-size: 10px; white-space: nowrap; }
+.count-waiting { color: var(--accent-waiting-text); }
+.count-running { color: var(--accent-running-soft-text); }
+.count-done    { color: var(--accent-done-soft-text); }
+.count-stale   { color: var(--chip-stale-text); }
+
+.rc-indicator { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; line-height: 1; }
+.rc-dot { width: 6px; height: 6px; border-radius: 50%; box-sizing: border-box; }
+.rc-indicator.on .rc-dot { background: var(--sm-arctic-teal); border: 1px solid var(--sm-arctic-teal); }
+.rc-indicator.off .rc-dot { background: transparent; border: 1px solid var(--panel-muted); }
+.rc-indicator.off { opacity: 0.55; filter: grayscale(1); }
+
+/* ── Mini card, used in the anatomy panel and state specimens ───── */
+.mini {
+  background: var(--panel-card);
+  border-left: 3px solid var(--sm-blizzard-blue);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--panel-fg);
+  width: 100%;
+  min-width: 0;
+}
+.mini.is-waiting { border-left-color: var(--sm-frozen-peach); }
+.mini.is-done    { border-left-color: var(--sm-arctic-teal); }
+.mini.is-stale   { border-left-color: #666666; }
+.mini.is-stale .mini-name { color: #aaaaaa; }
+.mini.is-stale .mini-detail { color: #888888; }
+.mini.is-focused { background: #1f2030; outline: 1px solid var(--sm-blizzard-blue); }
+.mini.is-spent { opacity: 0.62; }
+.mini.is-external > *:not(.mini-meta),
+.mini.is-external .mini-meta > *:not(.conflict-chip) { opacity: 0.6; }
+.mini-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.mini-name { font-size: 12px; font-weight: 500; color: #e0e0e0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-meta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+.mini-branch { margin-top: 4px; }
+.mini-detail { font-size: 10.5px; color: #9a9a9a; margin-top: 5px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-spacer { flex: 1; }
+.mini-edge { display: block; height: 2px; margin: 7px -10px -8px; background: transparent; overflow: hidden; }
+.edge-note { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--panel-muted); margin-top: 12px; }
+
+.callout {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+/* ── Closing note ───────────────────────────────────────────────── */
+.colophon {
+  margin-top: 64px;
+  padding-top: 22px;
+  border-top: 1px solid var(--rule);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  line-height: 1.85;
+  color: var(--ink-3);
+}
+.colophon a { color: var(--accent); }
+
+/* ── Reading rules ──────────────────────────────────────────────── */
+.rules {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 1px;
+  background: var(--rule);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.rule-card { background: var(--surface); padding: 18px 20px; }
+.rule-card h3 {
+  font-family: "Bricolage Grotesque", sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  letter-spacing: -0.005em;
+}
+.rule-card p { margin: 0; font-size: 13.5px; color: var(--ink-2); line-height: 1.55; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Serac · sidebar reference</p>
+  <h1>What every mark on a card means</h1>
+  <p class="standfirst">A Serac session card packs a lot into three short rows. This is the decoder: every pill, chip, badge, and wash, <strong>rendered at its real size</strong> in its real colours, with what it's telling you and what you'd do about it.</p>
+</header>
+
+<!-- ═══════════════════ ANATOMY ═══════════════════ -->
+<section>
+  <h2>Anatomy of a card</h2>
+  <p class="section-note">Four zones, always in this order. Everything in the meta row is conditional — a quiet local session shows almost none of it.</p>
+
+  <div class="anatomy">
+    <div>
+      <div class="mini" style="max-width: 420px;">
+        <div class="mini-top">
+          <span class="callout"><span class="marker">1</span><span class="mini-name">Fix the worktree picker</span></span>
+          <span class="callout"><span class="marker">2</span><span class="status-pill pill-running">Running</span></span>
+        </div>
+        <div class="mini-meta">
+          <span class="callout"><span class="marker">3</span><span class="model-pill clickable" style="--model-hue:18">Fable 5</span></span>
+          <span class="callout"><span class="marker">4</span><span class="mode-badge mode-badge-auto"><span class="mode-badge-glyph">⚡</span>auto</span></span>
+          <span class="callout"><span class="marker">5</span><span class="worktree-chip" style="--wt-hue:196">WP</span></span>
+          <span class="callout"><span class="marker">6</span><span class="wf-view-chip wf-chip-running">🤖<span class="agent-live-count">3</span><span class="wf-arrow">→</span></span></span>
+          <span class="mini-spacer"></span>
+          <span class="callout"><span class="marker">7</span><button class="action-btn">📜</button><button class="action-btn">×</button></span>
+        </div>
+        <div class="mini-branch">
+          <span class="callout"><span class="marker">8</span><span class="branch-pill">⎇ feat/worktree-picker</span></span>
+        </div>
+        <div class="mini-detail"><span class="marker">9</span>Reading src/worktreeRows.ts</div>
+        <div class="mini-edge"><span class="context-fill" style="width:42%"></span></div>
+        <div class="edge-note"><span class="marker">10</span>context bar — the card's bottom edge</div>
+      </div>
+    </div>
+
+    <div class="anatomy-key">
+      <ol>
+        <li><b>Name</b> Custom title, else AI title, else first message</li>
+        <li><b>Status pill</b> The one thing that's always there</li>
+        <li><b>Model</b> Hue = cost tier. Click to copy the transcript path</li>
+        <li><b>Permission mode</b> How much it asks before acting</li>
+        <li><b>Worktree</b> Which checkout — only when it isn't this one</li>
+        <li><b>Agents</b> Work happening underneath. Click to drill in</li>
+        <li><b>Actions</b> Transcript, and archive</li>
+        <li><b>Branch</b> Own row — it's the longest thing on a card</li>
+        <li><b>Activity</b> What it's doing, or what it finished with</li>
+        <li><b>Context</b> A hairline on the bottom edge, filling toward auto-compact</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ STATUS ═══════════════════ -->
+<section>
+  <h2>Status <span class="count">the pill, and the stripe down the left edge</span></h2>
+  <p class="section-note">Status is carried twice over: as a word in the pill and as a colour on the card's left edge, so you can triage a column of cards by stripe alone. The elapsed time is always <em>time in this state</em>, which is the actual triage question when several cards are blocked at once.</p>
+
+  <div class="entries">
+
+    <div class="entry">
+      <div class="swatch"><span class="status-pill pill-waiting">Waiting · <span class="t">4m</span></span></div>
+      <div class="entry-body">
+        <p class="entry-name">Waiting</p>
+        <p class="entry-when">peach · pulses slowly</p>
+        <p class="entry-what">Blocked on you — a permission prompt or a question. <strong>The only status that wants something.</strong> The pulse and the sidebar badge are both counting this.</p>
+        <p class="entry-what">The age matters: ten seconds and twenty minutes must not read the same, so the pill always says which.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="status-pill pill-running">Running</span></div>
+      <div class="entry-body">
+        <p class="entry-name">Running</p>
+        <p class="entry-when">blue · no elapsed time</p>
+        <p class="entry-what">Actively working. No age shown, because for a healthy session it isn't interesting.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="status-pill pill-running">Running · <span class="t">quiet 12m</span></span></div>
+      <div class="entry-body">
+        <p class="entry-name">Running · quiet</p>
+        <p class="entry-when">appears after a long silence</p>
+        <p class="entry-what">Still marked running, but nothing has been written for a while. Deliberately <strong>"quiet", not "stalled"</strong> — a long silent build is perfectly legitimate. You just want to know it's been twelve minutes either way.</p>
+        <p class="entry-what">Suppressed when the card owns a live workflow: those agents churn on a separate track that never touches the session's own timestamp, so the timer would fire on every healthy run.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="status-pill pill-done">Done · <span class="t">3m</span></span></div>
+      <div class="entry-body">
+        <p class="entry-name">Done</p>
+        <p class="entry-when">teal · finished, not yet looked at</p>
+        <p class="entry-what">The turn ended. Teal is the "there's something here you haven't seen" colour, and it holds until you actually acknowledge it — <strong>no time-based decay</strong>, because clearing unseen finished work after a timer is exactly how you miss it.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="status-pill pill-stale">Seen · <span class="t">2h</span></span></div>
+      <div class="entry-body">
+        <p class="entry-name">Seen</p>
+        <p class="entry-when">grey · acknowledged</p>
+        <p class="entry-what">Done, and you've looked at it. The whole card dims: name, preview, and badges all step back so live work reads louder.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch">
+        <span class="status-pill pill-done">Done · <span class="t">1h</span> · <span class="t">live</span></span>
+        <span class="status-pill pill-done">Done · <span class="t">1h</span> · <span class="t">ended</span></span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">· live &nbsp;/&nbsp; · ended</p>
+        <p class="entry-when">terminal cards only</p>
+        <p class="entry-what"><strong>live</strong> — the process is still attached, so you can resume it where it sits. <strong>ended</strong> — the process is gone; picking this up means a cold start.</p>
+        <p class="entry-what">Absent means the registry can't say, and Serac won't guess. A missing annotation is genuinely "unknown", not "no".</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="status-pill pill-stale"><span class="t">8m…</span></span></div>
+      <div class="entry-body">
+        <p class="entry-name">Elapsed time alone</p>
+        <p class="entry-when">low confidence</p>
+        <p class="entry-what">Serac thinks the session is live but can't tell running from waiting well enough to claim it. Rather than assert the wrong one, it shows only how long it's been. <strong>An ellipsis means "I'm not sure".</strong></p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ═══════════════════ META ROW ═══════════════════ -->
+<section>
+  <h2>The meta row <span class="count">left to right, in render order</span></h2>
+  <p class="section-note">Everything here is conditional. The order is fixed, so once you learn the sequence you can read position as well as shape.</p>
+
+  <div class="entries">
+
+    <div class="entry">
+      <div class="swatch">
+        <span class="model-pill clickable" style="--model-hue:208">Haiku 4.5</span>
+        <span class="model-pill clickable" style="--model-hue:232">Sonnet 5</span>
+        <span class="model-pill clickable" style="--model-hue:38">Opus 5</span>
+        <span class="model-pill clickable" style="--model-hue:18">Fable 5</span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Model pill</p>
+        <p class="entry-when">hue = cost tier · blue cheap → orange dear</p>
+        <p class="entry-what">Which model is answering, coloured by relative cost. The hue is a <strong>separate colour register from status</strong> — saturation and lightness are fixed, only hue moves, so a model pill never reads as a state.</p>
+        <p class="entry-what">Also the copy affordance: click it to copy the session's transcript path. A path is self-identifying when pasted into another Claude session, where a bare UUID gets mistaken for other kinds of id.</p>
+        <p class="entry-what">A trailing <span class="inline-code">*</span> means the model is inferred, not confirmed. An unrecognised family still gets its own stable colour rather than silently falling into one bucket.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch">
+        <span class="mode-badge mode-badge-manual"><span class="mode-badge-glyph">✋</span>manual</span>
+        <span class="mode-badge mode-badge-edit"><span class="mode-badge-glyph">&lt;/&gt;</span>edits</span>
+        <span class="mode-badge mode-badge-plan"><span class="mode-badge-glyph">📋</span>plan</span>
+        <span class="mode-badge mode-badge-auto"><span class="mode-badge-glyph">⚡</span>auto</span>
+        <span class="mode-badge mode-badge-bypass"><span class="mode-badge-glyph">🔀</span>bypass</span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Permission mode</p>
+        <p class="entry-when">glyph + word, one colour per mode</p>
+        <p class="entry-what">How much the session asks before it acts. <strong>manual</strong> asks every time · <strong>edits</strong> accepts file edits · <strong>plan</strong> is read-only until you approve · <strong>auto</strong> decides for itself · <strong>bypass</strong> asks nothing at all.</p>
+        <p class="entry-what">Each mode has its own colour so the badge is never mistaken for a status signal — and bypass borrows the conflict red on purpose.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch">
+        <span class="worktree-chip" style="--wt-hue:196">WP</span>
+        <span class="worktree-chip" style="--wt-hue:56">RL</span>
+        <span class="worktree-chip" style="--wt-hue:302">SP</span>
+        <span class="worktree-chip" style="--wt-hue:128">DP</span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Worktree chip <span class="tag-new">new</span></p>
+        <p class="entry-when">two letters + a tint · only when it isn't this checkout</p>
+        <p class="entry-what">Which worktree the session lives in. The letters come from the end of the folder name (<span class="inline-code">fix-workflow-resume-liveness</span> → RL), the tint from a hash of it.</p>
+        <p class="entry-what"><strong>Identity comes from the folder, never the branch.</strong> Branches get renamed and rebased away; if the chip followed the branch it would change colour under you. Hover for the full path.</p>
+        <p class="entry-what">No chip means the session is in the checkout you have open. Most cards carry none.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="worktree-chip worktree-chip-remote">📡</span></div>
+      <div class="entry-body">
+        <p class="entry-name">Started from your phone <span class="tag-new">new</span></p>
+        <p class="entry-when">replaces the letters on a bridge worktree</p>
+        <p class="entry-what">This session was spawned remotely, and lives in a throwaway worktree created just for it. It gets a fixed dish rather than initials because <strong>a monogram of a random id would be meaningless</strong> — two letters that look like identity but carry none.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch">
+        <span class="bg-shell-badge">2 🐚</span>
+        <span class="bg-shell-badge">💤 4m</span>
+        <span class="bg-shell-badge">loop · 3</span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Still going, quietly</p>
+        <p class="entry-when">blue outline · doesn't change the status</p>
+        <p class="entry-what">Three ways a finished-looking card isn't finished. <strong>🐚</strong> background shells still running · <strong>💤</strong> a scheduled wake-up, with the countdown · <strong>loop</strong> a session cron that will re-invoke it.</p>
+        <p class="entry-what">All three are tinted with the running colour on purpose: a <em>done</em> card that will start itself again in four minutes is idle, not finished.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="tool-error-badge">3 shared files</span></div>
+      <div class="entry-body">
+        <p class="entry-name">Shared files</p>
+        <p class="entry-when">off by default · red outline</p>
+        <p class="entry-what">Another <em>active</em> session is editing the same files as this one — a merge conflict in the making. Hover for the list. Finished sessions are ignored, since their edits aren't a live conflict.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch">
+        <span class="wf-view-chip wf-chip-running">🤖<span class="agent-live-count">3</span><span class="wf-arrow">→</span></span>
+        <span class="wf-view-chip wf-chip-done">🤖<span class="wf-arrow">→</span></span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Agents</p>
+        <p class="entry-when">count = how many are live right now</p>
+        <p class="entry-what">Work happening underneath this session — workflow agents, subagents, or teammates, all collapsed into <strong>one chip</strong> rather than competing for the same row. Click to drill into the detail panel, which offers a switcher across them.</p>
+        <p class="entry-what">The chip is tinted by <em>its own</em> state, not the card's: live agents under an idle session still read as running. No number means none are live at the moment.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch">
+        <span class="wf-view-chip conflict-chip">⚠<span class="wf-arrow">→</span></span>
+        <span class="wf-view-chip conflict-chip">⛔<span class="wf-arrow">→</span></span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Two windows, one session</p>
+        <p class="entry-when">rightmost · both clickable</p>
+        <p class="entry-what"><strong>⛔ Active in another window.</strong> Another VS Code window is driving this session. The card dims, but this chip deliberately stays full strength — it's the one useful thing on it. Click to switch to that window.</p>
+        <p class="entry-what"><strong>⚠ Live in two windows at once.</strong> Worse: two processes are able to append to the same conversation file. Click for a picker — keep it here, or release it. The card is <em>not</em> dimmed, because this window's claim is as real as the other's.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><button class="action-btn">📜</button><button class="action-btn">×</button></div>
+      <div class="entry-body">
+        <p class="entry-name">Actions</p>
+        <p class="entry-when">always last</p>
+        <p class="entry-what"><strong>📜</strong> opens the transcript. <strong>×</strong> archives the card. On a live session the × reads "Archive" and is the escape hatch for a status that's got stuck.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ═══════════════════ BELOW THE META ROW ═══════════════════ -->
+<section>
+  <h2>The rows underneath</h2>
+  <p class="section-note">Both are conditional, and both earn their own line rather than crowding the meta row.</p>
+
+  <div class="entries">
+    <div class="entry">
+      <div class="swatch"><span class="branch-pill">⎇ feat/worktree-picker</span></div>
+      <div class="entry-body">
+        <p class="entry-name">Branch</p>
+        <p class="entry-when">its own row · hidden when there's no branch</p>
+        <p class="entry-what">The git branch. It gets a line to itself because it's the widest, most variable thing on a card — inline, it pushed the action buttons into wrapping.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch" style="flex-direction:column; align-items:flex-start; gap:9px;">
+        <span class="context-bar"><span class="context-fill" style="width:35%"></span></span>
+        <span class="context-bar"><span class="context-fill hot" style="width:78%"></span></span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Context bar</p>
+        <p class="entry-when">2px, across the card's bottom edge</p>
+        <p class="entry-what">How full the context window is, measured against the <strong>auto-compact threshold</strong> rather than the model's raw capacity — the threshold is what actually interrupts the session. Hover for both numbers.</p>
+        <p class="entry-what">It's chrome, not a chip: a hairline on the card's bottom border rather than a row in the body, so it costs no vertical space. Past 60% of the threshold it brightens (shown above at 35% and 78%).</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="spec" style="color:#9a9a9a; font-size:10.5px;">Reading src/worktreeRows.ts</span></div>
+      <div class="entry-body">
+        <p class="entry-name">Activity line</p>
+        <p class="entry-when">last row</p>
+        <p class="entry-what">What the session is doing. On a finished card it switches to <strong>what it finished with</strong> — the last thing it said, not the last tool it ran, because that's the useful line once work has stopped.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ WHOLE-CARD STATES ═══════════════════ -->
+<section>
+  <h2>States that change the whole card</h2>
+  <p class="section-note">These aren't marks you add — they're treatments applied to the card itself.</p>
+
+  <div class="entries">
+
+    <div class="entry entry-card">
+      <div class="swatch on-bg holds-card">
+        <div class="mini is-focused">
+          <div class="mini-top"><span class="mini-name">Selected session</span><span class="status-pill pill-running">Running</span></div>
+        </div>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Focused</p>
+        <p class="entry-what">The card you last clicked, or one Serac auto-focused because a single new chat just arrived. The tint follows the status, so focus never overwrites the state colour.</p>
+      </div>
+    </div>
+
+    <div class="entry entry-card">
+      <div class="swatch on-bg holds-card">
+        <div class="mini is-external">
+          <div class="mini-top"><span class="mini-name">Owned elsewhere</span><span class="status-pill pill-running">Running</span></div>
+          <div class="mini-meta"><span class="model-pill" style="--model-hue:232">Sonnet 5</span><span class="mini-spacer"></span><span class="wf-view-chip conflict-chip">⛔<span class="wf-arrow">→</span></span></div>
+        </div>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Dimmed — another window has it</p>
+        <p class="entry-what">Everything fades except the ⛔ chip. A dimmed card with nothing bright on it just reads as unexplained greying, so the one thing you can act on stays at full strength. The preview line is dropped too — another window's live activity isn't useful here.</p>
+      </div>
+    </div>
+
+    <div class="entry entry-card">
+      <div class="swatch on-bg holds-card">
+        <div class="mini is-done is-spent">
+          <div class="mini-top"><span class="mini-name">Fix the login redirect</span><span class="status-pill pill-done">Done · <span class="t">2h</span> · <span class="t">ended</span></span></div>
+          <div class="mini-meta"><span class="worktree-chip worktree-chip-remote">📡</span></div>
+        </div>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Spent <span class="tag-new">new</span></p>
+        <p class="entry-what">A phone-started session whose process has ended. Its worktree was made for that one session and won't be reused, so <strong>nothing will ever resume this card</strong> — it recedes rather than competing with live work for your attention.</p>
+        <p class="entry-what">Only remote cards get this. An ordinary worktree session that ended is resumable, so it stays at full strength.</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ═══════════════════ TOP BAR ═══════════════════ -->
+<section>
+  <h2>The top bar</h2>
+  <p class="section-note">Above the cards: what needs attention, and whether your phone can reach this workspace.</p>
+
+  <div class="entries">
+    <div class="entry">
+      <div class="swatch on-bg">
+        <span class="status-count count-waiting">2 waiting</span>
+        <span class="status-count count-running">1 running</span>
+        <span class="status-count count-done">4 done</span>
+        <span class="status-count count-stale">7 seen</span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Counts</p>
+        <p class="entry-what">One number per state, in the same colours the cards use. A state with nothing in it is omitted entirely rather than shown as a zero.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch on-bg">
+        <span class="rc-indicator on"><span class="rc-dot"></span>📡</span>
+        <span style="width:14px"></span>
+        <span class="rc-indicator off"><span class="rc-dot"></span>📡</span>
+      </div>
+      <div class="entry-body">
+        <p class="entry-name">Remote Control <span class="tag-new">new</span></p>
+        <p class="entry-when">far right · filled dot = serving</p>
+        <p class="entry-what">Whether a Remote Control server is serving this workspace — i.e. whether <strong>you can start a new session here from your phone</strong> right now. Filled teal dot and a bright dish when it is; hollow dot and a faded dish when it isn't.</p>
+        <p class="entry-what">The two states differ by the dot's <em>fill</em> as well as its colour, so it survives a colour-blind read. It's wordless by design — the top bar's job is the counts; hover for the explanation.</p>
+        <p class="entry-what">Worth knowing: sessions you started <em>here</em> are reachable from the phone either way. The server is only needed to <strong>start new ones</strong>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ RULES ═══════════════════ -->
+<section>
+  <h2>Four rules the whole thing follows</h2>
+  <div class="rules">
+    <div class="rule-card">
+      <h3>Status colour is reserved</h3>
+      <p>Peach, blue, teal, and grey mean waiting, running, done, and seen — nothing else is allowed to use them that way. Model hue and worktree tint are separate registers on purpose.</p>
+    </div>
+    <div class="rule-card">
+      <h3>Shape carries the signal too</h3>
+      <p>Filled pill, outlined chip, hollow dot. Nothing depends on colour alone, so the panel still reads without it.</p>
+    </div>
+    <div class="rule-card">
+      <h3>Absence means unknown</h3>
+      <p>A missing annotation is never "no". Serac shows what it can confirm and stays quiet about the rest rather than guessing.</p>
+    </div>
+    <div class="rule-card">
+      <h3>The tooltip carries the words</h3>
+      <p>Chips are small because sidebars are narrow. Every one of them has a hover that says it in full — the glyph is the index, not the whole entry.</p>
+    </div>
+  </div>
+</section>
+
+<p class="colophon">
+  Specimens are rendered with the recipes from <span class="inline-code">media/panel.css</span>, at the sizes the sidebar actually uses — small, because reading them in a narrow column is part of the job.<br>
+  Colours shown are the dark-theme values; the light theme keeps the same meanings at adjusted contrast.<br>
+  Marks tagged <span class="tag-new">new</span> land in the next release.
+</p>
+
+</div>
+
+</body>
+</html>
