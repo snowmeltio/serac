@@ -10,6 +10,7 @@ import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeIn
 import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
+import { isRcServing } from './rcDetector.js';
 import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid, type WriterAggregate } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { readSettings } from './settings.js';
@@ -100,6 +101,9 @@ export class SessionDiscovery {
   /** Resolves whether a live registered process belongs to a *different* VS
    *  Code window than this one. Refreshed alongside processRegistry. */
   private writerOwnership: WriterOwnership;
+  /** Is a `claude rc` server hosting sessions in this workspace? Derived from
+   *  the registry on its rescan cadence (see rcDetector.ts); render-time only. */
+  private rcServing = false;
   /** Extended archive: lightweight snapshots for sessions older than SCAN_AGE_GATE_MS.
    *  Only populated when archiveRangeMs > SCAN_AGE_GATE_MS. Keyed by sessionId. */
   private extendedArchive: Map<string, SessionSnapshot> = new Map();
@@ -881,6 +885,13 @@ export class SessionDiscovery {
     return this.processRegistry.isSessionLive(sessionId);
   }
 
+  /** True when a `claude rc` server is hosting sessions in this workspace —
+   *  i.e. the phone can start new sessions here right now. Refreshed on the
+   *  registry's relaxed cadence, so it can lag a poll cycle. */
+  getRcServing(): boolean {
+    return this.rcServing;
+  }
+
   /** Cached writer-ownership verdict for a session id, aggregated across
    *  EVERY live process currently registered under it (usually one, but two
    *  can coexist — see ProcessRegistry.getProcessesForSession). Any one
@@ -1477,6 +1488,11 @@ export class SessionDiscovery {
       // the same treatment.
       if (this.processRegistry.shouldRescan()) {
         await this.processRegistry.scan();
+        // Remote Control server presence, for the top-bar indicator. Same
+        // deal as the rest of this block: a render-time signal, so it rides
+        // the next update rather than forcing one. Worst case the indicator
+        // lags a poll cycle behind the server starting or stopping.
+        this.rcServing = isRcServing(this.processRegistry.getLiveProcesses(), this.localCwd);
         // writerOwnership.refresh() exists purely in service of the
         // externalWriter feature (ps subprocess spawning) —
         // processRegistry.scan() itself must always run regardless (it also
