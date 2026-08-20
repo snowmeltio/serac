@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.20.0 (2026-08-20) — Copy pill hands over the transcript path
+
+### Changed
+- **Clicking the model pill now copies the session's transcript path** (`~/.claude/projects/<wsKey>/<id>.jsonl`) instead of the bare session id. A bare UUID pasted into another Claude session gets mistaken for other identifier kinds (workflow run, agent id, tool-use id); the path is self-identifying and immediately readable by the receiving session, and the id stays recoverable from the basename for `claude --resume`. Tooltip updated; the flash reads "Copied!".
+
+### Added
+- **Resilience for the JSONL record types Claude Code ~2.1.23x writes.** `bridge-session` (Remote Control enrolment — carries no uuid and no timestamp, and with account-wide Remote Control opens every new transcript) and `attachment` (harness context deltas) are now known types with real captured shapes pinned as fixtures: they never move a session's status or activity timestamps, and malformed or wrong-session records are dropped.
+- **`bridgeSessionId` captured into session snapshots (data-only).** The Remote Control bridge id (`cse_...`) is parsed and stored but deliberately not rendered: with account-wide Remote Control every new session carries it, so a card chip would be noise. Kept as data for a possible future inverse ("local-only") surface.
+
 ## v1.19.0 (2026-08-19) — Dual-writer sessions get a ⚠ chip and a resolve picker
 
 All externalWriter behaviour remains gated behind `serac.experimental.externalWriterBlock` (default off).
