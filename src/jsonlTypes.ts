@@ -35,6 +35,12 @@ export type JsonlRecordType =
   // reconnects. Carries NO uuid and NO timestamp. Surveyed 2026-08-20 across
   // 154 real records: sessionId always matches the containing file (no
   // resume/compaction carry-over observed).
+  // The DROP shape, written by the binary's `clearBridgeSession` when the
+  // bridge tears down: {"type":"bridge-session","sessionId":...,
+  // "bridgeSessionId":"","lastSequenceNum":0} — same type, EMPTY id, no owner
+  // fields. Seen on 4 live sessions 2026-08-20; the session is then absent
+  // from the phone until the chat is closed and reopened (new `cse_` id).
+  // Parsed into SessionState.bridgeState (sessionTypes.ts).
   | 'bridge-session'
   // Harness context deltas (deferred_tools_delta, skill_listing, ...) under an
   // `attachment` object. Not session-state relevant; skipped.
@@ -76,7 +82,8 @@ export interface JsonlRecord {
   customTitle?: string;
   /** Auto-generated title from `ai-title` records */
   aiTitle?: string;
-  /** Remote Control bridge session id (`cse_...`) from `bridge-session` records */
+  /** Remote Control bridge session id (`cse_...`) from `bridge-session`
+   *  records; the empty string is the drop marker (see JsonlRecordType). */
   bridgeSessionId?: string;
   [key: string]: unknown;
 }
