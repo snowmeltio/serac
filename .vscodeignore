@@ -1,7 +1,6 @@
 .vscode/**
 src/**
 mockups/**
-scripts/**
 BACKLOG.md
 node_modules/**
 .snapshot-*/**
@@ -44,3 +43,4 @@ HOOK-MONITORING.md
 panel-review/**
 spike/**
 scripts/**
+docs/**
