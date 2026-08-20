@@ -218,11 +218,19 @@ export class SessionManager {
    *  When true, the 5s idle timer is used (thinking phase is over). */
   private seenOutputInTurn = false;
   /** PID of the Claude Code process writing to this session's JSONL file.
-   *  Captured once via fuser at first activity. Used for zero-cost liveness
+   *  Captured once via fuser on the first LIVE activity (never during the
+   *  startup replay — see initialReplayDone). Used for zero-cost liveness
    *  checks (kill(pid, 0)) during the extended thinking grace period. */
   private writerPid: number | null = null;
   /** Whether PID capture has been attempted (to avoid repeated fuser calls). */
   private pidCaptureAttempted = false;
+  /** False until the first update() has read the file. Records delivered by
+   *  that first read are a replay of history, not live activity: a dormant
+   *  session's replay contains a running transition too, and spawning fuser
+   *  (a Perl wrapper over lsof on macOS, ~0.3 CPU-s each) for every recent
+   *  session at window open cost N lsof scans for nothing — fuser finds no
+   *  writer for a dead session and writerPid stays null anyway. */
+  private initialReplayDone = false;
   /** Registry-backed liveness probe (injected by SessionDiscovery). Tri-state:
    *  true = a live process backs this session, false = registry is active but
    *  has no entry for it, null = registry inactive/unknown. Distinct from the
@@ -497,6 +505,11 @@ export class SessionManager {
   /** Process all new records from the JSONL file. Returns true if state changed. */
   async update(): Promise<boolean> {
     const records = await this.tailer.readNewRecords();
+    // The first read replays whatever is already on disk; everything after
+    // it is live. Decided before the early returns below so an empty first
+    // read (a just-created session) still counts as the replay.
+    const isReplay = !this.initialReplayDone;
+    this.initialReplayDone = true;
 
     // Record mtime from the tailer's stat (avoids redundant syscall)
     if (this.tailer.lastMtimeMs > 0) {
@@ -517,6 +530,16 @@ export class SessionManager {
       if (this.processRecord(record)) {
         changed = true;
       }
+    }
+
+    // Writer-pid capture happens on the first LIVE record seen while running,
+    // not on the replayed running transition (see initialReplayDone). A session
+    // mid-turn at window open gets its pid on the next poll that delivers a
+    // record; until then isProcessAlive() answers "unknown" and the registry
+    // death-gate carries liveness, as it does for every session whose writer
+    // fuser cannot see.
+    if (!isReplay && records.length > 0 && this.state.status === 'running') {
+      this.captureWriterPid();
     }
 
     // Poll subagent tailers for direct JSONL reads (Phase 2: silent subagent detection)
@@ -867,8 +890,10 @@ export class SessionManager {
   }
 
   /** Capture the PID of the process writing to this session's JSONL file.
-   *  Called once on first activity. Uses fuser (macOS/Linux) to identify the
-   *  writer, then stores the PID for zero-cost liveness checks via kill(pid, 0). */
+   *  Called once, from update(), on the first live record processed while
+   *  running — never during the startup replay. Uses fuser (macOS/Linux) to
+   *  identify the writer, then stores the PID for zero-cost liveness checks
+   *  via kill(pid, 0). Fire-and-forget: the spawn is not awaited. */
   private captureWriterPid(): void {
     if (this.pidCaptureAttempted) return;
     this.pidCaptureAttempted = true;
@@ -1546,8 +1571,9 @@ export class SessionManager {
   private setRunning(reason: string = 'set_running'): void {
     if (this.state.status !== 'running') {
       this.turnStartAt = Date.now();
-      // Capture writer PID on first transition to running
-      this.captureWriterPid();
+      // (Writer-pid capture used to fire here, on every first running
+      // transition including the replayed one. It now lives in update(),
+      // gated on live records — see initialReplayDone.)
       // The session is resuming, so any "Waiting for …" subtitle is now stale.
       // Replace it with a neutral running label so the card doesn't keep
       // showing "Waiting for your response" through the next thinking phase.
