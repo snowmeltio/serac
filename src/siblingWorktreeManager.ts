@@ -17,6 +17,17 @@ import type { Logger } from './sessionDiscovery.js';
 import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate } from './sessionPolling.js';
 import { readSettings, ageGateMsFor } from './settings.js';
 
+/** Should sibling-worktree discovery run at all? The Worktrees pane is one
+ *  consumer; squash mode is the other, and it renders those sessions as cards
+ *  in the main list with the pane hidden. Gating discovery on the pane toggle
+ *  alone would make squash-with-pane-off silently show nothing — a setting
+ *  that appears to do nothing is worse than one that isn't there. */
+function siblingDiscoveryWanted(): boolean {
+  const s = readSettings();
+  return s.show.worktrees || s.worktrees.squash;
+}
+
+
 
 export class SiblingWorktreeManager {
   private sessions: Map<string, SessionManager> = new Map();
@@ -93,7 +104,7 @@ export class SiblingWorktreeManager {
    *  caller can trigger a re-render. */
   async scan(): Promise<boolean> {
     if (this.inert) { return false; }
-    if (!readSettings().show.worktrees) { return false; }
+    if (!siblingDiscoveryWanted()) { return false; }
     const now = Date.now();
     const ageGate = ageGateMsFor('worktrees');
     // Drop siblings whose worktree directory has been removed (e.g. `git
@@ -239,7 +250,7 @@ export class SiblingWorktreeManager {
   /** Poll active sibling sessions (shared loop in sessionPolling.ts). */
   async poll(): Promise<boolean> {
     if (this.inert) { return false; }
-    if (!readSettings().show.worktrees) { return false; }
+    if (!siblingDiscoveryWanted()) { return false; }
     let changed = false;
     const now = Date.now();
     const ageGate = ageGateMsFor('worktrees');

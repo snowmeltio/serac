@@ -48,6 +48,7 @@ describe('readSettings', () => {
       'serac.foreignWorkspaces.maxHeightPx': 0,
       'serac.worktrees.maxHeightPx': 500,
       'serac.worktrees.autoCollapseAfterSeconds': 60,
+      'serac.worktrees.squash': true,
       'serac.usage.showWeekly': false,
       'serac.usage.warnAtPercent': 70,
       'serac.usage.criticalAtPercent': 90,
@@ -70,6 +71,7 @@ describe('readSettings', () => {
     expect(s.foreignWorkspaces.maxHeightPx).toBe(0);
     expect(s.worktrees.maxHeightPx).toBe(500);
     expect(s.worktrees.autoCollapseAfterSeconds).toBe(60);
+    expect(s.worktrees.squash).toBe(true);
     expect(s.usage.showWeekly).toBe(false);
     expect(s.usage.warnAtPercent).toBe(70);
     expect(s.usage.criticalAtPercent).toBe(90);

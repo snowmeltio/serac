@@ -20,6 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
+import { _setConfigValues } from './__mocks__/vscode.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 
 const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {}, trace: () => {} };
@@ -60,6 +61,7 @@ describe('SiblingWorktreeManager', () => {
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'swm-')));
     projectsDir = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsDir, { recursive: true });
+    _setConfigValues({});
   });
 
   afterEach(() => {
@@ -117,5 +119,48 @@ describe('SiblingWorktreeManager', () => {
     expect(manager.getSnapshots().map(s => s.sessionId)).toContain('sib-1');
 
     manager.dispose();
+  });
+
+  describe('discovery gate', () => {
+    /** Repo + one sibling worktree carrying a session, ready to scan. */
+    async function seed(): Promise<SiblingWorktreeManager> {
+      const repo = path.join(tmpDir, 'repo');
+      const wt = path.join(tmpDir, 'repo-feature');
+      fs.mkdirSync(repo, { recursive: true });
+      setupRepoWithWorktree(repo, wt, 'feature');
+      const repoRoot = await resolveRepoRoot(wt);
+      createSession(sanitiseKey(wt), 'sib-1', wt);
+      const manager = new SiblingWorktreeManager(projectsDir, sanitiseKey(repo), silentLog);
+      manager.setLocalRepoRoot(repoRoot);
+      return manager;
+    }
+
+    it('discovers siblings when the Worktrees pane is on (squash off)', async () => {
+      _setConfigValues({ 'serac.show.worktrees': true, 'serac.worktrees.squash': false });
+      const manager = await seed();
+      await manager.scan();
+      expect(manager.getSnapshots().map(s => s.sessionId)).toContain('sib-1');
+      manager.dispose();
+    });
+
+    it('skips discovery when neither consumer wants it', async () => {
+      _setConfigValues({ 'serac.show.worktrees': false, 'serac.worktrees.squash': false });
+      const manager = await seed();
+      expect(await manager.scan()).toBe(false);
+      expect(manager.getSnapshots()).toHaveLength(0);
+      expect(await manager.poll()).toBe(false);
+      manager.dispose();
+    });
+
+    it('discovers siblings for squash even with the pane off', async () => {
+      // Squash renders these sessions as cards in the main list, so gating
+      // discovery on the pane toggle alone would make the setting silently do
+      // nothing — the failure mode this gate exists to prevent.
+      _setConfigValues({ 'serac.show.worktrees': false, 'serac.worktrees.squash': true });
+      const manager = await seed();
+      await manager.scan();
+      expect(manager.getSnapshots().map(s => s.sessionId)).toContain('sib-1');
+      manager.dispose();
+    });
   });
 });
