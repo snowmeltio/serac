@@ -380,12 +380,12 @@ h2 .count {
 
 .branch-pill { font-size: 9px; color: var(--panel-muted); }
 
-.context-bar {
-  width: 120px; height: 3px; border-radius: 2px;
-  background: rgba(255,255,255,0.08); overflow: hidden;
-}
-.context-fill { height: 100%; background: var(--sm-blizzard-blue); border-radius: 2px; }
-.context-fill.hot { background: var(--sm-frozen-peach); }
+/* The real bar is absolutely positioned along the card's bottom edge; these
+   specimens show the same 2px strip laid flat so it can sit in a swatch. */
+.context-bar { width: 180px; height: 2px; background: transparent; overflow: hidden; }
+.context-fill { height: 100%; background: #666666; }
+.context-fill.hot { background: #3a3a3a; }
+.ctx-demo { width: 180px; padding: 6px 0 0; border-bottom: 2px solid transparent; }
 
 .action-btn {
   background: none; border: none; color: var(--panel-muted);
@@ -429,6 +429,8 @@ h2 .count {
 .mini-branch { margin-top: 4px; }
 .mini-detail { font-size: 10.5px; color: #9a9a9a; margin-top: 5px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini-spacer { flex: 1; }
+.mini-edge { height: 2px; margin: 7px -10px -8px; background: transparent; overflow: hidden; }
+.edge-note { font-family: "IBM Plex Mono", monospace; font-size: 10px; color: var(--panel-muted); margin-top: 12px; }
 
 .callout {
   position: relative;
@@ -504,8 +506,9 @@ h2 .count {
         <div class="mini-branch">
           <span class="callout"><span class="marker">8</span><span class="branch-pill">⎇ feat/worktree-picker</span></span>
         </div>
-        <div style="margin-top:6px;"><span class="callout"><span class="marker">9</span><span class="context-bar"><span class="context-fill" style="width:42%"></span></span></span></div>
-        <div class="mini-detail"><span class="marker">10</span>Reading src/worktreeRows.ts</div>
+        <div class="mini-detail"><span class="marker">9</span>Reading src/worktreeRows.ts</div>
+        <div class="mini-edge"><span class="context-fill" style="width:42%"></span></div>
+        <div class="edge-note"><span class="marker">10</span>context bar — the card's bottom edge</div>
       </div>
     </div>
 
@@ -519,8 +522,8 @@ h2 .count {
         <li><b>Agents</b> Work happening underneath. Click to drill in</li>
         <li><b>Actions</b> Transcript, and archive</li>
         <li><b>Branch</b> Own row — it's the longest thing on a card</li>
-        <li><b>Context</b> Fill toward the auto-compact threshold</li>
         <li><b>Activity</b> What it's doing, or what it finished with</li>
+        <li><b>Context</b> A hairline on the bottom edge, filling toward auto-compact</li>
       </ol>
     </div>
   </div>
@@ -746,14 +749,15 @@ h2 .count {
     </div>
 
     <div class="entry">
-      <div class="swatch">
+      <div class="swatch" style="flex-direction:column; align-items:flex-start; gap:9px;">
         <span class="context-bar"><span class="context-fill" style="width:35%"></span></span>
         <span class="context-bar"><span class="context-fill hot" style="width:78%"></span></span>
       </div>
       <div class="entry-body">
         <p class="entry-name">Context bar</p>
-        <p class="entry-when">turns peach past 60%</p>
+        <p class="entry-when">2px, across the card's bottom edge</p>
         <p class="entry-what">How full the context window is, measured against the <strong>auto-compact threshold</strong> rather than the model's raw capacity — the threshold is what actually interrupts the session. Hover for both numbers.</p>
+        <p class="entry-what">It's chrome, not a chip: a hairline on the card's bottom border rather than a row in the body, so it costs no vertical space. Past 60% it shifts shade (shown above at 35% and 78%).</p>
       </div>
     </div>
 
