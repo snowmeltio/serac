@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.21.1 (2026-08-21) — Remote Control drops are now on the record
+
+### Added
+- **A session that falls off Remote Control is now tracked.** Claude Code writes a second `bridge-session` shape when a session's bridge tears down: same record type, empty `bridgeSessionId`, no owner fields. Serac only recognised the enrolment shape, so the dropped state was invisible. It now keeps a tri-state per session (`bridgeState`: enrolled, dropped, or unset) and clears the bridge id on a drop. A dropped session does not come back on its own: a further turn does not re-enrol it, only closing and reopening the chat does, under a new `cse_` id and a new row on the phone. Nothing renders this yet; it is instrumentation ahead of a dropped-bridge chip with a reconnect action, so drop frequency can be read first.
+- **`[rc]` lines in the Serac Output channel.** Every live drop (`[rc] <id8> bridge dropped`) and re-enrolment (`re-enrolled as cse_…`) logs at info; first enrolments and startup-replay history log at trace, with the newest turn timestamp as the lower bound since the record carries none of its own. Re-emitted enrolment records (Claude Code writes one on every reconnect) are swallowed, so the channel shows transitions, not chatter.
+
 ## v1.21.0 (2026-08-20) — One list for every worktree
 
 ### Added
