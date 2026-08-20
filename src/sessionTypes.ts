@@ -116,6 +116,14 @@ export interface SessionState {
    *  the session holds `running`/high-confidence and is not demoted. Cleared on
    *  `compact_boundary` or a safety timeout. */
   compacting?: boolean;
+  /** Remote Control bridge session id (`cse_...`) from the transcript's
+   *  `bridge-session` records. Presence means the session is enrolled with the
+   *  Remote Control bridge (reachable from claude.ai / the mobile app). NOTE:
+   *  with account-wide Remote Control enabled this is stamped on EVERY new
+   *  session, which is why the card chip idea was shelved (2026-08-20) — kept
+   *  in state/snapshot as data for any future surface (e.g. an inverse
+   *  "local-only" chip). No per-message or disconnect signal exists on disk. */
+  bridgeSessionId?: string;
 }
 
 /** Outcome of a completed tool, captured from the `PostToolUse` hook. */
@@ -160,6 +168,10 @@ export interface SessionSnapshot {
    *  render a copy pill (team/foreign degraded snapshots) may omit it, and the
    *  pill falls back to the session id. */
   filePath?: string;
+  /** Remote Control bridge session id — see SessionState.bridgeSessionId for
+   *  semantics and the shelved-chip caveat. Data-only: no consumer renders it
+   *  yet. */
+  bridgeSessionId?: string;
   /** How confident we are in the displayed status */
   confidence: StatusConfidence;
   /** The session's originating worktree CWD. TAGGING INVARIANT: every local

@@ -28,6 +28,17 @@ export type JsonlRecordType =
   // JsonlRecord.permissionMode). This is the real auto-accept-aware permission
   // timer signal (see isAutoAcceptPermissionMode in toolProfiles.ts).
   | 'permission-mode'
+  // Remote Control bridge enrolment marker: {"type":"bridge-session",
+  // "sessionId":..., "bridgeSessionId":"cse_...", "lastSequenceNum":N,
+  // "ownerAccountUuid":..., "ownerOrganizationUuid":...}. Written at session
+  // start when the account has Remote Control enabled and re-emitted on
+  // reconnects. Carries NO uuid and NO timestamp. Surveyed 2026-08-20 across
+  // 154 real records: sessionId always matches the containing file (no
+  // resume/compaction carry-over observed).
+  | 'bridge-session'
+  // Harness context deltas (deferred_tools_delta, skill_listing, ...) under an
+  // `attachment` object. Not session-state relevant; skipped.
+  | 'attachment'
   | (string & {}); // allows any string but provides autocomplete for known types
 
 /** Raw JSONL record from Claude Code transcript files */
@@ -65,6 +76,8 @@ export interface JsonlRecord {
   customTitle?: string;
   /** Auto-generated title from `ai-title` records */
   aiTitle?: string;
+  /** Remote Control bridge session id (`cse_...`) from `bridge-session` records */
+  bridgeSessionId?: string;
   [key: string]: unknown;
 }
 
