@@ -30,7 +30,6 @@ HANDOFF-PROMPT.md
 .locks/**
 .serac/**
 logo-concepts/**
-CHANGELOG.md
 .claude/**
 AUDIT.md
 CLAUDE.md
@@ -42,5 +41,6 @@ DESIGN-DETAIL-PANE-V2.md
 HOOK-MONITORING.md
 panel-review/**
 spike/**
+.github/**
 scripts/**
 docs/**
