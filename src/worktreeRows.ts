@@ -27,8 +27,8 @@ function normalisePath(p: string): string {
 function bucketSessions(
   sessions: SessionSnapshot[],
   localPath: string,
-): Map<string, { counts: Record<string, number>; confidence: StatusConfidence }> {
-  const buckets = new Map<string, { counts: Record<string, number>; confidence: StatusConfidence }>();
+): Map<string, { counts: Record<string, number>; confidence: StatusConfidence; topName: string | null; topAt: number }> {
+  const buckets = new Map<string, { counts: Record<string, number>; confidence: StatusConfidence; topName: string | null; topAt: number }>();
   const localKey = normalisePath(localPath);
 
   for (const s of sessions) {
@@ -36,13 +36,21 @@ function bucketSessions(
     const key = s.worktreeRoot ? normalisePath(s.worktreeRoot) : localKey;
     let bucket = buckets.get(key);
     if (!bucket) {
-      bucket = { counts: {}, confidence: 'low' };
+      bucket = { counts: {}, confidence: 'low', topName: null, topAt: 0 };
       buckets.set(key, bucket);
     }
     bucket.counts[s.status] = (bucket.counts[s.status] ?? 0) + 1;
     const sessConf = (s.confidence ?? 'medium') as StatusConfidence;
     if (CONFIDENCE_RANK[sessConf] > CONFIDENCE_RANK[bucket.confidence]) {
       bucket.confidence = sessConf;
+    }
+    // Representative session name for the row: the most recently active
+    // titled session wins (custom title outranks the ai-title, which
+    // outranks the repaired first-message title).
+    const label = s.customTitle || s.aiTitle || s.title || '';
+    if (label && s.lastActivity > bucket.topAt) {
+      bucket.topName = label;
+      bucket.topAt = s.lastActivity;
     }
   }
   return buckets;
@@ -70,6 +78,7 @@ export function buildWorktreeRows(
       path: wt.path,
       branch: wt.branch,
       displayName,
+      sessionName: bucket?.topName ?? null,
       counts: bucket?.counts ?? {},
       confidence: bucket?.confidence ?? 'high',
       isCurrent,
