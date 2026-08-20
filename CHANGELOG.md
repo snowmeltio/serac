@@ -11,6 +11,7 @@
 
 ### Fixed
 - **The context bar's "hot" state is now visible in the dark theme.** Past 60% of the auto-compact threshold the bar painted `#3a3a3a` on a `#252526` card — darker than its own `#666666` base, so the cards closest to compacting showed the *faintest* hairline. It now brightens to `#a8a8a8`, matching what the light theme has always done in its own direction. Present since v1.0.0; found while writing the card legend.
+- **A dismiss could be silently undone by a concurrent reload.** The session-meta store abandons an in-flight reload when a user action lands mid-read, but it decided that by checking whether the store was dirty — and the same user action's own save clears that flag the moment it completes. If the save finished while the read's continuation was still pending, the store committed the stale bytes it had already read and reverted the action. It now compares the mutation generation captured before the read, which a completed save cannot clear. Narrow window, but it was reachable by an ordinary dismiss click, and CI hit it.
 
 ### Docs
 - **A card legend** ([`docs/CARD-LEGEND.md`](docs/CARD-LEGEND.md), plus a rendered [`docs/card-legend.html`](docs/card-legend.html) that shows every mark at real size). Every chip, pill, badge, dot, and whole-card state on a session card, with what each one means and when it appears. Linked from the README.
