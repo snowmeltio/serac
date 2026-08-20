@@ -123,6 +123,10 @@ export interface WorktreeRow {
   branch: string | null;
   /** Display label — branch name when available, else the dir basename. */
   displayName: string;
+  /** Most recent titled session in this worktree (custom title > ai-title >
+   *  repaired title). Lets the renderer show a human name where the branch
+   *  is machine noise — remote-spawned `bridge-cse_*` rows especially. */
+  sessionName?: string | null;
   /** Status counts (waiting/running/done/stale) for sessions in this worktree. */
   counts: Record<string, number>;
   /** Highest status confidence across this worktree's sessions. */
