@@ -9,6 +9,12 @@
 - **A Remote Control indicator in the top bar.** A state dot plus a dish at the right end, showing whether a `claude rc` server is serving this workspace — that is, whether you can start a *new* session here from your phone right now. (Sessions started in this window are reachable from the phone either way; the server only enables the spawn direction.) The two states differ by the dot's fill as well as its colour, so it survives a colour-blind read, and the tooltip carries the words. Detection is a filter over the process registry Serac already scans, so it costs nothing extra; it infers the server from the sessions it hosts, which means a server that has not yet hosted anything reads as off. Documented in ARCHITECTURE.md along with the rest of the v1 blind spots.
 - **`scripts/rc-headless/` — a launchd agent for an always-on Remote Control server.** Installs a per-repo agent so the phone can start sessions without a terminal open, with an install script that smoke-tests headless startup before making anything permanent. It deliberately will not enable Remote Control on your account: that is a one-time interactive consent, and a script that seeded the flag would be answering a security question on your behalf. Not shipped in the extension.
 
+### Fixed
+- **The context bar's "hot" state is now visible in the dark theme.** Past 60% of the auto-compact threshold the bar painted `#3a3a3a` on a `#252526` card — darker than its own `#666666` base, so the cards closest to compacting showed the *faintest* hairline. It now brightens to `#a8a8a8`, matching what the light theme has always done in its own direction. Present since v1.0.0; found while writing the card legend.
+
+### Docs
+- **A card legend** ([`docs/CARD-LEGEND.md`](docs/CARD-LEGEND.md), plus a rendered [`docs/card-legend.html`](docs/card-legend.html) that shows every mark at real size). Every chip, pill, badge, dot, and whole-card state on a session card, with what each one means and when it appears. Linked from the README.
+
 ## v1.20.0 (2026-08-20) — Copy pill hands over the transcript path
 
 ### Changed
