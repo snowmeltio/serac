@@ -570,6 +570,7 @@ export class SessionManager {
       title: null,  // Populated by SessionDiscovery from session-meta.json
       customTitle: this.state.customTitle,
       aiTitle: this.state.aiTitle,
+      bridgeSessionId: this.state.bridgeSessionId,
       confidence: this.computeConfidence(),
       worktreeRoot: this.worktreeRoot,
       worktreeLabel: this.worktreeLabel,
@@ -1044,6 +1045,16 @@ export class SessionManager {
         return false;
       case 'file-history-snapshot':
         return this.glance.onFileHistorySnapshot(record);
+      case 'bridge-session':
+        // Remote Control bridge enrolment (see jsonlTypes.ts). Metadata-only:
+        // never a status/activity signal — with account-wide Remote Control
+        // every new session carries these records. No uuid/timestamp on the
+        // record; the sessionId guard above already dropped mismatches.
+        if (typeof record.bridgeSessionId === 'string' && record.bridgeSessionId) {
+          this.state.bridgeSessionId = record.bridgeSessionId;
+          return true;
+        }
+        return false;
       default:
         return false;
     }
