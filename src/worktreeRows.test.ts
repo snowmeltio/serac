@@ -93,3 +93,35 @@ describe('buildWorktreeRows', () => {
     expect(rows[2].path).toBe('/repo-spike-a'); // alpha-sorted last
   });
 });
+
+describe('sessionName selection', () => {
+  it('picks the most recently active titled session for the row', () => {
+    const rows = buildWorktreeRows([mainWt, spikeA], [
+      makeSession({ sessionId: 'a', worktreeRoot: '/repo-spike-a', aiTitle: 'Older title', lastActivity: 1_000 }),
+      makeSession({ sessionId: 'b', worktreeRoot: '/repo-spike-a', aiTitle: 'Newer title', lastActivity: 2_000 }),
+    ], '/repo')!;
+    expect(rows.find(r => r.path === '/repo-spike-a')!.sessionName).toBe('Newer title');
+  });
+
+  it('prefers a custom title over the ai-title', () => {
+    const rows = buildWorktreeRows([mainWt, spikeA], [
+      makeSession({ worktreeRoot: '/repo-spike-a', customTitle: 'My name', aiTitle: 'Machine name', lastActivity: 1_000 }),
+    ], '/repo')!;
+    expect(rows.find(r => r.path === '/repo-spike-a')!.sessionName).toBe('My name');
+  });
+
+  it('yields null when no session in the worktree carries a title', () => {
+    const rows = buildWorktreeRows([mainWt, spikeA], [
+      makeSession({ worktreeRoot: '/repo-spike-a', lastActivity: 1_000 }),
+    ], '/repo')!;
+    expect(rows.find(r => r.path === '/repo-spike-a')!.sessionName).toBeNull();
+  });
+
+  it('ignores dismissed sessions when naming the row', () => {
+    const rows = buildWorktreeRows([mainWt, spikeA], [
+      makeSession({ worktreeRoot: '/repo-spike-a', aiTitle: 'Dismissed one', dismissed: true, lastActivity: 9_000 }),
+      makeSession({ worktreeRoot: '/repo-spike-a', aiTitle: 'Live one', lastActivity: 1_000 }),
+    ], '/repo')!;
+    expect(rows.find(r => r.path === '/repo-spike-a')!.sessionName).toBe('Live one');
+  });
+});

@@ -13,6 +13,7 @@
  * registered in tsconfig.webview.json (dual-registration rule).
  */
 
+import { chipHue, chipMonogram, isRemoteWorktree } from './worktreeChip.js';
 import {
   basename,
   countsChipsHtml,
@@ -143,6 +144,7 @@ export interface PanelWorktreeRow {
   path: string;
   branch: string | null;
   displayName: string;
+  sessionName?: string | null;
   counts: Record<string, number>;
   confidence: string;
   isCurrent: boolean;
@@ -449,6 +451,25 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     metaHtml += '<span class="mode-badge mode-badge-' + modeBadge.className + '" title="Permission mode: '
       + escapeHtml(modeBadge.label) + '"><span class="mode-badge-glyph">' + escapeHtml(modeBadge.glyph)
       + '</span>' + escapeHtml(modeBadge.label) + '</span>';
+  }
+  // Worktree chip — which checkout this card sits on. Identity derives from
+  // the worktree PATH BASENAME (stable across branch renames), monogram+hue
+  // from worktreeChip.ts; remote-spawned bridge worktrees take a fixed 📡
+  // mark (hashing a one-shot cse id would fake a stable identity). Local
+  // cards — worktreeRoot === the workspace root, including the RC server's
+  // pre-created main-checkout session — carry no chip; the top-bar indicator
+  // says "RC serving", the chip only answers "which checkout".
+  if (s.worktreeRoot && ctx.workspacePath && normPath(s.worktreeRoot) !== normPath(ctx.workspacePath)) {
+    const wtBase = basename(s.worktreeRoot);
+    const wtTitle = 'Worktree: ' + tildeAbbrev(ctx, s.worktreeRoot);
+    if (isRemoteWorktree(wtBase)) {
+      metaHtml += '<span class="worktree-chip worktree-chip-remote" title="'
+        + escapeHtml('Remote-spawned (phone) — ' + wtTitle) + '">\u{1F4E1}</span>';
+    } else {
+      metaHtml += '<span class="worktree-chip" style="--wt-hue:' + chipHue(wtBase)
+        + '" title="' + escapeHtml(wtTitle) + '">'
+        + escapeHtml(chipMonogram(wtBase, basename(ctx.workspacePath))) + '</span>';
+    }
   }
   // Background-shell badge — a detached `run_in_background` shell is still
   // going after the turn ended. Non-status (the card keeps its real status);
@@ -780,11 +801,26 @@ export function renderWorktreeRow(ctx: RenderContext, wt: PanelWorktreeRow): str
   const mainChip = wt.isMain
     ? '<span class="ws-main-chip" title="Main checkout">main</span>'
     : '';
+  // Worktree chip + readable name (mockup pick 4A′): non-main rows lead with
+  // the identity chip; remote-spawned rows swap the raw bridge branch string
+  // for the session's title (branch stays in the tooltip via the path).
+  const wtBase = basename(wt.path);
+  const remote = isRemoteWorktree(wtBase);
+  let chipSlot = '';
+  let nameText = wt.displayName;
+  if (remote) {
+    chipSlot = '<span class="worktree-chip worktree-chip-remote" title="Remote-spawned (phone) worktree">\u{1F4E1}</span>';
+    nameText = wt.sessionName || wt.displayName;
+  } else if (!wt.isMain && !wt.isCurrent) {
+    chipSlot = '<span class="worktree-chip" style="--wt-hue:' + chipHue(wtBase) + '">'
+      + escapeHtml(chipMonogram(wtBase, ctx.workspacePath ? basename(ctx.workspacePath) : undefined)) + '</span>';
+  }
   return '<div class="' + cls + '"'
     + (hasLive ? ' data-confidence="' + escapeHtml(wt.confidence) + '"' : '')
     + cwdAttr
     + ' title="' + escapeHtml(titleText) + '">'
-    + '<span class="ws-name">' + escapeHtml(wt.displayName) + '</span>'
+    + chipSlot
+    + '<span class="ws-name">' + escapeHtml(nameText) + '</span>'
     + pinSlot
     + mainChip
     + '<div class="ws-counts">' + countsHtml + '</div>'
