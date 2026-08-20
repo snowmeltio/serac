@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.21.0 (2026-08-20) — One list for every worktree
+
+### Added
+- **Worktree sessions can now fold into the main list** (`serac.worktrees.squash`, default off). On, sessions from this repo's other worktrees render as ordinary cards tagged with a worktree chip, and the sidebar "Worktrees" section is hidden — no duplicate summary. For the common case where worktrees are an implementation detail rather than a place you navigate to. Remote Control makes that sharp: every phone-started session lands in its own throwaway worktree, so a row per worktree becomes a row per agent, each behind a window switch. Display only — no git command runs and nothing on disk changes. Clicking a folded card opens that worktree's window rather than pointing this window's editor at a foreign cwd.
+- **A worktree chip on cards and pane rows.** Two letters from the tail of the worktree's folder name plus a tint hashed from it, so you can tell folded cards apart at a glance. Identity comes from the folder, never the branch — branches get renamed and rebased away, and a chip that changed colour under you would be worse than no chip. Sessions in the checkout you have open carry none. Hover for the full path.
+- **Phone-started sessions are marked 📡.** Sessions spawned remotely live in a one-shot `bridge-cse_*` worktree; they take a fixed dish rather than initials, because a monogram of a random id looks like identity while carrying none. Once such a session's process ends, its card dims — that worktree will never be reused, so nothing can resume it. Ordinary worktree sessions that ended stay at full strength; they are resumable.
+- **A Remote Control indicator in the top bar.** A state dot plus a dish at the right end, showing whether a `claude rc` server is serving this workspace — that is, whether you can start a *new* session here from your phone right now. (Sessions started in this window are reachable from the phone either way; the server only enables the spawn direction.) The two states differ by the dot's fill as well as its colour, so it survives a colour-blind read, and the tooltip carries the words. Detection is a filter over the process registry Serac already scans, so it costs nothing extra; it infers the server from the sessions it hosts, which means a server that has not yet hosted anything reads as off. Documented in ARCHITECTURE.md along with the rest of the v1 blind spots.
+- **`scripts/rc-headless/` — a launchd agent for an always-on Remote Control server.** Installs a per-repo agent so the phone can start sessions without a terminal open, with an install script that smoke-tests headless startup before making anything permanent. It deliberately will not enable Remote Control on your account: that is a one-time interactive consent, and a script that seeded the flag would be answering a security question on your behalf. Not shipped in the extension.
+
+### Fixed
+- **A development helper was shipping inside the packaged extension.** The `scripts/` directory was missing from `.vscodeignore`. Now excluded.
+
 ## v1.20.0 (2026-08-20) — Copy pill hands over the transcript path
 
 ### Changed
