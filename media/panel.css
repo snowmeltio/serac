@@ -335,6 +335,12 @@ body {
 }
 
 .card.card-enter { opacity: 0; transform: translateY(-10px); }
+
+/* Spent remote card: a phone-spawned (bridge-cse_*) session whose process has
+ * ended. Its worktree is one-shot, so nothing will resume it — it recedes
+ * instead of competing with live work. Excluded during enter/leave so the FLIP
+ * fades still run from their own opacity values. */
+.card.card-spent:not(.card-enter):not(.card-leave) { opacity: 0.62; }
 /* Exit at half the move duration and slightly scaled down, stacked beneath
  * the in-flow cards FLIP-sliding into the freed space, so a removal reads as
  * the card receding rather than two cards overlapping. */
