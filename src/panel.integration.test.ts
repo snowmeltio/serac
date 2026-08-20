@@ -37,7 +37,7 @@ function sendSettings(overrides: any = {}): void {
     refresh: { intervalSeconds: 5 },
     discovery: { ageGateDays: 7 },
     foreignWorkspaces: { maxHeightPx: 280 },
-    worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20 },
+    worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20, squash: false },
     usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
     animations: { enabled: true },
     cleanup: { confirmRequired: true },
@@ -390,6 +390,119 @@ describe('panel.ts integration', () => {
     const cards = document.querySelectorAll('.card');
     expect(cards).toHaveLength(1);
     expect((cards[0] as HTMLElement).dataset.sessionId).toBe('local-wt');
+  });
+
+  describe('worktree squash', () => {
+    const sibling = () => makeSession({
+      sessionId: 'sib-squash',
+      status: 'running',
+      worktreeRoot: '/test-spike-a',
+      worktreeLabel: 'test-spike-a',
+    });
+    const worktreeRows = [
+      { path: '/test', branch: 'main', displayName: 'main', counts: { running: 1 }, confidence: 'high', isCurrent: true, isMain: true },
+      { path: '/test-spike-a', branch: 'spike-a', displayName: 'spike-a', counts: { running: 1 }, confidence: 'high', isCurrent: false, isMain: false },
+    ];
+
+    it('folds sibling-worktree sessions into the main list when on', () => {
+      sendSettings({ worktrees: { squash: true } });
+      sendUpdate({ sessions: [makeSession({ sessionId: 'local-1' }), sibling()] });
+      const ids = Array.from(document.querySelectorAll('.card'))
+        .map(c => (c as HTMLElement).dataset.sessionId);
+      expect(ids).toContain('local-1');
+      expect(ids).toContain('sib-squash');
+    });
+
+    it('tags a folded card with its worktree chip', () => {
+      sendSettings({ worktrees: { squash: true } });
+      sendUpdate({ sessions: [sibling()] });
+      const card = document.querySelector('.card')!;
+      expect(card.querySelector('.worktree-chip')).toBeTruthy();
+    });
+
+    it('hides the Worktrees pane while on, and restores it when off', () => {
+      sendSettings({ worktrees: { squash: false } });
+      sendUpdate({ sessions: [makeSession()], worktrees: worktreeRows });
+      expect(document.querySelector('.ws-worktree-rows')).toBeTruthy();
+
+      sendSettings({ worktrees: { squash: true } });
+      sendUpdate({ sessions: [makeSession()], worktrees: worktreeRows });
+      expect(document.querySelector('.ws-worktree-rows')).toBeFalsy();
+
+      sendSettings({ worktrees: { squash: false } });
+      sendUpdate({ sessions: [makeSession()], worktrees: worktreeRows });
+      expect(document.querySelector('.ws-worktree-rows')).toBeTruthy();
+    });
+
+    it('leaves no ghost header when on with no sibling sessions at all', () => {
+      sendSettings({ worktrees: { squash: true } });
+      sendUpdate({ sessions: [makeSession({ sessionId: 'only-local' })], worktrees: worktreeRows });
+      expect(document.querySelector('.ws-worktree-rows')).toBeFalsy();
+      expect(document.querySelectorAll('.card')).toHaveLength(1);
+    });
+
+    it('does not fold anything while off (the pane keeps them)', () => {
+      sendSettings({ worktrees: { squash: false } });
+      sendUpdate({ sessions: [makeSession({ sessionId: 'local-1' }), sibling()] });
+      const ids = Array.from(document.querySelectorAll('.card'))
+        .map(c => (c as HTMLElement).dataset.sessionId);
+      expect(ids).toEqual(['local-1']);
+    });
+
+    it('clicking a folded card opens that worktree, and does NOT open the session here', () => {
+      // The hazard this replaces: focusSession would point THIS window's
+      // companion editor at a foreign cwd, and the session may already be
+      // owned by another window or an RC server.
+      sendSettings({ worktrees: { squash: true } });
+      sendUpdate({ sessions: [sibling()] });
+      postedMessages = [];
+      (document.querySelector('.card') as HTMLElement).click();
+      expect(postedMessages).toContainEqual(
+        { type: 'openWorkspace', cwd: '/test-spike-a', sessionId: 'sib-squash' },
+      );
+      expect(postedMessages.filter((m: any) => m.type === 'focusSession')).toHaveLength(0);
+    });
+
+    it('still opens a LOCAL card here, squash or not', () => {
+      sendSettings({ worktrees: { squash: true } });
+      sendUpdate({ sessions: [makeSession({ sessionId: 'local-1', worktreeRoot: '/test' })] });
+      postedMessages = [];
+      (document.querySelector('.card') as HTMLElement).click();
+      expect(postedMessages).toContainEqual({ type: 'focusSession', sessionId: 'local-1' });
+      expect(postedMessages.filter((m: any) => m.type === 'openWorkspace')).toHaveLength(0);
+    });
+
+    it('dims a spent phone-spawned card, but not one still running', () => {
+      sendSettings({ worktrees: { squash: true } });
+      const remote = (over: any) => makeSession({
+        sessionId: over.sessionId,
+        status: over.status,
+        processLive: over.processLive,
+        worktreeRoot: '/test/.claude/worktrees/bridge-cse_01ABC',
+        worktreeLabel: 'worktree-bridge-cse_01ABC',
+      });
+      sendUpdate({ sessions: [
+        remote({ sessionId: 'dead-remote', status: 'done', processLive: false }),
+        remote({ sessionId: 'live-remote', status: 'running', processLive: true }),
+      ] });
+      const byId = (id: string) => document.querySelector(`.card[data-session-id="${id}"]`)!;
+      expect(byId('dead-remote').className).toContain('card-spent');
+      expect(byId('live-remote').className).not.toContain('card-spent');
+    });
+
+    it('does not dim an ordinary sibling worktree whose process ended', () => {
+      // Only phone-spawned worktrees are one-shot. A normal worktree's session
+      // is resumable, so an ended card there is ordinary, not spent.
+      sendSettings({ worktrees: { squash: true } });
+      sendUpdate({ sessions: [makeSession({
+        sessionId: 'sib-done',
+        status: 'done',
+        processLive: false,
+        worktreeRoot: '/test-spike-a',
+        worktreeLabel: 'test-spike-a',
+      })] });
+      expect(document.querySelector('.card')!.className).not.toContain('card-spent');
+    });
   });
 
   it('renders foreign workspaces section', () => {

@@ -9,8 +9,10 @@
  * per render pass (audit refactor-panel-4).
  */
 
+import { isRemoteWorktree } from './worktreeChip.js';
 import {
   normPath,
+  basename,
   escapeHtml,
   stripMarkdown,
   clickEndsSelection,
@@ -254,7 +256,28 @@ let FOREIGN_SLIDE_MS = 220;
    *  means "take me there", not "select it here"; if the host opens it
    *  locally after all (stale mark, quiet unlock), it drives the highlight
    *  back through a focusSession message. */
+  /** The worktree a session lives in, when that is NOT this workspace — i.e.
+   *  the session is folded in from a sibling worktree (squash). Null for local
+   *  sessions, which is every session in the list when squash is off. */
+  function foreignWorktreeOf(sessionId: string): string | null {
+    const s = (lastSessions ?? []).find(x => x.sessionId === sessionId);
+    if (!s || !s.worktreeRoot || !workspacePath) { return null; }
+    return normPath(s.worktreeRoot) === normPath(workspacePath) ? null : s.worktreeRoot;
+  }
+
   function activateSession(sessionId: string): void {
+    // A card in the main list can belong to another worktree of this repo
+    // (squash). Opening its session HERE would point the companion editor at a
+    // foreign cwd — cwd drift, plus a dual-writer hazard when another window or
+    // an RC server already owns it. So switch to that worktree's window
+    // instead. Data-driven, not squash-gated: if a card is foreign it needs
+    // this branch however it got into the list. Reading the transcript in
+    // place is unaffected — that is the 📜 button and the detail chip.
+    const foreignWorktree = foreignWorktreeOf(sessionId);
+    if (foreignWorktree) {
+      vscode.postMessage({ type: 'openWorkspace', cwd: foreignWorktree, sessionId });
+      return;
+    }
     vscode.postMessage({ type: 'focusSession', sessionId });
     if (!isExternalSession(sessionId)) {
       focusedSessionId = sessionId;
@@ -448,9 +471,9 @@ let FOREIGN_SLIDE_MS = 220;
       return;
     }
 
-    // Card click. Cards in the main list are always local (sibling-worktree
-    // sessions are filtered out — accessed via the Worktrees pane), so the
-    // click always opens the Claude Code companion editor for that session.
+    // Card click. Under squash the list also holds sibling-worktree sessions,
+    // so activateSession decides per card: local → open the companion editor
+    // here; foreign → switch to that worktree's window.
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
     if (card) {
       // A click that ENDS a text selection on this card is a copy gesture,
@@ -649,12 +672,14 @@ let FOREIGN_SLIDE_MS = 220;
     }
     lastSessions = sessions;
     lastNeedsInputCount = waitingCount;
-    // Main card list is local-only. Sibling-worktree sessions (worktreeRoot
-    // points elsewhere) are reached through the Worktrees pane — clicking a
-    // row switches windows. Sessions whose worktreeRoot equals the current
-    // workspace path ARE local (the current workspace is itself a worktree)
-    // and stay in the list.
+    // Which sessions belong in the main card list. Local ones always; sessions
+    // from OTHER worktrees of this repo only under squash, which folds them in
+    // (each tagged with a worktree chip) and hides the Worktrees pane. Without
+    // squash they stay in that pane, reached by switching windows. Sessions
+    // whose worktreeRoot equals the current workspace path ARE local (the
+    // current workspace is itself a worktree) and always stay.
     const wsRootNorm = normPath(workspacePath);
+    const squash = currentSettings.worktrees.squash;
     sessions = sessions.filter(s => {
       if (isGhost(s)) { return false; }
       // Defensive only: every local producer stamps worktreeRoot (see the
@@ -662,7 +687,8 @@ let FOREIGN_SLIDE_MS = 220;
       // not reach here. Treating one as local is the least-wrong default for
       // a degraded host — but it is NOT a local test; do not lean on it.
       if (!s.worktreeRoot) { return true; }
-      return normPath(s.worktreeRoot) === wsRootNorm;
+      if (normPath(s.worktreeRoot) === wsRootNorm) { return true; }
+      return squash;
     });
 
     const counts: Record<string, number> = { 'waiting': 0, running: 0, done: 0, stale: 0, archived: 0 };
@@ -797,7 +823,9 @@ let FOREIGN_SLIDE_MS = 220;
 
     // === Worktrees pane (sits above Other workspaces) ===
     let worktreesContainer = root.querySelector('.ws-worktree-rows') as HTMLElement | null;
-    if (currentSettings.show.worktrees) {
+    // Squash already put these sessions in the main list; a pane as well would
+    // double-count them and re-introduce the window-hopping it removes.
+    if (currentSettings.show.worktrees && !currentSettings.worktrees.squash) {
       if (!worktreesContainer) {
         worktreesContainer = document.createElement('div');
         worktreesContainer.className = 'ws-worktree-rows';
@@ -937,8 +965,15 @@ let FOREIGN_SLIDE_MS = 220;
       // A new element with a previous rect is a section move \u2014 FLIP it from
       // its old position below instead of playing the enter fade.
       const enters = isNew && !prevRects.has(s.sessionId);
+      // A phone-spawned worktree is one-shot: each remote start gets a fresh
+      // bridge-cse_* worktree, never reused. Once its process is gone the card
+      // is spent — nothing will resume it — so it recedes rather than
+      // competing with live work for attention. Presentational only; the
+      // worktree itself is untouched.
+      const spent = s.processLive === false && !!s.worktreeRoot
+        && isRemoteWorktree(basename(s.worktreeRoot));
       const cls = 'card ' + s.status + (isFocused ? ' focused' : '') + (enters ? ' card-enter' : '')
-        + (s.externalWriter ? ' external-writer' : '');
+        + (s.externalWriter ? ' external-writer' : '') + (spent ? ' card-spent' : '');
       if (el.className !== cls) { el.className = cls; }
       el.setAttribute('role', 'listitem');
       el.setAttribute('tabindex', '0');

@@ -169,7 +169,7 @@ export interface PanelSettings {
   refresh: { intervalSeconds: number };
   discovery: { ageGateDays: number };
   foreignWorkspaces: { maxHeightPx: number };
-  worktrees: { maxHeightPx: number; autoCollapseAfterSeconds: number };
+  worktrees: { maxHeightPx: number; autoCollapseAfterSeconds: number; squash: boolean };
   usage: { showWeekly: boolean; warnAtPercent: number; criticalAtPercent: number };
   animations: { enabled: boolean };
   cleanup: { confirmRequired: boolean };
@@ -184,7 +184,7 @@ export const DEFAULT_PANEL_SETTINGS: PanelSettings = {
   refresh: { intervalSeconds: 5 },
   discovery: { ageGateDays: 7 },
   foreignWorkspaces: { maxHeightPx: 280 },
-  worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20 },
+  worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20, squash: false },
   usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
   animations: { enabled: true },
   cleanup: { confirmRequired: true },

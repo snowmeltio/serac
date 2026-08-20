@@ -749,6 +749,46 @@ Foreign/worktree rows carry an attention wash: peach (`ws-row-waiting`) when any
 
 The teal wash keys off the foreign `done` count, whose display promotion to `stale` ("seen") is acknowledgement-only (`foreignWorkspaceManager.ts:shouldPromoteDoneToStale`): an **acknowledged** session promotes 10s after acknowledgement (mirrors the local rule), while a **never-acknowledged** session holds `done` for as long as it's tracked — the discovery window / age gate (`discovery.foreignWorkspacesWindow`, default 7d) is the eventual ceiling for workspaces nothing ever opens. Deliberately no time-based decay: originally the rollover mirrored the 10s constant for unacknowledged sessions (clearing the done signal seconds after an unattended turn ended), and v1.16.14 briefly shipped a 24h decay; both cleared unseen finished work before it was actually seen.
 
+### Worktree squash (`serac.worktrees.squash`)
+
+Off by default. On, sessions from this repo's **other** worktrees are folded
+into the main card list — each tagged with its worktree chip — and the
+Worktrees pane is hidden. It exists for the common case where worktrees are an
+implementation detail rather than a place you navigate to: Remote Control makes
+this sharp, since every phone-spawned session lands in its own one-shot
+`bridge-cse_*` worktree, so a pane row per worktree becomes a row per agent.
+
+Display only. Nothing on disk is touched, no git command runs, and
+`gitWorktreeUtil.ts` stays a pure `.git`-file reader.
+
+Four pieces:
+
+1. **Discovery gate.** `siblingWorktreeManager.ts` gates `scan()`/`poll()` on
+   `siblingDiscoveryWanted()` = `show.worktrees || worktrees.squash`, not on
+   the pane toggle alone. Gating on the pane would make squash-with-pane-off
+   silently render nothing.
+2. **Admit filter** (`panel.ts`). The main list always takes local sessions
+   (including ones whose `worktreeRoot` *equals* the workspace path — the
+   current workspace may itself be a worktree); it takes foreign-`worktreeRoot`
+   sessions only under squash. Top-bar counts tally the filtered array, so they
+   absorb folded cards for free.
+3. **Pane gate.** The pane renders on `show.worktrees && !squash`; the else
+   branch removes an existing container, so toggling takes effect immediately.
+   `worktrees.maxHeightPx` and `autoCollapseAfterSeconds` are inert while on.
+4. **Click routing.** `activateSession` is **data-driven, not squash-gated**: a
+   card whose `worktreeRoot` differs from the workspace posts `openWorkspace`
+   (the path-confined handler in `extension.ts`) to switch to that worktree's
+   window, rather than `focusSession`. Opening a foreign-cwd session in this
+   window's companion editor means cwd drift plus a dual-writer hazard when
+   another window or an RC server already owns it. Reading in place is
+   unaffected — that is the transcript button and the detail chip.
+
+A folded `bridge-cse_*` card whose process is registry-dead (`processLive ===
+false`) gets `.card-spent` and recedes: a phone-spawned worktree is one-shot,
+so nothing will resume that session. Ordinary sibling worktrees never get it —
+their sessions are resumable. Squash does not touch the "Other workspaces"
+list, which is about different repos entirely.
+
 ### Foreign workspace worktree picker
 
 When `groupForeignWorkspaces` aggregates 2+ foreign workspaces sharing a `repoRoot`, the synthetic row becomes click-to-expand (chevron, no `data-cwd`). Expanding inlines one child row per worktree of the repo (read from `<repoRoot>/.git/worktrees/*` by `ForeignWorkspaceManager`, refreshed on the same 60s cadence as the local `discoveredWorktrees`). Per-worktree counts come from the pre-aggregation `members` preserved on the synthetic row. Inactive worktrees (no Claude Code activity within the foreign-workspace age gate, `ageGateDaysFor('foreignWorkspaces')`) still appear, marked with a quiet "no activity" tag. Picking a worktree posts `openWorkspace` and auto-collapses the parent; an idle expand collapses after `serac.worktrees.autoCollapseAfterSeconds`.
