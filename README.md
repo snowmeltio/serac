@@ -12,6 +12,10 @@ In one sidebar, you get:
 - **Insight into your worktrees and other open windows,** gathered into one cross-window list.
 - **Session usage at a glance,** with rolling quota bars and a per-session context-window gauge.
 
+## Reading the cards
+
+A card packs a lot into three short rows. The **[card legend](docs/CARD-LEGEND.md)** decodes every pill, chip, badge, and wash: what each one is telling you, and what you'd do about it. There's a [rendered specimen sheet](docs/card-legend.html) too, with every chip drawn at its real size.
+
 ## Requirements
 
 - VS Code 1.94 or later
