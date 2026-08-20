@@ -249,14 +249,15 @@ h2 .count {
 }
 .entry {
   display: grid;
-  grid-template-columns: 188px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 188px) minmax(0, 1fr);
   gap: 22px;
   background: var(--surface);
   padding: 16px 20px;
   align-items: start;
 }
-@media (max-width: 640px) {
-  .entry { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.entry.entry-card { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); }
+@media (max-width: 760px) {
+  .entry, .entry.entry-card { grid-template-columns: minmax(0, 1fr); gap: 12px; }
 }
 .swatch {
   background: var(--panel-card);
@@ -269,6 +270,7 @@ h2 .count {
   min-height: 34px;
 }
 .swatch.on-bg { background: var(--panel-bg); }
+.swatch.holds-card { display: block; padding: 12px; min-width: 0; }
 .entry-body { min-width: 0; }
 .entry-name {
   font-family: "Bricolage Grotesque", ui-sans-serif, sans-serif;
@@ -412,7 +414,8 @@ h2 .count {
   padding: 8px 10px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--panel-fg);
-  min-width: 250px;
+  width: 100%;
+  min-width: 0;
 }
 .mini.is-waiting { border-left-color: var(--sm-frozen-peach); }
 .mini.is-done    { border-left-color: var(--sm-arctic-teal); }
@@ -779,9 +782,9 @@ h2 .count {
 
   <div class="entries">
 
-    <div class="entry">
-      <div class="swatch on-bg">
-        <div class="mini is-focused" style="min-width:200px;">
+    <div class="entry entry-card">
+      <div class="swatch on-bg holds-card">
+        <div class="mini is-focused">
           <div class="mini-top"><span class="mini-name">Selected session</span><span class="status-pill pill-running">Running</span></div>
         </div>
       </div>
@@ -791,9 +794,9 @@ h2 .count {
       </div>
     </div>
 
-    <div class="entry">
-      <div class="swatch on-bg">
-        <div class="mini is-external" style="min-width:200px;">
+    <div class="entry entry-card">
+      <div class="swatch on-bg holds-card">
+        <div class="mini is-external">
           <div class="mini-top"><span class="mini-name">Owned elsewhere</span><span class="status-pill pill-running">Running</span></div>
           <div class="mini-meta"><span class="model-pill" style="--model-hue:232">Sonnet 5</span><span class="mini-spacer"></span><span class="wf-view-chip conflict-chip">⛔<span class="wf-arrow">→</span></span></div>
         </div>
@@ -804,9 +807,9 @@ h2 .count {
       </div>
     </div>
 
-    <div class="entry">
-      <div class="swatch on-bg">
-        <div class="mini is-done is-spent" style="min-width:200px;">
+    <div class="entry entry-card">
+      <div class="swatch on-bg holds-card">
+        <div class="mini is-done is-spent">
           <div class="mini-top"><span class="mini-name">Fix the login redirect</span><span class="status-pill pill-done">Done · <span class="t">2h</span> · <span class="t">ended</span></span></div>
           <div class="mini-meta"><span class="worktree-chip worktree-chip-remote">📡</span></div>
         </div>
