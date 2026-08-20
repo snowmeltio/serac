@@ -71,6 +71,12 @@ export interface SeracSettings {
     /** Group foreign scratch sessions under /private/tmp (and /tmp) into a
      *  single "tmp" pseudo-repository row instead of one flat row per dir. */
     consolidateTmp: boolean;
+    /** Fold this repo's other worktrees into the main session list (each card
+     *  tagged with a worktree chip) instead of listing them in their own pane.
+     *  Display only — nothing on disk is touched. While on, the Worktrees pane
+     *  is hidden and maxHeightPx/autoCollapseAfterSeconds are inert, but
+     *  sibling *discovery* must still run (see siblingWorktreeManager). */
+    squash: boolean;
   };
   usage: {
     showWeekly: boolean;
@@ -137,7 +143,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     workflowsAgeGateDays: null,
   },
   foreignWorkspaces: { maxHeightPx: 280 },
-  worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20, consolidateTmp: false },
+  worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20, consolidateTmp: false, squash: false },
   usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
   animations: { enabled: true },
   cleanup: { confirmRequired: true },
@@ -189,6 +195,7 @@ export function readSettings(): SeracSettings {
       maxHeightPx: cfg.get<number>('worktrees.maxHeightPx', d.worktrees.maxHeightPx),
       autoCollapseAfterSeconds: cfg.get<number>('worktrees.autoCollapseAfterSeconds', d.worktrees.autoCollapseAfterSeconds),
       consolidateTmp: cfg.get<boolean>('worktrees.consolidateTmp', d.worktrees.consolidateTmp),
+      squash: cfg.get<boolean>('worktrees.squash', d.worktrees.squash),
     },
     usage: {
       showWeekly: cfg.get<boolean>('usage.showWeekly', d.usage.showWeekly),
