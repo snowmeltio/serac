@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template. install.sh substitutes @SLUG@, @WRAPPER@, @REPO@, and @HOME@ and
+  writes the result to ~/Library/LaunchAgents/io.snowmelt.claude-rc.<slug>.plist.
+  Do not load this file directly.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.snowmelt.claude-rc.@SLUG@</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>@WRAPPER@</string>
+    <string>@REPO@</string>
+  </array>
+
+  <!-- Start at login and keep it up. ThrottleInterval stops a server that
+       fails immediately (expired auth, network down) from spinning: launchd
+       waits at least this long between restarts. The .err.log says why. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <!-- launchd agents inherit a bare PATH; the wrapper sets a usable one, and
+       this covers anything that reads the environment before that. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>@HOME@</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>@REPO@</string>
+
+  <key>StandardOutPath</key>
+  <string>@HOME@/Library/Logs/claude-rc/@SLUG@.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/Library/Logs/claude-rc/@SLUG@.err.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

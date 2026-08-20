@@ -1,6 +1,7 @@
 .vscode/**
 src/**
 mockups/**
+scripts/**
 BACKLOG.md
 node_modules/**
 .snapshot-*/**
