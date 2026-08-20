@@ -284,6 +284,33 @@ Known blind spots, accepted in v1:
   remote-access server is the user's explicit act (see `scripts/rc-headless/`
   for the supported always-on setup).
 
+#### Bridge enrolment state (`bridgeState`)
+
+Separate from the server indicator above (which is about the *spawn*
+direction), each session carries its own enrolment with the Remote Control
+bridge, read from the transcript's `bridge-session` records (no uuid, no
+timestamp; `jsonlTypes.ts`). Two shapes exist: the enrolment record with a
+`cse_…` id, written at session start under account-wide Remote Control and
+re-emitted on every reconnect, and the **drop** record — same type, **empty**
+id, no owner fields — written by the binary's `clearBridgeSession` when the
+bridge tears down. `SessionManager.processBridgeSession()` folds them into a
+tri-state on the snapshot, `bridgeState: 'enrolled' | 'dropped' | unset`
+(`sessionTypes.ts`), keeping `bridgeSessionId` set only while enrolled. A
+dropped session is no longer listed on the phone and **a further turn does
+not re-enrol it**; only closing and reopening the chat does, under a new
+`cse_` id (a new phone row) — verified live 2026-08-21.
+
+Only a real transition fires the optional `onBridgeTransition` trace (the
+re-emitted enrol record is swallowed), which `sessionDiscovery.ts` writes to
+the Output channel as `[rc] <id8> bridge dropped` / `re-enrolled as cse_…` at
+`info`, and first enrolments plus startup-replay history at `trace` — a
+replayed record has no timestamp of its own, so the line carries the newest
+turn timestamp seen before it as the lower bound. Status and activity
+timestamps are never touched by either record. Nothing renders `bridgeState`
+yet: the positive state is noise under account-wide enrolment (v1.20.0
+decision), and the dropped-bridge chip with a close-and-reopen action is the
+planned next step once the trace has shown drop frequency.
+
 ### Writer ownership (externalWriter)
 
 Gated entirely behind `serac.experimental.externalWriterBlock` (default

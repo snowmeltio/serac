@@ -9,6 +9,7 @@
 
 export type {
   SessionStatus, DisplayStatus, StatusConfidence,
+  BridgeState, BridgeTransition,
   SubagentInfo, SessionState, ToolOutcome,
   SessionSnapshot, SubagentSnapshot,
   SessionMeta, SessionMetaFile,

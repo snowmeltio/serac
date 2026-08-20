@@ -1200,6 +1200,27 @@ export class SessionDiscovery {
                 this.log.trace(msg);
               }
             },
+            // Remote Control bridge trace (instrumentation for the dropped-
+            // bridge chip; see ARCHITECTURE.md → "Bridge enrolment state").
+            // Live drops and re-enrolments surface at `info` so drop
+            // frequency and clock times are readable from the Output channel
+            // across days; first enrolments (every new session under
+            // account-wide Remote Control) and startup-replay history go to
+            // `trace`. A replayed record has no timestamp of its own, so the
+            // line carries the newest turn timestamp seen before it.
+            onBridgeTransition: (ev) => {
+              const id8 = sessionId.slice(0, 8);
+              const what = ev.to === 'dropped'
+                ? 'bridge dropped'
+                : `${ev.from === 'dropped' ? 're-enrolled' : 'enrolled'} as ${ev.bridgeSessionId}`;
+              if (ev.replay) {
+                this.log.trace(`[rc] ${id8} ${what} (replay; last activity ${ev.lastActivity.toISOString()})`);
+              } else if (ev.from === undefined && ev.to === 'enrolled') {
+                this.log.trace(`[rc] ${id8} ${what}`);
+              } else {
+                this.log.info(`[rc] ${id8} ${what}`);
+              }
+            },
             // Shared probe derivations — see the Probe factories section.
             livenessProbe: this.livenessProbeFor(sessionId),
             writerOwnershipProbe: this.writerOwnershipProbeFor(sessionId),

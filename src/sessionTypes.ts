@@ -15,6 +15,34 @@ export type DisplayStatus = SessionStatus | 'stale';
  *  high = recent data confirms status. medium = some uncertainty. low = extended silence. */
 export type StatusConfidence = 'high' | 'medium' | 'low';
 
+/** Remote Control bridge enrolment state, read from the transcript's
+ *  `bridge-session` records (see jsonlTypes.ts for the shapes).
+ *  - `enrolled` — the last record carried a `cse_…` id: the session is listed
+ *    on the phone / claude.ai.
+ *  - `dropped` — the last record carried an EMPTY id. Claude Code's own
+ *    `clearBridgeSession` writes that when the bridge tears down (observed
+ *    spontaneously on live sessions, 2026-08-20). The session is then no longer
+ *    listed on the phone, and a further turn does NOT re-enrol it; only closing
+ *    and reopening the chat does, under a new `cse_` id (a new phone row).
+ *  - unset — no record seen: a pre-Remote-Control transcript, or none yet.
+ *  Never a status/activity signal. */
+export type BridgeState = 'enrolled' | 'dropped';
+
+/** Emitted by SessionManager when a session's BridgeState changes (first
+ *  enrolment, drop, re-enrolment). Re-emitted identical records do not fire.
+ *  `replay` is true when the record came from the startup replay of an
+ *  existing transcript rather than a live append — history, not an event —
+ *  and since the record itself carries no timestamp, `lastActivity` (the
+ *  newest turn timestamp seen so far) is the lower bound on when it happened. */
+export interface BridgeTransition {
+  from: BridgeState | undefined;
+  to: BridgeState;
+  /** The new `cse_…` id on enrolment; undefined on a drop. */
+  bridgeSessionId?: string;
+  replay: boolean;
+  lastActivity: Date;
+}
+
 
 /** A detected subagent within a session */
 export interface SubagentInfo {
@@ -117,13 +145,15 @@ export interface SessionState {
    *  `compact_boundary` or a safety timeout. */
   compacting?: boolean;
   /** Remote Control bridge session id (`cse_...`) from the transcript's
-   *  `bridge-session` records. Presence means the session is enrolled with the
-   *  Remote Control bridge (reachable from claude.ai / the mobile app). NOTE:
-   *  with account-wide Remote Control enabled this is stamped on EVERY new
-   *  session, which is why the card chip idea was shelved (2026-08-20) — kept
-   *  in state/snapshot as data for any future surface (e.g. an inverse
-   *  "local-only" chip). No per-message or disconnect signal exists on disk. */
+   *  `bridge-session` records. Set on enrolment, cleared on a drop (see
+   *  bridgeState). NOTE: with account-wide Remote Control enabled this is
+   *  stamped on EVERY new session, which is why a positive "enrolled" chip was
+   *  shelved (2026-08-20) — the renderable state is the *negative* one. */
   bridgeSessionId?: string;
+  /** Remote Control enrolment tri-state — see BridgeState. `dropped` is the
+   *  one renderable value (the session fell off the phone and will not come
+   *  back on its own). Unset until a `bridge-session` record is seen. */
+  bridgeState?: BridgeState;
 }
 
 /** Outcome of a completed tool, captured from the `PostToolUse` hook. */
@@ -169,9 +199,12 @@ export interface SessionSnapshot {
    *  pill falls back to the session id. */
   filePath?: string;
   /** Remote Control bridge session id — see SessionState.bridgeSessionId for
-   *  semantics and the shelved-chip caveat. Data-only: no consumer renders it
-   *  yet. */
+   *  semantics and the shelved-chip caveat. Data-only: no consumer renders it. */
   bridgeSessionId?: string;
+  /** Remote Control enrolment tri-state — see BridgeState. Instrumented
+   *  (logged on transition) since v1.21.x; the dropped-chip surface is the
+   *  next step (plan: serac-rc-reconnect-plan). */
+  bridgeState?: BridgeState;
   /** How confident we are in the displayed status */
   confidence: StatusConfidence;
   /** The session's originating worktree CWD. TAGGING INVARIANT: every local

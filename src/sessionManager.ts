@@ -107,6 +107,7 @@ import type {
   SubagentSnapshot,
   JsonlRecord,
   JsonlContentBlock,
+  BridgeTransition,
 } from './types.js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -284,6 +285,15 @@ export class SessionManager {
    *  Non-invasive: default no-op. Used by the replay harness to verify a
    *  captured transition stream is reproducible from JSONL. */
   private readonly onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
+  /** Optional observability hook fired when the Remote Control bridge state
+   *  changes (enrol / drop / re-enrol) — see BridgeTransition. Fires on real
+   *  transitions only; Claude Code re-emits the enrolled record on every
+   *  reconnect and those are swallowed. Default no-op. */
+  private readonly onBridgeTransition?: (ev: BridgeTransition) => void;
+  /** True while processRecord() is consuming the startup replay (the first
+   *  tailer read); false for every live append after it. Mirrors the
+   *  `isReplay` local in update() for the per-record hooks that need it. */
+  private currentReadIsReplay = true;
   /** Optional hook-event router, passed to every tracker factory at
    *  construction; hook-capable trackers subscribe via it and fall back to
    *  JSONL inference when it is undefined (foreign workspaces, sibling
@@ -326,6 +336,8 @@ export class SessionManager {
     workspaceKey: string,
     opts: {
       onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
+      /** Remote Control bridge enrol/drop/re-enrol trace — see the field. */
+      onBridgeTransition?: (ev: BridgeTransition) => void;
       hookRouter?: HookEventRouter;
       livenessProbe?: () => boolean | null;
       /** Reports which window(s) confirmed-own this session's live writer
@@ -347,6 +359,7 @@ export class SessionManager {
   ) {
     const now = new Date();
     this.onTransition = opts.onTransition;
+    this.onBridgeTransition = opts.onBridgeTransition;
     this.hookRouter = opts.hookRouter;
     this.livenessProbe = opts.livenessProbe;
     this.writerOwnershipProbe = opts.writerOwnershipProbe;
@@ -526,6 +539,7 @@ export class SessionManager {
     }
 
     let changed = false;
+    this.currentReadIsReplay = isReplay;
     for (const record of records) {
       if (this.processRecord(record)) {
         changed = true;
@@ -595,6 +609,7 @@ export class SessionManager {
       aiTitle: this.state.aiTitle,
       filePath: this.state.filePath,
       bridgeSessionId: this.state.bridgeSessionId,
+      bridgeState: this.state.bridgeState,
       confidence: this.computeConfidence(),
       worktreeRoot: this.worktreeRoot,
       worktreeLabel: this.worktreeLabel,
@@ -1072,18 +1087,41 @@ export class SessionManager {
       case 'file-history-snapshot':
         return this.glance.onFileHistorySnapshot(record);
       case 'bridge-session':
-        // Remote Control bridge enrolment (see jsonlTypes.ts). Metadata-only:
-        // never a status/activity signal — with account-wide Remote Control
-        // every new session carries these records. No uuid/timestamp on the
-        // record; the sessionId guard above already dropped mismatches.
-        if (typeof record.bridgeSessionId === 'string' && record.bridgeSessionId) {
-          this.state.bridgeSessionId = record.bridgeSessionId;
-          return true;
-        }
-        return false;
+        // Remote Control bridge enrolment / drop (see jsonlTypes.ts).
+        // Metadata-only: never a status/activity signal — with account-wide
+        // Remote Control every new session carries these records. No
+        // uuid/timestamp on the record; the sessionId guard above already
+        // dropped mismatches. Tri-state: a non-empty id enrols, the EMPTY
+        // string (Claude Code's clearBridgeSession) drops; anything else is a
+        // malformed record and ignored. Only a real change returns true /
+        // fires the trace — the enrolled record is re-emitted on every
+        // reconnect with the same id.
+        return this.processBridgeSession(record);
       default:
         return false;
     }
+  }
+
+  private processBridgeSession(record: JsonlRecord): boolean {
+    const id = record.bridgeSessionId;
+    if (typeof id !== 'string') return false;
+    const from = this.state.bridgeState;
+    if (id === '') {
+      if (from === 'dropped') return false;
+      this.state.bridgeState = 'dropped';
+      this.state.bridgeSessionId = undefined;
+      this.onBridgeTransition?.({
+        from, to: 'dropped', replay: this.currentReadIsReplay, lastActivity: this.state.lastActivity,
+      });
+      return true;
+    }
+    if (from === 'enrolled' && this.state.bridgeSessionId === id) return false;
+    this.state.bridgeState = 'enrolled';
+    this.state.bridgeSessionId = id;
+    this.onBridgeTransition?.({
+      from, to: 'enrolled', bridgeSessionId: id, replay: this.currentReadIsReplay, lastActivity: this.state.lastActivity,
+    });
+    return true;
   }
 
   private processUserRecord(record: JsonlRecord, timestamp: Date): boolean {
