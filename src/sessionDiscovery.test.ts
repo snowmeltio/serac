@@ -15,6 +15,26 @@ vi.mock('./writerOwnership.js', async (importOriginal) => {
   return { ...mod, isExtensionHostPid: vi.fn(mod.isExtensionHostPid) };
 });
 
+// Records SessionManager's `fuser` writer-pid spawns and short-circuits them
+// (fuser is a Perl wrapper over lsof on macOS, ~0.3 CPU-s each — 60 of them
+// at once is what made the 60-session test below take ~2 s under load).
+// Everything else (`ps` for WriterOwnership, `spawn` for
+// spawnExternalProcess) passes through to the real module.
+const fuserSpawns = vi.hoisted(() => ({ count: 0 }));
+vi.mock('child_process', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('child_process')>();
+  const execFile = ((file: string, ...rest: unknown[]) => {
+    if (file === 'fuser') {
+      fuserSpawns.count++;
+      const cb = rest[rest.length - 1];
+      if (typeof cb === 'function') { cb(null, '', ''); }
+      return undefined as never;
+    }
+    return (mod.execFile as unknown as (...a: unknown[]) => unknown)(file, ...rest);
+  }) as typeof mod.execFile;
+  return { ...mod, execFile, default: { ...mod, execFile } };
+});
+
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -153,6 +173,7 @@ describe('SessionDiscovery', () => {
     // suite — the "externalWriterBlock gate" describe block near the bottom
     // explicitly overrides this to prove the real (off) default.
     _setConfigValues({ 'serac.experimental.externalWriterBlock': true });
+    fuserSpawns.count = 0;
   });
 
   afterEach(() => {
@@ -423,9 +444,13 @@ describe('SessionDiscovery', () => {
 
   // ── Audit fix: batched updates ──────────────────────────────
 
-  it('handles more sessions than UPDATE_BATCH_SIZE', async () => {
+  // The initial scan is sequential (scanWorkspace awaits each manager's first
+  // update() in turn); UPDATE_BATCH_SIZE only governs the poll loops. This
+  // test covers the scan: 60 sessions discovered, and — since every replay
+  // contains a running transition — zero writer-pid (fuser) spawns. Before the
+  // live-only gate, this spawned 60 lsof scans and ran ~2 s under suite load.
+  it('scan discovers 60 sessions without spawning a process per session', async () => {
     const discovery = makeDiscovery();
-    // Create 60 sessions (exceeds batch size of 50)
     for (let i = 0; i < 60; i++) {
       createJsonlFile(`session-${String(i).padStart(3, '0')}`);
     }
@@ -433,6 +458,44 @@ describe('SessionDiscovery', () => {
 
     const snapshots = discovery.getSnapshots();
     expect(snapshots).toHaveLength(60);
+    expect(fuserSpawns.count).toBe(0);
+    discovery.stop();
+  });
+
+  // The poll path is what UPDATE_BATCH_SIZE (50) actually batches: 60 active
+  // sessions → two batches of update() per cycle. Append a live record to every
+  // file after start and wait for the fast (500 ms) poll cadence to carry all
+  // 60 through.
+  it('poll updates more sessions than UPDATE_BATCH_SIZE in one cycle', async () => {
+    const discovery = makeDiscovery();
+    const ids: string[] = [];
+    for (let i = 0; i < 60; i++) {
+      ids.push(`session-${String(i).padStart(3, '0')}`);
+      createJsonlFile(ids[i]);
+    }
+    await discovery.start(() => {});
+    const before = new Map(discovery.getSnapshots().map(s => [s.sessionId, s.lastActivity]));
+    expect(before.size).toBe(60);
+
+    // Live record with a future timestamp: lastActivity clamps to wall-clock at
+    // processing time, which is strictly after the creation-time record above.
+    const future = new Date(Date.now() + 10_000).toISOString();
+    for (const id of ids) {
+      fs.appendFileSync(
+        path.join(projectsDir, workspaceKey, `${id}.jsonl`),
+        JSON.stringify({ type: 'assistant', timestamp: future, message: { content: [{ type: 'text', text: 'working' }] } }) + '\n',
+      );
+    }
+
+    await vi.waitFor(() => {
+      const snaps = discovery.getSnapshots();
+      expect(snaps).toHaveLength(60);
+      for (const s of snaps) {
+        expect(s.lastActivity).toBeGreaterThan(before.get(s.sessionId)!);
+      }
+    }, { timeout: 4000, interval: 100 });
+    // Live records while running: the writer-pid capture now fires, once each.
+    expect(fuserSpawns.count).toBe(60);
     discovery.stop();
   });
 
