@@ -117,7 +117,7 @@ Always last. **📜** opens the transcript. **×** archives the card; on a live 
 
 **⎇ branch** — gets a line to itself because it's the widest, most variable thing on a card. Inline, it pushed the action buttons into wrapping. Hidden when there's no branch, and controlled by `serac.show.gitBranch`.
 
-**Context bar** — a 2px hairline across the card's **bottom edge** (not a row in the body), filling left to right with how full the context window is. Measured against the **auto-compact threshold** rather than the model's raw capacity, since the threshold is what actually interrupts the session. Past 60% it changes shade. Hover anywhere on the bar for both numbers.
+**Context bar** — a 2px hairline across the card's **bottom edge** (not a row in the body), filling left to right with how full the context window is. Measured against the **auto-compact threshold** rather than the model's raw capacity, since the threshold is what actually interrupts the session. Past 60% of that threshold it brightens. Hover anywhere on the bar for both numbers.
 
 **Activity line** — what the session is doing. On a finished card it switches to **what it finished with**: the last thing it said, not the last tool it ran, because that's the useful line once work has stopped. Controlled by `serac.show.previewText`.
 
