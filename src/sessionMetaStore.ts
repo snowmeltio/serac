@@ -10,6 +10,8 @@
  *        applied TWICE on the reload path — before the stat and again after
  *        the awaited read, so a mutation landing mid-read (e.g. a dismiss
  *        click during the file read) can never be reverted by the map swap.
+ *        The post-read re-check watches the MUTATION GENERATION, not `dirty`
+ *        alone — the user action's own save can clear `dirty` mid-read.
  *   - Saves are atomic (unique tmp path + rename) and serialised through a
  *     promise queue, so overlapping fire-and-forget saves can neither clobber
  *     one tmp file nor interleave partial writes. A failed write unlinks its
@@ -83,19 +85,30 @@ class FileSessionMetaStore implements SessionMetaStore {
     await this.loadInner(false);
   }
 
-  /** `abortIfDirty` is the reload path's post-read [C1] re-check: the initial
-   *  load must always commit (disk is authoritative at startup), but a RELOAD
-   *  whose awaited read overlapped a mutation must abandon the map swap — the
+  /** `abortIfDirty` enables the reload path's post-read [C1] re-check: the
+   *  initial load must always commit (disk is authoritative at startup), but a
+   *  RELOAD whose awaited read overlapped a mutation must abandon the map swap — the
    *  memory state is now ahead, and committing would silently revert a user
    *  action (e.g. a dismiss clicked while the file was being read). The
    *  abandoned external change is then overwritten by the pending save:
    *  ordinary last-writer-wins between windows, with the user action intact. */
   private async loadInner(abortIfDirty: boolean): Promise<void> {
+    // Snapshot the mutation generation BEFORE the awaited read [C1]. `dirty`
+    // on its own is NOT a safe abandon signal: the same user action that
+    // mutates also enqueues a save, and that save can complete and clear the
+    // flag while this read's continuation is still pending — leaving a clean
+    // store and stale bytes in hand, which is exactly when the swap must be
+    // abandoned. The generation only ever moves forward, so it survives the
+    // save that clears `dirty`.
+    const seqAtReadStart = this.mutationSeq;
+    const mutatedDuringRead = (): boolean =>
+      abortIfDirty && (this.dirty || this.mutationSeq !== seqAtReadStart);
+
     let content: string;
     try {
       content = await fs.promises.readFile(this.metaFilePath, 'utf-8');
     } catch {
-      if (abortIfDirty && this.dirty) { return; }
+      if (mutatedDuringRead()) { return; }
       // File doesn't exist — try legacy migration
       this.sessionMeta = new Map();
       await this.migrateFromLegacy();
@@ -104,7 +117,7 @@ class FileSessionMetaStore implements SessionMetaStore {
 
     try {
       const file: SessionMetaFile = JSON.parse(content);
-      if (abortIfDirty && this.dirty) { return; }
+      if (mutatedDuringRead()) { return; }
       this.sessionMeta = new Map(Object.entries(file.sessions));
       try {
         const stat = await fs.promises.stat(this.metaFilePath);
