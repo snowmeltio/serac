@@ -284,6 +284,20 @@ describe('renderCardInner', () => {
     expect(html).toContain('Running Bash');
   });
 
+  it('copy pill carries the transcript path when the snapshot stamps filePath', () => {
+    const html = renderCardInner(makeCtx(), makeSession({
+      modelLabel: 'Opus 4.8',
+      filePath: '/home/u/.claude/projects/-repo/sess-1234abcd.jsonl',
+    }), NOW, false);
+    expect(html).toContain('data-copy-id="/home/u/.claude/projects/-repo/sess-1234abcd.jsonl"');
+    expect(html).toContain('Click to copy transcript path');
+  });
+
+  it('copy pill falls back to the session id when filePath is absent', () => {
+    const html = renderCardInner(makeCtx(), makeSession({ modelLabel: 'Opus 4.8' }), NOW, false);
+    expect(html).toContain('data-copy-id="sess-1234abcd"');
+  });
+
   it('chip still reflects live subagents with show.subagents off — only the inline row is hidden', () => {
     const s = makeSession({
       subagents: [{ description: 'sub', running: true }],

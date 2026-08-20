@@ -570,6 +570,7 @@ export class SessionManager {
       title: null,  // Populated by SessionDiscovery from session-meta.json
       customTitle: this.state.customTitle,
       aiTitle: this.state.aiTitle,
+      filePath: this.state.filePath,
       bridgeSessionId: this.state.bridgeSessionId,
       confidence: this.computeConfidence(),
       worktreeRoot: this.worktreeRoot,

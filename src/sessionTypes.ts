@@ -162,6 +162,12 @@ export interface SessionSnapshot {
   customTitle: string;
   /** Claude Code's auto-generated title from `ai-title` JSONL records */
   aiTitle: string;
+  /** Absolute path to the session's JSONL transcript. Feeds the copy pill —
+   *  a path is self-identifying where a bare UUID gets mistaken for other id
+   *  kinds when pasted into another session. Optional: producers that never
+   *  render a copy pill (team/foreign degraded snapshots) may omit it, and the
+   *  pill falls back to the session id. */
+  filePath?: string;
   /** Remote Control bridge session id — see SessionState.bridgeSessionId for
    *  semantics and the shelved-chip caveat. Data-only: no consumer renders it
    *  yet. */

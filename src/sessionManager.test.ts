@@ -91,6 +91,11 @@ describe('SessionManager state machine', () => {
     expect(mgr.getStatus()).toBe('running');
   });
 
+  it('stamps the transcript filePath on every snapshot (copy-pill payload)', () => {
+    const mgr = makeManager();
+    expect(mgr.getSnapshot().filePath).toBe('/tmp/test.jsonl');
+  });
+
   it('extracts topic from first user message', async () => {
     const mgr = makeManager();
     await feedRecords(mgr, [userRecord('Fix the login bug')]);

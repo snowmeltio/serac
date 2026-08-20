@@ -361,7 +361,7 @@ let FOREIGN_SLIDE_MS = 220;
     if (copyPill) {
       e.stopPropagation();
       vscode.postMessage({ type: 'copyToClipboard', text: copyPill.dataset.copyId });
-      copyPill.textContent = 'ID copied!';
+      copyPill.textContent = 'Copied!';
       setTimeout(() => { copyPill.textContent = copyPill.dataset.modelLabel!; }, 1000);
       return;
     }
