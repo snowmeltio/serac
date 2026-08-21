@@ -10,7 +10,7 @@ In one sidebar, you get:
 - **The full shape of each run on its card:** dynamic workflows, agent teams, and subagents, nested underneath as they spawn.
 - **Access to their histories,** with every session, workflow, and agent transcript readable as markdown, plus a time-filtered archive.
 - **Insight into your worktrees and other open windows,** gathered into one cross-window list, or folded into the main list with a worktree chip (`serac.worktrees.squash`) when eight worktrees should not mean eight windows.
-- **Remote Control in the same list.** Sessions you start from your phone show up as ordinary cards marked 📡, and a dot in the top bar tells you whether a `claude rc` server is serving this workspace, that is, whether you can start a new session here from the phone right now. [`scripts/rc-headless/`](scripts/rc-headless/README.md) keeps such a server running via launchd.
+- **Remote Control in the same list.** Sessions you start from your phone show up as ordinary cards marked 📡, a session that has been switched off Remote Control gets a slashed 📡 chip with the way back, and a two-bar signal mark in the top bar tells you how much of Remote Control is on for this workspace: one bar when sessions you start here go to your phone, the second when a server here lets the phone start new sessions. Hover for which; click to turn the rest on (start a server in a terminal, install the always-on launchd server, or open Claude Code's settings at the enrolment flag, which Serac points at but never writes). [`scripts/rc-headless/`](scripts/rc-headless/README.md) is the launchd server, now shipped inside the extension.
 - **Session usage at a glance,** with rolling quota bars and a per-session context-window gauge.
 
 ## Reading the cards

@@ -306,6 +306,10 @@ describe('AgentPanelProvider', () => {
       // The empty-array-omission idiom used by the list fields would erase the
       // off state; the webview must be able to tell "off" from "no data".
       expect(off).toHaveProperty('rcServing', false);
+      expect(off).toHaveProperty('rcAutoEnrol', null);
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: false, rcAutoEnrol: true });
+      const on = webview.postMessage.mock.calls.at(-1)![0];
+      expect(on).toHaveProperty('rcAutoEnrol', true);
 
       provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: true });
       expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('rcServing', true);

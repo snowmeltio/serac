@@ -63,11 +63,18 @@ capacity (the phone shows it as "N of M").
 
 ## Serac's indicator
 
-The sidebar's top bar shows a filled dot and 📡 when a server is serving the
-open workspace, hollow and faded when not. It infers this from the sessions
-the server hosts (they register with `entrypoint: "sdk-cli"`), so a server
-that has not yet hosted anything can read as off — see
-`src/rcDetector.ts` and ARCHITECTURE.md.
+The sidebar's top bar shows two phone-signal bars and 📡. The tall bar is
+this server: lit when one is serving the open workspace. (The short bar is
+Claude Code's own "Enable Remote Control for all sessions" setting.) Serac
+infers the server from the sessions it hosts (they register with
+`entrypoint: "sdk-cli"`), so a server that has not yet hosted anything can
+read as off — see `src/rcDetector.ts` and ARCHITECTURE.md.
+
+These scripts ship inside the extension. Clicking the indicator while the
+tall bar is unlit offers to run `install.sh` for the open repo in a VS Code
+terminal (macOS), or to start a plain `claude rc --spawn worktree` in a
+terminal for this VS Code session only. Serac starts; it never stops a
+server — that is the terminal's close button or `uninstall.sh`.
 
 ## Caveats
 

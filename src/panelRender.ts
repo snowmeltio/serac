@@ -14,6 +14,7 @@
  */
 
 import { chipHue, chipMonogram, isRemoteWorktree } from './worktreeChip.js';
+import { rcLevel, rcTooltip, rcAriaLabel, type RcFacts } from './rcState.js';
 import {
   basename,
   countsChipsHtml,
@@ -231,20 +232,24 @@ export function statusSummaryHtml(counts: Record<string, number>): string {
   return summaryHtml;
 }
 
-/** Remote Control on/off mark for the top bar: a state dot plus a dish glyph.
- *  Deliberately wordless — the top bar's job is the status counts, and RC is
- *  ambient context, not a count. The two states differ by dot fill as well as
- *  colour (a colour-only difference fails for colour-blind users), and the
- *  tooltip carries the words plus what to do about it. */
-export function rcIndicatorHtml(serving: boolean): string {
-  const title = serving
-    ? 'Remote Control is serving this workspace — you can start new sessions here from your phone.'
-    : 'Remote Control is not serving this workspace. Run "claude rc" here to start new sessions from your phone.'
-      + ' Sessions started in this window stay reachable from the phone either way.';
-  const cls = serving ? 'rc-indicator on' : 'rc-indicator off';
-  return '<span class="' + cls + '" title="' + escapeHtml(title) + '"'
-    + ' aria-label="' + escapeHtml(serving ? 'Remote Control serving' : 'Remote Control off') + '">'
-    + '<span class="rc-dot"></span>\u{1F4E1}</span>';
+/** Remote Control mark for the top bar: a two-bar phone-signal glyph plus the
+ *  dish. Level = how many of the two facts are on (see rcState.ts): auto-enrol
+ *  (sessions started here go to the phone) and a server serving this
+ *  workspace (the phone can start sessions here). Deliberately wordless — the
+ *  top bar's job is the status counts, and RC is ambient context — so the
+ *  tooltip carries the words. The levels differ by how many bars are filled,
+ *  not by colour alone. Below full it is a button: the host offers ways to
+ *  turn the rest on (start/install a server, open settings.json). */
+export function rcIndicatorHtml(facts: RcFacts): string {
+  const level = rcLevel(facts);
+  const cls = 'rc-indicator rc-level-' + level + (level === 2 ? ' on' : level === 0 ? ' off' : ' half');
+  const button = level < 2 ? ' role="button" tabindex="0" data-rc-indicator="1"' : '';
+  return '<span class="' + cls + '" title="' + escapeHtml(rcTooltip(facts)) + '"'
+    + ' aria-label="' + escapeHtml(rcAriaLabel(facts)) + '"' + button + '>'
+    + '<span class="rc-bars" aria-hidden="true">'
+    + '<span class="rc-bar' + (level >= 1 ? ' lit' : '') + '"></span>'
+    + '<span class="rc-bar' + (level >= 2 ? ' lit' : '') + '"></span>'
+    + '</span>\u{1F4E1}</span>';
 }
 
 /** Empty card-section placeholder; mentions older sessions when the 7-day

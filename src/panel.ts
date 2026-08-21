@@ -73,6 +73,9 @@ interface UpdateMessage {
   /** Remote Control server serving this workspace. Always sent by the host;
    *  optional here only so an older host's payload still type-checks. */
   rcServing?: boolean;
+  /** Claude Code's remoteControlAtStartup — sessions started here enrol
+   *  automatically. null = settings.json unreadable. Always sent. */
+  rcAutoEnrol?: boolean | null;
 }
 
 interface FocusMessage {
@@ -124,6 +127,7 @@ let FOREIGN_SLIDE_MS = 220;
   let lastForeignWorkspaces: WorkspaceGroup[] | null = null;
   let lastWorktrees: PanelWorktreeRow[] = [];
   let lastRcServing = false;
+  let lastRcAutoEnrol: boolean | null = null;
   let lastWorktreesHtml = '';
   let lastForeignWaiting: PanelSession[] = [];
   let lastForeignRunning: PanelSession[] = [];
@@ -334,6 +338,15 @@ let FOREIGN_SLIDE_MS = 220;
       return;
     }
 
+    // Top-bar Remote Control indicator below full — the host offers the ways
+    // to turn the rest on (start or install a server, open settings.json).
+    const rcIndicator = target.closest<HTMLElement>('[data-rc-indicator]');
+    if (rcIndicator) {
+      e.stopPropagation();
+      vscode.postMessage({ type: 'rcIndicatorClick' });
+      return;
+    }
+
     // 📡-with-a-slash chip — Remote Control is off for this session. The
     // remedy is typed in that chat (/remote-control), which the webview
     // cannot do for you, so the click is the card's own activation: open it
@@ -524,6 +537,13 @@ let FOREIGN_SLIDE_MS = 220;
       dualChip.click();
       return;
     }
+    // Top-bar Remote Control indicator — role=button span, same routing.
+    const rcIndicator = target.closest<HTMLElement>('[data-rc-indicator]');
+    if (rcIndicator) {
+      e.preventDefault();
+      rcIndicator.click();
+      return;
+    }
     // 📡-slash Remote-Control-off chip — role=button span, same routing.
     const rcOffChip = target.closest<HTMLElement>('[data-rc-off]');
     if (rcOffChip) {
@@ -613,6 +633,7 @@ let FOREIGN_SLIDE_MS = 220;
         lastOlderSessionCount = message.olderSessionCount ?? 0;
         lastWorktrees = message.worktrees ?? [];
         lastRcServing = message.rcServing ?? false;
+        lastRcAutoEnrol = message.rcAutoEnrol === undefined ? null : message.rcAutoEnrol;
         homeDir = message.home ?? '';
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         // Same-file collisions across every active session we can see —
@@ -760,7 +781,7 @@ let FOREIGN_SLIDE_MS = 220;
       rcSlot.className = 'rc-slot';
       topBar.appendChild(rcSlot);
     }
-    rcSlot.innerHTML = rcIndicatorHtml(lastRcServing);
+    rcSlot.innerHTML = rcIndicatorHtml({ autoEnrol: lastRcAutoEnrol, serving: lastRcServing });
 
     // === Scroll container ===
     let scrollWrap = root.querySelector('.card-archive-scroll') as HTMLElement | null;

@@ -38,6 +38,33 @@ export function readCompactSettings(): CompactSettings {
   }
 }
 
+/** Claude Code's `remoteControlAtStartup` ("Enable Remote Control for all
+ *  sessions"): whether sessions started in this workspace enrol with the
+ *  Remote Control bridge automatically, i.e. show up on the phone. Read from
+ *  the same three settings files Claude Code merges, lowest to highest
+ *  precedence: user (<claudeStateDir>/settings.json), project
+ *  (<workspace>/.claude/settings.json), local (<workspace>/.claude/
+ *  settings.local.json). Returns `null` only when the USER file cannot be
+ *  read or parsed (then nothing is known); a readable file without the key
+ *  means the Claude Code default, which is off. Serac never writes this key —
+ *  it is the user's account-level consent. */
+export function readRemoteControlAtStartup(workspacePath: string): boolean | null {
+  let value: boolean | null = null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(getClaudeSettingsPath(), 'utf-8'));
+    value = parsed?.remoteControlAtStartup === true;
+  } catch {
+    return null;
+  }
+  for (const rel of ['settings.json', 'settings.local.json']) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(workspacePath, '.claude', rel), 'utf-8'));
+      if (typeof parsed?.remoteControlAtStartup === 'boolean') { value = parsed.remoteControlAtStartup; }
+    } catch { /* absent or malformed project/local file: keep the lower layer */ }
+  }
+  return value;
+}
+
 /** Reads the configured default model (the top-level `model` field in
  *  settings.json, e.g. "sonnet" or "claude-opus-4-8") used to seed a
  *  session's model pill before its first assistant record confirms the

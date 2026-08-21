@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
-import { readCompactSettings, readDefaultModel } from './claudeSettings.js';
+import { readCompactSettings, readDefaultModel, readRemoteControlAtStartup } from './claudeSettings.js';
 
 vi.mock('fs');
 
@@ -93,5 +93,55 @@ describe('readDefaultModel', () => {
   it('handles malformed JSON gracefully', () => {
     vi.mocked(fs.readFileSync).mockReturnValue('not json');
     expect(readDefaultModel()).toBe('');
+  });
+});
+
+describe('readRemoteControlAtStartup', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  /** Route reads: the workspace layers are matched by their full '/ws/…'
+   *  path; anything else ending in settings.json is the user file (the real
+   *  state dir is ~/.claude, so a bare suffix match would collide). */
+  function mockFiles(files: Record<string, string | null>): void {
+    vi.mocked(fs.readFileSync).mockImplementation(((p: fs.PathOrFileDescriptor) => {
+      const s = String(p);
+      const key = s.startsWith('/ws/') ? s.slice(3) : s.endsWith('/settings.json') ? '/settings.json' : undefined;
+      if (key === undefined || !(key in files) || files[key] === null) { throw new Error('ENOENT'); }
+      return files[key] as string;
+    }) as typeof fs.readFileSync);
+  }
+
+  it('returns null when the user settings.json is unreadable — nothing is known', () => {
+    mockFiles({});
+    expect(readRemoteControlAtStartup('/ws')).toBeNull();
+  });
+
+  it('returns false when the user file is readable but the key is absent (Claude Code default)', () => {
+    mockFiles({ '/settings.json': JSON.stringify({ model: 'opus' }), '/.claude/settings.json': null, '/.claude/settings.local.json': null });
+    expect(readRemoteControlAtStartup('/ws')).toBe(false);
+  });
+
+  it('reads true from the user file', () => {
+    mockFiles({ '/settings.json': JSON.stringify({ remoteControlAtStartup: true }), '/.claude/settings.json': null, '/.claude/settings.local.json': null });
+    expect(readRemoteControlAtStartup('/ws')).toBe(true);
+  });
+
+  it('project and local files override the user file, local winning', () => {
+    mockFiles({
+      '/.claude/settings.local.json': JSON.stringify({ remoteControlAtStartup: false }),
+      '/.claude/settings.json': JSON.stringify({ remoteControlAtStartup: true }),
+      '/settings.json': JSON.stringify({ remoteControlAtStartup: true }),
+    });
+    expect(readRemoteControlAtStartup('/ws')).toBe(false);
+  });
+
+  it('a malformed project file keeps the user value', () => {
+    mockFiles({
+      '/.claude/settings.json': '{not json',
+      '/.claude/settings.local.json': null,
+      '/settings.json': JSON.stringify({ remoteControlAtStartup: true }),
+    });
+    expect(readRemoteControlAtStartup('/ws')).toBe(true);
   });
 });

@@ -114,6 +114,11 @@ export interface PanelUpdate {
    *  Not optional-by-omission like the array fields above — `false` is a real
    *  state the top bar renders, so it is always sent. */
   rcServing?: boolean;
+  /** Claude Code's `remoteControlAtStartup` ("Enable Remote Control for all
+   *  sessions"): sessions started here go to the phone automatically. `null`
+   *  when settings.json is unreadable. Always sent, like rcServing — the two
+   *  together drive the top-bar signal level (rcState.ts). */
+  rcAutoEnrol?: boolean | null;
 }
 
 /** A row in the Worktrees pane: one worktree of the current repo. Built in
@@ -178,9 +183,12 @@ export type WebviewMessage =
        *  linked worktree (even ones with no CC history). Empty/undefined when
        *  the workspace isn't a git repo or has no linked worktrees. */
       worktrees?: WorktreeRow[];
-      /** Whether a Remote Control server is serving this workspace — drives
-       *  the top-bar on/off indicator. Always sent; `false` is a real state. */
+      /** Whether a Remote Control server is serving this workspace — one of
+       *  the two top-bar signal facts. Always sent; `false` is a real state. */
       rcServing?: boolean;
+      /** Claude Code's remoteControlAtStartup — the other top-bar signal
+       *  fact. Always sent; `null` = unreadable. */
+      rcAutoEnrol?: boolean | null;
     }
   | {
       type: 'focusSession';
@@ -205,7 +213,10 @@ export type WebviewCommand =
   | { type: 'dismissWorkflow'; runId: string }
   | { type: 'undismissWorkflow'; runId: string }
   /** ⚠ dual-writer chip: ask the host to run the keep-here/release-here picker. */
-  | { type: 'resolveDualWriter'; sessionId: string };
+  | { type: 'resolveDualWriter'; sessionId: string }
+  /** Top-bar Remote Control indicator below full: ask the host for the
+   *  turn-it-on picker (start/install a server, open settings.json). */
+  | { type: 'rcIndicatorClick' };
 
 // ─── Public extension API surface (returned by activate()) ──────────────
 
