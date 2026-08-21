@@ -297,8 +297,15 @@ bridge tears down. `SessionManager.processBridgeSession()` folds them into a
 tri-state on the snapshot, `bridgeState: 'enrolled' | 'dropped' | unset`
 (`sessionTypes.ts`), keeping `bridgeSessionId` set only while enrolled. A
 dropped session is no longer listed on the phone and **a further turn does
-not re-enrol it**; only closing and reopening the chat does, under a new
-`cse_` id (a new phone row) — verified live 2026-08-21.
+not re-enrol it**. Re-enrolment happens under a new `cse_` id (a new phone
+row) either in-process via the chat's `/remote-control` toggle (same pid, ~4 s,
+verified 2026-08-21 on session 3bb5ac3d) or by closing and reopening the
+chat. The drop itself is that same toggle going off — the X on Claude Code's
+"Remote Control is active" popup (tooltip "Disconnect Remote Control") or
+`/remote-control` — not a spontaneous bridge failure: every observed drop is
+preceded in the extension's "Claude VSCode" log by the webview's
+`toggle_remote_control enable:false`, then `end_session` → server archive →
+4090 close → `clearBridgeSession`.
 
 Only a real transition fires the optional `onBridgeTransition` trace (the
 re-emitted enrol record is swallowed), which `sessionDiscovery.ts` writes to

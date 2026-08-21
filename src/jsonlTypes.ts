@@ -38,8 +38,10 @@ export type JsonlRecordType =
   // The DROP shape, written by the binary's `clearBridgeSession` when the
   // bridge tears down: {"type":"bridge-session","sessionId":...,
   // "bridgeSessionId":"","lastSequenceNum":0} — same type, EMPTY id, no owner
-  // fields. Seen on 4 live sessions 2026-08-20; the session is then absent
-  // from the phone until the chat is closed and reopened (new `cse_` id).
+  // fields. Written when Remote Control is toggled off for the session (the
+  // popup's X or `/remote-control`); the session is then absent from the
+  // phone until `/remote-control` is run again or the chat is closed and
+  // reopened (new `cse_` id either way).
   // Parsed into SessionState.bridgeState (sessionTypes.ts).
   | 'bridge-session'
   // Harness context deltas (deferred_tools_delta, skill_listing, ...) under an
