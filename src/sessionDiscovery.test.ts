@@ -312,33 +312,182 @@ describe('SessionDiscovery', () => {
     discovery.stop();
   });
 
-  it('honours the local dismiss overlay for sibling-worktree sessions', async () => {
-    // Sibling sessions are merged into the feed but source their state from the
-    // sibling's own meta. Dismissal is a local view-state overlay, so clicking ×
-    // on a sibling card must move it to the archive even though we never touch
-    // the sibling's session-meta.json. Regression: previously a no-op. [worktree]
-    const discovery = makeDiscovery();
-    await discovery.start(() => {});
-
-    const sibSnapshot = makeSnapshot('sib-session', {
+  /** Wire a fake sibling-worktree session into a live discovery, owned by
+   *  `ownerKey` so dismissal has somewhere to write through to. */
+  function injectSibling(
+    discovery: SessionDiscovery,
+    sessionId: string,
+    ownerKey: string,
+  ): void {
+    const sibSnapshot = makeSnapshot(sessionId, {
       status: 'done',
       worktreeRoot: '/repos/serac-hook-monitoring',
       worktreeLabel: 'serac-hook-monitoring',
     });
-    // Inject a sibling snapshot via the internal manager (no real worktree on disk).
     (discovery as unknown as {
-      siblingManager: { getSnapshots: () => unknown[] };
+      siblingManager: {
+        getSnapshots: () => unknown[];
+        ownerWorkspaceKeyFor: (id: string) => string | null;
+      };
     }).siblingManager.getSnapshots = () => [{ ...sibSnapshot }];
+    (discovery as unknown as {
+      siblingManager: { ownerWorkspaceKeyFor: (id: string) => string | null };
+    }).siblingManager.ownerWorkspaceKeyFor = (id: string) => (id === sessionId ? ownerKey : null);
+  }
+
+  it('dismissing a sibling-worktree session archives it here AND in its own workspace', async () => {
+    // The local flag is a view-state overlay so the card archives instantly.
+    // It is not enough on its own: every other window aggregates the sibling's
+    // OWN session-meta.json, so a dismissal that stops here leaves the session
+    // counted in the "Other workspaces" chips of every other window. [worktree]
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    const ownerKey = 'sibling-worktree-ws';
+    injectSibling(discovery, 'sib-session', ownerKey);
 
     // Before: visible and not dismissed.
-    const before = discovery.getSnapshots().find(s => s.sessionId === 'sib-session');
-    expect(before?.dismissed).toBe(false);
+    expect(discovery.getSnapshots().find(s => s.sessionId === 'sib-session')?.dismissed).toBe(false);
 
-    // Dismiss writes only to local meta — the sibling's meta is never touched.
     discovery.dismissSession('sib-session');
 
-    const after = discovery.getSnapshots().find(s => s.sessionId === 'sib-session');
-    expect(after?.dismissed).toBe(true);
+    // Here: archived immediately, off the in-memory overlay.
+    expect(discovery.getSnapshots().find(s => s.sessionId === 'sib-session')?.dismissed).toBe(true);
+
+    // There: written through to the worktree's own file (fire-and-forget).
+    const ownerMeta = path.join(projectsDir, ownerKey, 'session-meta.json');
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(ownerMeta, 'utf-8'));
+      expect(meta.sessions['sib-session'].dismissed).toBe(true);
+    });
+    discovery.stop();
+  });
+
+  it('a sibling dismissed while still RUNNING is written through too', async () => {
+    // The case that locked the old behaviour in: acknowledgeIfDone() no-ops on
+    // a running session (and on any session not in the local map), so
+    // `acknowledged` never gets set and the done→stale rollover can never fire
+    // either. Without write-through the count is permanent. [worktree]
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    const ownerKey = 'sibling-running-ws';
+    const running = makeSnapshot('sib-running', {
+      status: 'running',
+      worktreeRoot: '/repos/serac-hook-monitoring',
+      worktreeLabel: 'serac-hook-monitoring',
+    });
+    (discovery as unknown as {
+      siblingManager: {
+        getSnapshots: () => unknown[];
+        ownerWorkspaceKeyFor: (id: string) => string | null;
+      };
+    }).siblingManager.getSnapshots = () => [{ ...running }];
+    (discovery as unknown as {
+      siblingManager: { ownerWorkspaceKeyFor: (id: string) => string | null };
+    }).siblingManager.ownerWorkspaceKeyFor = () => ownerKey;
+
+    discovery.dismissSession('sib-running');
+
+    const ownerMeta = path.join(projectsDir, ownerKey, 'session-meta.json');
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(ownerMeta, 'utf-8'));
+      expect(meta.sessions['sib-running'].dismissed).toBe(true);
+    });
+    discovery.stop();
+  });
+
+  it('undismissing a sibling clears the flag in its own workspace too', async () => {
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    const ownerKey = 'sibling-undismiss-ws';
+    injectSibling(discovery, 'sib-session', ownerKey);
+    const ownerMeta = path.join(projectsDir, ownerKey, 'session-meta.json');
+
+    discovery.dismissSession('sib-session');
+    await vi.waitFor(() => {
+      expect(JSON.parse(fs.readFileSync(ownerMeta, 'utf-8')).sessions['sib-session'].dismissed).toBe(true);
+    });
+
+    discovery.undismissSession('sib-session');
+    await vi.waitFor(() => {
+      expect(JSON.parse(fs.readFileSync(ownerMeta, 'utf-8')).sessions['sib-session'].dismissed).toBe(false);
+    });
+    discovery.stop();
+  });
+
+  it('write-through merges rather than clobbers the owning window\'s other entries', async () => {
+    // The store persists its whole map, so writing from a stale one would drop
+    // whatever the owning window had recorded. Reload-before-mutate is what
+    // keeps a sibling entry from eating its neighbours.
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    const ownerKey = 'sibling-merge-ws';
+    injectSibling(discovery, 'sib-session', ownerKey);
+
+    // The owning window has already recorded state for a DIFFERENT session.
+    const ownerMeta = path.join(projectsDir, ownerKey, 'session-meta.json');
+    fs.mkdirSync(path.dirname(ownerMeta), { recursive: true });
+    fs.writeFileSync(ownerMeta, JSON.stringify({
+      sessions: {
+        'their-session': {
+          title: 'theirs', dismissed: false, acknowledged: true,
+          acknowledgedAt: 1_784_000_000_000, firstSeen: 1_784_000_000_000,
+        },
+      },
+    }));
+
+    discovery.dismissSession('sib-session');
+
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(ownerMeta, 'utf-8'));
+      expect(meta.sessions['sib-session'].dismissed).toBe(true);
+      expect(meta.sessions['their-session']).toBeDefined();
+      expect(meta.sessions['their-session'].title).toBe('theirs');
+    });
+    discovery.stop();
+  });
+
+  it('lands dismiss-then-undismiss in click order, not file-read order', async () => {
+    // Each write-through spans a reload and a flush. Fired without
+    // serialisation, two overlapping clicks can resolve in either order and
+    // the file ends up disagreeing with the last thing the user did.
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    const ownerKey = 'sibling-order-ws';
+    injectSibling(discovery, 'sib-session', ownerKey);
+    const ownerMeta = path.join(projectsDir, ownerKey, 'session-meta.json');
+    // Pre-existing file, so both reloads take the slower read path.
+    fs.mkdirSync(path.dirname(ownerMeta), { recursive: true });
+    fs.writeFileSync(ownerMeta, JSON.stringify({ sessions: {} }));
+
+    discovery.dismissSession('sib-session');
+    discovery.undismissSession('sib-session');
+
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(ownerMeta, 'utf-8'));
+      expect(meta.sessions['sib-session']).toBeDefined();
+    });
+    // Give any out-of-order tail a chance to land before asserting.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(JSON.parse(fs.readFileSync(ownerMeta, 'utf-8')).sessions['sib-session'].dismissed).toBe(false);
+    discovery.stop();
+  });
+
+  it('does not write through for a session this window owns', async () => {
+    // Local sessions already persist to our own file; a second write to some
+    // other workspace would be a bug, not belt-and-braces.
+    const discovery = makeDiscovery();
+    createJsonlFile('local-session');
+    await discovery.start(() => {});
+    (discovery as unknown as {
+      siblingManager: { ownerWorkspaceKeyFor: (id: string) => string | null };
+    }).siblingManager.ownerWorkspaceKeyFor = () => 'should-never-be-written';
+
+    discovery.dismissSession('local-session');
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(path.join(projectsDir, workspaceKey, 'session-meta.json'), 'utf-8'));
+      expect(meta.sessions['local-session'].dismissed).toBe(true);
+    });
+    expect(fs.existsSync(path.join(projectsDir, 'should-never-be-written'))).toBe(false);
     discovery.stop();
   });
 

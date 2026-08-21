@@ -822,6 +822,8 @@ Foreign/worktree rows carry an attention wash: peach (`ws-row-waiting`) when any
 
 The teal wash keys off the foreign `done` count, whose display promotion to `stale` ("seen") is acknowledgement-only (`foreignWorkspaceManager.ts:shouldPromoteDoneToStale`): an **acknowledged** session promotes 10s after acknowledgement (mirrors the local rule), while a **never-acknowledged** session holds `done` for as long as it's tracked — the discovery window / age gate (`discovery.foreignWorkspacesWindow`, default 7d) is the eventual ceiling for workspaces nothing ever opens. Deliberately no time-based decay: originally the rollover mirrored the 10s constant for unacknowledged sessions (clearing the done signal seconds after an unattended turn ended), and v1.16.14 briefly shipped a 24h decay; both cleared unseen finished work before it was actually seen.
 
+One other promotion path exists, and it is a fact about the workspace rather than the session, so it lives in `getWorkspaces()` rather than in `shouldPromoteDoneToStale`: a session whose cwd is a **removed Claude worktree** (`<repo>/.claude/worktrees/<name>`, tracked in `unreachableKeys`, refreshed alongside the repoRoots) counts as `stale`, not `done`. That is not decay — the folder is gone, so no window can ever open it and no acknowledgement can ever arrive, and the teal signal would sit there unclearable until the age gate expired. It is the same judgement `.card-spent` already makes for a dead one-shot `bridge-cse_*` card, applied to the count. A worktree that still exists is unaffected.
+
 ### Worktree squash (`serac.worktrees.squash`)
 
 Off by default. On, sessions from this repo's **other** worktrees are folded
@@ -834,8 +836,22 @@ this sharp, since every phone-spawned session lands in its own one-shot
 Display only. Nothing on disk is touched, no git command runs, and
 `gitWorktreeUtil.ts` stays a pure `.git`-file reader.
 
-Four pieces:
+Five pieces:
 
+0. **Dismissal write-through** (`sessionDiscovery.ts:writeThroughDismissal`).
+   Dismissing a sibling card sets the local view-state overlay so the card
+   archives instantly, **and** writes `dismissed` into the worktree's own
+   `session-meta.json`. The overlay alone was the whole story until v1.22, and
+   it meant a card dismissed here still counted towards the "Other workspaces"
+   chips in every other window, forever — dismissing while the session was
+   still *running* made it permanent, because `acknowledgeIfDone()` no-ops on a
+   running session and on any session not in the local map, so `acknowledged`
+   was never set and the done→stale rollover could never fire either. A sibling
+   worktree is the same repo, the same user, and the same machine, so there is
+   no meaningful sense in which the dismissal was "local only". The write is a
+   read-modify-write through a cached `SessionMetaStore` for the owning key,
+   reloading first because the store persists its whole map and a stale one
+   would drop the owning window's other entries.
 1. **Discovery gate.** `siblingWorktreeManager.ts` gates `scan()`/`poll()` on
    `siblingDiscoveryWanted()` = `show.worktrees || worktrees.squash`, not on
    the pane toggle alone. Gating on the pane would make squash-with-pane-off
@@ -865,6 +881,14 @@ list, which is about different repos entirely.
 ### Foreign workspace worktree picker
 
 When `groupForeignWorkspaces` aggregates 2+ foreign workspaces sharing a `repoRoot`, the synthetic row becomes click-to-expand (chevron, no `data-cwd`). Expanding inlines one child row per worktree of the repo (read from `<repoRoot>/.git/worktrees/*` by `ForeignWorkspaceManager`, refreshed on the same 60s cadence as the local `discoveredWorktrees`). Per-worktree counts come from the pre-aggregation `members` preserved on the synthetic row. Inactive worktrees (no Claude Code activity within the foreign-workspace age gate, `ageGateDaysFor('foreignWorkspaces')`) still appear, marked with a quiet "no activity" tag. Picking a worktree posts `openWorkspace` and auto-collapses the parent; an idle expand collapses after `serac.worktrees.autoCollapseAfterSeconds`.
+
+#### repoRoot resolution, refresh, and own-repo eviction
+
+`resolveRepoRoot` (`gitWorktreeUtil.ts`) reads the CWD's own `.git`, and — when that can't answer, which includes the CWD no longer existing — derives the owning repo from the `<repo>/.claude/worktrees/<name>` shape (`repoRootFromClaudeWorktreePath`) and reads *its* `.git`. The result is always backed by a real `.git`, never a guess, and the second pass resolves directly so a nested worktree path cannot recurse. Without the fallback a Remote Control worktree that has been removed — the normal end state, since each phone-spawned session gets a one-shot worktree — resolves to `null`, drops out of sibling classification (`siblingWorktreeManager.ts:pruneRemovedWorktrees` lets go), and resurfaces as a flat "Other workspaces" row named after the dead worktree.
+
+`ForeignWorkspaceManager.refreshRepoRoots()` re-resolves **every** cached cwd on the same cadence as the worktree enumeration it precedes; there is no separate TTL to fall out of step with (cf. v1.16.7). The cache is deliberately not once-only: resolution depends on what is on disk right now, and a window that never re-reads disagrees with a freshly opened one about the same directory — which is precisely how the same two sessions showed as flat `bridge-cse_*` rows in one window and folded into the repo row in another.
+
+The same pass evicts any key whose repoRoot equals `localRepoRoot` (injected by `SessionDiscovery.start`): our own repo's worktrees are never foreign. Live ones are already excluded via `getSiblingKeys()`; this catches the ones the sibling manager has pruned because their directory is gone.
 
 #### `/private/tmp` pseudo-repository
 

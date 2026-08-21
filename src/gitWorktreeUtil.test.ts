@@ -6,7 +6,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { resolveRepoRoot, worktreeSetChanged } from './gitWorktreeUtil.js';
+import {
+  resolveRepoRoot,
+  worktreeSetChanged,
+  repoRootFromClaudeWorktreePath,
+  isAtOrUnder,
+} from './gitWorktreeUtil.js';
 
 let tmpDir: string;
 
@@ -22,7 +27,90 @@ function realTmp(p: string): string {
   return fs.realpathSync(p);
 }
 
+describe('repoRootFromClaudeWorktreePath', () => {
+  it('derives the repo from the <repo>/.claude/worktrees/<name> shape', () => {
+    expect(repoRootFromClaudeWorktreePath('/repo/serac/.claude/worktrees/bridge-cse_01A'))
+      .toBe('/repo/serac');
+  });
+
+  it('does no fs work, so it still answers for a removed worktree', () => {
+    const gone = path.join(tmpDir, 'never-existed', '.claude', 'worktrees', 'bridge-cse_X');
+    expect(repoRootFromClaudeWorktreePath(gone)).toBe(path.join(tmpDir, 'never-existed'));
+  });
+
+  it('tolerates a trailing separator', () => {
+    expect(repoRootFromClaudeWorktreePath('/repo/serac/.claude/worktrees/wt/'))
+      .toBe('/repo/serac');
+  });
+
+  it('rejects a subfolder of a worktree — only the immediate child qualifies', () => {
+    expect(repoRootFromClaudeWorktreePath('/repo/serac/.claude/worktrees/wt/src')).toBeNull();
+  });
+
+  it('rejects unrelated shapes', () => {
+    expect(repoRootFromClaudeWorktreePath('/repo/serac')).toBeNull();
+    expect(repoRootFromClaudeWorktreePath('/repo/serac/.claude/agents/x')).toBeNull();
+    expect(repoRootFromClaudeWorktreePath('/repo/serac/worktrees/x')).toBeNull();
+    expect(repoRootFromClaudeWorktreePath('relative/.claude/worktrees/x')).toBeNull();
+    expect(repoRootFromClaudeWorktreePath('')).toBeNull();
+  });
+});
+
+describe('isAtOrUnder', () => {
+  it('is true for the path itself and for descendants', () => {
+    expect(isAtOrUnder('/repo/serac', '/repo/serac')).toBe(true);
+    expect(isAtOrUnder('/repo/serac/src/a.ts', '/repo/serac')).toBe(true);
+  });
+
+  it('compares segment-wise, so a shared prefix is not containment', () => {
+    expect(isAtOrUnder('/repo/serac-old', '/repo/serac')).toBe(false);
+  });
+
+  it('is false for empty inputs', () => {
+    expect(isAtOrUnder('', '/repo/serac')).toBe(false);
+    expect(isAtOrUnder('/repo/serac', '')).toBe(false);
+  });
+});
+
 describe('resolveRepoRoot', () => {
+  it('falls back to the owning repo when a Claude worktree has been removed', async () => {
+    // The RC case: `<repo>/.claude/worktrees/bridge-cse_*` is created, used,
+    // and deleted, but its session JSONL outlives it. Reading the worktree's
+    // own `.git` cannot answer — the directory is gone.
+    const repo = path.join(tmpDir, 'repo');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    const gone = path.join(repo, '.claude', 'worktrees', 'bridge-cse_01A');
+    expect(fs.existsSync(gone)).toBe(false);
+
+    expect(await resolveRepoRoot(gone)).toBe(realTmp(repo));
+  });
+
+  it('still returns null for a removed path that is not a Claude worktree', async () => {
+    const repo = path.join(tmpDir, 'repo');
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+
+    expect(await resolveRepoRoot(path.join(repo, 'sub', 'dir'))).toBeNull();
+    expect(await resolveRepoRoot(path.join(tmpDir, 'not-a-repo'))).toBeNull();
+  });
+
+  it('returns null when the derived parent is not a repo either', async () => {
+    const gone = path.join(tmpDir, 'nowhere', '.claude', 'worktrees', 'bridge-cse_01A');
+
+    expect(await resolveRepoRoot(gone)).toBeNull();
+  });
+
+  it('does not let the fallback override a real .git', async () => {
+    // A LIVE Claude worktree resolves through its own gitdir, not the shape.
+    const repo = path.join(tmpDir, 'repo');
+    const wtGitDir = path.join(repo, '.git', 'worktrees', 'live');
+    fs.mkdirSync(wtGitDir, { recursive: true });
+    const wt = path.join(repo, '.claude', 'worktrees', 'live');
+    fs.mkdirSync(wt, { recursive: true });
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${wtGitDir}\n`);
+
+    expect(await resolveRepoRoot(wt)).toBe(realTmp(repo));
+  });
+
   it('returns the cwd for a main checkout (.git is a directory)', async () => {
     const repo = path.join(tmpDir, 'repo');
     fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
