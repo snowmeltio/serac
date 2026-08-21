@@ -709,37 +709,56 @@ describe('statusSummaryHtml', () => {
 });
 
 describe('rcIndicatorHtml', () => {
-  it('marks the serving state with a filled dot and the dish', () => {
-    const html = rcIndicatorHtml(true);
-    expect(html).toContain('rc-indicator on');
-    expect(html).toContain('rc-dot');
-    expect(html).toContain('\u{1F4E1}');
-    expect(html).toContain('serving this workspace');
+  const full = { autoEnrol: true, serving: true };
+  const common = { autoEnrol: true, serving: false };
+  const inverse = { autoEnrol: false, serving: true };
+  const off = { autoEnrol: false, serving: false };
+
+  it('fills one bar per fact that is on', () => {
+    expect(rcIndicatorHtml(full)).toContain('rc-indicator rc-level-2 on');
+    expect((rcIndicatorHtml(full).match(/rc-bar lit/g) ?? []).length).toBe(2);
+    expect(rcIndicatorHtml(common)).toContain('rc-level-1 half');
+    expect((rcIndicatorHtml(common).match(/rc-bar lit/g) ?? []).length).toBe(1);
+    expect(rcIndicatorHtml(inverse)).toContain('rc-level-1 half');
+    expect(rcIndicatorHtml(off)).toContain('rc-level-0 off');
+    expect(rcIndicatorHtml(off)).not.toContain('rc-bar lit');
   });
 
-  it('marks the off state distinctly, and says what to run', () => {
-    const html = rcIndicatorHtml(false);
-    expect(html).toContain('rc-indicator off');
-    expect(html).not.toContain('rc-indicator on');
-    expect(html).toContain('claude rc');
+  it('is a button below full, plain at full', () => {
+    expect(rcIndicatorHtml(full)).not.toContain('data-rc-indicator');
+    expect(rcIndicatorHtml(full)).not.toContain('role="button"');
+    for (const f of [common, inverse, off]) {
+      expect(rcIndicatorHtml(f)).toContain('data-rc-indicator="1"');
+      expect(rcIndicatorHtml(f)).toContain('role="button"');
+      expect(rcIndicatorHtml(f)).toContain('tabindex="0"');
+    }
   });
 
-  it('carries no visible text in either state — the words live in the tooltip', () => {
-    for (const html of [rcIndicatorHtml(true), rcIndicatorHtml(false)]) {
-      // Strip tags and attributes, leaving only rendered text.
-      const visible = html.replace(/<[^>]*>/g, '').trim();
+  it('tooltip spells out both facts and the click, never the terminal command', () => {
+    const html = rcIndicatorHtml(common);
+    expect(html).toContain('go to your phone automatically');
+    expect(html).toContain('No Remote Control server is running here');
+    expect(html).toContain('Click for ways to turn the rest on');
+    expect(html).not.toContain('claude rc');
+    expect(rcIndicatorHtml(full)).not.toContain('Click for');
+  });
+
+  it('carries no visible text in any state — the words live in the tooltip', () => {
+    for (const f of [full, common, inverse, off]) {
+      const visible = rcIndicatorHtml(f).replace(/<[^>]*>/g, '').trim();
       expect(visible).toBe('\u{1F4E1}');
     }
   });
 
   it('escapes the tooltip it builds', () => {
-    // The quoted command in the off tooltip must not break out of title="".
-    expect(rcIndicatorHtml(false)).not.toMatch(/title="[^"]*"claude/);
-    expect(rcIndicatorHtml(false)).toContain('&quot;claude rc&quot;');
+    // The quoted setting name in the off tooltip must not break out of title="".
+    expect(rcIndicatorHtml(off)).not.toMatch(/title="[^"]*"Enable/);
+    expect(rcIndicatorHtml(off)).toContain('&quot;Enable Remote Control for all sessions&quot;');
   });
 
   it('always renders an indicator — off is a real state, not an absence', () => {
-    expect(rcIndicatorHtml(false).length).toBeGreaterThan(0);
+    expect(rcIndicatorHtml(off).length).toBeGreaterThan(0);
+    expect(rcIndicatorHtml({ autoEnrol: null, serving: false })).toContain('rc-level-0 off');
   });
 });
 

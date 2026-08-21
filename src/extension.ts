@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { SessionDiscovery } from './sessionDiscovery.js';
@@ -12,7 +13,8 @@ import type { DetailSource } from './types.js';
 import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
-import { readCompactSettings, getClaudeSettingsPath, type CompactSettings } from './claudeSettings.js';
+import { readCompactSettings, getClaudeSettingsPath, readRemoteControlAtStartup, type CompactSettings } from './claudeSettings.js';
+import { rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems } from './rcLauncher.js';
 import { sanitiseWorkspaceKey, applyWorkflowLiveStatus, normPath, computeWaitingCount, formatAge } from './panelUtils.js';
 import { buildWorktreeRows } from './worktreeRows.js';
 import {
@@ -902,6 +904,10 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // Start discovery and wire updates
   let lastSendTime = 0;
   let compactSettings: CompactSettings = readCompactSettings();
+  // Claude Code's remoteControlAtStartup — one of the two top-bar signal
+  // facts (the other is the rc server, read per poll). Reloaded by the
+  // settings watchers below; never written by Serac.
+  let rcAutoEnrol: boolean | null = readRemoteControlAtStartup(wsPath);
   function sendUpdate() {
     const now = Date.now();
     if (now - lastSendTime < 200) { return; }
@@ -928,6 +934,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       foreignWorkspaces, compactSettings, teams, foreignWaiting,
       olderSessionCount, foreignRunning, worktrees, workflows,
       rcServing: discovery.getRcServing(),
+      rcAutoEnrol,
     });
     detailPanel.refresh();
 
@@ -994,11 +1001,74 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   const settingsWatcher = vscode.workspace.createFileSystemWatcher(
     new vscode.RelativePattern(vscode.Uri.file(path.dirname(settingsPath)), path.basename(settingsPath)),
   );
-  const reloadSettings = () => { compactSettings = readCompactSettings(); sendUpdate(); };
+  const reloadSettings = () => {
+    compactSettings = readCompactSettings();
+    rcAutoEnrol = readRemoteControlAtStartup(wsPath);
+    sendUpdate();
+  };
   settingsWatcher.onDidChange(reloadSettings);
   settingsWatcher.onDidCreate(reloadSettings);
   settingsWatcher.onDidDelete(reloadSettings);
   context.subscriptions.push(settingsWatcher);
+  // The project/local layers (<ws>/.claude/settings.json, settings.local.json)
+  // can override remoteControlAtStartup; watch them too.
+  const projectSettingsWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(path.join(wsPath, '.claude')), 'settings{,.local}.json'),
+  );
+  projectSettingsWatcher.onDidChange(reloadSettings);
+  projectSettingsWatcher.onDidCreate(reloadSettings);
+  projectSettingsWatcher.onDidDelete(reloadSettings);
+  context.subscriptions.push(projectSettingsWatcher);
+
+  // Top-bar Remote Control indicator, clicked while below full: offer the
+  // ways to turn the rest on. Serac may START a server — in a terminal the
+  // user can see and close — and never stops one; it never writes
+  // remoteControlAtStartup (the user's account-level consent), only opens
+  // settings.json and points at it.
+  panelProvider.setRcIndicatorClickHandler(() => {
+    void (async () => {
+      const facts = { autoEnrol: rcAutoEnrol, serving: discovery.getRcServing() };
+      const items = rcQuickPickItems(facts, process.platform);
+      if (items.length === 0) {
+        vscode.window.setStatusBarMessage('Remote Control is already fully on for this workspace.', 4000);
+        return;
+      }
+      const picked = await vscode.window.showQuickPick(items, {
+        placeHolder: 'Remote Control for this workspace',
+        ignoreFocusOut: true,
+      });
+      if (!picked) { return; }
+      const home = process.env.HOME ?? os.homedir();
+      const exists = (p: string): boolean => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+      if (picked.action === 'start' || picked.action === 'install') {
+        const terminal = vscode.window.createTerminal({
+          name: picked.action === 'start' ? 'Remote Control server' : 'Remote Control installer',
+          cwd: wsPath,
+          env: rcTerminalEnvOverrides(process.env),
+        });
+        terminal.show(false);
+        terminal.sendText(picked.action === 'start'
+          ? rcStartCommand(locateClaudeCli(home, exists))
+          : rcInstallCommand(context.extensionPath, wsPath), true);
+        vscode.window.setStatusBarMessage(picked.action === 'start'
+          ? 'Remote Control server starting in the terminal. The indicator fills in within a poll or two.'
+          : 'Remote Control installer running in the terminal.', 8000);
+        return;
+      }
+      // 'settings': open and point, never write.
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(getClaudeSettingsPath()));
+      const editor = await vscode.window.showTextDocument(doc, { preview: false });
+      const idx = doc.getText().indexOf('remoteControlAtStartup');
+      if (idx >= 0) {
+        const pos = doc.positionAt(idx);
+        editor.selection = new vscode.Selection(pos, pos);
+        editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+      }
+      void vscode.window.showInformationMessage(
+        'Turn on "Enable Remote Control for all sessions" in Claude Code\'s Remote Control popup, or set "remoteControlAtStartup": true in this file. Serac does not change it for you.',
+      );
+    })();
+  });
 
   // Timestamp freshness timer (relative time labels in UI). Reactive to
   // serac.refresh.intervalSeconds — rebuilt whenever the user changes it.

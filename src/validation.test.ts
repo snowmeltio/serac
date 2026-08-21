@@ -90,6 +90,7 @@ describe('parseWebviewCommand', () => {
   it('parses simple commands', () => {
     expect(parseWebviewCommand({ type: 'newChat' })).toEqual({ type: 'newChat' });
     expect(parseWebviewCommand({ type: 'requestUpdate' })).toEqual({ type: 'requestUpdate' });
+    expect(parseWebviewCommand({ type: 'rcIndicatorClick' })).toEqual({ type: 'rcIndicatorClick' });
     expect(parseWebviewCommand({ type: 'cleanup' })).toEqual({ type: 'cleanup' });
   });
 

@@ -17,6 +17,9 @@ vi.mock('vscode', () => {
       }),
     },
     ViewColumn: { One: 1, Active: -1 },
+    TextEditorRevealType: { InCenter: 2 },
+    Selection: class { constructor(public anchor: unknown, public active: unknown) {} },
+    Range: class { constructor(public start: unknown, public end: unknown) {} },
     RelativePattern: class { constructor(public base: unknown, public pattern: string) {} },
     // nativeDocs.ts's NativeDocsProvider (Phase 4, DESIGN-DETAIL-PANE-V2.md)
     // constructs one of these at activation — declared, never fired (see its
@@ -59,6 +62,7 @@ vi.mock('vscode', () => {
       showWarningMessage: vi.fn(),
       showErrorMessage: vi.fn(),
       showTextDocument: vi.fn(),
+      createTerminal: vi.fn(),
       setStatusBarMessage: vi.fn(),
       tabGroups,
     },
@@ -123,6 +127,7 @@ const mockPanelProvider = {
   focusSession: vi.fn(),
   setFocusHandler: vi.fn(),
   setResolveDualWriterHandler: vi.fn(),
+  setRcIndicatorClickHandler: vi.fn(),
   setDismissHandler: vi.fn(),
   setUndismissHandler: vi.fn(),
   setTranscriptHandler: vi.fn(),
@@ -163,6 +168,7 @@ vi.mock('./sessionRepair.js', () => ({
 vi.mock('./claudeSettings.js', () => ({
   readCompactSettings: vi.fn().mockReturnValue({ autoCompactWindow: 200_000, autoCompactPct: 95 }),
   getClaudeSettingsPath: vi.fn().mockReturnValue('/mock/.claude/settings.json'),
+  readRemoteControlAtStartup: vi.fn().mockReturnValue(true),
 }));
 
 // Deterministic env signals: the real module reads ~/.claude on THIS machine —
@@ -198,6 +204,7 @@ import { ensureSessionMetadata } from './sessionRepair.js';
 describe('extension', () => {
   let context: {
     extensionUri: { scheme: string; fsPath: string };
+    extensionPath: string;
     globalStorageUri: { scheme: string; fsPath: string };
     subscriptions: Array<{ dispose: () => void }>;
   };
@@ -207,6 +214,7 @@ describe('extension', () => {
     vi.useFakeTimers();
     context = {
       extensionUri: { scheme: 'file', fsPath: '/test/ext' },
+      extensionPath: '/test/ext',
       globalStorageUri: { scheme: 'file', fsPath: '/test/data/User/globalStorage/snowmeltio.serac' },
       subscriptions: [],
     };
@@ -613,6 +621,128 @@ describe('extension', () => {
       // Never falls through to the focus-then-close fallback either.
       expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
         'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+    });
+  });
+
+  describe('Remote Control indicator click handler', () => {
+    const getHandler = () =>
+      vi.mocked(mockPanelProvider.setRcIndicatorClickHandler).mock.calls[0][0] as () => void;
+    const makeTerminal = () => {
+      const terminal = { show: vi.fn(), sendText: vi.fn(), dispose: vi.fn() };
+      vi.mocked(vscode.window.createTerminal).mockReturnValue(terminal as any);
+      return terminal;
+    };
+
+    it('offers only what is off: auto-enrol on + no server → server routes, no settings row', async () => {
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce(undefined);
+      getHandler()();
+      await vi.waitFor(() => expect(vscode.window.showQuickPick).toHaveBeenCalled());
+      const items = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as Array<{ action: string }>;
+      const actions = items.map(i => i.action);
+      expect(actions).toContain('start');
+      expect(actions).not.toContain('settings');
+      expect(vscode.window.createTerminal).not.toHaveBeenCalled();
+    });
+
+    it('"start" opens a visible terminal in the workspace with the exthost env stripped and runs claude rc', async () => {
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const terminal = makeTerminal();
+      vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(
+        async (items: any) => (items as Array<{ action: string }>).find(i => i.action === 'start'));
+      const saved = { VSCODE_PID: process.env.VSCODE_PID, ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE };
+      process.env.VSCODE_PID = '4242';
+      process.env.ELECTRON_RUN_AS_NODE = '1';
+      try {
+        getHandler()();
+        await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      } finally {
+        if (saved.VSCODE_PID === undefined) { delete process.env.VSCODE_PID; } else { process.env.VSCODE_PID = saved.VSCODE_PID; }
+        if (saved.ELECTRON_RUN_AS_NODE === undefined) { delete process.env.ELECTRON_RUN_AS_NODE; } else { process.env.ELECTRON_RUN_AS_NODE = saved.ELECTRON_RUN_AS_NODE; }
+      }
+      const opts = vi.mocked(vscode.window.createTerminal).mock.calls[0][0] as any;
+      expect(opts.cwd).toBe('/test/ws');
+      expect(opts.env).toMatchObject({ VSCODE_PID: null, ELECTRON_RUN_AS_NODE: null });
+      expect(opts.env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
+      expect(terminal.show).toHaveBeenCalled();
+      const cmd = terminal.sendText.mock.calls[0][0] as string;
+      expect(cmd).toMatch(/claude rc --spawn worktree$/);
+      // Serac starts; it never stops. No process handle is kept, no kill path exists.
+      expect(terminal.dispose).not.toHaveBeenCalled();
+    });
+
+    it('"install" runs the shipped installer from the extension path against this workspace', async () => {
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const terminal = makeTerminal();
+      vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(
+        async (items: any) => (items as Array<{ action: string }>).find(i => i.action === 'install'));
+      getHandler()();
+      await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      const cmd = terminal.sendText.mock.calls[0][0] as string;
+      expect(cmd).toBe('bash /test/ext/scripts/rc-headless/install.sh /test/ws');
+    });
+
+    it('"settings" opens settings.json at the key and writes nothing', async () => {
+      const { readRemoteControlAtStartup } = await import('./claudeSettings.js');
+      vi.mocked(readRemoteControlAtStartup).mockReturnValueOnce(false);
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(true);
+      const text = '{\n  "model": "opus",\n  "remoteControlAtStartup": false\n}\n';
+      const doc = { getText: () => text, positionAt: vi.fn((i: number) => ({ offset: i })) };
+      vi.mocked(vscode.workspace.openTextDocument).mockResolvedValueOnce(doc as any);
+      const editor = { selection: undefined as unknown, revealRange: vi.fn() };
+      vi.mocked(vscode.window.showTextDocument).mockResolvedValueOnce(editor as any);
+      vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(
+        async (items: any) => {
+          const actions = (items as Array<{ action: string }>).map(i => i.action);
+          // Server is on, so only the settings route is offered.
+          expect(actions).toEqual(['settings']);
+          return (items as Array<{ action: string }>)[0];
+        });
+      getHandler()();
+      await vi.waitFor(() => expect(editor.revealRange).toHaveBeenCalled());
+      expect(vscode.workspace.openTextDocument).toHaveBeenCalledWith(
+        expect.objectContaining({ fsPath: '/mock/.claude/settings.json' }));
+      expect(doc.positionAt).toHaveBeenCalledWith(text.indexOf('remoteControlAtStartup'));
+      expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+        expect.stringContaining('Serac does not change it'));
+      expect(vscode.window.createTerminal).not.toHaveBeenCalled();
+      expect(vscode.workspace.openTextDocument).toHaveBeenCalledTimes(1);
+    });
+
+    it('says so and offers nothing when both facts are already on', async () => {
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(true);
+      getHandler()();
+      await vi.waitFor(() => expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+        expect.stringContaining('already fully on'), expect.any(Number)));
+      expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    });
+
+    it('passes rcAutoEnrol to the panel on every update, re-read when a settings file changes', async () => {
+      const { readRemoteControlAtStartup } = await import('./claudeSettings.js');
+      activate(context as any);
+      const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
+      vi.advanceTimersByTime(700);
+      startCb();
+      const lastCall = () => vi.mocked(mockPanelProvider.updateSessions).mock.calls.at(-1)![0] as any;
+      expect(lastCall()).toHaveProperty('rcAutoEnrol', true);
+      expect(readRemoteControlAtStartup).toHaveBeenCalledWith('/test/ws');
+
+      // Both the user settings.json watcher and the workspace .claude/settings
+      // watcher re-read the flag; fire the project-layer one.
+      const watchers = vi.mocked(vscode.workspace.createFileSystemWatcher).mock;
+      const projectIdx = watchers.calls.findIndex(c => (c[0] as any)?.pattern === 'settings{,.local}.json');
+      expect(projectIdx).toBeGreaterThanOrEqual(0);
+      const onDidChange = vi.mocked((watchers.results[projectIdx].value as any).onDidChange);
+      vi.mocked(readRemoteControlAtStartup).mockReturnValue(false);
+      vi.advanceTimersByTime(300);
+      (onDidChange.mock.calls[0][0] as () => void)();
+      expect(lastCall()).toHaveProperty('rcAutoEnrol', false);
+      vi.mocked(readRemoteControlAtStartup).mockReturnValue(true);
     });
   });
 

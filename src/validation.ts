@@ -13,6 +13,7 @@ const VALID_COMMAND_TYPES = new Set([
   'newChat', 'copyToClipboard', 'requestUpdate', 'cleanup', 'archiveRange',
   'undismissTeam', 'openWorkspace', 'footerSlotClick',
   'openDetail', 'dismissWorkflow', 'undismissWorkflow', 'resolveDualWriter',
+  'rcIndicatorClick',
 ]);
 
 /** Valid detail-panel sources (mirrors DetailSource in types.ts). */

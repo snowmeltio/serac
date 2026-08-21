@@ -423,11 +423,14 @@ h2 .count {
 .count-done    { color: var(--accent-done-soft-text); }
 .count-stale   { color: var(--chip-stale-text); }
 
-.rc-indicator { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; line-height: 1; }
-.rc-dot { width: 6px; height: 6px; border-radius: 50%; box-sizing: border-box; }
-.rc-indicator.on .rc-dot { background: var(--sm-arctic-teal); border: 1px solid var(--sm-arctic-teal); }
-.rc-indicator.off .rc-dot { background: transparent; border: 1px solid var(--panel-muted); }
+.rc-indicator { display: inline-flex; align-items: flex-end; gap: 4px; font-size: 10px; line-height: 1; }
+.rc-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 8px; }
+.rc-bar { width: 3px; box-sizing: border-box; border-radius: 1px; background: transparent; border: 1px solid var(--panel-muted); }
+.rc-bar:nth-child(1) { height: 5px; }
+.rc-bar:nth-child(2) { height: 8px; }
+.rc-bar.lit { background: var(--sm-arctic-teal); border-color: var(--sm-arctic-teal); }
 .rc-indicator.off { opacity: 0.55; filter: grayscale(1); }
+.rc-indicator.half { opacity: 0.85; }
 
 /* ── Mini card, used in the anatomy panel and state specimens ───── */
 .mini {
@@ -878,16 +881,18 @@ h2 .count {
 
     <div class="entry">
       <div class="swatch on-bg">
-        <span class="rc-indicator on"><span class="rc-dot"></span>📡</span>
+        <span class="rc-indicator on"><span class="rc-bars"><span class="rc-bar lit"></span><span class="rc-bar lit"></span></span>📡</span>
         <span style="width:14px"></span>
-        <span class="rc-indicator off"><span class="rc-dot"></span>📡</span>
+        <span class="rc-indicator half"><span class="rc-bars"><span class="rc-bar lit"></span><span class="rc-bar"></span></span>📡</span>
+        <span style="width:14px"></span>
+        <span class="rc-indicator off"><span class="rc-bars"><span class="rc-bar"></span><span class="rc-bar"></span></span>📡</span>
       </div>
       <div class="entry-body">
         <p class="entry-name">Remote Control <span class="tag-new">new</span></p>
-        <p class="entry-when">far right · filled dot = serving</p>
-        <p class="entry-what">Whether a Remote Control server is serving this workspace — i.e. whether <strong>you can start a new session here from your phone</strong> right now. Filled teal dot and a bright dish when it is; hollow dot and a faded dish when it isn't.</p>
-        <p class="entry-what">The two states differ by the dot's <em>fill</em> as well as its colour, so it survives a colour-blind read. It's wordless by design — the top bar's job is the counts; hover for the explanation.</p>
-        <p class="entry-what">Worth knowing: sessions you started <em>here</em> are reachable from the phone either way. The server is only needed to <strong>start new ones</strong>.</p>
+        <p class="entry-when">far right · one bar per fact that is on</p>
+        <p class="entry-what">Two phone-signal bars. The short bar: <strong>sessions you start here go to your phone automatically</strong> (Claude Code's "Enable Remote Control for all sessions"). The tall bar: <strong>a Remote Control server is running here</strong>, so the phone can also start new sessions in this workspace, and they keep running with VS Code closed. Two lit is full, one is partial, none is off — the level is how many, the tooltip says which.</p>
+        <p class="entry-what">Below full it's a button: start a server in a VS Code terminal (yours to close; Serac never stops one), install the always-on launchd server (macOS), or open Claude Code's <span class="inline-code">settings.json</span> at <span class="inline-code">remoteControlAtStartup</span>, which Serac points at but never writes.</p>
+        <p class="entry-what">Bars differ by <em>fill</em>, not colour alone, so it survives a colour-blind read. Worth knowing: the common state is one bar — sessions you started <em>here</em> are reachable from the phone either way; the server is only needed to <strong>start new ones</strong>.</p>
       </div>
     </div>
   </div>

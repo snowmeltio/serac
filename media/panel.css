@@ -137,26 +137,35 @@ body {
 
 /* Remote Control indicator — right end of the top bar (.status-summary's
  * flex:1 pushes it there). Wordless by design: a state dot plus a dish, with
- * the words in the tooltip. On/off differ by dot FILL as well as colour, so
- * the state survives a colour-blind read. */
+ * the words in the tooltip. Two phone-signal bars: level = how many of the
+ * two facts are on (auto-enrol, server here — rcState.ts). Levels differ by
+ * how many bars are FILLED, not by colour alone, so the state survives a
+ * colour-blind read. Below full the span is a button (host quick pick). */
 .rc-slot { display: flex; align-items: center; flex: 0 0 auto; }
 .rc-indicator {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 4px;
   font-size: 10px;
   line-height: 1;
   cursor: default;
 }
-.rc-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+.rc-indicator[role="button"] { cursor: pointer; }
+.rc-indicator[role="button"]:hover { filter: none; opacity: 1; }
+.rc-indicator[role="button"]:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; border-radius: 2px; }
+.rc-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 8px; }
+.rc-bar {
+  width: 3px;
   box-sizing: border-box;
+  border-radius: 1px;
+  background: transparent;
+  border: 1px solid var(--vscode-descriptionForeground, #888888);
 }
-.rc-indicator.on .rc-dot { background: var(--sm-arctic-teal); border: 1px solid var(--sm-arctic-teal); }
-.rc-indicator.off .rc-dot { background: transparent; border: 1px solid var(--vscode-descriptionForeground, #888888); }
+.rc-bar:nth-child(1) { height: 5px; }
+.rc-bar:nth-child(2) { height: 8px; }
+.rc-bar.lit { background: var(--sm-arctic-teal); border-color: var(--sm-arctic-teal); }
 .rc-indicator.off { opacity: 0.55; filter: grayscale(1); }
+.rc-indicator.half { opacity: 0.85; }
 
 /* Cross-workspace rows. max-height keeps a long workspace list from pushing
  * the rest of the panel offscreen — caps at ~12 rows then scrolls internally.

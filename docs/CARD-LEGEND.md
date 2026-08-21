@@ -139,9 +139,11 @@ Always last. **📜** opens the transcript. **×** archives the card; on a live 
 
 **Counts** — one number per state in the same colours the cards use. A state with nothing in it is omitted rather than shown as a zero.
 
-**📡 Remote Control** — at the far right, whether a `claude rc` server is serving this workspace: that is, whether you can **start a new session here from your phone** right now. Filled teal dot and a bright dish when it is; hollow dot and a faded dish when it isn't. The two states differ by the dot's *fill* as well as its colour, so it survives a colour-blind read, and it's wordless by design — hover for the explanation.
+**📡 Remote Control** — at the far right, two phone-signal bars and a dish. Each bar is one fact: the short bar, **sessions you start here go to your phone automatically** (Claude Code's "Enable Remote Control for all sessions"); the tall bar, **a Remote Control server is running here**, so the phone can also *start* new sessions in this workspace, and they keep running with VS Code closed. Two bars lit is full; one is partial; none is off. The level is how many are on, not which — the tooltip says which. Bars differ by *fill*, not colour alone, so it survives a colour-blind read, and it's wordless by design — hover for the explanation.
 
-Worth knowing: sessions you started *here* are reachable from the phone either way. The server is only needed to **start new ones**. See [`scripts/rc-headless/`](../scripts/rc-headless/) for keeping one running without a terminal open.
+Below full it's a button. Click for the ways to turn the rest on: start a server in a VS Code terminal (it's yours to close; Serac never stops one), install the always-on launchd server from [`scripts/rc-headless/`](../scripts/rc-headless/) (macOS), or open Claude Code's `settings.json` at `remoteControlAtStartup`, which Serac points at but never writes.
+
+Worth knowing: the common state is one bar. Sessions you started *here* are reachable from the phone either way; the server is only needed to **start new ones** from the phone.
 
 ## Four rules the whole thing follows
 

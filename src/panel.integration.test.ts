@@ -1455,28 +1455,33 @@ describe('panel.ts integration', () => {
   });
 
   describe('Remote Control top-bar indicator', () => {
-    it('renders the off state when the host reports no server', () => {
-      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-1' })], rcServing: false });
+    it('renders the off state when neither fact is on', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-1' })], rcServing: false, rcAutoEnrol: false });
       const ind = document.querySelector('.rc-indicator');
       expect(ind).toBeTruthy();
       expect(ind!.className).toContain('off');
+      expect(ind!.querySelectorAll('.rc-bar.lit').length).toBe(0);
     });
 
-    it('flips to the on state when a server starts serving', () => {
-      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-2' })], rcServing: false });
-      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-2' })], rcServing: true });
-      const ind = document.querySelector('.rc-indicator')!;
+    it('shows one bar for the common case (auto-enrol on, no server) and fills to two when a server starts', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-2' })], rcServing: false, rcAutoEnrol: true });
+      let ind = document.querySelector('.rc-indicator')!;
+      expect(ind.className).toContain('half');
+      expect(ind.querySelectorAll('.rc-bar.lit').length).toBe(1);
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-2' })], rcServing: true, rcAutoEnrol: true });
+      ind = document.querySelector('.rc-indicator')!;
       expect(ind.className).toContain('on');
-      expect(ind.className).not.toContain('off');
+      expect(ind.className).not.toContain('half');
+      expect(ind.querySelectorAll('.rc-bar.lit').length).toBe(2);
     });
 
-    it('flips back off when the server goes away', () => {
-      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-3' })], rcServing: true });
-      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-3' })], rcServing: false });
-      expect(document.querySelector('.rc-indicator')!.className).toContain('off');
+    it('drops back when the server goes away', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-3' })], rcServing: true, rcAutoEnrol: true });
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-3' })], rcServing: false, rcAutoEnrol: true });
+      expect(document.querySelector('.rc-indicator')!.className).toContain('half');
     });
 
-    it('defaults to off when the field is absent (older host)', () => {
+    it('defaults to off when both fields are absent (older host)', () => {
       sendUpdate({ sessions: [makeSession({ sessionId: 'rc-4' })] });
       expect(document.querySelector('.rc-indicator')!.className).toContain('off');
     });
@@ -1484,7 +1489,7 @@ describe('panel.ts integration', () => {
     it('sits beside the status counts without displacing them', () => {
       sendUpdate({
         sessions: [makeSession({ sessionId: 'rc-5', status: 'running' })],
-        rcServing: true,
+        rcServing: true, rcAutoEnrol: true,
       });
       const topBar = document.querySelector('.top-bar')!;
       expect(topBar.querySelector('.status-summary')).toBeTruthy();
@@ -1495,10 +1500,32 @@ describe('panel.ts integration', () => {
 
     it('keeps exactly one indicator across many updates', () => {
       for (const serving of [true, false, true, true, false]) {
-        sendUpdate({ sessions: [makeSession({ sessionId: 'rc-6' })], rcServing: serving });
+        sendUpdate({ sessions: [makeSession({ sessionId: 'rc-6' })], rcServing: serving, rcAutoEnrol: true });
       }
       expect(document.querySelectorAll('.rc-indicator').length).toBe(1);
       expect(document.querySelectorAll('.rc-slot').length).toBe(1);
+    });
+
+    it('clicking below full asks the host for the picker; at full it is not a button', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-7' })], rcServing: false, rcAutoEnrol: true });
+      postedMessages = [];
+      (document.querySelector('.rc-indicator') as HTMLElement).click();
+      expect(postedMessages).toContainEqual({ type: 'rcIndicatorClick' });
+
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-7' })], rcServing: true, rcAutoEnrol: true });
+      postedMessages = [];
+      const full = document.querySelector('.rc-indicator') as HTMLElement;
+      expect(full.getAttribute('role')).toBeNull();
+      full.click();
+      expect(postedMessages).not.toContainEqual({ type: 'rcIndicatorClick' });
+    });
+
+    it('Enter on the focused indicator routes like a click', () => {
+      sendUpdate({ sessions: [makeSession({ sessionId: 'rc-8' })], rcServing: false, rcAutoEnrol: false });
+      postedMessages = [];
+      const ind = document.querySelector('.rc-indicator') as HTMLElement;
+      ind.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      expect(postedMessages).toContainEqual({ type: 'rcIndicatorClick' });
     });
   });
 
