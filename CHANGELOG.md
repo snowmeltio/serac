@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.22.1 (2026-08-21) — Remote Control clears up after itself
+
+### Fixed
+- **A finished Remote Control session no longer leaves a dead row in "Other workspaces".** Every session your phone starts runs in a one-shot `<repo>/.claude/worktrees/bridge-cse_*` worktree that Claude Code deletes when the session ends, but its transcript lives on. Serac found the owning repo by reading the worktree's own `.git`, which is gone by then, so the transcript grouped nowhere and surfaced as its own workspace row named after the dead worktree. The owning repo is now derived from the `<repo>/.claude/worktrees/<name>` path shape and confirmed against *that* repo's real `.git`, so it still answers after the directory is gone, and our own worktrees are never treated as foreign.
+- **Done counts you could not clear.** A session in a removed worktree now counts as stale rather than done. No window can ever open that folder, so no acknowledgement could arrive and the teal done-but-unseen mark sat there until the age gate. Same judgement Serac already makes for a dead one-shot card, applied to the count. Dismissing a sibling-worktree card also writes through to that worktree's own state now, instead of stopping at this window's overlay, which is what made dismissing a *running* session permanent.
+- **Two windows disagreeing about the same folder.** A repo root was resolved once and cached forever, so a long-lived window and a freshly opened one could show the same two sessions as flat rows in one and folded into the repo row in the other. It is re-resolved on the same cadence as the worktree list.
+- **A phantom done card the moment Claude Code creates a transcript.** Zero-length JSONL files are skipped until something is written to them.
+- **"Start a Remote Control server here" reuses its terminal instead of opening another one.** Two `claude rc` servers on one directory displace each other, and the loser's shutdown lines land in whichever terminal you are not looking at. A `Remote Control server` terminal already open in this window is reused; one whose shell has exited is skipped. Both the picker and the new prompt below also re-check that nothing is serving at the moment you answer, so an offer left sitting for a few minutes cannot start a rival server.
+- **Serac now tells you when the server it started has stopped.** `claude rc` paints its status as a pinned footer and never repaints it on exit, so a terminal can sit on "Connected" indefinitely above a live shell prompt, with the server long gone and the dark signal bar the only tell. Serac says it once, twenty seconds after the server stops registering, and offers to start it again or show you the terminal. It stays quiet when it never saw the server come up in the first place, and when you close the terminal yourself — that is how you stop a server, and Serac still never stops one for you.
+
 ## v1.22.0 (2026-08-21) — Remote Control: what's on, and how to turn the rest on
 
 ### Added
