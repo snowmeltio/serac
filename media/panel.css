@@ -1038,6 +1038,28 @@ body.vscode-light .wf-badge { background: rgba(var(--sm-arctic-teal-rgb), 0.12);
  * chip; the card itself stays undimmed (this window's claim is real too). */
 .dual-writer-chip { color: var(--accent-failed-text); }
 .dual-writer-chip:hover { background: rgba(var(--sm-salmon-red-rgb), 0.14); }
+/* 📡 with a slash — Remote Control was switched off for this session (the
+ * chat popup's × or /remote-control); it is not on the phone and won't come
+ * back by itself. Neutral tint: an off state, not a conflict. The slash is a
+ * pseudo-element so the glyph is the same dish the worktree chip uses. */
+.rc-off-chip {
+  position: relative;
+  color: var(--vscode-descriptionForeground, #888888);
+  opacity: 0.85;
+  font-size: 10px;
+}
+.rc-off-chip::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 50%;
+  height: 1.5px;
+  background: currentColor;
+  transform: rotate(-35deg);
+  pointer-events: none;
+}
+.rc-off-chip:hover { opacity: 1; }
 .wf-view-chip:focus-visible {
   outline: 1px solid currentColor;
   outline-offset: 1px;

@@ -548,6 +548,27 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     metaHtml += renderDetailChip(label, hasWf ? 'workflow' : 'subagents',
       s.sessionId, s.sessionId, chipState, agentsChipHtml(live));
   }
+  // Remote Control was switched off for this session — the × on Claude
+  // Code's "Remote Control is active" popup (or /remote-control) archives
+  // its bridge session, the transcript records it (bridgeState 'dropped'),
+  // and it vanishes from the phone without coming back by itself. Only while
+  // the process lives: a dead session has nothing to reconnect, and resuming
+  // it re-enrols anyway. The webview cannot type /remote-control into the
+  // chat, so the chip's click is the card's own activation (open here /
+  // switch window / hand off) and the tooltip carries the one-line remedy.
+  // Never rendered for 'enrolled' or unset: under account-wide Remote
+  // Control every session enrols, so a positive mark would be noise.
+  if (s.bridgeState === 'dropped' && s.processLive !== false) {
+    const foreignCard = s.externalWriter === true
+      || !!(s.worktreeRoot && ctx.workspacePath && normPath(s.worktreeRoot) !== normPath(ctx.workspacePath));
+    const rcOffTitle = foreignCard
+      ? 'Remote Control is off for this session. Click to go to its window, then type /remote-control in the chat to reconnect.'
+      : 'Remote Control is off for this session \u2014 the \u00d7 on the "Remote Control is active" popup does that. Click to open the chat, then type /remote-control to reconnect (it reappears on your phone as a new session).';
+    metaHtml += '<span class="wf-tag wf-view-chip rc-off-chip" data-rc-off="'
+      + escapeHtml(s.sessionId) + '" role="button" tabindex="0"'
+      + ' title="' + escapeHtml(rcOffTitle) + '"'
+      + ' aria-label="Remote Control off for this session; activate to open the chat">\u{1F4E1}</span>';
+  }
   // Live in TWO windows at once — this window AND another both hold a live
   // interactive process for the session (two writers, one JSONL). Worse than
   // "active elsewhere", so it gets its own chip; clicking opens the resolve

@@ -357,6 +357,28 @@ h2 .count {
   font-size: 10px; color: var(--panel-muted);
   background: transparent; border-color: transparent; opacity: 0.85;
 }
+/* 📡 with a slash — Remote Control was switched off for this session (the
+ * chat popup's × or /remote-control); it is not on the phone and won't come
+ * back by itself. Neutral tint: an off state, not a conflict. The slash is a
+ * pseudo-element so the glyph is the same dish the worktree chip uses. */
+.rc-off-chip {
+  position: relative;
+  color: var(--vscode-descriptionForeground, #888888);
+  opacity: 0.85;
+  font-size: 10px;
+}
+.rc-off-chip::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 50%;
+  height: 1.5px;
+  background: currentColor;
+  transform: rotate(-35deg);
+  pointer-events: none;
+}
+.rc-off-chip:hover { opacity: 1; }
 
 .bg-shell-badge {
   font-size: 9px; line-height: 1.2; padding: 0 5px;
@@ -673,6 +695,16 @@ h2 .count {
         <p class="entry-name">Started from your phone <span class="tag-new">new</span></p>
         <p class="entry-when">replaces the letters on a bridge worktree</p>
         <p class="entry-what">This session was spawned remotely, and lives in a throwaway worktree created just for it. It gets a fixed dish rather than initials because <strong>a monogram of a random id would be meaningless</strong> — two letters that look like identity but carry none.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="wf-tag wf-view-chip rc-off-chip">📡</span></div>
+      <div class="entry-body">
+        <p class="entry-name">Remote Control is off for this session <span class="tag-new">new</span></p>
+        <p class="entry-when">📡 with a slash · only while the process is alive</p>
+        <p class="entry-what">The session was on your phone and now isn't: Remote Control was switched off <strong>for that one session</strong> — the × on Claude Code's "Remote Control is active" popup does it, and so does <span class="inline-code">/remote-control</span> in the chat. It won't come back by itself.</p>
+        <p class="entry-what">Click to open the chat, then type <span class="inline-code">/remote-control</span>. It reconnects in place in a few seconds and reappears on your phone as a new session. On a card from another worktree or window, the click takes you there instead.</p>
       </div>
     </div>
 

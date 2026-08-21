@@ -334,6 +334,17 @@ let FOREIGN_SLIDE_MS = 220;
       return;
     }
 
+    // 📡-with-a-slash chip — Remote Control is off for this session. The
+    // remedy is typed in that chat (/remote-control), which the webview
+    // cannot do for you, so the click is the card's own activation: open it
+    // here, switch to its worktree window, or hand off to its owning window.
+    const rcOffChip = target.closest<HTMLElement>('[data-rc-off]');
+    if (rcOffChip) {
+      e.stopPropagation();
+      activateSession(rcOffChip.dataset.rcOff!);
+      return;
+    }
+
     // Inline agent row (not-done teammate / subagent / workflow agent) — opens
     // the detail panel deep-linked to that agent. Checked before the generic
     // card-body handler (focusSession) that would otherwise swallow it.
@@ -511,6 +522,13 @@ let FOREIGN_SLIDE_MS = 220;
     if (dualChip) {
       e.preventDefault();
       dualChip.click();
+      return;
+    }
+    // 📡-slash Remote-Control-off chip — role=button span, same routing.
+    const rcOffChip = target.closest<HTMLElement>('[data-rc-off]');
+    if (rcOffChip) {
+      e.preventDefault();
+      rcOffChip.click();
       return;
     }
     // Companion footer slots — role=button rows, need Enter/Space wiring
