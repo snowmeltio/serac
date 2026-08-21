@@ -228,6 +228,49 @@ describe('trackJsonlSessions', () => {
     cleanup();
   });
 
+  it('skips a zero-length JSONL — an empty file is not a done session', async () => {
+    // SessionManager's initial state is `done` with lastActivity = now, so
+    // tracking an empty file manufactures a permanent done-but-unseen count
+    // that no acknowledgement can ever clear. Claude Code creates the file
+    // before writing its first record, so this is a real transient state.
+    const { wsPath, sessions, cleanup } = setup();
+    const now = Date.now();
+    fs.writeFileSync(path.join(wsPath, 'empty.jsonl'), '');
+    const makeManager = vi.fn((sessionId: string, filePath: string) => new SessionManager(sessionId, filePath, 'ws'));
+
+    const changed = await trackJsonlSessions({
+      wsPath, workspaceKey: 'ws', files: ['empty.jsonl'],
+      sessions, now, withinWindow: () => true, makeManager, warn: () => {},
+    });
+
+    expect(changed).toBe(false);
+    expect(sessions.size).toBe(0);
+    expect(makeManager).not.toHaveBeenCalled();
+    cleanup();
+  });
+
+  it('picks the same file up once it has a record', async () => {
+    const { wsPath, sessions, cleanup } = setup();
+    const now = Date.now();
+    const filePath = path.join(wsPath, 'later.jsonl');
+    fs.writeFileSync(filePath, '');
+    const opts = {
+      wsPath, workspaceKey: 'ws', files: ['later.jsonl'],
+      sessions, now, withinWindow: () => true,
+      makeManager: (sessionId: string, fp: string) => new SessionManager(sessionId, fp, 'ws'),
+      warn: () => {},
+    };
+    await trackJsonlSessions(opts);
+    expect(sessions.size).toBe(0);
+
+    fs.writeFileSync(filePath, jsonlLine('later', now));
+    const changed = await trackJsonlSessions(opts);
+
+    expect(changed).toBe(true);
+    expect(sessions.has('ws/later')).toBe(true);
+    cleanup();
+  });
+
   it('skips already-tracked sessions without constructing a manager', async () => {
     const { wsPath, sessions, cleanup } = setup();
     const now = Date.now();

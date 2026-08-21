@@ -90,6 +90,19 @@ export class SiblingWorktreeManager {
     return this.siblingKeys;
   }
 
+  /** Workspace key of the worktree that owns `sessionId`, or null when this
+   *  manager doesn't track it. Lets a dismiss write through to that worktree's
+   *  own session-meta.json instead of stopping at this window. */
+  ownerWorkspaceKeyFor(sessionId: string): string | null {
+    const suffix = '/' + sessionId;
+    for (const compositeId of this.sessions.keys()) {
+      if (compositeId.endsWith(suffix)) {
+        return compositeId.slice(0, compositeId.length - suffix.length);
+      }
+    }
+    return null;
+  }
+
   /** Whether it's time for a full rescan (every Nth poll cycle). No active
    *  fast-path: a rescan walks the whole projectsDir, too costly per cycle. */
   private readonly rescanGate = makeRescanGate();

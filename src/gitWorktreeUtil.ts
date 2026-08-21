@@ -2,13 +2,20 @@
  * Git repository root resolution.
  *
  * Determines the canonical repository root for a working-tree CWD without
- * shelling out to git. Handles three cases:
+ * shelling out to git. Handles four cases:
  *
  *  1. `<cwd>/.git` is a directory → cwd is the main checkout; repo root = cwd.
  *  2. `<cwd>/.git` is a file (linked worktree) → parse `gitdir: <path>`,
  *     read `<gitdir>/commondir` to find the main `.git` directory, then
  *     return its parent.
- *  3. No `.git` (or unreadable) → return `null`.
+ *  3. No `.git` (or unreadable) → derive the owning repo from the
+ *     `<repo>/.claude/worktrees/<name>` path shape and resolve that instead.
+ *     This is the removed-worktree case: Remote Control spawns a one-shot
+ *     worktree per phone session and it is gone by the time we look, but the
+ *     session's JSONL lives on. Without the fallback such a session resolves
+ *     to `null`, drops out of sibling classification, and resurfaces as a flat
+ *     "Other workspaces" row named after the dead worktree.
+ *  4. Nothing else matches → return `null`.
  *
  * Symlinks are resolved via `realpath` so two paths that point to the same
  * physical repo collapse to a single key. All errors are swallowed and
@@ -18,9 +25,54 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+/** Subdirectory (relative to a repo root) that Claude Code spawns its
+ *  per-session worktrees into. Remote Control puts one `bridge-cse_*` child
+ *  here per phone-spawned session. */
+export const CLAUDE_WORKTREE_SUBDIR = path.join('.claude', 'worktrees');
+
+/** Is `child` the same path as `parent`, or contained by it? Compares resolved
+ *  paths segment-wise so `/repo/serac-old` is not read as inside `/repo/serac`. */
+export function isAtOrUnder(child: string, parent: string): boolean {
+  if (!child || !parent) { return false; }
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  if (rel === '') { return true; }
+  return !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/** Derive the owning repo root from the `<repo>/.claude/worktrees/<name>` shape
+ *  by path alone. Deliberately does no fs work — the whole point is that it
+ *  still answers after the worktree directory has been removed. Only the
+ *  immediate child of the spawn dir qualifies: a deeper path is a subfolder of
+ *  a worktree, not the worktree itself. Returns null for any other shape. */
+export function repoRootFromClaudeWorktreePath(cwd: string): string | null {
+  if (!cwd || !path.isAbsolute(cwd)) { return null; }
+  const norm = path.resolve(cwd);
+  const spawnDir = path.dirname(norm);
+  // <repo>/.claude/worktrees → <repo>
+  const repoRoot = path.dirname(path.dirname(spawnDir));
+  if (repoRoot === spawnDir) { return null; }
+  if (path.join(repoRoot, CLAUDE_WORKTREE_SUBDIR) !== spawnDir) { return null; }
+  return repoRoot;
+}
+
 /** Resolve the repository root for a working-tree CWD. Returns null when
- *  the path isn't part of a git repo (or any fs error occurs). */
+ *  the path isn't part of a git repo (or any fs error occurs).
+ *
+ *  Two passes: read the CWD's own `.git`, and — when that can't answer, which
+ *  includes the CWD no longer existing — derive the owning repo from a Claude
+ *  worktree path shape and read *its* `.git`. The result is always backed by a
+ *  real `.git`, never a guess. The second pass resolves directly, so a nested
+ *  `.claude/worktrees` path cannot recurse. */
 export async function resolveRepoRoot(cwd: string): Promise<string | null> {
+  const direct = await resolveRepoRootDirect(cwd);
+  if (direct) { return direct; }
+  const derived = repoRootFromClaudeWorktreePath(cwd);
+  if (!derived) { return null; }
+  return resolveRepoRootDirect(derived);
+}
+
+/** Single-pass resolution: read `<cwd>/.git` and nothing else. */
+async function resolveRepoRootDirect(cwd: string): Promise<string | null> {
   if (!cwd) { return null; }
 
   let realCwd: string;

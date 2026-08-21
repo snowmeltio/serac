@@ -51,6 +51,14 @@ const nullLogger: Logger = {
  */
 export class SessionDiscovery {
   private readonly projectsDir: string;
+  /** Lazily created session-meta.json stores for OTHER workspaces we write
+   *  dismissals through to (sibling worktrees). One per owning workspace key;
+   *  each reloads before mutating. See writeThroughDismissal. */
+  private readonly ownerMetaStores: Map<string, SessionMetaStore> = new Map();
+  /** Serialises write-throughs per owning workspace. One write spans a reload
+   *  and a flush, so two overlapping clicks could otherwise resolve out of
+   *  order and leave the file disagreeing with the last one. */
+  private readonly ownerWriteQueues: Map<string, Promise<void>> = new Map();
   private readonly workspaceKey: string;
   private readonly metaFilePath: string;
   private sessions: Map<string, SessionManager> = new Map();
@@ -210,6 +218,7 @@ export class SessionDiscovery {
     this.meta.markDirty();
     // Fire-and-forget save — UI is updated from in-memory state
     this.meta.enqueueSave();
+    this.writeThroughDismissal(sessionId, true);
   }
 
   /** Undismiss a session */
@@ -217,6 +226,59 @@ export class SessionDiscovery {
     this.meta.getOrCreate(sessionId).dismissed = false;
     this.meta.markDirty();
     this.meta.enqueueSave();
+    this.writeThroughDismissal(sessionId, false);
+  }
+
+  /**
+   * Mirror a dismissal into the session's OWN workspace when the card belongs
+   * to a sibling worktree rather than to us.
+   *
+   * The local flag above is a view-state overlay (see getSnapshots), and until
+   * v1.22 that was the whole story — which meant a card dismissed here still
+   * counted towards the "Other workspaces" done/waiting chips in every other
+   * window, forever. Dismissing while the session was still RUNNING made it
+   * permanent: acknowledgeIfDone() no-ops on a running session and on any
+   * session not in the local map, so `acknowledged` never gets set and the
+   * done→stale rollover can never fire either.
+   *
+   * A sibling worktree is the same repo, the same user, and the same machine,
+   * so there is no meaningful sense in which the dismissal is "local only".
+   *
+   * Fire-and-forget: the UI renders from in-memory state and does not wait.
+   */
+  private writeThroughDismissal(sessionId: string, dismissed: boolean): void {
+    if (this.sessions.has(sessionId)) { return; }  // ours; already written above
+    const ownerKey = this.siblingManager.ownerWorkspaceKeyFor(sessionId);
+    if (!ownerKey || ownerKey === this.workspaceKey) { return; }
+    // Chain onto whatever is already in flight for this workspace. The
+    // reload → mutate → flush sequence spans two awaits; dismiss immediately
+    // followed by undismiss must land in click order, not in whichever order
+    // the two file reads happen to settle.
+    const queued = (this.ownerWriteQueues.get(ownerKey) ?? Promise.resolve())
+      .then(() => this.applyOwnerDismissal(ownerKey, sessionId, dismissed))
+      .catch((err) => {
+        this.log.warn(`Dismissal write-through failed (${ownerKey}/${sessionId}):`, err);
+      });
+    this.ownerWriteQueues.set(ownerKey, queued);
+  }
+
+  /** Read-modify-write of one entry in another workspace's session-meta.json.
+   *  Reloads first so a concurrent write by the owning window is merged rather
+   *  than clobbered — the store writes the whole map, so a stale map would
+   *  drop the owner's other entries. The reload→flush gap is still a race, but
+   *  it spans one user action rather than the life of the window. */
+  private async applyOwnerDismissal(ownerKey: string, sessionId: string, dismissed: boolean): Promise<void> {
+    let store = this.ownerMetaStores.get(ownerKey);
+    if (!store) {
+      store = makeSessionMetaStore(path.join(this.projectsDir, ownerKey, 'session-meta.json'), this.log);
+      this.ownerMetaStores.set(ownerKey, store);
+    }
+    await store.reloadIfChanged();
+    const meta = store.getOrCreate(sessionId);
+    if (meta.dismissed === dismissed) { return; }
+    meta.dismissed = dismissed;
+    store.markDirty();
+    await store.flush();
   }
 
   /** R4: Mark completed subagents as acknowledged so they're pruned from the card */
@@ -258,6 +320,10 @@ export class SessionDiscovery {
       const repoRoot = await resolveRepoRoot(this.localCwd);
       this.localRepoRoot = repoRoot;
       this.siblingManager.setLocalRepoRoot(repoRoot);
+      // The foreign manager needs it too, so it can evict workspace keys that
+      // turn out to be OUR worktrees — including ones the sibling manager has
+      // pruned because their directory is gone.
+      this.foreignManager.setLocalRepoRoot(repoRoot);
     } catch (err) {
       this.log.warn('Failed to resolve local repoRoot:', err);
     }
@@ -318,6 +384,11 @@ export class SessionDiscovery {
     // every cycle ends in a flush). Fire-and-forget: stop() is synchronous and
     // deactivation can't await; the store's queue serialises it safely.
     void this.meta.flush();
+    // Same for any write-through that hasn't landed yet — a dismiss can be the
+    // last thing a user does before closing the window.
+    for (const store of this.ownerMetaStores.values()) {
+      void store.flush();
+    }
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;

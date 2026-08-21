@@ -373,3 +373,116 @@ describe('shouldPromoteDoneToStale: done means done-but-unseen', () => {
     expect(shouldPromoteDoneToStale(NOW, { acknowledged: true, acknowledgedAt: null })).toBe(true);
   });
 });
+
+describe('ForeignWorkspaceManager: removed Claude worktrees', () => {
+  /** A user record dated `agoMs` back, so the session demotes running → done. */
+  function createAgedSession(workspaceKey: string, sessionId: string, cwd: string, agoMs = 60_000): void {
+    const dir = path.join(projectsDir, workspaceKey);
+    fs.mkdirSync(dir, { recursive: true });
+    const record = JSON.stringify({
+      type: 'user',
+      cwd,
+      timestamp: new Date(Date.now() - agoMs).toISOString(),
+      message: { content: [{ type: 'text', text: 'from the phone' }] },
+    });
+    fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), record + '\n');
+  }
+
+  let repo: string;
+  /** cwd of an RC-spawned worktree that has since been deleted. */
+  let goneWorktree: string;
+  let goneKey: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-gone-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+    repo = fs.realpathSync(fs.mkdtempSync(path.join(tmpDir, 'repo-')));
+    fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    // Never created on disk: RC made it, used it, and removed it.
+    goneWorktree = path.join(repo, '.claude', 'worktrees', 'bridge-cse_01A');
+    goneKey = sanitiseKey(goneWorktree);
+  });
+
+  afterEach(() => {
+    _resetConfig();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('evicts our own repo\'s worktrees instead of listing them as foreign', async () => {
+    createAgedSession(goneKey, '33333333-3333-4333-8333-333333333333', goneWorktree);
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLocalRepoRoot(repo);
+    await manager.scan();
+
+    expect(manager.getWorkspaces().map(w => w.workspaceKey)).not.toContain(goneKey);
+    expect(manager.getRepoRootForWorkspace(goneKey)).toBeUndefined();
+  });
+
+  it('still lists it for a window belonging to a different repo, resolved to the right root', async () => {
+    // The hub window: same disk, different local repo. The row must fold into
+    // the repo it came from rather than stand alone under the worktree's name.
+    createAgedSession(goneKey, '33333333-3333-4333-8333-333333333333', goneWorktree);
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLocalRepoRoot(path.join(tmpDir, 'some-other-repo'));
+    await manager.scan();
+
+    const row = manager.getWorkspaces().find(w => w.workspaceKey === goneKey);
+    expect(row).toBeDefined();
+    expect(row!.repoRoot).toBe(repo);
+  });
+
+  it('counts a session in a removed worktree as stale, not done-but-unseen', async () => {
+    // Nothing can ever open that folder, so no acknowledgement can arrive and
+    // the teal done-but-unseen signal would never clear.
+    createAgedSession(goneKey, '33333333-3333-4333-8333-333333333333', goneWorktree);
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLocalRepoRoot(path.join(tmpDir, 'some-other-repo'));
+    await manager.scan();
+    await manager.poll();
+
+    const row = manager.getWorkspaces().find(w => w.workspaceKey === goneKey)!;
+    expect(row.counts['done'] ?? 0).toBe(0);
+    expect(row.counts['stale'] ?? 0).toBe(1);
+  });
+
+  it('leaves a worktree that still exists as done-but-unseen', async () => {
+    // Control for the test above: same shape, directory present.
+    const liveWorktree = path.join(repo, '.claude', 'worktrees', 'bridge-cse_01B');
+    fs.mkdirSync(liveWorktree, { recursive: true });
+    const liveKey = sanitiseKey(liveWorktree);
+    createAgedSession(liveKey, '44444444-4444-4444-8444-444444444444', liveWorktree);
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLocalRepoRoot(path.join(tmpDir, 'some-other-repo'));
+    await manager.scan();
+    await manager.poll();
+
+    const row = manager.getWorkspaces().find(w => w.workspaceKey === liveKey)!;
+    expect(row.counts['done'] ?? 0).toBe(1);
+    expect(row.counts['stale'] ?? 0).toBe(0);
+  });
+
+  it('re-resolves repoRoot rather than caching the first answer forever', async () => {
+    // A long-lived window must converge on what a freshly opened one sees.
+    const plain = path.join(tmpDir, 'later-a-repo');
+    fs.mkdirSync(plain, { recursive: true });
+    const plainKey = sanitiseKey(plain);
+    createAgedSession(plainKey, '55555555-5555-4555-8555-555555555555', plain);
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+    expect(manager.getRepoRootForWorkspace(plainKey)).toBeNull();
+
+    // `git init` happens in that directory while the window stays open.
+    fs.mkdirSync(path.join(plain, '.git'), { recursive: true });
+    const changed = await manager.refreshWorktreesForKnownRepos();
+
+    expect(changed).toBe(true);
+    expect(manager.getRepoRootForWorkspace(plainKey)).toBe(fs.realpathSync(plain));
+  });
+});

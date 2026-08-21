@@ -165,6 +165,13 @@ export async function trackJsonlSessions(opts: TrackJsonlOptions): Promise<boole
     try {
       const fstat = await fs.promises.stat(filePath);
       if (!opts.withinWindow(sessionId, fstat.mtimeMs)) { continue; }
+      // An empty JSONL has no session in it yet. SessionManager's initial
+      // state is `done` with lastActivity = now, so tracking one manufactures
+      // a permanent done-but-unseen count that no acknowledgement can clear.
+      // Skip it; the next scan picks it up once Claude Code writes a record.
+      // (Only foreign/sibling discovery comes through here — the local scan
+      // has its own loop — so the one-scan delay costs nothing visible.)
+      if (fstat.size === 0) { continue; }
     } catch { continue; }
 
     const manager = opts.makeManager(sessionId, filePath);

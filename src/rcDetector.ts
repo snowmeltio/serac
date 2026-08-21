@@ -28,22 +28,10 @@
 
 import * as path from 'path';
 import type { LiveProcess } from './processRegistry.js';
+import { CLAUDE_WORKTREE_SUBDIR, isAtOrUnder } from './gitWorktreeUtil.js';
 
 /** Registry `entrypoint` value stamped by an RC-hosted session process. */
 export const RC_ENTRYPOINT = 'sdk-cli';
-
-/** Directory (relative to a workspace) that RC spawns its per-session
- *  worktrees into. Each phone-spawned session gets its own `bridge-cse_*`
- *  child here. */
-export const RC_WORKTREE_SUBDIR = path.join('.claude', 'worktrees');
-
-/** Is `child` the same path as `parent`, or contained by it? Compares resolved
- *  paths segment-wise so `/repo/serac-old` is not read as inside `/repo/serac`. */
-function isAtOrUnder(child: string, parent: string): boolean {
-  const rel = path.relative(path.resolve(parent), path.resolve(child));
-  if (rel === '') { return true; }
-  return !rel.startsWith('..') && !path.isAbsolute(rel);
-}
 
 /**
  * True when any live registry entry looks like an RC-hosted session rooted at
@@ -57,7 +45,7 @@ function isAtOrUnder(child: string, parent: string): boolean {
 export function isRcServing(processes: readonly LiveProcess[], workspacePath: string): boolean {
   if (!workspacePath) { return false; }
   const wsRoot = path.resolve(workspacePath);
-  const spawnDir = path.join(wsRoot, RC_WORKTREE_SUBDIR);
+  const spawnDir = path.join(wsRoot, CLAUDE_WORKTREE_SUBDIR);
   return processes.some(p => {
     if (p.entrypoint !== RC_ENTRYPOINT) { return false; }
     if (!p.cwd) { return false; }

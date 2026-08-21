@@ -6,14 +6,15 @@
  * it has any tracked JSONL file within the age gate; counts (running/waiting/
  * done/stale) are aggregated for display but a workspace with all-idle sessions
  * is still listed (with empty counts). Dismissed sessions are filtered out of
- * the counts entirely.
+ * the counts entirely, and workspaces belonging to the local repo (its own
+ * worktrees, live or removed) are evicted rather than listed as foreign.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
 import type { WriterAggregate } from './writerOwnership.js';
-import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeInfo } from './gitWorktreeUtil.js';
+import { resolveRepoRoot, repoRootFromClaudeWorktreePath, discoverWorktrees, worktreeSetChanged, type WorktreeInfo } from './gitWorktreeUtil.js';
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
@@ -37,7 +38,12 @@ const STALE_PROMOTION_MS = 10_000;
  *  as it's tracked; the discovery window / age gate is the eventual ceiling
  *  for workspaces nothing ever opens. Deliberately no time-based decay here
  *  (a 24h decay shipped briefly in v1.16.14): unseen finished work must
- *  stay visible until actually seen. */
+ *  stay visible until actually seen.
+ *
+ *  One other promotion path exists, and it lives in getWorkspaces() rather
+ *  than here because it is a fact about the workspace, not the session: a
+ *  removed Claude worktree. That isn't decay — the folder is gone, so no
+ *  window can ever open it and no acknowledgement can ever arrive. */
 export function shouldPromoteDoneToStale(
   now: number,
   meta: Pick<SessionMeta, 'acknowledged' | 'acknowledgedAt'> | undefined,
@@ -76,6 +82,14 @@ export class ForeignWorkspaceManager {
    *  and should therefore NOT be tracked here as foreign. Provided by
    *  SiblingWorktreeManager (defaults to an empty set). */
   private getSiblingKeys: () => Set<string> = () => new Set();
+  /** Repo root of the current workspace, injected by SessionDiscovery. Any
+   *  workspace key resolving to the same root is one of OUR worktrees, not a
+   *  foreign repo — see the eviction in refreshRepoRoots(). */
+  private localRepoRoot: string | null = null;
+  /** Keys whose cwd is a Claude worktree path that no longer exists on disk.
+   *  Nothing will ever resume or acknowledge these sessions, so their `done`
+   *  is promoted to `stale` — see getWorkspaces(). */
+  private unreachableKeys: Set<string> = new Set();
 
   constructor(
     private readonly projectsDir: string,
@@ -97,6 +111,18 @@ export class ForeignWorkspaceManager {
 
   setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => WriterAggregate): void {
     this.writerOwnershipProbeFactory = factory;
+  }
+
+  /** Tell the manager which repo the current workspace belongs to. Workspace
+   *  keys resolving to it are evicted rather than listed as foreign: they are
+   *  this repo's own worktrees, live or removed. Mirrors
+   *  SiblingWorktreeManager.setLocalRepoRoot. */
+  setLocalRepoRoot(repoRoot: string | null): void {
+    if (this.localRepoRoot === repoRoot) { return; }
+    this.localRepoRoot = repoRoot;
+    // The answer to "is this one of ours?" just changed for every key.
+    this.repoRootCache.clear();
+    this.unreachableKeys.clear();
   }
 
   /** Whether a session falls inside the visibility window. In live-only mode
@@ -175,18 +201,9 @@ export class ForeignWorkspaceManager {
           this.cwdCache.set(snapshot.workspaceKey, cwd);
         }
       }
-      // Resolve repoRoot once per cached cwd (drives repo grouping in the panel).
-      for (const [key, cwd] of this.cwdCache) {
-        if (this.repoRootCache.has(key)) { continue; }
-        try {
-          this.repoRootCache.set(key, await resolveRepoRoot(cwd));
-        } catch (err) {
-          this.repoRootCache.set(key, null);
-          this.log.warn(`Failed to resolve repoRoot for ${cwd}:`, err);
-        }
-      }
-      // Enumerate worktrees for every distinct repoRoot we now track. Reads
-      // only `.git/worktrees/*` dirents — no shell-out. Used for the inline
+      // Re-resolve repoRoots (evicting any that turn out to be ours), then
+      // enumerate worktrees for every distinct repoRoot we still track. Reads
+      // only `.git` and `.git/worktrees/*` — no shell-out. Used for the inline
       // picker on aggregated rows.
       await this.refreshWorktreesForKnownRepos();
       // Refresh meta caches for every workspace we now track
@@ -216,18 +233,20 @@ export class ForeignWorkspaceManager {
     this.cwdCache.delete(workspaceKey);
     this.repoRootCache.delete(workspaceKey);
     this.metaCache.delete(workspaceKey);
+    this.unreachableKeys.delete(workspaceKey);
     this.pruneWorktreesByRepoRoot();
   }
 
-  /** Re-enumerate worktrees for every distinct non-null repoRoot we currently
-   *  track. Returns true when the set changed for any repo. Safe to call from
-   *  scan() (after repoRootCache is populated) or from a 60s refresh timer. */
+  /** Re-resolve repoRoots, then re-enumerate worktrees for every distinct
+   *  non-null repoRoot we currently track. Returns true when anything changed.
+   *  Safe to call from scan() (after cwdCache is populated) or from the 60s
+   *  refresh timer. */
   async refreshWorktreesForKnownRepos(): Promise<boolean> {
+    let changed = await this.refreshRepoRoots();
     const wantedRoots = new Set<string>();
     for (const root of this.repoRootCache.values()) {
       if (root) { wantedRoots.add(root); }
     }
-    let changed = false;
     for (const root of wantedRoots) {
       let next: WorktreeInfo[] = [];
       try {
@@ -248,6 +267,65 @@ export class ForeignWorkspaceManager {
         this.worktreesByRepoRoot.delete(root);
         changed = true;
       }
+    }
+    return changed;
+  }
+
+  /**
+   * Re-resolve the repo root of every cached cwd, and recompute which of them
+   * are unreachable Claude worktrees. Returns true when anything changed.
+   *
+   * Deliberately NOT a once-only cache. Resolution depends on what is on disk
+   * right now — a worktree removed mid-session flips its answer — and a cache
+   * that never re-reads makes a long-lived window disagree with a freshly
+   * opened one about the same directory. That divergence is exactly how the
+   * same two sessions showed as flat `bridge-cse_*` rows in one window and
+   * folded into the repo row in another.
+   *
+   * Runs on the same cadence as the worktree enumeration it precedes; there is
+   * no separate TTL to fall out of step with (cf. v1.16.7).
+   */
+  private async refreshRepoRoots(): Promise<boolean> {
+    let changed = false;
+    const ownKeys: string[] = [];
+    for (const [key, cwd] of this.cwdCache) {
+      let root: string | null;
+      try {
+        root = await resolveRepoRoot(cwd);
+      } catch (err) {
+        root = null;
+        this.log.warn(`Failed to resolve repoRoot for ${cwd}:`, err);
+      }
+      if (!this.repoRootCache.has(key) || this.repoRootCache.get(key) !== root) {
+        this.repoRootCache.set(key, root);
+        changed = true;
+      }
+      // Our own repo's worktrees are never foreign. Live ones are already
+      // excluded via getSiblingKeys(); this also catches ones the sibling
+      // manager has pruned because their directory is gone.
+      if (root !== null && root === this.localRepoRoot) {
+        ownKeys.push(key);
+        continue;
+      }
+      // A Claude worktree path whose directory has been removed: the session
+      // is a spent one-shot that no window can ever open.
+      const isClaudeWorktree = repoRootFromClaudeWorktreePath(cwd) !== null;
+      let missing = false;
+      if (isClaudeWorktree) {
+        try {
+          await fs.promises.access(cwd);
+        } catch {
+          missing = true;
+        }
+      }
+      if (missing !== this.unreachableKeys.has(key)) {
+        if (missing) { this.unreachableKeys.add(key); } else { this.unreachableKeys.delete(key); }
+        changed = true;
+      }
+    }
+    for (const key of ownKeys) {
+      this.evictWorkspace(key);
+      changed = true;
     }
     return changed;
   }
@@ -360,9 +438,11 @@ export class ForeignWorkspaceManager {
       }
       if (meta?.dismissed) { continue; }
 
-      // Stale rollover — acknowledgement-only, see shouldPromoteDoneToStale.
+      // Stale rollover — acknowledgement, or a workspace no acknowledgement can
+      // ever reach. See shouldPromoteDoneToStale and unreachableKeys.
       let status = snapshot.status;
-      if (status === 'done' && shouldPromoteDoneToStale(now, meta)) {
+      if (status === 'done'
+        && (shouldPromoteDoneToStale(now, meta) || this.unreachableKeys.has(snapshot.workspaceKey))) {
         status = 'stale';
       }
 
