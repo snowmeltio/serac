@@ -63,6 +63,8 @@ vi.mock('vscode', () => {
       showErrorMessage: vi.fn(),
       showTextDocument: vi.fn(),
       createTerminal: vi.fn(),
+      terminals: [] as unknown[],
+      onDidCloseTerminal: vi.fn(() => ({ dispose: vi.fn() })),
       setStatusBarMessage: vi.fn(),
       tabGroups,
     },
@@ -219,6 +221,7 @@ describe('extension', () => {
       subscriptions: [],
     };
     (vscode.window.tabGroups as any).all = [];
+    (vscode.window as any).terminals = [];
   });
 
   afterEach(() => {
@@ -711,6 +714,105 @@ describe('extension', () => {
         expect.stringContaining('Serac does not change it'));
       expect(vscode.window.createTerminal).not.toHaveBeenCalled();
       expect(vscode.workspace.openTextDocument).toHaveBeenCalledTimes(1);
+    });
+
+    const pickStart = () => vi.mocked(vscode.window.showQuickPick).mockImplementation(
+      async (items: any) => (items as any[]).find(i => i.action === 'start'));
+
+    it('reuses the Remote Control terminal already open here rather than adding a rival server', async () => {
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const existing = { name: 'Remote Control server', show: vi.fn(), sendText: vi.fn() };
+      (vscode.window as any).terminals = [existing];
+      pickStart();
+      getHandler()();
+      await vi.waitFor(() => expect(existing.sendText).toHaveBeenCalled());
+      expect(vscode.window.createTerminal).not.toHaveBeenCalled();
+      expect(existing.sendText.mock.calls[0][0] as string).toMatch(/claude rc --spawn worktree$/);
+      expect(existing.show).toHaveBeenCalled();
+      expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+        expect.stringContaining('existing terminal'), expect.anything());
+    });
+
+    it('opens a fresh terminal when the only Remote Control one has exited', async () => {
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      (vscode.window as any).terminals = [
+        { name: 'Remote Control server', exitStatus: { code: 0 }, show: vi.fn(), sendText: vi.fn() },
+      ];
+      const terminal = makeTerminal();
+      pickStart();
+      getHandler()();
+      await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      expect(vscode.window.createTerminal).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not start a rival when the workspace got a server while the offer sat unanswered', async () => {
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      let resolvePick: (v: unknown) => void = () => {};
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        (items: any) => new Promise(r => { resolvePick = () => r((items as any[]).find(i => i.action === 'start')); }) as any);
+      getHandler()();
+      await vi.waitFor(() => expect(vscode.window.showQuickPick).toHaveBeenCalled());
+      // Another window (or launchd) takes the workspace before the pick lands.
+      mockDiscovery.getRcServing.mockReturnValue(true);
+      resolvePick(undefined);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(vscode.window.createTerminal).not.toHaveBeenCalled();
+      expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+        expect.stringContaining('already serving'), expect.anything());
+    });
+
+    it('warns once when the server it started disappears, and not before the grace window', async () => {
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const terminal = makeTerminal();
+      pickStart();
+      getHandler()();
+      await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      // The registry confirms it is up...
+      mockDiscovery.getRcServing.mockReturnValue(true);
+      await vi.advanceTimersByTimeAsync(2000);
+      // ...then it is gone, with the terminal still open on a stale frame.
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining('has stopped'), 'Start it again', 'Show terminal');
+      const said = vi.mocked(vscode.window.showWarningMessage).mock.calls.length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(vi.mocked(vscode.window.showWarningMessage).mock.calls.length).toBe(said);
+    });
+
+    it('stays quiet when the registry never confirmed the server it started', async () => {
+      // rcDetector cannot see a server that has registered no session yet, so
+      // absence is ignorance rather than death — say nothing.
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const terminal = makeTerminal();
+      pickStart();
+      getHandler()();
+      await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    });
+
+    it('says nothing when the user closes the terminal — that is how you stop a server', async () => {
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const terminal = makeTerminal();
+      pickStart();
+      getHandler()();
+      await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      mockDiscovery.getRcServing.mockReturnValue(true);
+      await vi.advanceTimersByTimeAsync(2000);
+      const onClose = vi.mocked(vscode.window.onDidCloseTerminal).mock.calls[0][0] as (t: unknown) => void;
+      onClose(terminal);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
     });
 
     it('says so and offers nothing when both facts are already on', async () => {

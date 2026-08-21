@@ -14,7 +14,11 @@ import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, readRemoteControlAtStartup, type CompactSettings } from './claudeSettings.js';
-import { rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems } from './rcLauncher.js';
+import {
+  rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems,
+  findLiveRcTerminal, rcWatchTick, rcWatchStarted, RC_TERMINAL_NAME, RC_WATCH_IDLE, RC_STOPPED_MESSAGE,
+  type RcWatchState,
+} from './rcLauncher.js';
 import { sanitiseWorkspaceKey, applyWorkflowLiveStatus, normPath, computeWaitingCount, formatAge } from './panelUtils.js';
 import { buildWorktreeRows } from './worktreeRows.js';
 import {
@@ -908,6 +912,13 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // facts (the other is the rc server, read per poll). Reloaded by the
   // settings watchers below; never written by Serac.
   let rcAutoEnrol: boolean | null = readRemoteControlAtStartup(wsPath);
+  // The Remote Control server Serac started in THIS window, if any: the
+  // terminal, so a second start reuses it rather than adding a rival server on
+  // the same directory, and the watch that notices the process dying inside a
+  // terminal that stays open (v1.22.0 shipped with neither — a dead server was
+  // still painting "Connected" over a live shell prompt, 2026-08-21).
+  let rcTerminal: vscode.Terminal | undefined;
+  let rcWatch: RcWatchState = RC_WATCH_IDLE;
   function sendUpdate() {
     const now = Date.now();
     if (now - lastSendTime < 200) { return; }
@@ -929,14 +940,22 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     });
     const olderSessionCount = discovery.getOlderSessionCount();
     const worktrees = buildWorktreeRows(discovery.getDiscoveredWorktrees(), sessions, wsPath);
+    const rcServing = discovery.getRcServing();
     panelProvider.updateSessions({
       sessions, waitingCount, workspacePath: wsPath, usage,
       foreignWorkspaces, compactSettings, teams, foreignWaiting,
       olderSessionCount, foreignRunning, worktrees, workflows,
-      rcServing: discovery.getRcServing(),
+      rcServing,
       rcAutoEnrol,
     });
     detailPanel.refresh();
+
+    // A server Serac started can stop without the terminal showing it, so the
+    // dark signal bar would otherwise be the only tell. Same cadence as the
+    // indicator it contradicts; says it once, then goes quiet.
+    const watched = rcWatchTick(rcWatch, rcServing, Date.now());
+    rcWatch = watched.state;
+    if (watched.notify) { void notifyRcServerStopped(); }
 
     // Auto-focus a single newly arrived live local session. Four gates keep the
     // highlight on a genuinely new chat:
@@ -1020,6 +1039,58 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   projectSettingsWatcher.onDidDelete(reloadSettings);
   context.subscriptions.push(projectSettingsWatcher);
 
+  /** Start a Remote Control server in a terminal the user can see and close.
+   *  Reuses the terminal from an earlier start instead of opening a second
+   *  one: the picker only offers this while nothing is serving the workspace,
+   *  so that shell is sitting at a prompt with a dead (or never-started)
+   *  server scrolled above it. Serac still never stops a server — closing the
+   *  terminal is the user's job and their only off switch. */
+  function startRcServer(): void {
+    // The offer goes stale while it waits to be answered: a quick pick or the
+    // stopped-warning can sit for minutes, and by then another window (or the
+    // launchd server) may have taken this workspace. Starting a second server
+    // on one directory is exactly the collision this path exists to avoid, so
+    // re-read the fact at the moment of acting rather than trusting the one
+    // the offer was built from. It can lag a poll cycle; better than nothing.
+    if (discovery.getRcServing()) {
+      vscode.window.setStatusBarMessage('A Remote Control server is already serving this workspace — nothing to start.', 6000);
+      return;
+    }
+    const home = process.env.HOME ?? os.homedir();
+    const exists = (p: string): boolean => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+    const reused = findLiveRcTerminal(vscode.window.terminals);
+    const terminal = reused ?? vscode.window.createTerminal({
+      name: RC_TERMINAL_NAME,
+      cwd: wsPath,
+      env: rcTerminalEnvOverrides(process.env),
+    });
+    rcTerminal = terminal;
+    terminal.show(false);
+    terminal.sendText(rcStartCommand(locateClaudeCli(home, exists)), true);
+    rcWatch = rcWatchStarted();
+    vscode.window.setStatusBarMessage(reused
+      ? 'Remote Control server restarting in its existing terminal. The indicator fills in within a poll or two.'
+      : 'Remote Control server starting in the terminal. The indicator fills in within a poll or two.', 8000);
+  }
+
+  /** The server Serac started is gone while its terminal is still open. */
+  async function notifyRcServerStopped(): Promise<void> {
+    const again = 'Start it again';
+    const reveal = 'Show terminal';
+    const actions = rcTerminal ? [again, reveal] : [again];
+    const picked = await vscode.window.showWarningMessage(RC_STOPPED_MESSAGE, ...actions);
+    if (picked === again) { startRcServer(); }
+    else if (picked === reveal) { rcTerminal?.show(false); }
+  }
+
+  // Closing that terminal IS how you stop the server, so it is not news:
+  // disarm the watch rather than reporting the user's own action back at them.
+  context.subscriptions.push(vscode.window.onDidCloseTerminal(t => {
+    if (t !== rcTerminal) { return; }
+    rcTerminal = undefined;
+    rcWatch = RC_WATCH_IDLE;
+  }));
+
   // Top-bar Remote Control indicator, clicked while below full: offer the
   // ways to turn the rest on. Serac may START a server — in a terminal the
   // user can see and close — and never stops one; it never writes
@@ -1038,21 +1109,16 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         ignoreFocusOut: true,
       });
       if (!picked) { return; }
-      const home = process.env.HOME ?? os.homedir();
-      const exists = (p: string): boolean => { try { return fs.statSync(p).isFile(); } catch { return false; } };
-      if (picked.action === 'start' || picked.action === 'install') {
+      if (picked.action === 'start') { startRcServer(); return; }
+      if (picked.action === 'install') {
         const terminal = vscode.window.createTerminal({
-          name: picked.action === 'start' ? 'Remote Control server' : 'Remote Control installer',
+          name: 'Remote Control installer',
           cwd: wsPath,
           env: rcTerminalEnvOverrides(process.env),
         });
         terminal.show(false);
-        terminal.sendText(picked.action === 'start'
-          ? rcStartCommand(locateClaudeCli(home, exists))
-          : rcInstallCommand(context.extensionPath, wsPath), true);
-        vscode.window.setStatusBarMessage(picked.action === 'start'
-          ? 'Remote Control server starting in the terminal. The indicator fills in within a poll or two.'
-          : 'Remote Control installer running in the terminal.', 8000);
+        terminal.sendText(rcInstallCommand(context.extensionPath, wsPath), true);
+        vscode.window.setStatusBarMessage('Remote Control installer running in the terminal.', 8000);
         return;
       }
       // 'settings': open and point, never write.

@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems } from './rcLauncher.js';
+import {
+  rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems,
+  findLiveRcTerminal, rcWatchTick, rcWatchStarted, RC_TERMINAL_NAME, RC_WATCH_IDLE, RC_STOPPED_GRACE_MS,
+} from './rcLauncher.js';
 
 describe('rcTerminalEnvOverrides', () => {
   it('nulls every VSCODE_* and ELECTRON_RUN_AS_NODE, keeps CLAUDE_CONFIG_DIR and the rest', () => {
@@ -73,5 +76,79 @@ describe('rcQuickPickItems', () => {
     }
     const start = rcQuickPickItems({ autoEnrol: true, serving: false }, 'darwin')[0];
     expect(start.detail).toContain('never stops it');
+  });
+});
+
+describe('findLiveRcTerminal', () => {
+  const open = (name: string) => ({ name });
+  const dead = (name: string) => ({ name, exitStatus: { code: 0 } });
+
+  it('finds the RC terminal already open in this window', () => {
+    const mine = open(RC_TERMINAL_NAME);
+    expect(findLiveRcTerminal([open('zsh'), mine, open('npm watch')])).toBe(mine);
+  });
+
+  it('skips one whose shell has exited — that tab cannot run anything', () => {
+    expect(findLiveRcTerminal([dead(RC_TERMINAL_NAME)])).toBeUndefined();
+    const live = open(RC_TERMINAL_NAME);
+    expect(findLiveRcTerminal([dead(RC_TERMINAL_NAME), live])).toBe(live);
+  });
+
+  it('ignores other terminals, including the installer', () => {
+    expect(findLiveRcTerminal([open('Remote Control installer'), open('zsh')])).toBeUndefined();
+    expect(findLiveRcTerminal([])).toBeUndefined();
+  });
+});
+
+describe('rcWatchTick', () => {
+  const t0 = 1_000_000;
+
+  it('does nothing while disarmed — Serac only watches what it started', () => {
+    expect(rcWatchTick(RC_WATCH_IDLE, false, t0)).toEqual({ state: RC_WATCH_IDLE, notify: false });
+    expect(rcWatchTick(RC_WATCH_IDLE, true, t0)).toEqual({ state: RC_WATCH_IDLE, notify: false });
+  });
+
+  it('stays silent forever while the registry has never confirmed the server', () => {
+    // rcDetector cannot see a server that has not registered a session yet, so
+    // absence here is ignorance, not death.
+    let state = rcWatchStarted();
+    for (let i = 0; i < 20; i++) {
+      const out = rcWatchTick(state, false, t0 + i * RC_STOPPED_GRACE_MS);
+      expect(out.notify).toBe(false);
+      state = out.state;
+    }
+    expect(state.confirmed).toBe(false);
+  });
+
+  it('confirms on the first serving tick, then waits out the grace before saying it is gone', () => {
+    let out = rcWatchTick(rcWatchStarted(), true, t0);
+    expect(out.state.confirmed).toBe(true);
+    expect(out.notify).toBe(false);
+
+    out = rcWatchTick(out.state, false, t0 + 1000);
+    expect(out).toMatchObject({ notify: false, state: { missingSince: t0 + 1000 } });
+
+    // A later tick inside the window does not slide the deadline.
+    out = rcWatchTick(out.state, false, t0 + 1000 + RC_STOPPED_GRACE_MS - 1);
+    expect(out).toMatchObject({ notify: false, state: { missingSince: t0 + 1000 } });
+
+    out = rcWatchTick(out.state, false, t0 + 1000 + RC_STOPPED_GRACE_MS);
+    expect(out.notify).toBe(true);
+  });
+
+  it('rearms rather than warning when the server comes back inside the grace', () => {
+    const confirmed = rcWatchTick(rcWatchStarted(), true, t0).state;
+    const missing = rcWatchTick(confirmed, false, t0 + 1000).state;
+    const back = rcWatchTick(missing, true, t0 + 2000);
+    expect(back.state.missingSince).toBeNull();
+    expect(rcWatchTick(back.state, false, t0 + 3000 + RC_STOPPED_GRACE_MS - 1).notify).toBe(false);
+  });
+
+  it('says it once: the state goes idle with the notification', () => {
+    const confirmed = rcWatchTick(rcWatchStarted(), true, t0).state;
+    const missing = rcWatchTick(confirmed, false, t0).state;
+    const fired = rcWatchTick(missing, false, t0 + RC_STOPPED_GRACE_MS);
+    expect(fired).toEqual({ state: RC_WATCH_IDLE, notify: true });
+    expect(rcWatchTick(fired.state, false, t0 + RC_STOPPED_GRACE_MS * 10).notify).toBe(false);
   });
 });
