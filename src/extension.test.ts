@@ -639,7 +639,7 @@ describe('extension', () => {
       vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce(undefined);
       getHandler()();
       await vi.waitFor(() => expect(vscode.window.showQuickPick).toHaveBeenCalled());
-      const items = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as Array<{ action: string }>;
+      const items = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as unknown as Array<{ action: string }>;
       const actions = items.map(i => i.action);
       expect(actions).toContain('start');
       expect(actions).not.toContain('settings');
@@ -650,8 +650,8 @@ describe('extension', () => {
       activate(context as any);
       mockDiscovery.getRcServing.mockReturnValue(false);
       const terminal = makeTerminal();
-      vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(
-        async (items: any) => (items as Array<{ action: string }>).find(i => i.action === 'start'));
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'start'));
       const saved = { VSCODE_PID: process.env.VSCODE_PID, ELECTRON_RUN_AS_NODE: process.env.ELECTRON_RUN_AS_NODE };
       process.env.VSCODE_PID = '4242';
       process.env.ELECTRON_RUN_AS_NODE = '1';
@@ -677,8 +677,8 @@ describe('extension', () => {
       activate(context as any);
       mockDiscovery.getRcServing.mockReturnValue(false);
       const terminal = makeTerminal();
-      vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(
-        async (items: any) => (items as Array<{ action: string }>).find(i => i.action === 'install'));
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'install'));
       getHandler()();
       await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
       const cmd = terminal.sendText.mock.calls[0][0] as string;
@@ -695,12 +695,12 @@ describe('extension', () => {
       vi.mocked(vscode.workspace.openTextDocument).mockResolvedValueOnce(doc as any);
       const editor = { selection: undefined as unknown, revealRange: vi.fn() };
       vi.mocked(vscode.window.showTextDocument).mockResolvedValueOnce(editor as any);
-      vi.mocked(vscode.window.showQuickPick).mockImplementationOnce(
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
         async (items: any) => {
-          const actions = (items as Array<{ action: string }>).map(i => i.action);
+          const actions = (items as any[]).map(i => i.action);
           // Server is on, so only the settings route is offered.
           expect(actions).toEqual(['settings']);
-          return (items as Array<{ action: string }>)[0];
+          return (items as any[])[0];
         });
       getHandler()();
       await vi.waitFor(() => expect(editor.revealRange).toHaveBeenCalled());
