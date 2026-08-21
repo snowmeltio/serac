@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.22.0 (2026-08-21) — Remote Control: what's on, and how to turn the rest on
+
+### Added
+- **📡 with a slash: a chip for a session that has been switched off Remote Control.** The session was on your phone and now isn't. That is the × on Claude Code's "Remote Control is active" popup (tooltip "Disconnect Remote Control"), or `/remote-control` in the chat, and it doesn't come back by itself; a further turn won't re-enrol it. The chip sits in the meta row on any card whose process is still alive, including running ones. Click it to open that chat (or go to its window for a foreign card), then type `/remote-control` to reconnect; the session reappears on the phone as a new row. Legend row and specimen added.
+- **The top-bar Remote Control mark is now a two-bar phone signal.** The v1.21.0 dot answered one question; the bar answers two. The short bar: sessions you start here go to your phone automatically (Claude Code's "Enable Remote Control for all sessions", read from the user, project, and local settings files and re-read when any of them change). The tall bar: a Remote Control server is running here, so the phone can also start new sessions in this workspace, and they keep running with VS Code closed. The level is how many are on; the tooltip says which, in plain words, and never tells you to run a terminal command. Bars differ by fill, not colour alone. The common state is one bar.
+- **Below full, the mark is a button.** It offers only what is off: start a server here (a visible VS Code terminal running `claude rc --spawn worktree`, with the extension host's `VSCODE_*`/`ELECTRON_RUN_AS_NODE` stripped so the CLI behaves and `CLAUDE_CONFIG_DIR` kept so it serves the same account), install the always-on launchd server for this repo (macOS), or open Claude Code's `settings.json` with the cursor on `remoteControlAtStartup`. Serac may start a server and never stops one; it never writes the enrolment flag, which is your account-level consent.
+- **`scripts/rc-headless/` ships inside the extension** so the installer route above works from the .vsix. v1.21.0 said it didn't ship; now it does, by design.
+
+### Changed
+- v1.21.1's `[rc]` Output-channel trace and `bridgeState` tri-state were merged but never published; they land here.
+
 ## v1.21.1 (2026-08-21) — Remote Control drops are now on the record
 
 ### Added
