@@ -40,7 +40,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `processRegistry.ts` | Reads Claude Code's live process registry (`~/.claude/sessions/<pid>.json`) and confirms each pid with `kill(pid, 0)`. The one source of *actual* process liveness in an otherwise disk-tailing monitor. Owned by `SessionDiscovery` (scanned on a relaxed cadence); exposes `getLiveProcesses()` / `isSessionLive()` / `isActive()`. Injected into each `SessionManager` as a tri-state `livenessProbe` that powers the permission-false-positive gate (a registry-confirmed-dead session can't be `waiting` — see Status inference §6). A hit is a strong positive, a miss is "unknown" (not every session class is guaranteed to register), and an inactive registry disables the gate. `isScanClean()` distinguishes a degraded scan (a non-ENOENT read error or unparseable content on a *present* file) from genuine absence, so a transient disk error on a live session's file degrades the probe to "unknown" rather than "dead" — only a clean scan's absence is trusted as death. |
 | `rcDetector.ts` | Pure filter over the process registry answering one question: is a **Remote Control** (`claude rc`) server hosting sessions in this workspace? Each session such a server hosts registers with `entrypoint: "sdk-cli"` and a real cwd — the workspace root for the session pre-created in the serving directory, or `<workspace>/.claude/worktrees/bridge-cse_<id>` for each phone-spawned one. `isRcServing()` matches either, segment-wise (so a sibling path sharing our prefix never counts). One of the two facts behind the top-bar signal indicator; nothing is gated on it. |
 | `rcState.ts` | Webview-safe fold of the two Remote Control facts (`remoteControlAtStartup` auto-enrol, server serving here) into a signal level 0–2 plus the tooltip/aria words. Level = count of facts on; the tooltip says which. |
-| `rcLauncher.ts` | Pure half of the indicator's click: terminal env overrides (strip `VSCODE_*`/`ELECTRON_RUN_AS_NODE`, keep `CLAUDE_CONFIG_DIR`), CLI location, the `claude rc --spawn worktree` and `install.sh` command strings, and the quick-pick rows for whatever is off. |
+| `rcLauncher.ts` | Pure half of the indicator's click: terminal env overrides (strip `VSCODE_*`/`ELECTRON_RUN_AS_NODE`, keep `CLAUDE_CONFIG_DIR`), CLI location, the `claude rc --spawn worktree` and `install.sh` command strings, the quick-pick rows for whatever is off, the reuse rule for an already-open server terminal (`findLiveRcTerminal`), and the watch that notices a started server going away (`rcWatchTick`). |
 | `writerOwnership.ts` | Resolves, per live registered pid, whether it's a child of THIS VS Code window's Extension Host or a different window's — the account-agnostic `externalWriter` signal (see Status inference § Writer ownership). Async `ps`-based resolution refreshed alongside `processRegistry`'s rescan; exposes a synchronous `getInfo(pid)` for the per-session probe. |
 | `writerActivity.ts` | Pure recency helpers layered on top of `writerOwnership.ts`'s tri-state verdict, consumed ONLY by the hard open/send gate (`isExternalWriterFresh()`) — the cosmetic mark is ownership-only (see Status inference § Writer ownership). `getSessionLastWriteMtime()` stats a session's own JSONL plus every file under its `subagents/` tree (recursing into nested `workflows/<runId>/` dirs, so Task subagents and Workflow-run agents both count). `isWithinActivityWindow()` compares the later of that mtime and the writer's `startedAt` against `EXTERNAL_WRITER_QUIET_MS` (10 min), failing toward "still active" when both inputs are null. |
 | `detailPanel.ts` | Source-keyed editor-area webview host (`createWebviewPanel`, `ViewColumn.Beside`). One reused instance serves three drill-ins (workflow / team / subagents); builds a normalised `DetailModel` per source (with a cross-source view switcher for session-card sources) and resolves agent transcripts on demand via injected deps. Dedups re-pushes (`lastPushed` JSON compare). |
@@ -292,7 +292,16 @@ offering only what is off:
   with the exthost's `VSCODE_*`/`ELECTRON_RUN_AS_NODE` removed (the Claude CLI
   misbehaves under them) and `CLAUDE_CONFIG_DIR` kept (same account as the
   sessions here), then `claude rc --spawn worktree` (preferring
-  `~/.local/bin/claude`). Visible, the user's to close.
+  `~/.local/bin/claude`). Visible, the user's to close. A terminal named
+  `Remote Control server` already open in this window is reused rather than
+  joined by a second one (`rcLauncher.ts:findLiveRcTerminal`): two servers on
+  one directory displace each other, and the loser's shutdown lines land in
+  whichever terminal you are not looking at. Reuse is safe because the row is
+  only offered while nothing is serving — which is also what stops a *second
+  window* on the same folder starting a rival, since `serving` is machine-wide.
+  Both entry points (the quick pick and the stopped-warning's "Start it
+  again") re-read `serving` at the moment of acting, so an offer answered
+  minutes later cannot start one either.
 - **Install the always-on server** (macOS) — `bash
   <extensionPath>/scripts/rc-headless/install.sh <ws>` in a terminal. The
   scripts ship in the .vsix (`.vscodeignore` re-includes
@@ -313,9 +322,19 @@ and never stops one. Known blind spots, accepted:
 - **No full process-table scan.** Closing the gap would mean a `ps -ax`
   enumeration; the codebase has only ever queried `ps` by known pid
   (`writerOwnership.ts`), and one ambient indicator doesn't justify starting.
-- **A server started from the indicator is not tracked.** No handle is kept
-  and no kill path exists; the indicator picks it up from the registry like
-  any other.
+- **A server started from the indicator is watched, never controlled.** The
+  terminal handle is kept for reuse and for one message, and there is still no
+  kill path — the terminal is the only off switch. `claude rc` paints its
+  status as a pinned footer and never repaints it on exit, so a dead server
+  reads "Connected" indefinitely above a live shell prompt, leaving the dark
+  signal bar as the only tell (observed 2026-08-21: a hub server ran 12:54 to
+  13:31 and then stopped, with the terminal still claiming it was up). The
+  watch (`rcLauncher.ts:rcWatchTick`, driven from `sendUpdate`) says so once
+  when `serving` has been false for `RC_STOPPED_GRACE_MS` after being
+  confirmed true, and offers to start it again. It stays silent when the
+  registry never confirmed the server (the blind spot above is ignorance, not
+  death) and when the user closes the terminal themselves (that is how you
+  stop a server, not news).
 
 #### Bridge enrolment state (`bridgeState`)
 

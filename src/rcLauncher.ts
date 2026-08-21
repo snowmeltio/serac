@@ -95,3 +95,85 @@ export function rcQuickPickItems(facts: RcFacts, platform: NodeJS.Platform): RcQ
   }
   return items;
 }
+
+/** The name Serac gives a terminal it starts a server in — and the handle it
+ *  finds that terminal by on the next start (see `findLiveRcTerminal`). */
+export const RC_TERMINAL_NAME = 'Remote Control server';
+
+/** Structural stand-in for `vscode.Terminal`, so the reuse rule stays testable
+ *  without the vscode module. `exitStatus` is set once the SHELL has exited (a
+ *  dead tab still sitting in the panel). That is NOT the same as the `claude
+ *  rc` process inside it having stopped: that leaves the shell at a prompt
+ *  with the server's last painted frame — "Connected" — above it. */
+export interface TerminalLike {
+  readonly name: string;
+  readonly exitStatus?: unknown;
+}
+
+/** The Remote Control terminal already open in this window, if any.
+ *
+ *  Reused rather than opening a second one: two `claude rc` servers on one
+ *  directory displace each other, and the loser's shutdown lines land in
+ *  whichever terminal you are not looking at. Cross-WINDOW duplicates are
+ *  already covered elsewhere — the picker only offers "start" while the
+ *  registry says nothing is serving this workspace, and that fact is
+ *  machine-wide, not per window.
+ *
+ *  Matched by name, so a terminal the user named this themselves would be
+ *  reused too; the cost is a command typed into their terminal, not a lost
+ *  server. */
+export function findLiveRcTerminal<T extends TerminalLike>(terminals: readonly T[]): T | undefined {
+  return terminals.find(t => t.name === RC_TERMINAL_NAME && t.exitStatus === undefined);
+}
+
+/** How long the registry must keep saying the server is gone before Serac
+ *  says so. Long enough to ride out one degraded scan (rcDetector reads an
+ *  empty registry as "not serving" — a soft negative, not proof) plus several
+ *  poll cycles at any sane refresh interval. */
+export const RC_STOPPED_GRACE_MS = 20_000;
+
+/** Watch over the server Serac started in THIS window. Serac still never
+ *  stops one; this only notices when one has stopped without saying so. */
+export interface RcWatchState {
+  /** A server was started here and has not yet been reported gone. */
+  started: boolean;
+  /** The registry has confirmed it at least once. Until it does, silence:
+   *  rcDetector cannot see a server that has not registered a session yet, so
+   *  "it never started" is not a claim this watch is entitled to make. */
+  confirmed: boolean;
+  /** When the registry first stopped seeing it, else null. */
+  missingSince: number | null;
+}
+
+export const RC_WATCH_IDLE: RcWatchState = { started: false, confirmed: false, missingSince: null };
+
+/** Arm the watch — called at the moment the start command is sent. */
+export function rcWatchStarted(): RcWatchState {
+  return { started: true, confirmed: false, missingSince: null };
+}
+
+/** One poll's worth of the watch. Pure: the caller owns the clock, the
+ *  serving fact, and the telling. Notifies at most once per start — the
+ *  returned state goes idle with it. */
+export function rcWatchTick(
+  state: RcWatchState,
+  serving: boolean,
+  now: number,
+): { state: RcWatchState; notify: boolean } {
+  if (!state.started) { return { state, notify: false }; }
+  if (serving) { return { state: { started: true, confirmed: true, missingSince: null }, notify: false }; }
+  if (!state.confirmed) { return { state, notify: false }; }
+  const missingSince = state.missingSince ?? now;
+  if (now - missingSince < RC_STOPPED_GRACE_MS) {
+    return { state: { ...state, missingSince }, notify: false };
+  }
+  return { state: RC_WATCH_IDLE, notify: true };
+}
+
+/** Said once, when the server Serac started has gone but its terminal is
+ *  still open. The terminal is the misleading part: `claude rc` paints its
+ *  status as a pinned footer and never repaints it on exit, so a dead server
+ *  reads "Connected" indefinitely, above a live shell prompt. */
+export const RC_STOPPED_MESSAGE =
+  'The Remote Control server Serac started here has stopped, so your phone can no longer start sessions in this workspace. '
+  + 'Its terminal may still say "Connected" — that is the last frame of a dead process, not the current state.';
