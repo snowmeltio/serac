@@ -21,9 +21,12 @@ export type StatusConfidence = 'high' | 'medium' | 'low';
  *    on the phone / claude.ai.
  *  - `dropped` — the last record carried an EMPTY id. Claude Code's own
  *    `clearBridgeSession` writes that when the bridge tears down (observed
- *    spontaneously on live sessions, 2026-08-20). The session is then no longer
- *    listed on the phone, and a further turn does NOT re-enrol it; only closing
- *    and reopening the chat does, under a new `cse_` id (a new phone row).
+ *    when Remote Control is toggled off for the session — the X on the
+ *    "Remote Control is active" popup or `/remote-control` in the chat; seen
+ *    as "spontaneous" on 2026-08-20 until the exthost log showed the toggle).
+ *    The session is then no longer listed on the phone, and a further turn
+ *    does NOT re-enrol it; `/remote-control` again (in-process, new `cse_`)
+ *    or closing and reopening the chat does, as a new phone row.
  *  - unset — no record seen: a pre-Remote-Control transcript, or none yet.
  *  Never a status/activity signal. */
 export type BridgeState = 'enrolled' | 'dropped';
@@ -151,8 +154,9 @@ export interface SessionState {
    *  shelved (2026-08-20) — the renderable state is the *negative* one. */
   bridgeSessionId?: string;
   /** Remote Control enrolment tri-state — see BridgeState. `dropped` is the
-   *  one renderable value (the session fell off the phone and will not come
-   *  back on its own). Unset until a `bridge-session` record is seen. */
+   *  one renderable value (Remote Control was turned off for this session;
+   *  it will not come back on its own). Unset until a `bridge-session`
+   *  record is seen. */
   bridgeState?: BridgeState;
 }
 
