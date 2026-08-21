@@ -80,6 +80,12 @@ Letters come from the tail of the folder name (`fix-workflow-resume-liveness` �
 
 The session was spawned remotely and lives in a throwaway `bridge-cse_*` worktree created just for it. It gets a fixed dish rather than initials, because a monogram of a random id looks like identity while carrying none.
 
+### 📡 with a slash — Remote Control is off for this session
+
+The session was on your phone and now isn't. That happens when Remote Control gets switched off **for that one session**: the × on Claude Code's "Remote Control is active" popup does it (its tooltip says "Disconnect Remote Control"), and so does `/remote-control` in the chat. It doesn't come back by itself; a new turn won't re-enrol it.
+
+Click to open the chat, then type **`/remote-control`** — it reconnects in place in a few seconds and reappears on your phone as a new session. On a card from another worktree or window, the click takes you there instead. Shown only while the session's process is alive; a finished-and-gone session has nothing to reconnect, and resuming it re-enrols anyway.
+
 ### Still going, quietly
 
 Three ways a finished-looking card isn't finished. All tinted with the running colour: a *done* card that will start itself again in four minutes is idle, not finished. None of them change the status.

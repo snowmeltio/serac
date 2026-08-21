@@ -46,6 +46,9 @@ export interface PanelSession {
   /** Live in BOTH this window and another at once — the two-writers hazard
    *  (see SessionSnapshot.dualWriter). Mutually exclusive with externalWriter. */
   dualWriter?: boolean;
+  /** Remote Control enrolment tri-state (see SessionSnapshot.bridgeState).
+   *  Only `dropped` renders — the 📡-with-a-slash chip. */
+  bridgeState?: 'enrolled' | 'dropped';
   /** Files this session has edited (latest file-history-snapshot). Feeds the
    *  same-file collision badge. */
   trackedFiles?: string[];

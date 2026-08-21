@@ -253,6 +253,23 @@ describe('panel.ts integration', () => {
     expect((focusMsg as any).sessionId).toBe(sess.sessionId);
   });
 
+  it('the 📡-slash rc-off chip activates the session like the card body (click and Enter)', () => {
+    const sess = makeSession({ bridgeState: 'dropped', processLive: true } as any);
+    sendUpdate({ sessions: [sess] });
+    const chip = document.querySelector('.rc-off-chip') as HTMLElement;
+    expect(chip).toBeTruthy();
+    expect(chip.dataset.rcOff).toBe(sess.sessionId);
+    expect(chip.title).toContain('/remote-control');
+    chip.click();
+    let focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
+    expect(focusMsg).toBeTruthy();
+    expect((focusMsg as any).sessionId).toBe(sess.sessionId);
+    postedMessages.length = 0;
+    chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
+    expect(focusMsg).toBeTruthy();
+  });
+
   it('an external card hides the preview line and dims chrome per-child, chip exempt', () => {
     sendUpdate({ sessions: [makeSession({ externalWriter: true, activity: 'Running Bash' })] });
     const card = document.querySelector('.card') as HTMLElement;

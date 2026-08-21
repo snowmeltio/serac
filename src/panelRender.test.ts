@@ -425,6 +425,49 @@ describe('renderCardInner', () => {
     expect(on).not.toContain('data-switch-session');
   });
 
+  it('rc-off chip renders only for a dropped bridge on a live (or liveness-unknown) process', () => {
+    expect(renderCardInner(makeCtx(), makeSession(), NOW, false)).not.toContain('rc-off-chip');
+    expect(renderCardInner(makeCtx(), makeSession({ bridgeState: 'enrolled' }), NOW, false)).not.toContain('rc-off-chip');
+    expect(renderCardInner(makeCtx(), makeSession({ bridgeState: 'dropped', processLive: false }), NOW, false)).not.toContain('rc-off-chip');
+    const live = renderCardInner(makeCtx(), makeSession({ bridgeState: 'dropped', processLive: true }), NOW, false);
+    expect(live).toContain('rc-off-chip');
+    expect(live).toContain('data-rc-off="sess-1234abcd"');
+    expect(live).toContain('📡');
+    const unknown = renderCardInner(makeCtx(), makeSession({ bridgeState: 'dropped' }), NOW, false);
+    expect(unknown).toContain('rc-off-chip');
+  });
+
+  it('rc-off chip tooltip carries the /remote-control remedy, local vs foreign wording', () => {
+    const local = renderCardInner(makeCtx(), makeSession({ bridgeState: 'dropped', status: 'done' }), NOW, false);
+    expect(local).toContain('/remote-control');
+    expect(local).toContain('Click to open the chat');
+    const foreign = renderCardInner(makeCtx(), makeSession({
+      bridgeState: 'dropped', worktreeRoot: '/Users/me/repos/proj-wt/feature-x', worktreeLabel: 'feature-x',
+    }), NOW, false);
+    expect(foreign).toContain('rc-off-chip');
+    expect(foreign).toContain('go to its window');
+    expect(foreign).toContain('/remote-control');
+    const external = renderCardInner(makeCtx(), makeSession({ bridgeState: 'dropped', externalWriter: true }), NOW, false);
+    expect(external).toContain('go to its window');
+  });
+
+  it('rc-off chip shows on running cards too — /remote-control re-enrols in-process', () => {
+    const html = renderCardInner(makeCtx(), makeSession({ bridgeState: 'dropped', status: 'running', processLive: true }), NOW, false);
+    expect(html).toContain('rc-off-chip');
+  });
+
+  it('rc-off chip sits after the agents chip and before the ⛔/⚠ chips and the actions', () => {
+    const s = makeSession({
+      bridgeState: 'dropped', externalWriter: true,
+      subagents: [{ description: 'a', running: true }],
+    });
+    const html = renderCardInner(makeCtx(), s, NOW, false);
+    const idx = html.indexOf('rc-off-chip');
+    expect(idx).toBeGreaterThan(html.indexOf('detail-chip'));
+    expect(idx).toBeLessThan(html.indexOf('external-writer-chip'));
+    expect(idx).toBeLessThan(html.indexOf('card-actions'));
+  });
+
   it('dual-writer card keeps its preview line — this window\'s claim is real', () => {
     const s = makeSession({ dualWriter: true, activity: 'Running Bash' });
     const html = renderCardInner(makeCtx(), s, NOW, false);

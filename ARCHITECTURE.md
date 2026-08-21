@@ -313,10 +313,16 @@ the Output channel as `[rc] <id8> bridge dropped` / `re-enrolled as cse_…` at
 `info`, and first enrolments plus startup-replay history at `trace` — a
 replayed record has no timestamp of its own, so the line carries the newest
 turn timestamp seen before it as the lower bound. Status and activity
-timestamps are never touched by either record. Nothing renders `bridgeState`
-yet: the positive state is noise under account-wide enrolment (v1.20.0
-decision), and the dropped-bridge chip with a close-and-reopen action is the
-planned next step once the trace has shown drop frequency.
+timestamps are never touched by either record. The one rendered state is
+`dropped` (`panelRender.ts`, `.rc-off-chip`): a 📡 with a CSS slash in the
+meta row, shown while `processLive !== false` (a dead session has nothing to
+reconnect; resuming re-enrols anyway). Its click is the card's own activation
+(`activateSession` in `panel.ts`: open here / switch worktree window / hand
+off) because the remedy — `/remote-control` typed in that chat, which
+re-enrols in-process under a new `cse_` in ~4 s — is something the webview
+cannot send into Claude Code's chat; the tooltip carries it. `enrolled` and
+unset never render: under account-wide enrolment a positive mark is noise
+(v1.20.0 decision).
 
 ### Writer ownership (externalWriter)
 
