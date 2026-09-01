@@ -264,28 +264,14 @@ let FOREIGN_SLIDE_MS = 220;
    *  means "take me there", not "select it here"; if the host opens it
    *  locally after all (stale mark, quiet unlock), it drives the highlight
    *  back through a focusSession message. */
-  /** The worktree a session lives in, when that is NOT this workspace — i.e.
-   *  the session is folded in from a sibling worktree (squash). Null for local
-   *  sessions, which is every session in the list when squash is off. */
-  function foreignWorktreeOf(sessionId: string): string | null {
-    const s = (lastSessions ?? []).find(x => x.sessionId === sessionId);
-    if (!s || !s.worktreeRoot || !workspacePath) { return null; }
-    return normPath(s.worktreeRoot) === normPath(workspacePath) ? null : s.worktreeRoot;
-  }
-
   function activateSession(sessionId: string): void {
-    // A card in the main list can belong to another worktree of this repo
-    // (squash). Opening its session HERE would point the companion editor at a
-    // foreign cwd — cwd drift, plus a dual-writer hazard when another window or
-    // an RC server already owns it. So switch to that worktree's window
-    // instead. Data-driven, not squash-gated: if a card is foreign it needs
-    // this branch however it got into the list. Reading the transcript in
-    // place is unaffected — that is the 📜 button and the detail chip.
-    const foreignWorktree = foreignWorktreeOf(sessionId);
-    if (foreignWorktree) {
-      vscode.postMessage({ type: 'openWorkspace', cwd: foreignWorktree, sessionId });
-      return;
-    }
+    // Sibling-worktree cards (squash) activate the same way as local ones:
+    // focusSession, through the host's open gate. v1.21.0 instead switched to
+    // that worktree's window (openWorkspace) to avoid pointing this window's
+    // editor at a foreign cwd — in practice that meant every phone-spawned
+    // one-shot worktree card cost a fresh VS Code window on a folder nobody
+    // works in. Reversed 2026-09-01: the conversation opens here, and the
+    // gate still hands off a session another window verifiably owns.
     vscode.postMessage({ type: 'focusSession', sessionId });
     if (!isExternalSession(sessionId)) {
       focusedSessionId = sessionId;
@@ -354,7 +340,7 @@ let FOREIGN_SLIDE_MS = 220;
     // 📡-with-a-slash chip — Remote Control is off for this session. The
     // remedy is typed in that chat (/remote-control), which the webview
     // cannot do for you, so the click is the card's own activation: open it
-    // here, switch to its worktree window, or hand off to its owning window.
+    // here, or hand off to its owning window.
     const rcOffChip = target.closest<HTMLElement>('[data-rc-off]');
     if (rcOffChip) {
       e.stopPropagation();
@@ -499,9 +485,8 @@ let FOREIGN_SLIDE_MS = 220;
       return;
     }
 
-    // Card click. Under squash the list also holds sibling-worktree sessions,
-    // so activateSession decides per card: local → open the companion editor
-    // here; foreign → switch to that worktree's window.
+    // Card click — open the companion editor here (sibling-worktree cards
+    // included; the host's open gate handles externally-owned sessions).
     const card = target.closest<HTMLElement>('.card:not(.card-leave)');
     if (card) {
       // A click that ENDS a text selection on this card is a copy gesture,

@@ -466,18 +466,17 @@ describe('panel.ts integration', () => {
       expect(ids).toEqual(['local-1']);
     });
 
-    it('clicking a folded card opens that worktree, and does NOT open the session here', () => {
-      // The hazard this replaces: focusSession would point THIS window's
-      // companion editor at a foreign cwd, and the session may already be
-      // owned by another window or an RC server.
+    it('clicking a folded card opens the session here, not a window on its worktree', () => {
+      // Reversal of the v1.21.0 window-switch: the host's open gate still
+      // hands off a session another window verifiably owns; every other
+      // sibling card (phone-spawned one-shots especially) opens here rather
+      // than costing a fresh VS Code window.
       sendSettings({ worktrees: { squash: true } });
       sendUpdate({ sessions: [sibling()] });
       postedMessages = [];
       (document.querySelector('.card') as HTMLElement).click();
-      expect(postedMessages).toContainEqual(
-        { type: 'openWorkspace', cwd: '/test-spike-a', sessionId: 'sib-squash' },
-      );
-      expect(postedMessages.filter((m: any) => m.type === 'focusSession')).toHaveLength(0);
+      expect(postedMessages).toContainEqual({ type: 'focusSession', sessionId: 'sib-squash' });
+      expect(postedMessages.filter((m: any) => m.type === 'openWorkspace')).toHaveLength(0);
     });
 
     it('still opens a LOCAL card here, squash or not', () => {
