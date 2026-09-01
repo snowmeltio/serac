@@ -214,6 +214,11 @@ describe('extension', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    // The profile verdict reads the real environment at activate() time, and
+    // this suite is developed on a machine where companion windows export
+    // CLAUDE_CONFIG_DIR — run from one of those, every activate() would read
+    // companion and ~9 RC tests would fail. Pin the default-account axis.
+    vi.stubEnv('CLAUDE_CONFIG_DIR', '');
     context = {
       extensionUri: { scheme: 'file', fsPath: '/test/ext' },
       extensionPath: '/test/ext',
@@ -229,6 +234,7 @@ describe('extension', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it('returns early when no workspace folders', () => {

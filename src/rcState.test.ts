@@ -87,8 +87,12 @@ describe('rcAriaLabel', () => {
     expect(rcAriaLabel({ autoEnrol: true, serving: false, companionProfile: false })).toContain('activate');
     expect(rcAriaLabel({ autoEnrol: false, serving: false, companionProfile: false })).toContain('activate');
   });
-  it('does not offer activation when the profile gate leaves nothing to offer', () => {
-    expect(rcAriaLabel({ autoEnrol: true, serving: false, companionProfile: true })).not.toContain('activate');
+  it('says why instead of offering activation when the profile gate leaves nothing to offer', () => {
+    // The span is still a button below full, so a bare "partial" would be a
+    // dead button to a screen reader — the label carries the reason.
+    const label = rcAriaLabel({ autoEnrol: true, serving: false, companionProfile: true });
+    expect(label).not.toContain('activate');
+    expect(label).toContain('unavailable in a companion profile');
     expect(rcAriaLabel({ autoEnrol: false, serving: false, companionProfile: true })).toContain('activate');
   });
 });

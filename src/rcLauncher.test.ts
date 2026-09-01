@@ -110,7 +110,7 @@ describe('isDefaultProfile', () => {
     expect(isDefaultProfile({ configDir: undefined, globalStoragePath: gs('Code-overwatch'), home })).toBe(false);
   });
   it('other editors’ default instance dirs count as default', () => {
-    for (const name of ['Code - Insiders', 'VSCodium', 'Cursor', 'Windsurf']) {
+    for (const name of ['Code - Insiders', 'Code - OSS', 'VSCodium', 'Cursor', 'Windsurf']) {
       expect(isDefaultProfile({ configDir: undefined, globalStoragePath: gs(name), home })).toBe(true);
     }
   });
@@ -118,13 +118,29 @@ describe('isDefaultProfile', () => {
     const nested = '/Users/x/Library/Application Support/Code/User/profiles/-1a2b3c4d/globalStorage/snowmeltio.serac-claude-code';
     expect(isDefaultProfile({ configDir: undefined, globalStoragePath: nested, home })).toBe(true);
   });
-  it('linux and windows layouts parse the same way', () => {
+  it('the linux layout parses the same way', () => {
+    // Windows paths are untestable from a POSIX runner (path.sep differs);
+    // the parse is separator-agnostic via path.resolve/split on the host's
+    // own module, which is also what a real Windows host would use.
     expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/home/x/.config/Code/User/globalStorage/ext', home: '/home/x' })).toBe(true);
     expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/home/x/.config/Code-snowmelt/User/globalStorage/ext', home: '/home/x' })).toBe(false);
   });
-  it('fails closed on an unrecognised layout (portable mode)', () => {
-    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/opt/portable/user-data/globalStorage/ext', home })).toBe(false);
-    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/User', home })).toBe(false);
+  it('remote-development server layouts read as default — the rc server belongs on the remote host', () => {
+    for (const server of ['.vscode-server', '.vscode-server-insiders', '.cursor-server']) {
+      expect(isDefaultProfile({ configDir: undefined, globalStoragePath: `/home/x/${server}/data/User/globalStorage/ext`, home: '/home/x' })).toBe(true);
+    }
+    // A data/User nesting NOT under a *-server dir stays closed.
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/test/data/User/globalStorage/ext', home })).toBe(false);
+  });
+  it('fails closed on portable mode — its user-data dir is not a recognised name', () => {
+    // Real portable layout: <install>/data/user-data/User/globalStorage/<ext>.
+    // The segment before User is 'user-data', which the recognised-names set
+    // misses; the parent is 'data', not a *-server dir, so the remote branch
+    // misses too.
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/opt/vscode/data/user-data/User/globalStorage/ext', home })).toBe(false);
+  });
+  it('fails closed when no User segment exists at all', () => {
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/opt/somewhere/globalStorage/ext', home })).toBe(false);
   });
 });
 

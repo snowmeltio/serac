@@ -52,10 +52,14 @@ export function rcTooltip(f: RcFacts): string {
     : f.autoEnrol === false
       ? 'Sessions you start here do not go to your phone automatically (Claude Code\'s "Enable Remote Control for all sessions" is off).'
       : 'Serac could not read Claude Code\'s settings.json, so it cannot tell whether sessions you start here go to your phone automatically.';
+  // The serving caveat states a fact about THIS WINDOW's account, never about
+  // the detected server: `serving` is account-blind (the sessions registry is
+  // shared across the profile symlink farm, so a companion window can be
+  // seeing the default account's server — adversarial review, 2026-09-01).
   const server = f.serving
     ? 'A Remote Control server is running here, so the phone can also start new sessions in this workspace, and they keep running with VS Code closed.'
       + (f.companionProfile
-        ? ' Note: it serves a companion account, so your phone cannot reach it without switching accounts there.'
+        ? ' Note: this window uses a companion account — a server started under it is not reachable from your phone without switching accounts there.'
         : '')
     : f.companionProfile
       ? 'No Remote Control server is running here. Serac does not offer to start one from a companion profile — a server under this account would not be reachable from your phone without switching accounts there.'
@@ -68,6 +72,14 @@ export function rcTooltip(f: RcFacts): string {
 
 export function rcAriaLabel(f: RcFacts): string {
   const level = rcLevel(f);
-  const options = level < 2 && rcHasOffers(f) ? '; activate for options' : '';
+  // Below full the span is still a button (activating it explains itself in
+  // the status bar), so the label must say what activation yields — a
+  // no-offers state announced as bare "partial" would be a dead button to a
+  // screen reader.
+  const options = level < 2
+    ? rcHasOffers(f)
+      ? '; activate for options'
+      : '; starting a server here is unavailable in a companion profile'
+    : '';
   return (level === 2 ? 'Remote Control full' : level === 1 ? 'Remote Control partial' : 'Remote Control off') + options;
 }

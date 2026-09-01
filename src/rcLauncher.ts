@@ -25,6 +25,21 @@ const DEFAULT_USER_DATA_DIR_NAMES = new Set([
   'Code', 'Code - Insiders', 'Code - OSS', 'VSCodium', 'Cursor', 'Windsurf',
 ]);
 
+/** Remote-development server dirs (`~/.vscode-server`, `~/.cursor-server`,
+ *  `-insiders` variants…): there the extension host runs on the remote and
+ *  globalStorage sits under `<server-dir>/data/User/…` — a layout the
+ *  editor-name list structurally cannot express. A remote window with a
+ *  default `~/.claude` on the remote host is exactly where the rc server
+ *  should run, so it must not read as a companion. */
+const REMOTE_SERVER_DIR = /^\.[a-z]+-server(?:-insiders)?$/;
+
+/** Why Serac withholds the server-start routes in a companion profile — said
+ *  identically by the empty-picker click and the startRcServer() guard, so it
+ *  lives here once (the RC_STOPPED_MESSAGE precedent). */
+export const RC_COMPANION_START_WITHHELD_MESSAGE =
+  'Serac does not start Remote Control servers from a companion profile — your phone could not reach this account\'s server. '
+  + 'Run claude rc in a terminal yourself if you want one.';
+
 /** Is this window the DEFAULT profile — the one whose Remote Control servers
  *  the phone can actually reach?
  *
@@ -49,13 +64,19 @@ export function isDefaultProfile(args: {
   home: string;
 }): boolean {
   const { configDir, globalStoragePath, home } = args;
-  if (configDir && configDir.trim().length > 0) {
+  // Emptiness test matches paths.ts exactly (length, no trim): a whitespace
+  // CLAUDE_CONFIG_DIR resolves to some cwd-relative dir ≠ ~/.claude and reads
+  // companion here, just as claudeKeychainService hashes it as non-default.
+  if (configDir && configDir.length > 0) {
     if (path.resolve(configDir) !== path.join(home, '.claude')) { return false; }
   }
   const segments = path.resolve(globalStoragePath).split(path.sep);
   const userIdx = segments.lastIndexOf('User');
   if (userIdx <= 0) { return false; }
-  return DEFAULT_USER_DATA_DIR_NAMES.has(segments[userIdx - 1]);
+  const dataDirName = segments[userIdx - 1];
+  if (DEFAULT_USER_DATA_DIR_NAMES.has(dataDirName)) { return true; }
+  // Remote development: `~/.vscode-server/data/User/globalStorage/…`.
+  return dataDirName === 'data' && userIdx >= 2 && REMOTE_SERVER_DIR.test(segments[userIdx - 2]);
 }
 
 export interface RcQuickPickItem {

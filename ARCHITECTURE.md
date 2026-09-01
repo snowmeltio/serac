@@ -324,17 +324,23 @@ also encodes), **and** the window's user-data-dir — parsed from
 `globalStorageUri` as the segment before the last `User` segment, which keeps
 the built-in profiles feature's `User/profiles/<id>/globalStorage` nesting
 inside the default instance — being a recognised editor default (`Code`,
-`Code - Insiders`, `Code - OSS`, `VSCodium`, `Cursor`, `Windsurf`). Anything
+`Code - Insiders`, `Code - OSS`, `VSCodium`, `Cursor`, `Windsurf`) or a
+remote-development server layout (`~/.vscode-server/data/User/…` and kin —
+the remote host is exactly where the rc server belongs). Anything
 unrecognised fails closed: withholding wrongly costs one manual `claude rc`
 in a terminal, offering wrongly puts capacity where the phone cannot reach
 it. Hard rule, no setting. The verdict is constant per window, logged once to
 the output channel, and reaches the webview as
 `PanelUpdate.rcCompanionProfile`. Observability is untouched everywhere: the
-level still reports the facts as they are, and when a hand-started server IS
-serving under a companion account the tooltip carries a not-reachable caveat
-(`rcState.ts`). A click with nothing offerable left shows the reason in the
-status bar instead of an empty picker (`rcState.ts:rcHasOffers` keeps the
-tooltip's call-to-action honest about that).
+level still reports the facts as they are, and in a companion profile the
+tooltip carries a caveat about THIS WINDOW's account — never a claim about
+who owns a detected server, because `serving` is account-blind (the sessions
+registry is shared across the profile symlink farm, so a companion window
+can be seeing the default account's server). A click with nothing offerable
+left shows the reason in the status bar instead of an empty picker
+(`rcState.ts:rcHasOffers` keeps the tooltip's call-to-action and the aria
+label honest about that; the shared reason string is
+`rcLauncher.ts:RC_COMPANION_START_WITHHELD_MESSAGE`).
 
 Principle: Serac may **start** a server, only in a terminal the user can see,
 and never stops one. Known blind spots, accepted:

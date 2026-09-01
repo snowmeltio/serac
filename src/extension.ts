@@ -16,6 +16,7 @@ import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, readRemoteControlAtStartup, type CompactSettings } from './claudeSettings.js';
 import {
   rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems, isDefaultProfile,
+  RC_COMPANION_START_WITHHELD_MESSAGE,
   findLiveRcTerminal, rcWatchTick, rcWatchStarted, RC_TERMINAL_NAME, RC_WATCH_IDLE, RC_STOPPED_MESSAGE,
   type RcWatchState,
 } from './rcLauncher.js';
@@ -1062,8 +1063,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     // stopped-warning's "Start it again" today) cannot bypass the row-level
     // gate — the same defence-in-depth as the serving re-read below.
     if (rcCompanionProfile) {
-      vscode.window.setStatusBarMessage(
-        'Serac does not start Remote Control servers from a companion profile — your phone could not reach this account\'s server. Run claude rc in a terminal yourself if you want one.', 8000);
+      vscode.window.setStatusBarMessage(RC_COMPANION_START_WITHHELD_MESSAGE, 8000);
       return;
     }
     // The offer goes stale while it waits to be answered: a quick pick or the
@@ -1125,7 +1125,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         // or the start routes withheld by the profile gate. Say which — an
         // empty picker would say neither.
         vscode.window.setStatusBarMessage(facts.companionProfile && !facts.serving
-          ? 'Serac does not start Remote Control servers from a companion profile — your phone could not reach this account\'s server. Run claude rc in a terminal yourself if you want one.'
+          ? RC_COMPANION_START_WITHHELD_MESSAGE
           : 'Remote Control is already fully on for this workspace.', 8000);
         return;
       }
