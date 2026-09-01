@@ -440,6 +440,30 @@ same JSONL file. Live-only by design: nothing on disk identifies a session's
 writer once that process has exited, and `undefined` (not yet resolved, or
 ownership couldn't be determined) is always treated as "don't flag".
 
+A verdict is resolved once per `(pid, startedAt)` and cached — with one
+freshness rule (v1.23.0): a **non-own** verdict older than
+`NON_OWN_VERDICT_TTL_MS` (60 s) is re-resolved on the next refresh, because
+its retained `ownerPid` can outlive the owner (the owning window dies while
+its writer survives, orphaned to launchd). The DEAD-address case is already
+caught downstream — every `ownerPid` consumer re-verifies with a fresh
+`isExtensionHostPid()` at decision time, and a dead pid fails it — so what
+the TTL actually closes is the recycled-address residue: the dead pid
+recycled onto another extension-host-shaped process, which passes that fresh
+check and would receive a focus hint for a session it does not own.
+Deliberately NOT a mark-clearing mechanism — a surviving orphan still
+resolves not-this-window and stays `'external'` (mapping orphans to unowned
+was red-teamed and dropped 2026-08-26: it would clear the open gate for a
+still-running writer). Own verdicts never expire (this window cannot stop
+being the parent while both live), and a failed TTL re-resolve keeps the
+standing verdict but re-stamps its TTL — same process, so stale beats wrong,
+and failure must not tighten the retry cadence to every poll — unlike the
+pid-reuse failure path, which drops a known-wrong entry. The refresh set is
+machine-wide minus RC-hosted pids, so the honest steady-state cost is one
+`ps` per non-own writer (other windows' and terminal-started sessions
+included) per minute per window; `execPs` carries a settle-guard so a `ps`
+that ignores SIGTERM bounds at ~3 s instead of wedging the serialising queue
+— and with it every open/send decision — for the window's life.
+
 **RC-hosted writers are excluded entirely** (`isRcHostedProcess()` in
 `rcDetector.ts`, applied by `SessionDiscovery.windowWriterProcs()` at every
 aggregate site — mark, open gate, dual check — and by the filtered

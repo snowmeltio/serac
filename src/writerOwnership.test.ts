@@ -5,7 +5,7 @@ vi.mock('child_process', () => ({
 }));
 
 import { execFile } from 'child_process';
-import { WriterOwnership, resolveParentPid, aggregateWriterOwnership, classifyProcessArgs, isExtensionHostPid } from './writerOwnership.js';
+import { WriterOwnership, resolveParentPid, aggregateWriterOwnership, classifyProcessArgs, isExtensionHostPid, NON_OWN_VERDICT_TTL_MS } from './writerOwnership.js';
 import type { LiveProcess } from './processRegistry.js';
 
 /** Mock execFile to invoke its callback with the given stdout. */
@@ -64,6 +64,21 @@ describe('resolveParentPid', () => {
   it('resolves null on unparseable stdout', async () => {
     mockPs('not-a-number\n');
     await expect(resolveParentPid(1234)).resolves.toBeNull();
+  });
+
+  it('settles null when ps never calls back — a wedged probe must not wedge the queue', async () => {
+    // execFile's timeout only SENDS SIGTERM; a child that never exits never
+    // fires the callback. The settle-guard bounds it so resolveFor()/refresh()
+    // (and everything queued behind them) cannot hang for the window's life.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(execFile).mockImplementation(() => ({} as ReturnType<typeof execFile>));
+      const pending = resolveParentPid(1234);
+      vi.advanceTimersByTime(3001);
+      await expect(pending).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -191,6 +206,127 @@ describe('WriterOwnership', () => {
     expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
     await wo.refresh([proc]);
     expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-resolves an external verdict past the TTL — the owner address must not outlive the owner', async () => {
+    vi.useFakeTimers();
+    try {
+      mockPs('4321\n'); // another window's Extension Host
+      const wo = new WriterOwnership();
+      const proc = liveProcess({ pid: 1234 });
+      await wo.refresh([proc]);
+      expect(wo.getInfo(1234)).toBe(true);
+      expect(wo.getOwnerPid(1234)).toBe(4321);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
+
+      // Within the TTL: cache hit, no second ps.
+      vi.advanceTimersByTime(NON_OWN_VERDICT_TTL_MS - 1000);
+      await wo.refresh([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
+
+      // Past the TTL: the owning window has died and the writer survived,
+      // reparented to launchd. Still external (a surviving orphan is not this
+      // window's writer), but the address refreshes — pid 1 fails
+      // isExtensionHostPid downstream, so the unfulfillable switch offer goes.
+      vi.advanceTimersByTime(2000);
+      mockPs('1\n');
+      await wo.refresh([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+      expect(wo.getInfo(1234)).toBe(true);
+      expect(wo.getOwnerPid(1234)).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('an own-window verdict never expires — this window cannot stop being the parent while both live', async () => {
+    vi.useFakeTimers();
+    try {
+      mockPs(`${process.pid}\n`);
+      const wo = new WriterOwnership();
+      const proc = liveProcess({ pid: 1234 });
+      await wo.refresh([proc]);
+      expect(wo.getInfo(1234)).toBe(false);
+      vi.advanceTimersByTime(NON_OWN_VERDICT_TTL_MS * 5);
+      await wo.refresh([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the standing verdict when a TTL re-resolve fails — same process, so stale beats wrong', async () => {
+    vi.useFakeTimers();
+    try {
+      mockPs('4321\n');
+      const wo = new WriterOwnership();
+      const proc = liveProcess({ pid: 1234 });
+      await wo.refresh([proc]);
+      expect(wo.getInfo(1234)).toBe(true);
+
+      // ps fails on the re-check. Unlike the pid-reuse case (startedAt
+      // mismatch — the old entry is known-wrong and dropped), this is still
+      // the same process: the old verdict is merely unconfirmed, and the next
+      // refresh retries.
+      vi.advanceTimersByTime(NON_OWN_VERDICT_TTL_MS + 1000);
+      mockPsError();
+      await wo.refresh([proc]);
+      expect(wo.getInfo(1234)).toBe(true);
+      expect(wo.getOwnerPid(1234)).toBe(4321);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a failed TTL re-resolve buys another TTL — failure must not tighten the cadence to every refresh', async () => {
+    // The adversarial-review catch: without re-stamping resolvedAt on the
+    // keep-the-verdict path, the entry stays permanently expired and every
+    // poll-loop refresh (2–8s) spawns another ps, forever.
+    vi.useFakeTimers();
+    try {
+      mockPs('4321\n');
+      const wo = new WriterOwnership();
+      const proc = liveProcess({ pid: 1234 });
+      await wo.refresh([proc]);
+      vi.advanceTimersByTime(NON_OWN_VERDICT_TTL_MS + 1000);
+      mockPsError();
+      await wo.refresh([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+
+      // The next few refreshes inside the fresh TTL are cache hits again.
+      vi.advanceTimersByTime(5000);
+      await wo.refresh([proc]);
+      await wo.refresh([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+
+      // And once THIS TTL lapses too, it retries.
+      vi.advanceTimersByTime(NON_OWN_VERDICT_TTL_MS);
+      await wo.refresh([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resolveFor honours the TTL the same way — the gate path never trusts an expired non-own verdict', async () => {
+    vi.useFakeTimers();
+    try {
+      mockPs('4321\n');
+      const wo = new WriterOwnership();
+      const proc = liveProcess({ pid: 1234 });
+      await wo.resolveFor([proc]);
+      expect(wo.getOwnerPid(1234)).toBe(4321);
+      await wo.resolveFor([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(NON_OWN_VERDICT_TTL_MS + 1000);
+      mockPs('1\n');
+      await wo.resolveFor([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+      expect(wo.getOwnerPid(1234)).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('retries a pid that previously failed to resolve', async () => {

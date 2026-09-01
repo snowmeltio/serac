@@ -28,7 +28,38 @@ interface CacheEntry {
   /** The LiveProcess's `startedAt` this verdict was resolved against — see
    *  refresh()'s re-resolve check below. */
   startedAt: number | null;
+  /** When this verdict was resolved (Date.now()) — see the non-own TTL in
+   *  needsResolution(). */
+  resolvedAt: number;
 }
+
+/** How long a NON-own verdict may stand before it is re-resolved. A verdict
+ *  is a snapshot of the writer's parentage, and for a non-own process that
+ *  snapshot's `ownerPid` can outlive the owner: the owning window dies while
+ *  the writer survives (orphaned to launchd). The dead-address case is
+ *  already caught downstream — every ownerPid consumer re-verifies with a
+ *  fresh isExtensionHostPid() at decision time, and a dead pid fails it — so
+ *  what the TTL actually closes is the narrower residue: the dead pid being
+ *  RECYCLED onto another extension-host-shaped process, which passes that
+ *  fresh check and receives a focus hint for a session it does not own.
+ *  Re-resolving keeps the address tracking the writer's real parent instead.
+ *
+ *  Deliberately NOT a "clear the mark" mechanism: a surviving orphan still
+ *  resolves not-this-window, so it stays 'external' — correct, it is not this
+ *  window's writer, and mapping orphans to unowned was red-teamed and dropped
+ *  (2026-08-26: it would clear the open gate for a still-running writer).
+ *  Own-window verdicts never expire: this window's pid cannot stop being the
+ *  parent while both live, and if THIS window dies the cache dies with it.
+ *
+ *  Cost, honestly: the refresh set is machine-wide (every registered claude
+ *  process minus RC-hosted), and other windows' sessions plus
+ *  terminal-started ones are non-own by construction — so this is one `ps`
+ *  per non-own writer per minute PER WINDOW, in bursts, not a rarity. Cheap
+ *  per call, and a failed re-check re-stamps the entry so failure never
+ *  tightens the cadence (see resolveAll). Wall-clock based: a backwards
+ *  clock step of Δ delays re-resolution by up to Δ — accepted, since the
+ *  pre-TTL behaviour was never re-resolving at all. */
+export const NON_OWN_VERDICT_TTL_MS = 60_000;
 
 export class WriterOwnership {
   /** pid -> resolved verdict, tagged with the process's startedAt at
@@ -94,14 +125,17 @@ export class WriterOwnership {
     // recycle. Treat a null startedAt as "can't prove continuity" and always
     // re-resolve rather than trust the cache.
     if (p.startedAt === null) { return true; }
-    return entry.startedAt !== p.startedAt;
+    if (entry.startedAt !== p.startedAt) { return true; }
+    // Same process, but a non-own verdict ages: its ownerPid may now name a
+    // dead window (see NON_OWN_VERDICT_TTL_MS). Re-resolve past the TTL.
+    return !entry.ownWindow && Date.now() - entry.resolvedAt > NON_OWN_VERDICT_TTL_MS;
   }
 
   private async resolveAll(pending: readonly LiveProcess[]): Promise<void> {
     await Promise.all(pending.map(async p => {
       const ppid = await resolveParentPid(p.pid);
       if (ppid !== null) {
-        this.cache.set(p.pid, { ownWindow: ppid === process.pid, ownerPid: ppid, startedAt: p.startedAt });
+        this.cache.set(p.pid, { ownWindow: ppid === process.pid, ownerPid: ppid, startedAt: p.startedAt, resolvedAt: Date.now() });
         return;
       }
       // null = unknown (ps failed/timed out). If this pid had no prior entry,
@@ -113,7 +147,16 @@ export class WriterOwnership {
       // verdict as if it were current. Drop it so getInfo() reports
       // "unresolved" instead of a confident, wrong answer.
       const stale = this.cache.get(p.pid);
-      if (stale && stale.startedAt !== p.startedAt) { this.cache.delete(p.pid); }
+      if (stale && stale.startedAt !== p.startedAt) {
+        this.cache.delete(p.pid);
+      } else if (stale) {
+        // Same process, TTL re-check failed: keep the verdict AND buy another
+        // TTL. Without the re-stamp the entry stays permanently expired and
+        // needsResolution() retries on every refresh — a 2–8 s ps cadence in
+        // place of the documented once-a-minute (adversarial review of this
+        // fix, 2026-09-01).
+        this.cache.set(p.pid, { ...stale, resolvedAt: Date.now() });
+      }
     }));
   }
 
@@ -200,11 +243,23 @@ export function resolveParentPid(pid: number): Promise<number | null> {
 
 /** One ps field for one pid — the single home of the invocation contract
  *  (timeout, encoding, error/empty-to-null mapping) shared by both public
- *  probes above/below. */
+ *  probes above/below.
+ *
+ *  The settle-guard timer exists because execFile's `timeout` only SENDS
+ *  SIGTERM — if the child never exits (uninterruptible wait), the callback
+ *  never fires and the promise never settles. An unsettled probe wedges the
+ *  serialising queue above for the life of the window: resolveFor() hangs
+ *  every open/send decision and refresh() stops the discovery poll loop
+ *  re-arming. Rare, but the TTL re-resolve now re-enters this path once a
+ *  minute per non-own writer instead of once per pid, so the guard bounds
+ *  it: settle null (unknown) and move on. A late callback's second resolve()
+ *  is a no-op. */
 function execPs(field: string, pid: number): Promise<string | null> {
   return new Promise(resolve => {
+    const guard = setTimeout(() => resolve(null), PS_TIMEOUT_MS + 1000);
     execFile('ps', ['-o', field, '-p', String(pid)], { timeout: PS_TIMEOUT_MS, encoding: 'utf-8' },
       (err, stdout) => {
+        clearTimeout(guard);
         resolve(err || !stdout || !stdout.trim() ? null : stdout);
       });
   });
