@@ -119,6 +119,11 @@ export interface PanelUpdate {
    *  when settings.json is unreadable. Always sent, like rcServing — the two
    *  together drive the top-bar signal level (rcState.ts). */
   rcAutoEnrol?: boolean | null;
+  /** True when this window is a companion profile (rcLauncher.ts's
+   *  isDefaultProfile, inverted): the tooltip carries the not-reachable
+   *  caveat and the start routes are withheld. Constant for the life of the
+   *  window; always sent. */
+  rcCompanionProfile?: boolean;
 }
 
 /** A row in the Worktrees pane: one worktree of the current repo. Built in
@@ -189,6 +194,9 @@ export type WebviewMessage =
       /** Claude Code's remoteControlAtStartup — the other top-bar signal
        *  fact. Always sent; `null` = unreadable. */
       rcAutoEnrol?: boolean | null;
+      /** This window is a companion profile — the tooltip carries the
+       *  not-reachable caveat (rcState.ts). Always sent. */
+      rcCompanionProfile?: boolean;
     }
   | {
       type: 'focusSession';

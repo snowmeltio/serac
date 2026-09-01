@@ -709,10 +709,10 @@ describe('statusSummaryHtml', () => {
 });
 
 describe('rcIndicatorHtml', () => {
-  const full = { autoEnrol: true, serving: true };
-  const common = { autoEnrol: true, serving: false };
-  const inverse = { autoEnrol: false, serving: true };
-  const off = { autoEnrol: false, serving: false };
+  const full = { autoEnrol: true, serving: true, companionProfile: false };
+  const common = { autoEnrol: true, serving: false, companionProfile: false };
+  const inverse = { autoEnrol: false, serving: true, companionProfile: false };
+  const off = { autoEnrol: false, serving: false, companionProfile: false };
 
   it('fills one bar per fact that is on', () => {
     expect(rcIndicatorHtml(full)).toContain('rc-indicator rc-level-2 on');
@@ -758,7 +758,7 @@ describe('rcIndicatorHtml', () => {
 
   it('always renders an indicator — off is a real state, not an absence', () => {
     expect(rcIndicatorHtml(off).length).toBeGreaterThan(0);
-    expect(rcIndicatorHtml({ autoEnrol: null, serving: false })).toContain('rc-level-0 off');
+    expect(rcIndicatorHtml({ autoEnrol: null, serving: false, companionProfile: false })).toContain('rc-level-0 off');
   });
 });
 

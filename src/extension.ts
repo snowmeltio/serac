@@ -15,7 +15,8 @@ import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 import { readCompactSettings, getClaudeSettingsPath, readRemoteControlAtStartup, type CompactSettings } from './claudeSettings.js';
 import {
-  rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems,
+  rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems, isDefaultProfile,
+  RC_COMPANION_START_WITHHELD_MESSAGE,
   findLiveRcTerminal, rcWatchTick, rcWatchStarted, RC_TERMINAL_NAME, RC_WATCH_IDLE, RC_STOPPED_MESSAGE,
   type RcWatchState,
 } from './rcLauncher.js';
@@ -912,6 +913,17 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // facts (the other is the rc server, read per poll). Reloaded by the
   // settings watchers below; never written by Serac.
   let rcAutoEnrol: boolean | null = readRemoteControlAtStartup(wsPath);
+  // Companion-profile verdict — constant for the life of the window (env and
+  // globalStorage cannot change under a running extension host). Logged once
+  // so a wrong verdict is diagnosable from the output channel rather than
+  // from a silently missing picker row.
+  const rcCompanionProfile = !(context.globalStorageUri && isDefaultProfile({
+    configDir: process.env.CLAUDE_CONFIG_DIR,
+    globalStoragePath: context.globalStorageUri.fsPath,
+    home: os.homedir(),
+  }));
+  log.info(`Remote Control profile verdict: ${rcCompanionProfile ? 'companion' : 'default'}`
+    + ` (CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? '<unset>'}, globalStorage=${context.globalStorageUri?.fsPath ?? '<none>'})`);
   // The Remote Control server Serac started in THIS window, if any: the
   // terminal, so a second start reuses it rather than adding a rival server on
   // the same directory, and the watch that notices the process dying inside a
@@ -947,6 +959,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       olderSessionCount, foreignRunning, worktrees, workflows,
       rcServing,
       rcAutoEnrol,
+      rcCompanionProfile,
     });
     detailPanel.refresh();
 
@@ -1046,6 +1059,13 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
    *  server scrolled above it. Serac still never stops a server — closing the
    *  terminal is the user's job and their only off switch. */
   function startRcServer(): void {
+    // Guarded here as well as at the picker rows, so a future call site (the
+    // stopped-warning's "Start it again" today) cannot bypass the row-level
+    // gate — the same defence-in-depth as the serving re-read below.
+    if (rcCompanionProfile) {
+      vscode.window.setStatusBarMessage(RC_COMPANION_START_WITHHELD_MESSAGE, 8000);
+      return;
+    }
     // The offer goes stale while it waits to be answered: a quick pick or the
     // stopped-warning can sit for minutes, and by then another window (or the
     // launchd server) may have taken this workspace. Starting a second server
@@ -1098,10 +1118,15 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // settings.json and points at it.
   panelProvider.setRcIndicatorClickHandler(() => {
     void (async () => {
-      const facts = { autoEnrol: rcAutoEnrol, serving: discovery.getRcServing() };
+      const facts = { autoEnrol: rcAutoEnrol, serving: discovery.getRcServing(), companionProfile: rcCompanionProfile };
       const items = rcQuickPickItems(facts, process.platform);
       if (items.length === 0) {
-        vscode.window.setStatusBarMessage('Remote Control is already fully on for this workspace.', 4000);
+        // Nothing offerable is two different stories: everything already on,
+        // or the start routes withheld by the profile gate. Say which — an
+        // empty picker would say neither.
+        vscode.window.setStatusBarMessage(facts.companionProfile && !facts.serving
+          ? RC_COMPANION_START_WITHHELD_MESSAGE
+          : 'Remote Control is already fully on for this workspace.', 8000);
         return;
       }
       const picked = await vscode.window.showQuickPick(items, {
