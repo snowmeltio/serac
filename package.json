@@ -2,7 +2,7 @@
   "name": "serac-claude-code",
   "displayName": "Serac Agent Manager",
   "description": "Manage your Claude Code agents, workflows, and teams from the VS Code sidebar: status cards, drill-in detail panel, usage quotas, and transcripts.",
-  "version": "1.22.1",
+  "version": "1.22.2",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",
@@ -136,7 +136,7 @@
           "serac.show.worktrees": {
             "type": "boolean",
             "default": true,
-            "description": "Show the \"Worktrees\" section. When off, the section is hidden and worktree scanning is skipped \u2014 unless serac.worktrees.squash is on, which needs the scan and hides the section itself."
+            "description": "Show the \"Worktrees\" section. When off, the section is hidden and worktree scanning is skipped — unless serac.worktrees.squash is on, which needs the scan and hides the section itself."
           },
           "serac.show.usage": {
             "type": "boolean",
@@ -199,7 +199,7 @@
           "serac.worktrees.squash": {
             "type": "boolean",
             "default": false,
-            "description": "Fold sessions from this repo's other worktrees into the main session list, each tagged with a worktree chip, instead of listing them separately. While on, the \"Worktrees\" section is hidden (so there is no duplicate summary) and serac.worktrees.maxHeightPx and serac.worktrees.autoCollapseAfterSeconds have no effect. Clicking a folded card opens that worktree's window. Nothing on disk changes \u2014 this is display only, and it does not affect the \"Other workspaces\" list."
+            "description": "Fold sessions from this repo's other worktrees into the main session list, each tagged with a worktree chip, instead of listing them separately. While on, the \"Worktrees\" section is hidden (so there is no duplicate summary) and serac.worktrees.maxHeightPx and serac.worktrees.autoCollapseAfterSeconds have no effect. Clicking a folded card opens that worktree's window. Nothing on disk changes — this is display only, and it does not affect the \"Other workspaces\" list."
           }
         }
       },
