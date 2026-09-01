@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.22.2 (2026-09-01) — Phone-driven sessions are not "another window"
+
+### Fixed
+- **A session your phone is driving no longer marks or blocks as "open in another VS Code window".** Every session a Remote Control server hosts is a child of the `claude rc` process, so the experimental external-writer check (`serac.experimental.externalWriterBlock`) confirmed it as another window's — a mark you could not act on and a block with no window behind it. Those processes register with `entrypoint: "sdk-cli"`, and they are now excluded from the writer-ownership verdict everywhere it is read: the card mark, the open/send gate, and the dual-writer check. A phone-driven session opens and resumes locally on click — Claude Code reconciles the concurrent writers for its server-backed sessions itself. The signal bar and the `bridge-cse_*` naming still tell you the phone is driving; nothing new is added to the card.
+
 ## v1.22.1 (2026-08-21) — Remote Control clears up after itself
 
 ### Fixed
