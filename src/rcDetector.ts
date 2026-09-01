@@ -34,6 +34,26 @@ import { CLAUDE_WORKTREE_SUBDIR, isAtOrUnder } from './gitWorktreeUtil.js';
 export const RC_ENTRYPOINT = 'sdk-cli';
 
 /**
+ * Is this registered process a headless SDK-driven writer (`entrypoint:
+ * "sdk-cli"`) rather than a candidate VS Code window's session? In practice
+ * these are Remote Control-hosted sessions — the phone drives them through
+ * the `claude rc` server, which parents every one of them.
+ *
+ * The writer-ownership paths use this to exclude such processes from the
+ * externalWriter aggregate entirely: the one-hop ppid check would otherwise
+ * confirm them 'external' (parent = the rc server, never this window's
+ * Extension Host), producing an unfulfillable "open in another VS Code
+ * window" mark and block. Deliberate consequence: a phone-driven session
+ * neither marks nor blocks, and CAN be resumed locally — Claude Code itself
+ * reconciles the concurrent writers for server-backed (`cse_`) sessions, so
+ * Serac stepping in front of that was pure false positive (decided
+ * 2026-09-01).
+ */
+export function isRcHostedProcess(p: Pick<LiveProcess, 'entrypoint'>): boolean {
+  return p.entrypoint === RC_ENTRYPOINT;
+}
+
+/**
  * True when any live registry entry looks like an RC-hosted session rooted at
  * this workspace — either the session pre-created in the serving directory
  * (cwd === workspace root) or one spawned into `<workspace>/.claude/worktrees/`.

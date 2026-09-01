@@ -119,13 +119,13 @@ async function spawnExternalProcess(): Promise<{ pid: number; cleanup: () => voi
 function writeRegistryEntryWithCwd(
   pid: number,
   sessionId: string,
-  opts: { startedAt?: number; cwd?: string } = {},
+  opts: { startedAt?: number; cwd?: string; entrypoint?: string } = {},
 ): void {
   const sessionsDir = path.join(tmpDir, 'sessions');
   fs.mkdirSync(sessionsDir, { recursive: true });
   fs.writeFileSync(path.join(sessionsDir, `${pid}.json`), JSON.stringify({
     pid, sessionId, cwd: opts.cwd ?? workspacePath, startedAt: opts.startedAt ?? Date.now(),
-    kind: 'interactive', entrypoint: 'claude-vscode', version: 'test',
+    kind: 'interactive', entrypoint: opts.entrypoint ?? 'claude-vscode', version: 'test',
   }));
 }
 
@@ -1232,6 +1232,27 @@ describe('SessionDiscovery', () => {
       }
     });
 
+    it("is 'clear' for an RC-hosted (sdk-cli) writer even with fresh activity — phone-driven sessions resume locally", async () => {
+      // Same non-exthost-parented fixture as the 'external' cases below, but
+      // registered as sdk-cli: the filter must clear the gate BEFORE
+      // ownership or recency are consulted. Claude Code reconciles the
+      // concurrent writers for server-backed sessions itself, so a local
+      // resume of a phone-driven session must never be blocked.
+      const sessionId = 'gate-rc-hosted-clear';
+      createJsonlFile(sessionId); // fresh — inside the quiet window
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { entrypoint: 'sdk-cli' });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.resolveOpenGate(sessionId, { classifyOwner: true })).resolves.toEqual({ kind: 'clear' });
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
     it("is 'external' with a non-null ownerPid but NOT addressable when the owner is not an extension host (terminal false-positive parity)", async () => {
       // The grandchild fixture's parent is a plain node process — ownerPid
       // resolves, but its ps args classify 'other', exactly like a shell
@@ -1417,6 +1438,28 @@ describe('SessionDiscovery', () => {
       discovery.stop();
     });
 
+    it('an RC-hosted (sdk-cli) writer never marks — externalWriter stays undefined', async () => {
+      // The grandchild fixture's parent is NOT this window's exthost, so the
+      // ppid check would confirm it 'external' — the exact false positive
+      // phone-driven Remote Control sessions hit (the rc server parents
+      // them). The entrypoint filter must exclude it before ownership is
+      // ever consulted.
+      const sessionId = 'gate-rc-hosted';
+      createJsonlFile(sessionId); // fresh — would mark if the process counted
+      const ext = await spawnExternalProcess();
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { entrypoint: 'sdk-cli' });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+        expect(snap?.externalWriter).toBeUndefined();
+        expect(discovery.isMarkedExternalWriter(sessionId)).toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+      }
+    });
+
     it('isMarkedExternalWriter mirrors the mark for any registry-known id, without a snapshot rebuild', async () => {
       // The public probe the click handlers use for the metadata/ack skips —
       // must answer for ids that never appear in getSnapshots() (foreign,
@@ -1592,6 +1635,31 @@ describe('SessionDiscovery', () => {
         // block (this window has its own live claim — the chip, not the
         // gate, surfaces the hazard).
         await expect(discovery.isDualWriterFresh(sessionId)).resolves.toBe(true);
+        await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+        ownChild.kill();
+      }
+    });
+
+    it('an own-window process + an RC-hosted (sdk-cli) writer aggregates own, never dual', async () => {
+      // The dual chip exists for the two-WINDOWS hazard; an RC co-writer is
+      // excluded from the aggregate, so this session reads as plainly ours.
+      const sessionId = 'own-plus-rc-sess';
+      createJsonlFile(sessionId);
+      const ext = await spawnExternalProcess(); // would confirm external if counted
+      const { spawn } = await import('child_process');
+      const ownChild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']);
+      try {
+        writeRegistryEntryWithCwd(ext.pid, sessionId, { entrypoint: 'sdk-cli' });
+        writeRegistryEntryWithCwd(ownChild.pid!, sessionId, { startedAt: Date.now() });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        const snap = discovery.getSnapshots().find(s => s.sessionId === sessionId);
+        expect(snap?.dualWriter).toBeUndefined();
+        expect(snap?.externalWriter).toBe(false);
+        await expect(discovery.isDualWriterFresh(sessionId)).resolves.toBe(false);
         await expect(discovery.isExternalWriterFresh(sessionId)).resolves.toBe(false);
         discovery.stop();
       } finally {

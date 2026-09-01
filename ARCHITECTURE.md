@@ -402,6 +402,19 @@ same JSONL file. Live-only by design: nothing on disk identifies a session's
 writer once that process has exited, and `undefined` (not yet resolved, or
 ownership couldn't be determined) is always treated as "don't flag".
 
+**RC-hosted writers are excluded entirely** (`isRcHostedProcess()` in
+`rcDetector.ts`, applied by `SessionDiscovery.windowWriterProcs()` at every
+aggregate site — mark, open gate, dual check — and by the filtered
+`writerOwnership.refresh()` calls, which also skip the `ps` spawn for those
+pids). A registry entry with `entrypoint: "sdk-cli"` is a headless SDK-driven
+writer — in practice a Remote Control session parented by the `claude rc`
+server — so the one-hop ppid check would confirm it 'external' with no
+window behind the verdict: an unfulfillable mark and block. A phone-driven
+session therefore neither marks nor blocks, and deliberately CAN be resumed
+locally — Claude Code reconciles concurrent writers for server-backed
+(`cse_`) sessions itself. The top-bar RC indicator and the `bridge-cse_*`
+worktree naming carry the "phone is driving this" signal instead.
+
 The cosmetic mark and the hard gate have **different freshness rules**:
 
 - **The mark** (`resolveWriterOwnership()`, feeding `SessionSnapshot.externalWriter`)

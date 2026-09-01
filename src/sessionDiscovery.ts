@@ -10,7 +10,7 @@ import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeIn
 import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
-import { isRcServing } from './rcDetector.js';
+import { isRcServing, isRcHostedProcess } from './rcDetector.js';
 import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid, type WriterAggregate } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { readSettings } from './settings.js';
@@ -342,7 +342,7 @@ export class SessionDiscovery {
     await this.teamDiscovery.scan();
     await this.workflowDiscovery.scan();
     await this.processRegistry.scan();
-    await this.writerOwnership.refresh(this.processRegistry.getLiveProcesses());
+    await this.writerOwnership.refresh(this.windowWriterCandidates());
 
     // Start adaptive poll loop
     this.schedulePoll();
@@ -994,11 +994,35 @@ export class SessionDiscovery {
    *  requirement. Read fresh (not cached) each call, same as every other
    *  experimental-gate read in this codebase (see e.g. `getMessagingSettings`
    *  in extension.ts) — cheap, and this function already runs on every
-   *  snapshot build. */
+   *  snapshot build.
+   *
+   *  RC-hosted (`sdk-cli`) writers are excluded from the aggregate — see
+   *  `windowWriterProcs()` / `isRcHostedProcess()`: a phone-driven session
+   *  never marks (and, symmetrically, never blocks). */
   private resolveWriterOwnership(sessionId: string): WriterAggregate {
     if (!readSettings().experimental.externalWriterBlock) { return undefined; }
-    const procs = this.processRegistry.getProcessesForSession(sessionId);
+    const procs = this.windowWriterProcs(sessionId);
     return aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid)));
+  }
+
+  /** The live processes registered under `sessionId` that could plausibly be
+   *  a VS Code window's writer — i.e. excluding RC-hosted (`sdk-cli`)
+   *  processes, which are parented by the `claude rc` server and would
+   *  otherwise confirm 'external' with no window behind the verdict (see
+   *  isRcHostedProcess). Every writer-ownership consumer (the mark, the open
+   *  gate, the dual check) collects through this one filter so the exclusion
+   *  is uniform by construction. */
+  private windowWriterProcs(sessionId: string): LiveProcess[] {
+    return this.processRegistry.getProcessesForSession(sessionId)
+      .filter(p => !isRcHostedProcess(p));
+  }
+
+  /** Machine-wide variant of the same filter, for the two
+   *  `writerOwnership.refresh()` call sites: RC-hosted pids never enter the
+   *  verdict cache (no `ps` spawned for them), and refresh()'s prune step
+   *  drops any verdict a pre-filter build may have cached for one. */
+  private windowWriterCandidates(): LiveProcess[] {
+    return this.processRegistry.getLiveProcesses().filter(p => !isRcHostedProcess(p));
   }
 
   /** Per-process detail (pid, startedAt, cwd) for every live process
@@ -1089,7 +1113,10 @@ export class SessionDiscovery {
   async resolveOpenGate(sessionId: string, opts: { classifyOwner?: boolean } = {}): Promise<OpenGateVerdict> {
     if (!readSettings().experimental.externalWriterBlock) { return { kind: 'clear' }; }
     await this.processRegistry.scan();
-    const procs = this.processRegistry.getProcessesForSession(sessionId);
+    // RC-hosted (sdk-cli) writers are excluded here exactly as in the mark —
+    // a phone-driven session resolves 'clear' and opens/resumes locally by
+    // design (Claude Code reconciles the concurrent writers itself).
+    const procs = this.windowWriterProcs(sessionId);
     if (procs.length === 0) { return { kind: 'clear' }; }
     await this.writerOwnership.resolveFor(procs);
     // 'dual' deliberately resolves 'clear': this window has its own live
@@ -1129,7 +1156,7 @@ export class SessionDiscovery {
   async isDualWriterFresh(sessionId: string): Promise<boolean> {
     if (!readSettings().experimental.externalWriterBlock) { return false; }
     await this.processRegistry.scan();
-    const procs = this.processRegistry.getProcessesForSession(sessionId);
+    const procs = this.windowWriterProcs(sessionId);
     if (procs.length === 0) { return false; }
     await this.writerOwnership.resolveFor(procs);
     return aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === 'dual';
@@ -1595,7 +1622,7 @@ export class SessionDiscovery {
         // owner clears the mark on this same scan, across every session
         // category.
         if (readSettings().experimental.externalWriterBlock) {
-          await this.writerOwnership.refresh(this.processRegistry.getLiveProcesses());
+          await this.writerOwnership.refresh(this.windowWriterCandidates());
         }
       }
 

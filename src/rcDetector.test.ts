@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isRcServing, RC_ENTRYPOINT } from './rcDetector.js';
+import { isRcHostedProcess, isRcServing, RC_ENTRYPOINT } from './rcDetector.js';
 import type { LiveProcess } from './processRegistry.js';
 
 const WS = '/Users/murraystubbs/repos/snowmeltio/serac';
@@ -81,5 +81,21 @@ describe('isRcServing', () => {
 
   it('pins the registry entrypoint value the detector keys on', () => {
     expect(RC_ENTRYPOINT).toBe('sdk-cli');
+  });
+});
+
+describe('isRcHostedProcess', () => {
+  it('matches on entrypoint alone — cwd is irrelevant, unlike isRcServing', () => {
+    // The writer-ownership exclusion must catch an RC-hosted session under
+    // ANY workspace (foreign, sibling worktree), not just the serving one.
+    for (const p of LIVE_RC_FIXTURES) {
+      expect(isRcHostedProcess(p)).toBe(true);
+    }
+    expect(isRcHostedProcess(proc({ entrypoint: 'sdk-cli', cwd: '/somewhere/else' }))).toBe(true);
+  });
+
+  it('never matches an ordinary VS Code session or a degraded entry', () => {
+    expect(isRcHostedProcess(proc({ entrypoint: 'claude-vscode' }))).toBe(false);
+    expect(isRcHostedProcess(proc({ entrypoint: null }))).toBe(false);
   });
 });
