@@ -958,13 +958,16 @@ Five pieces:
 3. **Pane gate.** The pane renders on `show.worktrees && !squash`; the else
    branch removes an existing container, so toggling takes effect immediately.
    `worktrees.maxHeightPx` and `autoCollapseAfterSeconds` are inert while on.
-4. **Click routing.** `activateSession` is **data-driven, not squash-gated**: a
-   card whose `worktreeRoot` differs from the workspace posts `openWorkspace`
-   (the path-confined handler in `extension.ts`) to switch to that worktree's
-   window, rather than `focusSession`. Opening a foreign-cwd session in this
-   window's companion editor means cwd drift plus a dual-writer hazard when
-   another window or an RC server already owns it. Reading in place is
-   unaffected — that is the transcript button and the detail chip.
+4. **Click routing.** A folded card activates like a local one: `focusSession`,
+   through the host's open gate (`resolveOpenGate`), which hands off a session
+   another window verifiably owns and blocks a genuine conflict. v1.21.0
+   instead posted `openWorkspace` to switch to that worktree's window — the
+   cwd-drift-cautious choice, but in practice every phone-spawned one-shot
+   worktree card cost a fresh VS Code window on a folder nobody works in.
+   Reversed 2026-09-01: the conversation opens here; the residual
+   trade-off is that a live foreign-cwd session with no addressable owning
+   window (e.g. terminal-run) opens in this window's companion editor at its
+   own cwd.
 
 A folded `bridge-cse_*` card whose process is registry-dead (`processLive ===
 false`) gets `.card-spent` and recedes: a phone-spawned worktree is one-shot,

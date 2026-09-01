@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Clicking a sibling-worktree card opens the conversation here, not that worktree's window.** The v1.21.0 squash design routed a folded card's click to a window switch — which meant a fresh VS Code window per click for every phone-spawned `bridge-cse_*` session, each on a one-shot worktree nobody works in. Folded cards now activate exactly like local ones: the conversation opens in this window, and the open gate still hands off a session another window verifiably owns. The trade-off accepted with the reversal: a live foreign-cwd session with no addressable owning window opens in this window's companion editor at its own cwd.
+
 ## v1.23.0 (2026-09-01) — Servers only where your phone can reach them
 
 ### Added
