@@ -19,12 +19,29 @@
 export interface RcFacts {
   autoEnrol: boolean | null;
   serving: boolean;
+  /** True when this window runs under a companion profile (a non-default
+   *  Claude account dir or VS Code instance dir — rcLauncher.ts's
+   *  isDefaultProfile). The phone's Remote Control view is per account, so a
+   *  server started from a companion window serves capacity the phone cannot
+   *  reach without switching accounts there — Serac withholds the START
+   *  routes in that case (the rows, and startRcServer). Observability is
+   *  unaffected: the level still reports the facts as they are. */
+  companionProfile: boolean;
 }
 
 export type RcLevel = 0 | 1 | 2;
 
 export function rcLevel(f: RcFacts): RcLevel {
   return ((f.autoEnrol === true ? 1 : 0) + (f.serving ? 1 : 0)) as RcLevel;
+}
+
+/** Would a click offer anything? Mirrors rcQuickPickItems' row conditions
+ *  (rcLauncher.ts): the server rows only exist outside a companion profile,
+ *  the settings row whenever auto-enrol isn't confirmed on. Keeps the tooltip
+ *  and aria wording honest — "click for ways to turn the rest on" must not
+ *  point at a picker that would come up empty. */
+export function rcHasOffers(f: RcFacts): boolean {
+  return (!f.serving && !f.companionProfile) || f.autoEnrol !== true;
 }
 
 /** Plain-words tooltip: both facts, always, and what the click offers when
@@ -37,14 +54,20 @@ export function rcTooltip(f: RcFacts): string {
       : 'Serac could not read Claude Code\'s settings.json, so it cannot tell whether sessions you start here go to your phone automatically.';
   const server = f.serving
     ? 'A Remote Control server is running here, so the phone can also start new sessions in this workspace, and they keep running with VS Code closed.'
-    : 'No Remote Control server is running here, so the phone cannot start a new session in this workspace.';
+      + (f.companionProfile
+        ? ' Note: it serves a companion account, so your phone cannot reach it without switching accounts there.'
+        : '')
+    : f.companionProfile
+      ? 'No Remote Control server is running here. Serac does not offer to start one from a companion profile — a server under this account would not be reachable from your phone without switching accounts there.'
+      : 'No Remote Control server is running here, so the phone cannot start a new session in this workspace.';
   const level = rcLevel(f);
   const head = level === 2 ? 'Remote Control: full. ' : level === 1 ? 'Remote Control: partial. ' : 'Remote Control: off. ';
-  const tail = level === 2 ? '' : ' Click for ways to turn the rest on.';
+  const tail = level === 2 || !rcHasOffers(f) ? '' : ' Click for ways to turn the rest on.';
   return head + enrol + ' ' + server + tail;
 }
 
 export function rcAriaLabel(f: RcFacts): string {
   const level = rcLevel(f);
-  return level === 2 ? 'Remote Control full' : level === 1 ? 'Remote Control partial; activate for options' : 'Remote Control off; activate for options';
+  const options = level < 2 && rcHasOffers(f) ? '; activate for options' : '';
+  return (level === 2 ? 'Remote Control full' : level === 1 ? 'Remote Control partial' : 'Remote Control off') + options;
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems,
   findLiveRcTerminal, rcWatchTick, rcWatchStarted, RC_TERMINAL_NAME, RC_WATCH_IDLE, RC_STOPPED_GRACE_MS,
+  isDefaultProfile,
 } from './rcLauncher.js';
 
 describe('rcTerminalEnvOverrides', () => {
@@ -45,37 +46,85 @@ describe('rcStartCommand / rcInstallCommand', () => {
 });
 
 describe('rcQuickPickItems', () => {
+  const facts = (f: { autoEnrol: boolean | null; serving: boolean; companionProfile?: boolean }) =>
+    ({ companionProfile: false, ...f });
   it('offers start + install + settings when everything is off on macOS', () => {
-    const actions = rcQuickPickItems({ autoEnrol: false, serving: false }, 'darwin').map(i => i.action);
+    const actions = rcQuickPickItems(facts({ autoEnrol: false, serving: false }), 'darwin').map(i => i.action);
     expect(actions).toEqual(['start', 'install', 'settings']);
   });
   it('omits the launchd installer off macOS', () => {
-    const actions = rcQuickPickItems({ autoEnrol: false, serving: false }, 'linux').map(i => i.action);
+    const actions = rcQuickPickItems(facts({ autoEnrol: false, serving: false }), 'linux').map(i => i.action);
     expect(actions).toEqual(['start', 'settings']);
   });
   it('the common case — auto-enrol on, no server — offers only the server routes', () => {
-    const actions = rcQuickPickItems({ autoEnrol: true, serving: false }, 'darwin').map(i => i.action);
+    const actions = rcQuickPickItems(facts({ autoEnrol: true, serving: false }), 'darwin').map(i => i.action);
     expect(actions).toEqual(['start', 'install']);
   });
   it('the inverse — server on, auto-enrol off — offers only settings', () => {
-    const actions = rcQuickPickItems({ autoEnrol: false, serving: true }, 'darwin').map(i => i.action);
+    const actions = rcQuickPickItems(facts({ autoEnrol: false, serving: true }), 'darwin').map(i => i.action);
     expect(actions).toEqual(['settings']);
   });
   it('unreadable settings still offers the settings route, and says why', () => {
-    const items = rcQuickPickItems({ autoEnrol: null, serving: true }, 'darwin');
+    const items = rcQuickPickItems(facts({ autoEnrol: null, serving: true }), 'darwin');
     expect(items.map(i => i.action)).toEqual(['settings']);
     expect(items[0].description).toContain('could not read');
   });
   it('offers nothing when both facts are on', () => {
-    expect(rcQuickPickItems({ autoEnrol: true, serving: true }, 'darwin')).toEqual([]);
+    expect(rcQuickPickItems(facts({ autoEnrol: true, serving: true }), 'darwin')).toEqual([]);
+  });
+  it('a companion profile withholds BOTH server rows — terminal and launchd', () => {
+    const actions = rcQuickPickItems(facts({ autoEnrol: false, serving: false, companionProfile: true }), 'darwin').map(i => i.action);
+    expect(actions).toEqual(['settings']);
+  });
+  it('a companion profile with auto-enrol already on offers nothing (the handler shows the reason instead)', () => {
+    expect(rcQuickPickItems(facts({ autoEnrol: true, serving: false, companionProfile: true }), 'darwin')).toEqual([]);
   });
   it('never claims Serac will stop a server or write the flag', () => {
-    for (const item of rcQuickPickItems({ autoEnrol: false, serving: false }, 'darwin')) {
+    for (const item of rcQuickPickItems(facts({ autoEnrol: false, serving: false }), 'darwin')) {
       const text = item.label + ' ' + item.description + ' ' + (item.detail ?? '');
       expect(text).not.toMatch(/Serac (will )?(stop|write)s?\b(?! this| it for)/);
     }
-    const start = rcQuickPickItems({ autoEnrol: true, serving: false }, 'darwin')[0];
+    const start = rcQuickPickItems(facts({ autoEnrol: true, serving: false }), 'darwin')[0];
     expect(start.detail).toContain('never stops it');
+  });
+});
+
+describe('isDefaultProfile', () => {
+  const home = '/Users/x';
+  const gs = (dataDir: string) =>
+    `/Users/x/Library/Application Support/${dataDir}/User/globalStorage/snowmeltio.serac-claude-code`;
+
+  it('default: no CLAUDE_CONFIG_DIR and the plain Code instance dir', () => {
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: gs('Code'), home })).toBe(true);
+    expect(isDefaultProfile({ configDir: '', globalStoragePath: gs('Code'), home })).toBe(true);
+  });
+  it('CLAUDE_CONFIG_DIR resolving to ~/.claude still counts as default', () => {
+    expect(isDefaultProfile({ configDir: '/Users/x/.claude', globalStoragePath: gs('Code'), home })).toBe(true);
+    expect(isDefaultProfile({ configDir: '/Users/x/./.claude/', globalStoragePath: gs('Code'), home })).toBe(true);
+  });
+  it('a companion account dir is a companion profile even in the default instance', () => {
+    expect(isDefaultProfile({ configDir: '/Users/x/.claude-snowmelt', globalStoragePath: gs('Code'), home })).toBe(false);
+  });
+  it('a companion instance dir is a companion profile even without the env var (Dock relaunch)', () => {
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: gs('Code-snowmelt'), home })).toBe(false);
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: gs('Code-overwatch'), home })).toBe(false);
+  });
+  it('other editors’ default instance dirs count as default', () => {
+    for (const name of ['Code - Insiders', 'VSCodium', 'Cursor', 'Windsurf']) {
+      expect(isDefaultProfile({ configDir: undefined, globalStoragePath: gs(name), home })).toBe(true);
+    }
+  });
+  it('the built-in profiles feature’s nested layout still reads as the default instance', () => {
+    const nested = '/Users/x/Library/Application Support/Code/User/profiles/-1a2b3c4d/globalStorage/snowmeltio.serac-claude-code';
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: nested, home })).toBe(true);
+  });
+  it('linux and windows layouts parse the same way', () => {
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/home/x/.config/Code/User/globalStorage/ext', home: '/home/x' })).toBe(true);
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/home/x/.config/Code-snowmelt/User/globalStorage/ext', home: '/home/x' })).toBe(false);
+  });
+  it('fails closed on an unrecognised layout (portable mode)', () => {
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/opt/portable/user-data/globalStorage/ext', home })).toBe(false);
+    expect(isDefaultProfile({ configDir: undefined, globalStoragePath: '/User', home })).toBe(false);
   });
 });
 

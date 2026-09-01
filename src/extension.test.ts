@@ -217,7 +217,10 @@ describe('extension', () => {
     context = {
       extensionUri: { scheme: 'file', fsPath: '/test/ext' },
       extensionPath: '/test/ext',
-      globalStorageUri: { scheme: 'file', fsPath: '/test/data/User/globalStorage/snowmeltio.serac' },
+      // A recognised default layout (`Code` instance dir): the fixture window
+      // is the DEFAULT profile, so the RC start routes are offered. The
+      // profile-gate tests below swap in a companion layout.
+      globalStorageUri: { scheme: 'file', fsPath: '/test/data/Code/User/globalStorage/snowmeltio.serac' },
       subscriptions: [],
     };
     (vscode.window.tabGroups as any).all = [];
@@ -822,6 +825,53 @@ describe('extension', () => {
       await vi.waitFor(() => expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
         expect.stringContaining('already fully on'), expect.any(Number)));
       expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    });
+
+    // The profile gate: a companion window (non-default Claude account dir or
+    // VS Code instance dir) withholds the START routes — a server started
+    // there serves an account the phone cannot reach without switching
+    // accounts. Observability is untouched.
+    const asCompanion = () => ({
+      ...context,
+      globalStorageUri: { scheme: 'file', fsPath: '/test/data/Code-snowmelt/User/globalStorage/snowmeltio.serac' },
+    });
+
+    it('companion profile: no picker when only the server rows would remain — the reason lands in the status bar', async () => {
+      activate(asCompanion() as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      getHandler()();
+      await vi.waitFor(() => expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+        expect.stringContaining('companion profile'), expect.any(Number)));
+      expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+      expect(vscode.window.createTerminal).not.toHaveBeenCalled();
+    });
+
+    it('companion profile: the settings route is still offered, the server rows are not', async () => {
+      const { readRemoteControlAtStartup } = await import('./claudeSettings.js');
+      vi.mocked(readRemoteControlAtStartup).mockReturnValueOnce(false);
+      activate(asCompanion() as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      vi.mocked(vscode.window.showQuickPick).mockResolvedValueOnce(undefined);
+      getHandler()();
+      await vi.waitFor(() => expect(vscode.window.showQuickPick).toHaveBeenCalled());
+      const items = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as unknown as Array<{ action: string }>;
+      expect(items.map(i => i.action)).toEqual(['settings']);
+    });
+
+    it('companion profile: the panel is told, so the tooltip can carry the caveat', async () => {
+      activate(asCompanion() as any);
+      await vi.advanceTimersByTimeAsync(5000);
+      const updates = vi.mocked(mockPanelProvider.updateSessions).mock.calls;
+      expect(updates.length).toBeGreaterThan(0);
+      expect((updates[updates.length - 1][0] as { rcCompanionProfile?: boolean }).rcCompanionProfile).toBe(true);
+    });
+
+    it('default profile: the panel fact is false', async () => {
+      activate(context as any);
+      await vi.advanceTimersByTimeAsync(5000);
+      const updates = vi.mocked(mockPanelProvider.updateSessions).mock.calls;
+      expect(updates.length).toBeGreaterThan(0);
+      expect((updates[updates.length - 1][0] as { rcCompanionProfile?: boolean }).rcCompanionProfile).toBe(false);
     });
 
     it('passes rcAutoEnrol to the panel on every update, re-read when a settings file changes', async () => {

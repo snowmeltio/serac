@@ -76,6 +76,9 @@ interface UpdateMessage {
   /** Claude Code's remoteControlAtStartup — sessions started here enrol
    *  automatically. null = settings.json unreadable. Always sent. */
   rcAutoEnrol?: boolean | null;
+  /** This window is a companion profile — tooltip carries the not-reachable
+   *  caveat (rcState.ts). Always sent. */
+  rcCompanionProfile?: boolean;
 }
 
 interface FocusMessage {
@@ -128,6 +131,7 @@ let FOREIGN_SLIDE_MS = 220;
   let lastWorktrees: PanelWorktreeRow[] = [];
   let lastRcServing = false;
   let lastRcAutoEnrol: boolean | null = null;
+  let lastRcCompanionProfile = false;
   let lastWorktreesHtml = '';
   let lastForeignWaiting: PanelSession[] = [];
   let lastForeignRunning: PanelSession[] = [];
@@ -634,6 +638,7 @@ let FOREIGN_SLIDE_MS = 220;
         lastWorktrees = message.worktrees ?? [];
         lastRcServing = message.rcServing ?? false;
         lastRcAutoEnrol = message.rcAutoEnrol === undefined ? null : message.rcAutoEnrol;
+        lastRcCompanionProfile = message.rcCompanionProfile ?? false;
         homeDir = message.home ?? '';
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         // Same-file collisions across every active session we can see —
@@ -781,7 +786,7 @@ let FOREIGN_SLIDE_MS = 220;
       rcSlot.className = 'rc-slot';
       topBar.appendChild(rcSlot);
     }
-    rcSlot.innerHTML = rcIndicatorHtml({ autoEnrol: lastRcAutoEnrol, serving: lastRcServing });
+    rcSlot.innerHTML = rcIndicatorHtml({ autoEnrol: lastRcAutoEnrol, serving: lastRcServing, companionProfile: lastRcCompanionProfile });
 
     // === Scroll container ===
     let scrollWrap = root.querySelector('.card-archive-scroll') as HTMLElement | null;
