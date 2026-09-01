@@ -15,6 +15,70 @@ import type { RcFacts } from './rcState.js';
 
 export type RcAction = 'start' | 'install' | 'settings';
 
+/** Default user-data-dir names across the Electron editors Serac runs in.
+ *  Anything else — Murray's `Code-<name>` companion launchers especially —
+ *  reads as a companion instance. A future editor not in this list fails
+ *  CLOSED (start routes withheld, reason shown on click); that costs its user
+ *  one manual `claude rc` in a terminal, where failing open would offer a
+ *  server their phone cannot reach. */
+const DEFAULT_USER_DATA_DIR_NAMES = new Set([
+  'Code', 'Code - Insiders', 'Code - OSS', 'VSCodium', 'Cursor', 'Windsurf',
+]);
+
+/** Remote-development server dirs (`~/.vscode-server`, `~/.cursor-server`,
+ *  `-insiders` variants…): there the extension host runs on the remote and
+ *  globalStorage sits under `<server-dir>/data/User/…` — a layout the
+ *  editor-name list structurally cannot express. A remote window with a
+ *  default `~/.claude` on the remote host is exactly where the rc server
+ *  should run, so it must not read as a companion. */
+const REMOTE_SERVER_DIR = /^\.[a-z]+-server(?:-insiders)?$/;
+
+/** Why Serac withholds the server-start routes in a companion profile — said
+ *  identically by the empty-picker click and the startRcServer() guard, so it
+ *  lives here once (the RC_STOPPED_MESSAGE precedent). */
+export const RC_COMPANION_START_WITHHELD_MESSAGE =
+  'Serac does not start Remote Control servers from a companion profile — your phone could not reach this account\'s server. '
+  + 'Run claude rc in a terminal yourself if you want one.';
+
+/** Is this window the DEFAULT profile — the one whose Remote Control servers
+ *  the phone can actually reach?
+ *
+ *  "Companion profile" is two uncoupled axes, and both must agree on default:
+ *   - Claude account: `CLAUDE_CONFIG_DIR` unset, or resolving to `~/.claude`
+ *     (the same comparison paths.ts:claudeKeychainService encodes). The
+ *     phone's Remote Control view is per account.
+ *   - VS Code instance: the `--user-data-dir` this window runs under, read
+ *     from the globalStorage path because the env var is not guaranteed to
+ *     survive a Dock relaunch or window restore. The dir name is the segment
+ *     before the last `User` segment — parsed that way rather than reusing
+ *     workspaceOpener.ts:deriveUserDataDir because VS Code's built-in
+ *     profiles feature nests globalStorage under `User/profiles/<id>/`, which
+ *     that helper (rightly, for spawn targeting) refuses to parse; a profile
+ *     inside the default install still counts as default here.
+ *
+ *  Anything unrecognised is a companion: fail closed (see
+ *  DEFAULT_USER_DATA_DIR_NAMES for the cost asymmetry). */
+export function isDefaultProfile(args: {
+  configDir: string | undefined;
+  globalStoragePath: string;
+  home: string;
+}): boolean {
+  const { configDir, globalStoragePath, home } = args;
+  // Emptiness test matches paths.ts exactly (length, no trim): a whitespace
+  // CLAUDE_CONFIG_DIR resolves to some cwd-relative dir ≠ ~/.claude and reads
+  // companion here, just as claudeKeychainService hashes it as non-default.
+  if (configDir && configDir.length > 0) {
+    if (path.resolve(configDir) !== path.join(home, '.claude')) { return false; }
+  }
+  const segments = path.resolve(globalStoragePath).split(path.sep);
+  const userIdx = segments.lastIndexOf('User');
+  if (userIdx <= 0) { return false; }
+  const dataDirName = segments[userIdx - 1];
+  if (DEFAULT_USER_DATA_DIR_NAMES.has(dataDirName)) { return true; }
+  // Remote development: `~/.vscode-server/data/User/globalStorage/…`.
+  return dataDirName === 'data' && userIdx >= 2 && REMOTE_SERVER_DIR.test(segments[userIdx - 2]);
+}
+
 export interface RcQuickPickItem {
   label: string;
   description: string;
@@ -63,11 +127,16 @@ export function rcInstallCommand(extensionPath: string, workspacePath: string): 
 }
 
 /** The picker's rows for the current facts. Only what is OFF is offered; the
- *  launchd installer is macOS-only. Empty when everything is on (the
- *  indicator is not a button then, so this is a guard, not a state). */
+ *  launchd installer is macOS-only. Both server rows (terminal and launchd)
+ *  are withheld in a companion profile — a server started there serves an
+ *  account the phone cannot reach without switching accounts, so offering it
+ *  is offering a dead end. Empty when everything is on, or when nothing
+ *  offerable remains (the click handler shows the reason in the status bar
+ *  instead of an empty picker — rcHasOffers is the shared spelling of
+ *  "would this be empty"). */
 export function rcQuickPickItems(facts: RcFacts, platform: NodeJS.Platform): RcQuickPickItem[] {
   const items: RcQuickPickItem[] = [];
-  if (!facts.serving) {
+  if (!facts.serving && !facts.companionProfile) {
     items.push({
       label: '$(terminal) Start a Remote Control server here',
       description: 'in a VS Code terminal — lets your phone start sessions in this workspace',

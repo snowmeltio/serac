@@ -28,6 +28,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   /** Remote Control server serving this workspace (top-bar indicator). */
   private rcServing = false;
   private rcAutoEnrol: boolean | null = null;
+  private rcCompanionProfile = false;
   private onFocusSession: ((sessionId: string) => void) | undefined;
   private onResolveDualWriter: ((sessionId: string) => void) | undefined;
   private onRcIndicatorClick: (() => void) | undefined;
@@ -216,6 +217,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.worktrees = update.worktrees;
     this.rcServing = update.rcServing ?? false;
     this.rcAutoEnrol = update.rcAutoEnrol === undefined ? null : update.rcAutoEnrol;
+    this.rcCompanionProfile = update.rcCompanionProfile ?? false;
 
     // Update badge
     if (this.view) {
@@ -269,6 +271,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       worktrees: this.worktrees && this.worktrees.length > 0 ? this.worktrees : undefined,
       rcServing: this.rcServing,
       rcAutoEnrol: this.rcAutoEnrol,
+      rcCompanionProfile: this.rcCompanionProfile,
     };
 
     this.view.webview.postMessage(message);
