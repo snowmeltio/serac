@@ -311,6 +311,31 @@ offering only what is off:
   to `remoteControlAtStartup` if present, and says how to enable it. Serac
   never writes that key: it is the user's account-level consent.
 
+**Profile gate (v1.23.0):** the two server rows — and `startRcServer()`
+directly, as defence-in-depth against future call sites — are withheld in a
+**companion profile**. The phone's Remote Control view is per account, so a
+server started under a companion account serves capacity the phone cannot
+reach without switching accounts there; offering it is offering a dead end.
+"Default profile" (`rcLauncher.ts:isDefaultProfile`) requires BOTH axes to
+agree, because the `code-<name>` launchers couple them but the coupling does
+not survive a Dock relaunch or window restore: `CLAUDE_CONFIG_DIR` unset or
+resolving to `~/.claude` (the comparison `paths.ts:claudeKeychainService`
+also encodes), **and** the window's user-data-dir — parsed from
+`globalStorageUri` as the segment before the last `User` segment, which keeps
+the built-in profiles feature's `User/profiles/<id>/globalStorage` nesting
+inside the default instance — being a recognised editor default (`Code`,
+`Code - Insiders`, `Code - OSS`, `VSCodium`, `Cursor`, `Windsurf`). Anything
+unrecognised fails closed: withholding wrongly costs one manual `claude rc`
+in a terminal, offering wrongly puts capacity where the phone cannot reach
+it. Hard rule, no setting. The verdict is constant per window, logged once to
+the output channel, and reaches the webview as
+`PanelUpdate.rcCompanionProfile`. Observability is untouched everywhere: the
+level still reports the facts as they are, and when a hand-started server IS
+serving under a companion account the tooltip carries a not-reachable caveat
+(`rcState.ts`). A click with nothing offerable left shows the reason in the
+status bar instead of an empty picker (`rcState.ts:rcHasOffers` keeps the
+tooltip's call-to-action honest about that).
+
 Principle: Serac may **start** a server, only in a terminal the user can see,
 and never stops one. Known blind spots, accepted:
 
@@ -322,6 +347,13 @@ and never stops one. Known blind spots, accepted:
 - **No full process-table scan.** Closing the gap would mean a `ps -ax`
   enumeration; the codebase has only ever queried `ps` by known pid
   (`writerOwnership.ts`), and one ambient indicator doesn't justify starting.
+- **Any headless `sdk-cli` writer at the workspace root reads as "serving".**
+  `isRcServing()` cannot tell an rc server's children from other headless
+  spawns — the registry carries no parent pid. A detached dispatch running at
+  the workspace root (e.g. an env-scrubbed `/handover` continuation, honest
+  `entrypoint: "sdk-cli"` since 2026-09-01) lights the bar as serving while
+  it runs. Accepted: it self-corrects when the dispatch exits, and telling
+  them apart would need the parent inspection the registry doesn't offer.
 - **A server started from the indicator is watched, never controlled.** The
   terminal handle is kept for reuse and for one message, and there is still no
   kill path — the terminal is the only off switch. `claude rc` paints its
