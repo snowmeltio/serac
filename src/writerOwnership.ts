@@ -28,7 +28,30 @@ interface CacheEntry {
   /** The LiveProcess's `startedAt` this verdict was resolved against — see
    *  refresh()'s re-resolve check below. */
   startedAt: number | null;
+  /** When this verdict was resolved (Date.now()) — see the non-own TTL in
+   *  needsResolution(). */
+  resolvedAt: number;
 }
+
+/** How long a NON-own verdict may stand before it is re-resolved. A verdict
+ *  is a snapshot of the writer's parentage, and for an external process that
+ *  parentage goes stale in one important way: the owning window dies while
+ *  the writer survives, leaving `ownerPid` pointing at a dead Extension Host
+ *  — exactly the address the cross-window handoff would target, so the click
+ *  offers a switch to a window that no longer exists. Re-resolving refreshes
+ *  the address (post-orphaning it is the new parent, launchd's pid 1, which
+ *  fails isExtensionHostPid → not addressable → no unfulfillable offer).
+ *
+ *  Deliberately NOT a "clear the mark" mechanism: a surviving orphan still
+ *  resolves not-this-window, so it stays 'external' — correct, it is not this
+ *  window's writer, and mapping orphans to unowned was red-teamed and dropped
+ *  (2026-08-26: it would clear the open gate for a still-running writer).
+ *  Own-window verdicts never expire: this window's pid cannot stop being the
+ *  parent while both live, and if THIS window dies the cache dies with it.
+ *  External verdicts are rare (RC-hosted sdk-cli writers never enter the
+ *  cache since v1.22.2), so the recurring `ps` cost is one call per external
+ *  writer per minute. */
+export const NON_OWN_VERDICT_TTL_MS = 60_000;
 
 export class WriterOwnership {
   /** pid -> resolved verdict, tagged with the process's startedAt at
@@ -94,14 +117,17 @@ export class WriterOwnership {
     // recycle. Treat a null startedAt as "can't prove continuity" and always
     // re-resolve rather than trust the cache.
     if (p.startedAt === null) { return true; }
-    return entry.startedAt !== p.startedAt;
+    if (entry.startedAt !== p.startedAt) { return true; }
+    // Same process, but a non-own verdict ages: its ownerPid may now name a
+    // dead window (see NON_OWN_VERDICT_TTL_MS). Re-resolve past the TTL.
+    return !entry.ownWindow && Date.now() - entry.resolvedAt > NON_OWN_VERDICT_TTL_MS;
   }
 
   private async resolveAll(pending: readonly LiveProcess[]): Promise<void> {
     await Promise.all(pending.map(async p => {
       const ppid = await resolveParentPid(p.pid);
       if (ppid !== null) {
-        this.cache.set(p.pid, { ownWindow: ppid === process.pid, ownerPid: ppid, startedAt: p.startedAt });
+        this.cache.set(p.pid, { ownWindow: ppid === process.pid, ownerPid: ppid, startedAt: p.startedAt, resolvedAt: Date.now() });
         return;
       }
       // null = unknown (ps failed/timed out). If this pid had no prior entry,
