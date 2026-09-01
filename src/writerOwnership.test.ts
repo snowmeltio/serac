@@ -65,6 +65,21 @@ describe('resolveParentPid', () => {
     mockPs('not-a-number\n');
     await expect(resolveParentPid(1234)).resolves.toBeNull();
   });
+
+  it('settles null when ps never calls back — a wedged probe must not wedge the queue', async () => {
+    // execFile's timeout only SENDS SIGTERM; a child that never exits never
+    // fires the callback. The settle-guard bounds it so resolveFor()/refresh()
+    // (and everything queued behind them) cannot hang for the window's life.
+    vi.useFakeTimers();
+    try {
+      vi.mocked(execFile).mockImplementation(() => ({} as ReturnType<typeof execFile>));
+      const pending = resolveParentPid(1234);
+      vi.advanceTimersByTime(3001);
+      await expect(pending).resolves.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('classifyProcessArgs', () => {
@@ -259,6 +274,56 @@ describe('WriterOwnership', () => {
       expect(wo.getInfo(1234)).toBe(true);
       expect(wo.getOwnerPid(1234)).toBe(4321);
       expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a failed TTL re-resolve buys another TTL — failure must not tighten the cadence to every refresh', async () => {
+    // The adversarial-review catch: without re-stamping resolvedAt on the
+    // keep-the-verdict path, the entry stays permanently expired and every
+    // poll-loop refresh (2–8s) spawns another ps, forever.
+    vi.useFakeTimers();
+    try {
+      mockPs('4321\n');
+      const wo = new WriterOwnership();
+      const proc = liveProcess({ pid: 1234 });
+      await wo.refresh([proc]);
+      vi.advanceTimersByTime(NON_OWN_VERDICT_TTL_MS + 1000);
+      mockPsError();
+      await wo.refresh([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+
+      // The next few refreshes inside the fresh TTL are cache hits again.
+      vi.advanceTimersByTime(5000);
+      await wo.refresh([proc]);
+      await wo.refresh([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+
+      // And once THIS TTL lapses too, it retries.
+      vi.advanceTimersByTime(NON_OWN_VERDICT_TTL_MS);
+      await wo.refresh([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resolveFor honours the TTL the same way — the gate path never trusts an expired non-own verdict', async () => {
+    vi.useFakeTimers();
+    try {
+      mockPs('4321\n');
+      const wo = new WriterOwnership();
+      const proc = liveProcess({ pid: 1234 });
+      await wo.resolveFor([proc]);
+      expect(wo.getOwnerPid(1234)).toBe(4321);
+      await wo.resolveFor([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(NON_OWN_VERDICT_TTL_MS + 1000);
+      mockPs('1\n');
+      await wo.resolveFor([proc]);
+      expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+      expect(wo.getOwnerPid(1234)).toBe(1);
     } finally {
       vi.useRealTimers();
     }
