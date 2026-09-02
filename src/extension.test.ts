@@ -701,17 +701,17 @@ describe('extension', () => {
       expect(terminal.dispose).not.toHaveBeenCalled();
     });
 
-    const withSpawnWorktreeSetting = () => {
+    const withSpawnMode = (mode: 'same-dir' | 'worktree' | 'auto') => {
       vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
         get: <T>(key: string, defaultValue?: T): T | undefined =>
-          key === 'rc.spawnWorktree' ? (true as unknown as T) : defaultValue,
+          key === 'rc.spawnMode' ? (mode as unknown as T) : defaultValue,
       } as any);
     };
 
-    it('"start" adds --spawn worktree when the setting is on and the workspace is a git repo', async () => {
+    it('"start" adds --spawn worktree in auto mode when the workspace is a git repo', async () => {
       const { resolveRepoRoot } = await import('./gitWorktreeUtil.js');
       vi.mocked(resolveRepoRoot).mockResolvedValue('/test/ws');
-      withSpawnWorktreeSetting();
+      withSpawnMode('auto');
       activate(context as any);
       mockDiscovery.getRcServing.mockReturnValue(false);
       const terminal = makeTerminal();
@@ -725,10 +725,10 @@ describe('extension', () => {
       expect(items.find(i => i.action === 'start')?.detail).toContain('--spawn worktree');
     });
 
-    it('"start" stays same-dir when the setting is on but the workspace is not a git repo', async () => {
+    it('"start" stays same-dir in auto mode when the workspace is not a git repo', async () => {
       const { resolveRepoRoot } = await import('./gitWorktreeUtil.js');
       vi.mocked(resolveRepoRoot).mockResolvedValue(null);
-      withSpawnWorktreeSetting();
+      withSpawnMode('auto');
       activate(context as any);
       mockDiscovery.getRcServing.mockReturnValue(false);
       const terminal = makeTerminal();
@@ -740,10 +740,25 @@ describe('extension', () => {
       expect(resolveRepoRoot).toHaveBeenCalledWith('/test/ws');
     });
 
+    it('"start" in worktree mode asks for a worktree even where no git repo resolves — the CLI says no, not Serac', async () => {
+      const { resolveRepoRoot } = await import('./gitWorktreeUtil.js');
+      vi.mocked(resolveRepoRoot).mockResolvedValue(null);
+      withSpawnMode('worktree');
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const terminal = makeTerminal();
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'start'));
+      getHandler()();
+      await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      expect(terminal.sendText.mock.calls[0][0] as string).toMatch(/claude rc --spawn worktree$/);
+      expect(resolveRepoRoot).not.toHaveBeenCalled();
+    });
+
     it('"install" passes the same spawn mode to the installer', async () => {
       const { resolveRepoRoot } = await import('./gitWorktreeUtil.js');
       vi.mocked(resolveRepoRoot).mockResolvedValue('/test/ws');
-      withSpawnWorktreeSetting();
+      withSpawnMode('auto');
       activate(context as any);
       mockDiscovery.getRcServing.mockReturnValue(false);
       const terminal = makeTerminal();

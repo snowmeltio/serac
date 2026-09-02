@@ -24,7 +24,8 @@ reopen them. Pass `--spawn worktree` to give each phone-started session its
 own worktree under `<repo>/.claude/worktrees/bridge-cse_<id>` instead —
 isolated edits, but transcripts that window's panel cannot restore, and a
 poor fit for shared workspaces whose state lives at fixed paths. Serac's
-`serac.rc.spawnWorktree` setting picks the mode for both the terminal server
+`serac.rc.spawnMode` setting (`same-dir`, `worktree`, or `auto` = match the
+workspace) picks the mode for both the terminal server
 and this installer.
 
 ## Install
@@ -80,7 +81,7 @@ read as off — see `src/rcDetector.ts` and ARCHITECTURE.md.
 These scripts ship inside the extension. Clicking the indicator while the
 tall bar is unlit offers to run `install.sh` for the open repo in a VS Code
 terminal (macOS), or to start a plain `claude rc` in a terminal for this VS
-Code session only (both in the mode `serac.rc.spawnWorktree` selects). Serac starts; it never stops a
+Code session only (both in the mode `serac.rc.spawnMode` selects). Serac starts; it never stops a
 server — that is the terminal's close button or `uninstall.sh`.
 
 ## Caveats

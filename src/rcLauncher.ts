@@ -115,8 +115,9 @@ function shellQuote(s: string): string {
 /** The server command. Bare `claude rc` is Claude Code's own default
  *  (`--spawn same-dir`): phone-started sessions share this directory and land
  *  under this workspace's project key, so the Claude Code panel here can
- *  reopen them. `--spawn worktree` is the opt-in (`serac.rc.spawnWorktree`,
- *  and only where a git repo exists — extension.ts resolves both): each
+ *  reopen them. `--spawn worktree` is the opt-in (`serac.rc.spawnMode`:
+ *  `worktree`, or `auto` where a git repo exists — extension.ts resolves
+ *  the setting to this boolean): each
  *  phone session gets its own worktree, at the cost that its transcript lives
  *  under the worktree's key and this window's panel cannot restore it. The
  *  launchd wrapper takes the same mode, so both servers agree. */

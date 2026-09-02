@@ -1059,13 +1059,16 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
    *  so that shell is sitting at a prompt with a dead (or never-started)
    *  server scrolled above it. Serac still never stops a server — closing the
    *  terminal is the user's job and their only off switch. */
-  /** Spawn mode for a server started or installed from here: worktree only
-   *  when the setting asks for it AND the workspace is a git repo (`claude rc
-   *  --spawn worktree` cannot make worktrees anywhere else). Resolved at the
-   *  moment of acting, so a settings edit or a `git init` between offer and
-   *  answer is honoured. */
+  /** Spawn mode for a server started or installed from here, as a boolean
+   *  the command builders take. `worktree` is passed through even outside a
+   *  git repo — the CLI's own "not a git repository" error is the honest
+   *  outcome of asking for that; `auto` is the mode that consults the
+   *  workspace. Resolved at the moment of acting, so a settings edit or a
+   *  `git init` between offer and answer is honoured. */
   async function rcSpawnWorktree(): Promise<boolean> {
-    if (!readSettings().rc.spawnWorktree) { return false; }
+    const mode = readSettings().rc.spawnMode;
+    if (mode === 'same-dir') { return false; }
+    if (mode === 'worktree') { return true; }
     return (await resolveRepoRoot(wsPath)) !== null;
   }
 
