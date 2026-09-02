@@ -363,6 +363,12 @@
             "default": 20,
             "minimum": 1,
             "description": "Maximum number of completed (done) items shown in the archive when expanded."
+          },
+          "serac.rc.spawnWorktree": {
+            "type": "boolean",
+            "default": false,
+            "scope": "resource",
+            "description": "Start Remote Control servers with --spawn worktree, so each session your phone starts gets its own git worktree under <repo>/.claude/worktrees. Off by default: those sessions cannot be reopened from this window's Claude Code panel (their transcripts live under the worktree's own project key), and worktrees do not suit shared workspaces whose state lives at fixed paths. Ignored where the workspace is not a git repository. Applies to the terminal server Serac starts and to the launchd installer."
           }
         }
       },

@@ -116,6 +116,21 @@ describe('panel.css invariants', () => {
     expect(orphans).toEqual([]);
   });
 
+  it('6. the Remote Control signal bars: empty is a solid ghost, lit colours via a light-parity token', () => {
+    // v1.24.0: the empty bar was a 1px outline that read darker than the lit
+    // fill beside it at 3px wide. A border here would bring that back.
+    const empty = rules.find(r => r.selector === '.rc-bar');
+    expect(empty, '.rc-bar rule missing').toBeDefined();
+    expect(empty!.body).not.toMatch(/(?:^|;|\s)border(?:-(?:color|width|style|top|right|bottom|left))?\s*:/);
+    expect(empty!.body).toMatch(/opacity\s*:\s*0\.[0-9]+/);
+    const lit = rules.find(r => r.selector === '.rc-bar.lit');
+    expect(lit, '.rc-bar.lit rule missing').toBeDefined();
+    // A brand --sm-* token is theme-invariant (pale on white); the role
+    // token themes via the light block, which invariant 1 keeps in parity.
+    expect(lit!.body).toMatch(/background\s*:\s*var\(--accent-/);
+    expect(lit!.body).toMatch(/opacity\s*:\s*1\b/);
+  });
+
   it('5. every state the renderer can emit has a rule in its family', () => {
     // Closed sets, pinned here on purpose: adding a state to the renderer
     // without a rule for it is exactly the wf-chip-failed regression.

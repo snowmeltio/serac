@@ -192,6 +192,11 @@ vi.mock('./claudeEnvSignals.js', () => ({
   readIdeOpenFolders: vi.fn(() => new Set<string>()),
 }));
 
+// The rc spawn-mode decision reads the workspace's `.git`; tests decide.
+vi.mock('./gitWorktreeUtil.js', () => ({
+  resolveRepoRoot: vi.fn().mockResolvedValue('/test/ws'),
+}));
+
 // extension.ts imports only isExtensionHostPid from here (the dual-writer
 // keep-here addressability check); the real one spawns `ps`.
 vi.mock('./writerOwnership.js', () => ({
@@ -637,6 +642,15 @@ describe('extension', () => {
   });
 
   describe('Remote Control indicator click handler', () => {
+    // The spawn-mode cases below swap the configuration stub and the repo
+    // resolver; clearAllMocks keeps implementations, so put them back here.
+    afterEach(async () => {
+      vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+        get: <T>(_key: string, defaultValue?: T): T | undefined => defaultValue,
+      } as any);
+      const { resolveRepoRoot } = await import('./gitWorktreeUtil.js');
+      vi.mocked(resolveRepoRoot).mockResolvedValue('/test/ws');
+    });
     const getHandler = () =>
       vi.mocked(mockPanelProvider.setRcIndicatorClickHandler).mock.calls[0][0] as () => void;
     const makeTerminal = () => {
@@ -680,9 +694,65 @@ describe('extension', () => {
       expect(opts.env).not.toHaveProperty('CLAUDE_CONFIG_DIR');
       expect(terminal.show).toHaveBeenCalled();
       const cmd = terminal.sendText.mock.calls[0][0] as string;
-      expect(cmd).toMatch(/claude rc --spawn worktree$/);
+      // Default: same-dir. Phone sessions then land under this workspace's
+      // project key — the only key the Claude Code panel here can restore from.
+      expect(cmd).toMatch(/claude rc$/);
       // Serac starts; it never stops. No process handle is kept, no kill path exists.
       expect(terminal.dispose).not.toHaveBeenCalled();
+    });
+
+    const withSpawnWorktreeSetting = () => {
+      vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+        get: <T>(key: string, defaultValue?: T): T | undefined =>
+          key === 'rc.spawnWorktree' ? (true as unknown as T) : defaultValue,
+      } as any);
+    };
+
+    it('"start" adds --spawn worktree when the setting is on and the workspace is a git repo', async () => {
+      const { resolveRepoRoot } = await import('./gitWorktreeUtil.js');
+      vi.mocked(resolveRepoRoot).mockResolvedValue('/test/ws');
+      withSpawnWorktreeSetting();
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const terminal = makeTerminal();
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'start'));
+      getHandler()();
+      await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      expect(terminal.sendText.mock.calls[0][0] as string).toMatch(/claude rc --spawn worktree$/);
+      // The picker row said the same thing before the click.
+      const items = vi.mocked(vscode.window.showQuickPick).mock.calls[0][0] as unknown as Array<{ action: string; detail?: string }>;
+      expect(items.find(i => i.action === 'start')?.detail).toContain('--spawn worktree');
+    });
+
+    it('"start" stays same-dir when the setting is on but the workspace is not a git repo', async () => {
+      const { resolveRepoRoot } = await import('./gitWorktreeUtil.js');
+      vi.mocked(resolveRepoRoot).mockResolvedValue(null);
+      withSpawnWorktreeSetting();
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const terminal = makeTerminal();
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'start'));
+      getHandler()();
+      await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      expect(terminal.sendText.mock.calls[0][0] as string).toMatch(/claude rc$/);
+      expect(resolveRepoRoot).toHaveBeenCalledWith('/test/ws');
+    });
+
+    it('"install" passes the same spawn mode to the installer', async () => {
+      const { resolveRepoRoot } = await import('./gitWorktreeUtil.js');
+      vi.mocked(resolveRepoRoot).mockResolvedValue('/test/ws');
+      withSpawnWorktreeSetting();
+      activate(context as any);
+      mockDiscovery.getRcServing.mockReturnValue(false);
+      const terminal = makeTerminal();
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(
+        async (items: any) => (items as any[]).find(i => i.action === 'install'));
+      getHandler()();
+      await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
+      expect(terminal.sendText.mock.calls[0][0] as string)
+        .toBe('bash /test/ext/scripts/rc-headless/install.sh --spawn worktree /test/ws');
     });
 
     it('"install" runs the shipped installer from the extension path against this workspace', async () => {
@@ -737,7 +807,7 @@ describe('extension', () => {
       getHandler()();
       await vi.waitFor(() => expect(existing.sendText).toHaveBeenCalled());
       expect(vscode.window.createTerminal).not.toHaveBeenCalled();
-      expect(existing.sendText.mock.calls[0][0] as string).toMatch(/claude rc --spawn worktree$/);
+      expect(existing.sendText.mock.calls[0][0] as string).toMatch(/claude rc$/);
       expect(existing.show).toHaveBeenCalled();
       expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
         expect.stringContaining('existing terminal'), expect.anything());

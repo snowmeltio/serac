@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Template. install.sh substitutes @SLUG@, @WRAPPER@, @REPO@, and @HOME@ and
+  Template. install.sh substitutes @SLUG@, @WRAPPER@, @REPO@, @HOME@, and @SPAWN@ and
   writes the result to ~/Library/LaunchAgents/io.snowmelt.claude-rc.<slug>.plist.
   Do not load this file directly.
 -->
@@ -15,6 +15,7 @@
     <string>/bin/zsh</string>
     <string>@WRAPPER@</string>
     <string>@REPO@</string>
+    <string>@SPAWN@</string>
   </array>
 
   <!-- Start at login and keep it up. ThrottleInterval stops a server that

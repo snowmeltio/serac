@@ -17,16 +17,23 @@ Two different things get confused:
   Control server running on this machine, in this repo. That is what `claude
   rc` provides, and what this makes permanent.
 
-Each phone-started session gets its own worktree under
-`<repo>/.claude/worktrees/bridge-cse_<id>` (that's `--spawn worktree`), so
-remote work never disturbs whatever you have checked out.
+By default the server runs in **same-dir** mode (Claude Code's own default):
+sessions the phone starts share the checkout and land under the repo's
+project key, so a Claude Code panel in a VS Code window on this repo can
+reopen them. Pass `--spawn worktree` to give each phone-started session its
+own worktree under `<repo>/.claude/worktrees/bridge-cse_<id>` instead —
+isolated edits, but transcripts that window's panel cannot restore, and a
+poor fit for shared workspaces whose state lives at fixed paths. Serac's
+`serac.rc.spawnWorktree` setting picks the mode for both the terminal server
+and this installer.
 
 ## Install
 
 ```sh
-scripts/rc-headless/install.sh                # current repo
-scripts/rc-headless/install.sh ~/repos/thing  # a specific one
-scripts/rc-headless/install.sh --smoke-only   # run the checks, install nothing
+scripts/rc-headless/install.sh                       # current repo
+scripts/rc-headless/install.sh ~/repos/thing         # a specific one
+scripts/rc-headless/install.sh --spawn worktree      # one worktree per phone session
+scripts/rc-headless/install.sh --smoke-only          # run the checks, install nothing
 ```
 
 The installer:
@@ -35,7 +42,7 @@ The installer:
    `io.snowmelt.claude-rc.<repo-slug>`.
 2. Checks the Claude CLI exists and that Remote Control is enabled on your
    account (`remoteDialogSeen` in `~/.claude.json`).
-3. **Smoke tests headless startup** — spawns `claude rc --spawn worktree` with
+3. **Smoke tests headless startup** — spawns `claude rc --spawn <mode>` with
    no TTY, waits for a hosted session to appear in the process registry, then
    kills it. This is the condition launchd will run it under, so it's worth
    proving before making it permanent.
@@ -72,8 +79,8 @@ read as off — see `src/rcDetector.ts` and ARCHITECTURE.md.
 
 These scripts ship inside the extension. Clicking the indicator while the
 tall bar is unlit offers to run `install.sh` for the open repo in a VS Code
-terminal (macOS), or to start a plain `claude rc --spawn worktree` in a
-terminal for this VS Code session only. Serac starts; it never stops a
+terminal (macOS), or to start a plain `claude rc` in a terminal for this VS
+Code session only (both in the mode `serac.rc.spawnWorktree` selects). Serac starts; it never stops a
 server — that is the terminal's close button or `uninstall.sh`.
 
 ## Caveats

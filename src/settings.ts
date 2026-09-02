@@ -89,6 +89,14 @@ export interface SeracSettings {
   cleanup: {
     confirmRequired: boolean;
   };
+  rc: {
+    /** Start Remote Control servers with `--spawn worktree` (each phone-started
+     *  session in its own git worktree). Default off: worktree sessions land
+     *  under their own project key, which the Claude Code panel cannot
+     *  restore from the repo window, and worktrees fight shared workspaces
+     *  whose state lives at fixed paths. Ignored where there is no git repo. */
+    spawnWorktree: boolean;
+  };
   experimental: {
     /** Master gate for direct teammate messaging (write into a member's inbox).
      *  Default off — Serac's only write path into `~/.claude/`; re-checked
@@ -147,6 +155,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
   usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
   animations: { enabled: true },
   cleanup: { confirmRequired: true },
+  rc: { spawnWorktree: false },
   experimental: { teammateMessaging: false, operatorName: 'operator', externalWriterBlock: false },
   hooks: { enabled: false, debug: false },
 };
@@ -207,6 +216,9 @@ export function readSettings(): SeracSettings {
     },
     cleanup: {
       confirmRequired: cfg.get<boolean>('cleanup.confirmRequired', d.cleanup.confirmRequired),
+    },
+    rc: {
+      spawnWorktree: cfg.get<boolean>('rc.spawnWorktree', d.rc.spawnWorktree),
     },
     experimental: {
       teammateMessaging: cfg.get<boolean>('experimental.teammateMessaging', d.experimental.teammateMessaging),
