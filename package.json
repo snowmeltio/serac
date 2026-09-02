@@ -2,7 +2,7 @@
   "name": "serac-claude-code",
   "displayName": "Serac Agent Manager",
   "description": "Manage your Claude Code agents, workflows, and teams from the VS Code sidebar: status cards, drill-in detail panel, usage quotas, and transcripts.",
-  "version": "1.23.1",
+  "version": "1.24.0",
   "publisher": "snowmeltio",
   "repository": {
     "type": "git",
@@ -366,7 +366,11 @@
           },
           "serac.rc.spawnMode": {
             "type": "string",
-            "enum": ["same-dir", "worktree", "auto"],
+            "enum": [
+              "same-dir",
+              "worktree",
+              "auto"
+            ],
             "enumDescriptions": [
               "Plain claude rc. Sessions your phone starts share this checkout and land under this workspace's project key, so this window's Claude Code panel can reopen them.",
               "Always claude rc --spawn worktree. Each phone session gets its own git worktree under <repo>/.claude/worktrees; this window's panel cannot reopen those transcripts. Fails outside a git repository.",
