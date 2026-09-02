@@ -112,18 +112,26 @@ function shellQuote(s: string): string {
   return /^[A-Za-z0-9_./:@%+=-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
 }
 
-/** `claude rc --spawn worktree` — the same invocation the launchd wrapper
- *  uses, so phone-started sessions land in their own worktrees rather than on
- *  whatever is checked out here. */
-export function rcStartCommand(cli: string): string {
-  return shellQuote(cli) + ' rc --spawn worktree';
+/** The server command. Bare `claude rc` is Claude Code's own default
+ *  (`--spawn same-dir`): phone-started sessions share this directory and land
+ *  under this workspace's project key, so the Claude Code panel here can
+ *  reopen them. `--spawn worktree` is the opt-in (`serac.rc.spawnMode`:
+ *  `worktree`, or `auto` where a git repo exists — extension.ts resolves
+ *  the setting to this boolean): each
+ *  phone session gets its own worktree, at the cost that its transcript lives
+ *  under the worktree's key and this window's panel cannot restore it. The
+ *  launchd wrapper takes the same mode, so both servers agree. */
+export function rcStartCommand(cli: string, spawnWorktree: boolean): string {
+  return shellQuote(cli) + ' rc' + (spawnWorktree ? ' --spawn worktree' : '');
 }
 
 /** Runs the shipped installer against this workspace. `bash` rather than
- *  relying on the execute bit, which a .vsix unpack does not promise. */
-export function rcInstallCommand(extensionPath: string, workspacePath: string): string {
+ *  relying on the execute bit, which a .vsix unpack does not promise. The
+ *  spawn mode rides along as install.sh's own option so the always-on server
+ *  honours the same choice as the terminal one. */
+export function rcInstallCommand(extensionPath: string, workspacePath: string, spawnWorktree: boolean): string {
   const script = path.join(extensionPath, 'scripts', 'rc-headless', 'install.sh');
-  return 'bash ' + shellQuote(script) + ' ' + shellQuote(workspacePath);
+  return 'bash ' + shellQuote(script) + (spawnWorktree ? ' --spawn worktree' : '') + ' ' + shellQuote(workspacePath);
 }
 
 /** The picker's rows for the current facts. Only what is OFF is offered; the
@@ -134,20 +142,27 @@ export function rcInstallCommand(extensionPath: string, workspacePath: string): 
  *  offerable remains (the click handler shows the reason in the status bar
  *  instead of an empty picker — rcHasOffers is the shared spelling of
  *  "would this be empty"). */
-export function rcQuickPickItems(facts: RcFacts, platform: NodeJS.Platform): RcQuickPickItem[] {
+export function rcQuickPickItems(
+  facts: RcFacts,
+  platform: NodeJS.Platform,
+  opts: { spawnWorktree: boolean } = { spawnWorktree: false },
+): RcQuickPickItem[] {
   const items: RcQuickPickItem[] = [];
   if (!facts.serving && !facts.companionProfile) {
+    const mode = opts.spawnWorktree
+      ? 'claude rc --spawn worktree (each phone session in its own worktree)'
+      : 'claude rc (phone sessions share this directory)';
     items.push({
       label: '$(terminal) Start a Remote Control server here',
       description: 'in a VS Code terminal — lets your phone start sessions in this workspace',
-      detail: 'Runs claude rc --spawn worktree. Leave the terminal open; closing it stops the server. Serac never stops it for you.',
+      detail: `Runs ${mode}. Leave the terminal open; closing it stops the server. Serac never stops it for you.`,
       action: 'start',
     });
     if (platform === 'darwin') {
       items.push({
         label: '$(pulse) Install an always-on server (launchd)',
         description: 'keeps serving this workspace after VS Code closes',
-        detail: 'Runs scripts/rc-headless/install.sh for this repo in a terminal. It checks Remote Control is enabled on your account first and installs nothing otherwise.',
+        detail: `Runs scripts/rc-headless/install.sh for this repo in a terminal, in the same ${opts.spawnWorktree ? 'worktree' : 'same-dir'} mode. It checks Remote Control is enabled on your account first and installs nothing otherwise.`,
         action: 'install',
       });
     }

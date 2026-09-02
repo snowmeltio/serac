@@ -3,8 +3,14 @@
 # running for one repo, so the phone can start sessions there without a
 # terminal open.
 #
-#   ./install.sh [repo-path]     # defaults to the current directory
-#   ./install.sh --smoke-only    # run the checks, install nothing
+#   ./install.sh [repo-path]           # defaults to the current directory
+#   ./install.sh --spawn worktree [repo] # each phone session in its own worktree
+#   ./install.sh --smoke-only          # run the checks, install nothing
+#
+# Spawn mode defaults to same-dir (Claude Code's own default): sessions the
+# phone starts share the checkout, so a Claude Code panel on this repo can
+# reopen them. --spawn worktree isolates each one in <repo>/.claude/worktrees
+# at the cost that the panel cannot restore those transcripts.
 #
 # What it will NOT do: enable Remote Control on your account. That is a
 # one-time interactive consent, and a script that seeds the flag for you would
@@ -21,14 +27,26 @@ SMOKE_TIMEOUT=45
 
 SMOKE_ONLY=0
 REPO_ARG=""
+SPAWN="same-dir"
+EXPECT_SPAWN=0
 for arg in "$@"; do
+  if [ "$EXPECT_SPAWN" = "1" ]; then
+    SPAWN="$arg"; EXPECT_SPAWN=0; continue
+  fi
   case "$arg" in
     --smoke-only) SMOKE_ONLY=1 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    --spawn) EXPECT_SPAWN=1 ;;
+    --spawn=*) SPAWN="${arg#--spawn=}" ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     -*) echo "unknown option: $arg" >&2; exit 64 ;;
     *) REPO_ARG="$arg" ;;
   esac
 done
+[ "$EXPECT_SPAWN" = "0" ] || { echo "--spawn needs a mode: same-dir or worktree" >&2; exit 64; }
+case "$SPAWN" in
+  same-dir|worktree) ;;
+  *) echo "unknown spawn mode: $SPAWN (same-dir or worktree)" >&2; exit 64 ;;
+esac
 
 die() { echo "error: $*" >&2; exit 1; }
 note() { echo "  $*"; }
@@ -37,7 +55,7 @@ note() { echo "  $*"; }
 REPO="$(cd "${REPO_ARG:-$PWD}" 2>/dev/null && pwd)" || die "no such directory: ${REPO_ARG:-$PWD}"
 git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $REPO"
 # The main checkout, even when invoked from inside a linked worktree — the RC
-# server should serve the repo, and --spawn worktree makes its own anyway.
+# server should serve the repo, not one of its worktrees.
 REPO="$(git -C "$REPO" rev-parse --show-toplevel)"
 SLUG="$(basename "$REPO" | tr -cs 'A-Za-z0-9-' '-' | sed 's/-*$//')"
 [ -n "$SLUG" ] || die "could not derive a label from $REPO"
@@ -46,6 +64,7 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
 echo "Remote Control headless install"
 note "repo   : $REPO"
+note "spawn  : $SPAWN"
 note "label  : $LABEL"
 note "logs   : ~/Library/Logs/claude-rc/$SLUG.{out,err}.log"
 echo
@@ -93,7 +112,7 @@ echo
 echo "Smoke test: starting a server with no terminal attached (up to ${SMOKE_TIMEOUT}s)..."
 SMOKE_LOG="$(mktemp -t claude-rc-smoke)"
 set +e
-( cd "$REPO" && PATH="$HOME/.local/bin:$PATH" "$CLAUDE_BIN" rc --spawn worktree </dev/null >"$SMOKE_LOG" 2>&1 ) &
+( cd "$REPO" && PATH="$HOME/.local/bin:$PATH" "$CLAUDE_BIN" rc --spawn "$SPAWN" </dev/null >"$SMOKE_LOG" 2>&1 ) &
 SMOKE_PID=$!
 set -e
 
@@ -168,11 +187,11 @@ if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
   launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
 fi
 
-python3 - "$TEMPLATE" "$PLIST" "$SLUG" "$WRAPPER" "$REPO" "$HOME" <<'PY'
+python3 - "$TEMPLATE" "$PLIST" "$SLUG" "$WRAPPER" "$REPO" "$HOME" "$SPAWN" <<'PY'
 import sys
-template, out, slug, wrapper, repo, home = sys.argv[1:7]
+template, out, slug, wrapper, repo, home, spawn = sys.argv[1:8]
 text = open(template).read()
-for token, value in (('@SLUG@', slug), ('@WRAPPER@', wrapper), ('@REPO@', repo), ('@HOME@', home)):
+for token, value in (('@SLUG@', slug), ('@WRAPPER@', wrapper), ('@REPO@', repo), ('@HOME@', home), ('@SPAWN@', spawn)):
     text = text.replace(token, value)
 open(out, 'w').write(text)
 PY

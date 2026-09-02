@@ -153,17 +153,20 @@ body {
 .rc-indicator[role="button"] { cursor: pointer; }
 .rc-indicator[role="button"]:hover { filter: none; opacity: 1; }
 .rc-indicator[role="button"]:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; border-radius: 2px; }
-.rc-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 8px; }
+.rc-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 9px; }
+/* An empty bar is a faint solid ghost, not an outline: at this width a 1px
+ * border left a 1px hollow and read as the darkest stroke in the row,
+ * out-competing the lit fill beside it. Opacity on the bar keeps the ghost
+ * tracking the theme's description colour. */
 .rc-bar {
-  width: 3px;
-  box-sizing: border-box;
+  width: 4px;
   border-radius: 1px;
-  background: transparent;
-  border: 1px solid var(--vscode-descriptionForeground, #888888);
+  background: var(--vscode-descriptionForeground, #888888);
+  opacity: 0.28;
 }
-.rc-bar:nth-child(1) { height: 5px; }
-.rc-bar:nth-child(2) { height: 8px; }
-.rc-bar.lit { background: var(--sm-arctic-teal); border-color: var(--sm-arctic-teal); }
+.rc-bar:nth-child(1) { height: 6px; }
+.rc-bar:nth-child(2) { height: 9px; }
+.rc-bar.lit { background: var(--accent-done-text); opacity: 1; }
 .rc-indicator.off { opacity: 0.55; filter: grayscale(1); }
 .rc-indicator.half { opacity: 0.85; }
 

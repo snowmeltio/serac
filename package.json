@@ -363,6 +363,18 @@
             "default": 20,
             "minimum": 1,
             "description": "Maximum number of completed (done) items shown in the archive when expanded."
+          },
+          "serac.rc.spawnMode": {
+            "type": "string",
+            "enum": ["same-dir", "worktree", "auto"],
+            "enumDescriptions": [
+              "Plain claude rc. Sessions your phone starts share this checkout and land under this workspace's project key, so this window's Claude Code panel can reopen them.",
+              "Always claude rc --spawn worktree. Each phone session gets its own git worktree under <repo>/.claude/worktrees; this window's panel cannot reopen those transcripts. Fails outside a git repository.",
+              "Match the workspace: worktree when it is a git repository, same-dir otherwise."
+            ],
+            "default": "same-dir",
+            "scope": "resource",
+            "description": "How Remote Control servers Serac starts (terminal) or installs (launchd) spawn the sessions your phone starts. Worktrees isolate edits but their sessions cannot be reopened from this window's Claude Code panel, and they do not suit shared workspaces whose state lives at fixed paths."
           }
         }
       },

@@ -89,6 +89,16 @@ export interface SeracSettings {
   cleanup: {
     confirmRequired: boolean;
   };
+  rc: {
+    /** How Remote Control servers Serac starts or installs spawn phone
+     *  sessions. `same-dir` (default): plain `claude rc` — sessions share the
+     *  checkout and land under this workspace's project key, the only key the
+     *  Claude Code panel here can restore from. `worktree`: always `--spawn
+     *  worktree` (the CLI itself fails outside a git repo). `auto`: match the
+     *  workspace — worktree when it resolves to a git repo, same-dir
+     *  otherwise. */
+    spawnMode: RcSpawnMode;
+  };
   experimental: {
     /** Master gate for direct teammate messaging (write into a member's inbox).
      *  Default off — Serac's only write path into `~/.claude/`; re-checked
@@ -147,6 +157,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
   usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
   animations: { enabled: true },
   cleanup: { confirmRequired: true },
+  rc: { spawnMode: 'same-dir' },
   experimental: { teammateMessaging: false, operatorName: 'operator', externalWriterBlock: false },
   hooks: { enabled: false, debug: false },
 };
@@ -208,6 +219,9 @@ export function readSettings(): SeracSettings {
     cleanup: {
       confirmRequired: cfg.get<boolean>('cleanup.confirmRequired', d.cleanup.confirmRequired),
     },
+    rc: {
+      spawnMode: validRcSpawnMode(cfg.get<string>('rc.spawnMode', d.rc.spawnMode)),
+    },
     experimental: {
       teammateMessaging: cfg.get<boolean>('experimental.teammateMessaging', d.experimental.teammateMessaging),
       operatorName: cfg.get<string>('experimental.operatorName', d.experimental.operatorName),
@@ -222,6 +236,14 @@ export function readSettings(): SeracSettings {
 
 /** Visibility presets for the "Other workspaces" section. */
 export type ForeignWindow = 'inherit' | 'live-only' | '1d' | '7d' | '30d' | 'forever';
+
+export type RcSpawnMode = 'same-dir' | 'worktree' | 'auto';
+const RC_SPAWN_MODES: ReadonlySet<string> = new Set<RcSpawnMode>(['same-dir', 'worktree', 'auto']);
+/** An unrecognised value falls back to the default: a typo must not silently
+ *  hand out worktrees. */
+function validRcSpawnMode(v: string): RcSpawnMode {
+  return RC_SPAWN_MODES.has(v) ? (v as RcSpawnMode) : DEFAULT_SETTINGS.rc.spawnMode;
+}
 
 const FOREIGN_WINDOWS: readonly ForeignWindow[] = ['inherit', 'live-only', '1d', '7d', '30d', 'forever'];
 

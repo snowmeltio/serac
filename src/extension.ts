@@ -31,6 +31,7 @@ import { isExtensionHostPid } from './writerOwnership.js';
 import { isValidSessionId } from './validation.js';
 import { wireHookIngress } from './hookWiring.js';
 import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
+import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import { appendInboxMessage, peekInboxMessages } from './teammateInbox.js';
 import {
   NativeDocsProvider, NATIVE_DOCS_SCHEME,
@@ -1058,7 +1059,20 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
    *  so that shell is sitting at a prompt with a dead (or never-started)
    *  server scrolled above it. Serac still never stops a server — closing the
    *  terminal is the user's job and their only off switch. */
-  function startRcServer(): void {
+  /** Spawn mode for a server started or installed from here, as a boolean
+   *  the command builders take. `worktree` is passed through even outside a
+   *  git repo — the CLI's own "not a git repository" error is the honest
+   *  outcome of asking for that; `auto` is the mode that consults the
+   *  workspace. Resolved at the moment of acting, so a settings edit or a
+   *  `git init` between offer and answer is honoured. */
+  async function rcSpawnWorktree(): Promise<boolean> {
+    const mode = readSettings().rc.spawnMode;
+    if (mode === 'same-dir') { return false; }
+    if (mode === 'worktree') { return true; }
+    return (await resolveRepoRoot(wsPath)) !== null;
+  }
+
+  async function startRcServer(): Promise<void> {
     // Guarded here as well as at the picker rows, so a future call site (the
     // stopped-warning's "Start it again" today) cannot bypass the row-level
     // gate — the same defence-in-depth as the serving re-read below.
@@ -1078,6 +1092,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     }
     const home = process.env.HOME ?? os.homedir();
     const exists = (p: string): boolean => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+    const spawnWorktree = await rcSpawnWorktree();
     const reused = findLiveRcTerminal(vscode.window.terminals);
     const terminal = reused ?? vscode.window.createTerminal({
       name: RC_TERMINAL_NAME,
@@ -1086,7 +1101,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     });
     rcTerminal = terminal;
     terminal.show(false);
-    terminal.sendText(rcStartCommand(locateClaudeCli(home, exists)), true);
+    terminal.sendText(rcStartCommand(locateClaudeCli(home, exists), spawnWorktree), true);
     rcWatch = rcWatchStarted();
     vscode.window.setStatusBarMessage(reused
       ? 'Remote Control server restarting in its existing terminal. The indicator fills in within a poll or two.'
@@ -1099,7 +1114,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     const reveal = 'Show terminal';
     const actions = rcTerminal ? [again, reveal] : [again];
     const picked = await vscode.window.showWarningMessage(RC_STOPPED_MESSAGE, ...actions);
-    if (picked === again) { startRcServer(); }
+    if (picked === again) { await startRcServer(); }
     else if (picked === reveal) { rcTerminal?.show(false); }
   }
 
@@ -1119,7 +1134,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   panelProvider.setRcIndicatorClickHandler(() => {
     void (async () => {
       const facts = { autoEnrol: rcAutoEnrol, serving: discovery.getRcServing(), companionProfile: rcCompanionProfile };
-      const items = rcQuickPickItems(facts, process.platform);
+      const items = rcQuickPickItems(facts, process.platform, { spawnWorktree: await rcSpawnWorktree() });
       if (items.length === 0) {
         // Nothing offerable is two different stories: everything already on,
         // or the start routes withheld by the profile gate. Say which — an
@@ -1134,7 +1149,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         ignoreFocusOut: true,
       });
       if (!picked) { return; }
-      if (picked.action === 'start') { startRcServer(); return; }
+      if (picked.action === 'start') { await startRcServer(); return; }
       if (picked.action === 'install') {
         const terminal = vscode.window.createTerminal({
           name: 'Remote Control installer',
@@ -1142,7 +1157,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
           env: rcTerminalEnvOverrides(process.env),
         });
         terminal.show(false);
-        terminal.sendText(rcInstallCommand(context.extensionPath, wsPath), true);
+        terminal.sendText(rcInstallCommand(context.extensionPath, wsPath, await rcSpawnWorktree()), true);
         vscode.window.setStatusBarMessage('Remote Control installer running in the terminal.', 8000);
         return;
       }

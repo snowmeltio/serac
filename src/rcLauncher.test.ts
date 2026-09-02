@@ -31,17 +31,22 @@ describe('locateClaudeCli', () => {
 });
 
 describe('rcStartCommand / rcInstallCommand', () => {
-  it('starts with --spawn worktree, matching the launchd wrapper', () => {
-    expect(rcStartCommand('claude')).toBe('claude rc --spawn worktree');
-    expect(rcStartCommand('/Users/x/.local/bin/claude')).toBe('/Users/x/.local/bin/claude rc --spawn worktree');
+  it('same-dir by default: bare claude rc, so phone sessions land under this workspace\'s project key', () => {
+    expect(rcStartCommand('claude', false)).toBe('claude rc');
+    expect(rcStartCommand('/Users/x/.local/bin/claude', false)).toBe('/Users/x/.local/bin/claude rc');
+  });
+  it('adds --spawn worktree only when asked, matching what the launchd wrapper gets', () => {
+    expect(rcStartCommand('claude', true)).toBe('claude rc --spawn worktree');
+    expect(rcInstallCommand('/ext', '/ws', true)).toBe('bash /ext/scripts/rc-headless/install.sh --spawn worktree /ws');
   });
   it('single-quotes paths with spaces or quotes', () => {
-    expect(rcStartCommand("/Users/o'brien/bin/claude")).toBe("'/Users/o'\\''brien/bin/claude' rc --spawn worktree");
-    expect(rcInstallCommand('/ext/serac 1.22', '/Users/x/repo'))
+    expect(rcStartCommand("/Users/o'brien/bin/claude", true)).toBe("'/Users/o'\\''brien/bin/claude' rc --spawn worktree");
+    expect(rcStartCommand("/Users/o'brien/bin/claude", false)).toBe("'/Users/o'\\''brien/bin/claude' rc");
+    expect(rcInstallCommand('/ext/serac 1.22', '/Users/x/repo', false))
       .toBe("bash '/ext/serac 1.22/scripts/rc-headless/install.sh' /Users/x/repo");
   });
   it('install runs the shipped script via bash (no execute bit assumed)', () => {
-    expect(rcInstallCommand('/ext', '/ws')).toBe('bash /ext/scripts/rc-headless/install.sh /ws');
+    expect(rcInstallCommand('/ext', '/ws', false)).toBe('bash /ext/scripts/rc-headless/install.sh /ws');
   });
 });
 
@@ -78,6 +83,15 @@ describe('rcQuickPickItems', () => {
   });
   it('a companion profile with auto-enrol already on offers nothing (the handler shows the reason instead)', () => {
     expect(rcQuickPickItems(facts({ autoEnrol: true, serving: false, companionProfile: true }), 'darwin')).toEqual([]);
+  });
+  it('the start and install rows say which spawn mode will run', () => {
+    const sameDir = rcQuickPickItems(facts({ autoEnrol: true, serving: false }), 'darwin');
+    expect(sameDir[0].detail).toMatch(/^Runs claude rc \(/);
+    expect(sameDir[0].detail).not.toContain('--spawn worktree');
+    expect(sameDir[1].detail).toContain('same-dir mode');
+    const worktree = rcQuickPickItems(facts({ autoEnrol: true, serving: false }), 'darwin', { spawnWorktree: true });
+    expect(worktree[0].detail).toMatch(/^Runs claude rc --spawn worktree/);
+    expect(worktree[1].detail).toContain('worktree mode');
   });
   it('never claims Serac will stop a server or write the flag', () => {
     for (const item of rcQuickPickItems(facts({ autoEnrol: false, serving: false }), 'darwin')) {
