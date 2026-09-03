@@ -30,8 +30,8 @@ import * as path from 'path';
 import type { LiveProcess } from './processRegistry.js';
 import { CLAUDE_WORKTREE_SUBDIR, isAtOrUnder } from './gitWorktreeUtil.js';
 
-/** Registry `entrypoint` value stamped by an RC-hosted session process. */
-export const RC_ENTRYPOINT = 'sdk-cli';
+export { RC_ENTRYPOINT, isRcOriginTranscript } from './rcOrigin.js';
+import { RC_ENTRYPOINT } from './rcOrigin.js';
 
 /**
  * Is this registered process a headless SDK-driven writer (`entrypoint:

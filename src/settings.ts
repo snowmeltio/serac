@@ -115,6 +115,12 @@ export interface SeracSettings {
      *  the ownership/recency checks at all, not just that the UI hides
      *  them. */
     externalWriterBlock: boolean;
+    /** Master gate for the 📡→ "bring this phone session here" chip and the
+     *  transfer flow behind it (release the phone's idle process, rewrite the
+     *  transcript's `entrypoint`, open here). Default off — the flow signals a
+     *  process and rewrites a transcript, both firsts for Serac. Off is a
+     *  genuine no-op: no chip, and the host handler refuses. */
+    transferPhoneSessions: boolean;
   };
   hooks: {
     /** Hook-ingress mode: patch Claude Code's settings.json so hook events
@@ -158,7 +164,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
   animations: { enabled: true },
   cleanup: { confirmRequired: true },
   rc: { spawnMode: 'same-dir' },
-  experimental: { teammateMessaging: false, operatorName: 'operator', externalWriterBlock: false },
+  experimental: { teammateMessaging: false, operatorName: 'operator', externalWriterBlock: false, transferPhoneSessions: false },
   hooks: { enabled: false, debug: false },
 };
 
@@ -226,6 +232,7 @@ export function readSettings(): SeracSettings {
       teammateMessaging: cfg.get<boolean>('experimental.teammateMessaging', d.experimental.teammateMessaging),
       operatorName: cfg.get<string>('experimental.operatorName', d.experimental.operatorName),
       externalWriterBlock: cfg.get<boolean>('experimental.externalWriterBlock', d.experimental.externalWriterBlock),
+      transferPhoneSessions: cfg.get<boolean>('experimental.transferPhoneSessions', d.experimental.transferPhoneSessions),
     },
     hooks: {
       enabled: cfg.get<boolean>('hooks.enabled', d.hooks.enabled),

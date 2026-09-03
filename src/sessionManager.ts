@@ -515,8 +515,22 @@ export class SessionManager {
     if (this.state.compacting) { this.openCompactWindow(); }
   }
 
+  /** Serialises update() and forceReplay(): both read through the one
+   *  JsonlTailer, whose stat→read→advance-offset sequence is not safe to
+   *  interleave (two concurrent reads from the same offset double every
+   *  record and leave the offset past EOF). The poll loop was the sole caller
+   *  until forceReplay() arrived; this keeps them one at a time. Rejections are
+   *  swallowed on the chain only, never on the caller's own promise. */
+  private updateChain: Promise<unknown> = Promise.resolve();
+
   /** Process all new records from the JSONL file. Returns true if state changed. */
-  async update(): Promise<boolean> {
+  update(): Promise<boolean> {
+    const p = this.updateChain.then(() => this.updateInner());
+    this.updateChain = p.catch(() => undefined);
+    return p;
+  }
+
+  private async updateInner(): Promise<boolean> {
     const records = await this.tailer.readNewRecords();
     // The first read replays whatever is already on disk; everything after
     // it is live. Decided before the early returns below so an empty first
@@ -610,6 +624,7 @@ export class SessionManager {
       filePath: this.state.filePath,
       bridgeSessionId: this.state.bridgeSessionId,
       bridgeState: this.state.bridgeState,
+      entrypoint: this.state.entrypoint,
       confidence: this.computeConfidence(),
       worktreeRoot: this.worktreeRoot,
       worktreeLabel: this.worktreeLabel,
@@ -681,6 +696,47 @@ export class SessionManager {
 
   getFilePath(): string {
     return this.state.filePath;
+  }
+
+  /** Most recent transcript `entrypoint` seen (see SessionState.entrypoint). */
+  getEntrypoint(): string | undefined {
+    return this.state.entrypoint;
+  }
+
+  /** Re-read the transcript from byte 0 as a replay. Needed after the
+   *  transfer flow rewrites the file in place: every record grows by a few
+   *  bytes, so the tailer's byte offset now points mid-record, and the tailer
+   *  only self-resets on a SHRINK. Mirrors the truncation branch of update():
+   *  reset the tailer, reset derived state (titles survive), replay. */
+  forceReplay(): Promise<void> {
+    return this.runThenReplay(async () => undefined, () => true).then(() => undefined);
+  }
+
+  /** Run `fn` (typically a rewrite of this transcript) INSIDE the update
+   *  chain, then replay when `needsReplay(result)` says so. Running the write
+   *  on the chain matters: the rename bumps the file's mtime, which wakes the
+   *  poll loop, and a poll `update()` queued between the rename and a separate
+   *  replay call would read the grown file from the old offset — a torn line,
+   *  then already-processed records re-run as live. Here nothing can read the
+   *  file between the write and the reset. */
+  runThenReplay<T>(fn: () => Promise<T>, needsReplay: (result: T) => boolean): Promise<T> {
+    const p = this.updateChain.then(async () => {
+      const result = await fn();
+      if (needsReplay(result)) {
+        this.tailer.reset();
+        this.resetState();
+        this.initialReplayDone = false;
+        // Unlike compaction, the writer HAS changed: the phone's process is
+        // gone and a new one will resume here. A stale pid would make
+        // isProcessAlive() answer "dead" and cut the thinking grace short.
+        this.writerPid = null;
+        this.pidCaptureAttempted = false;
+        await this.updateInner();
+      }
+      return result;
+    });
+    this.updateChain = p.catch(() => undefined);
+    return p;
   }
 
   getLastActivity(): Date {
@@ -1040,6 +1096,15 @@ export class SessionManager {
     this.glance.onGitBranch((record as { gitBranch?: unknown }).gitBranch);
     if (record.sessionId && record.sessionId !== this.state.sessionId) {
       return false;
+    }
+
+    // Who wrote this record: `claude-vscode`, `cli`, or `sdk-cli` for a
+    // phone-driven (Remote Control-hosted) session. Most-recent-seen — a
+    // transferred session's new records flip it back to `claude-vscode`
+    // without a restart. Cosmetic: never a status transition, and captured
+    // only after the sessionId guard so a foreign record can't mislabel us.
+    if (typeof record.entrypoint === 'string' && record.entrypoint) {
+      this.state.entrypoint = record.entrypoint;
     }
 
     // permissionMode gates real status transitions (unlike the cosmetic fields

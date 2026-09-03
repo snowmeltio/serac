@@ -10,6 +10,7 @@
  */
 
 import { isRemoteWorktree } from './worktreeChip.js';
+import { isRcOriginTranscript } from './rcOrigin.js';
 import {
   normPath,
   basename,
@@ -257,6 +258,15 @@ let FOREIGN_SLIDE_MS = 220;
     return lastSessions?.find(s => s.sessionId === sessionId)?.externalWriter === true;
   }
 
+  /** A phone-originated (sdk-cli) card while the transfer gate is on: the
+   *  📡→ chip is its way in, and the body click is deliberately a no-op (the
+   *  host answers it with a status-bar hint). Presentation reads the same
+   *  session data the renderer gates the chip on. */
+  function rcOriginGated(s: PanelSession): boolean {
+    return currentSettings.experimental?.transferPhoneSessions === true
+      && isRcOriginTranscript(s.entrypoint) && !s.externalWriter && !s.dualWriter;
+  }
+
   /** Shared activation tail for every session-activating gesture (card body,
    *  detail chip, inline agent row): post focusSession — the host's gate
    *  decides open-here vs hand-off — and take the LOCAL focus highlight only
@@ -325,6 +335,17 @@ let FOREIGN_SLIDE_MS = 220;
     if (dualChip) {
       e.stopPropagation();
       vscode.postMessage({ type: 'resolveDualWriter', sessionId: dualChip.dataset.resolveDual });
+      return;
+    }
+
+    // 📡→ bring-here chip — a phone-originated session the Claude Code panel
+    // can't restore as-is; the host runs the transfer flow (release the
+    // phone's process, rewrite, open). Its own message, not activateSession:
+    // a plain open would only produce an empty chat.
+    const transferChip = target.closest<HTMLElement>('[data-transfer]');
+    if (transferChip) {
+      e.stopPropagation();
+      vscode.postMessage({ type: 'transferSession', sessionId: transferChip.dataset.transfer });
       return;
     }
 
@@ -524,6 +545,13 @@ let FOREIGN_SLIDE_MS = 220;
     if (dualChip) {
       e.preventDefault();
       dualChip.click();
+      return;
+    }
+    // 📡→ bring-here chip — role=button span, same click routing as above.
+    const transferChip = target.closest<HTMLElement>('[data-transfer]');
+    if (transferChip) {
+      e.preventDefault();
+      transferChip.click();
       return;
     }
     // Top-bar Remote Control indicator — role=button span, same routing.
@@ -1002,7 +1030,8 @@ let FOREIGN_SLIDE_MS = 220;
       const spent = s.processLive === false && !!s.worktreeRoot
         && isRemoteWorktree(basename(s.worktreeRoot));
       const cls = 'card ' + s.status + (isFocused ? ' focused' : '') + (enters ? ' card-enter' : '')
-        + (s.externalWriter ? ' external-writer' : '') + (spent ? ' card-spent' : '');
+        + (s.externalWriter ? ' external-writer' : '') + (spent ? ' card-spent' : '')
+        + (rcOriginGated(s) ? ' card-rc-origin' : '');
       if (el.className !== cls) { el.className = cls; }
       el.setAttribute('role', 'listitem');
       el.setAttribute('tabindex', '0');

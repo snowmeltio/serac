@@ -20,6 +20,7 @@ vi.mock('./jsonlTailer.js', () => ({
       return r;
     }
     getFilePath() { return '/tmp/test.jsonl'; }
+    reset() {}
     dispose() {}
   },
 }));
@@ -573,5 +574,49 @@ describe('SessionManager: confidence tiers [H-5]', () => {
       // Restore defaults so global state doesn't bleed into other tests.
       setConfidenceThresholds(5_000, 30_000);
     }
+  });
+});
+
+describe('SessionManager: transcript entrypoint capture', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('is unset until a record carries entrypoint; token-less queue-operation records do not set it', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [{ type: 'queue-operation', operation: 'enqueue', sessionId: 'test-session' } as JsonlRecord]);
+    expect(mgr.getSnapshot().entrypoint).toBeUndefined();
+    await feed(mgr, [{ type: 'user', timestamp: ts(), sessionId: 'test-session', entrypoint: 'sdk-cli', message: { content: [{ type: 'text', text: 'hi' }] } } as JsonlRecord]);
+    expect(mgr.getSnapshot().entrypoint).toBe('sdk-cli');
+    expect(mgr.getEntrypoint()).toBe('sdk-cli');
+  });
+
+  it('most-recent-seen: a later claude-vscode record overwrites sdk-cli', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [
+      { type: 'user', timestamp: ts(), entrypoint: 'sdk-cli', message: { content: [{ type: 'text', text: 'a' }] } } as JsonlRecord,
+      { type: 'assistant', timestamp: ts(), entrypoint: 'claude-vscode', message: { content: [{ type: 'text', text: 'b' }] } } as JsonlRecord,
+    ]);
+    expect(mgr.getSnapshot().entrypoint).toBe('claude-vscode');
+  });
+
+  it('a record for a foreign session never sets it', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [{ type: 'user', timestamp: ts(), sessionId: 'someone-else', entrypoint: 'sdk-cli', message: { content: [{ type: 'text', text: 'x' }] } } as JsonlRecord]);
+    expect(mgr.getSnapshot().entrypoint).toBeUndefined();
+  });
+
+  it('empty or non-string values are ignored', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [{ type: 'user', timestamp: ts(), entrypoint: '', message: { content: [{ type: 'text', text: 'x' }] } } as JsonlRecord]);
+    await feed(mgr, [{ type: 'user', timestamp: ts(), entrypoint: 7, message: { content: [{ type: 'text', text: 'x' }] } } as unknown as JsonlRecord]);
+    expect(mgr.getSnapshot().entrypoint).toBeUndefined();
+  });
+
+  it('survives forceReplay (state reset keeps it, replay re-derives it)', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [{ type: 'user', timestamp: ts(), entrypoint: 'sdk-cli', message: { content: [{ type: 'text', text: 'a' }] } } as JsonlRecord]);
+    mockRecords = [{ type: 'user', timestamp: ts(), entrypoint: 'claude-vscode', message: { content: [{ type: 'text', text: 'a' }] } } as JsonlRecord];
+    await mgr.forceReplay();
+    expect(mgr.getSnapshot().entrypoint).toBe('claude-vscode');
   });
 });

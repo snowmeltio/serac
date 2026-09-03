@@ -97,6 +97,14 @@ const mockDiscovery = {
   isMarkedDualWriter: vi.fn().mockReturnValue(false),
   isDualWriterFresh: vi.fn().mockResolvedValue(false),
   getProcessesForSession: vi.fn().mockReturnValue([]),
+  getProcessesForSessionFresh: vi.fn().mockResolvedValue([]),
+  getEntrypointOf: vi.fn().mockReturnValue(undefined),
+  reloadSession: vi.fn().mockResolvedValue(undefined),
+  // Runs the write and reports whether a replay would have followed.
+  reloadSessionAfter: vi.fn(async (_id: string, fn: () => Promise<unknown>, needs: (r: unknown) => boolean) => {
+    const r = await fn(); mockDiscovery.reloadSessionAfterReplayed = needs(r); return r;
+  }),
+  reloadSessionAfterReplayed: false as boolean,
   getOwnershipOf: vi.fn().mockReturnValue(undefined),
   getOwnerPidOf: vi.fn().mockReturnValue(undefined),
   getSessionFilePath: vi.fn().mockReturnValue(null),
@@ -129,6 +137,7 @@ const mockPanelProvider = {
   focusSession: vi.fn(),
   setFocusHandler: vi.fn(),
   setResolveDualWriterHandler: vi.fn(),
+  setTransferSessionHandler: vi.fn(),
   setRcIndicatorClickHandler: vi.fn(),
   setDismissHandler: vi.fn(),
   setUndismissHandler: vi.fn(),
@@ -165,6 +174,23 @@ vi.mock('./transcriptRenderer.js', () => ({
 
 vi.mock('./sessionRepair.js', () => ({
   ensureSessionMetadata: vi.fn().mockResolvedValue(undefined),
+}));
+
+// The transfer flow's two side-effecting collaborators: the transcript
+// rewrite (real fs) and the mtime walk (real fs). The classifier itself runs
+// for real — it is pure.
+vi.mock('./transcriptEntrypoint.js', () => ({
+  rewriteTranscriptEntrypoint: vi.fn().mockResolvedValue({ changed: 3, skipped: false }),
+  VSCODE_ENTRYPOINT: 'claude-vscode',
+}));
+vi.mock('./processIdentity.js', () => ({
+  verifyClaudeProcess: vi.fn().mockResolvedValue({ kind: 'verified' }),
+  registryStartMs: (p: { startedAt: number | null; procStartMs?: number | null }) => p.procStartMs ?? p.startedAt,
+}));
+vi.mock('./writerActivity.js', () => ({
+  getSessionLastWriteMtime: vi.fn().mockReturnValue(null),
+  EXTERNAL_WRITER_QUIET_MS: 600_000,
+  isWithinActivityWindow: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock('./claudeSettings.js', () => ({
@@ -638,6 +664,330 @@ describe('extension', () => {
       // Never falls through to the focus-then-close fallback either.
       expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
         'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+    });
+  });
+
+  describe('📡→ transfer handler (serac.experimental.transferPhoneSessions)', () => {
+    const SID = 'b6ad54a8-804d-55a1-a232-066390a18787';
+    const rcProc = (over: Record<string, unknown> = {}) =>
+      ({ pid: 63717, sessionId: SID, cwd: '/test/ws', startedAt: 1_788_403_936_724, kind: 'interactive', entrypoint: 'sdk-cli', version: '2.1.258', ...over });
+    const gateOn = () => {
+      vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+        get: <T>(key: string, defaultValue?: T): T | undefined =>
+          key === 'experimental.transferPhoneSessions' ? (true as unknown as T) : defaultValue,
+      } as any);
+    };
+    const getHandler = () =>
+      vi.mocked(mockPanelProvider.setTransferSessionHandler).mock.calls[0][0] as (id: string) => void;
+    let killSpy: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      mockDiscovery.getSessionFilePath.mockReturnValue('/test/ws/.claude/projects/-test-ws/' + SID + '.jsonl');
+      mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([]);
+      mockDiscovery.isSessionRunning.mockReturnValue(false);
+      mockDiscovery.getEntrypointOf.mockReturnValue('sdk-cli'); // a local session this window tracks
+      mockDiscovery.reloadSessionAfterReplayed = false;
+    });
+    afterEach(async () => {
+      killSpy.mockRestore();
+      vi.mocked(vscode.window.showWarningMessage).mockReset();
+      mockDiscovery.getEntrypointOf.mockReturnValue(undefined);
+      const pi = await import('./processIdentity.js');
+      vi.mocked(pi.verifyClaudeProcess).mockResolvedValue({ kind: 'verified' });
+      vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+        get: <T>(_key: string, defaultValue?: T): T | undefined => defaultValue,
+      } as any);
+      const te = await import('./transcriptEntrypoint.js');
+      vi.mocked(te.rewriteTranscriptEntrypoint).mockResolvedValue({ changed: 3, skipped: false });
+    });
+
+    it('gate off: refuses with a status message, signals nothing, rewrites nothing, opens nothing', async () => {
+      activate(context as any);
+      mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([rcProc()]);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(expect.stringContaining('transfer is off'), expect.any(Number));
+      });
+      const te = await import('./transcriptEntrypoint.js');
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(te.rewriteTranscriptEntrypoint).not.toHaveBeenCalled();
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('claude-vscode.editor.open', expect.anything(), undefined, expect.anything());
+    });
+
+    it('dead session: no modal, rewrite, reload, open', async () => {
+      gateOn();
+      activate(context as any);
+      getHandler()(SID);
+      const te = await import('./transcriptEntrypoint.js');
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+      });
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(te.rewriteTranscriptEntrypoint).toHaveBeenCalledWith(expect.stringContaining(SID), { from: 'sdk-cli', to: 'claude-vscode', sessionId: SID });
+      expect(mockDiscovery.reloadSessionAfterReplayed).toBe(true);
+    });
+
+    it('already claude-vscode: skipped rewrite means no reload, still opens', async () => {
+      gateOn();
+      const te = await import('./transcriptEntrypoint.js');
+      vi.mocked(te.rewriteTranscriptEntrypoint).mockResolvedValueOnce({ changed: 0, skipped: true });
+      activate(context as any);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+      });
+      expect(mockDiscovery.reloadSessionAfterReplayed).toBe(false);
+    });
+
+    it('busy on the phone (status running): refused, nothing signalled or rewritten', async () => {
+      gateOn();
+      activate(context as any);
+      mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([rcProc()]);
+      mockDiscovery.isSessionRunning.mockReturnValue(true);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(expect.stringContaining('still working from your phone'), expect.any(Number));
+      });
+      const te = await import('./transcriptEntrypoint.js');
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(te.rewriteTranscriptEntrypoint).not.toHaveBeenCalled();
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    });
+
+    it('busy on the phone (recent write): refused', async () => {
+      gateOn();
+      activate(context as any);
+      mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([rcProc()]);
+      const wa = await import('./writerActivity.js');
+      vi.mocked(wa.getSessionLastWriteMtime).mockReturnValueOnce(Date.now() - 1_000);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(expect.stringContaining('still working from your phone'), expect.any(Number));
+      });
+      expect(killSpy).not.toHaveBeenCalled();
+    });
+
+    it('a window process already holds it: plain open, no rewrite', async () => {
+      gateOn();
+      activate(context as any);
+      mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([rcProc({ pid: 1, entrypoint: 'claude-vscode' })]);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+      });
+      const te = await import('./transcriptEntrypoint.js');
+      expect(te.rewriteTranscriptEntrypoint).not.toHaveBeenCalled();
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+    });
+
+    it('idle on the phone, confirmed: SIGTERM, wait for the registry to clear, rewrite, open', async () => {
+      gateOn();
+      activate(context as any);
+      let alive = true;
+      mockDiscovery.getProcessesForSessionFresh.mockImplementation(async () => (alive ? [rcProc()] : []));
+      killSpy.mockImplementation(((pid: number, sig?: unknown) => {
+        if (sig === 'SIGTERM' && pid === 63717) { alive = false; }
+        return true;
+      }) as any);
+      vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce('Bring here' as any);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+      }, { timeout: 3000 });
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        'Bring this phone session here?', expect.objectContaining({ modal: true }), 'Bring here');
+      expect(killSpy).toHaveBeenCalledWith(63717, 'SIGTERM');
+      const te = await import('./transcriptEntrypoint.js');
+      expect(te.rewriteTranscriptEntrypoint).toHaveBeenCalledTimes(1);
+      expect(mockDiscovery.reloadSessionAfterReplayed).toBe(true);
+    });
+
+    it('idle on the phone, cancelled: nothing happens', async () => {
+      gateOn();
+      activate(context as any);
+      mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([rcProc()]);
+      vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce(undefined as any);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith('Bring this phone session here?', expect.anything(), 'Bring here');
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      const te = await import('./transcriptEntrypoint.js');
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(te.rewriteTranscriptEntrypoint).not.toHaveBeenCalled();
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+    });
+
+    it('process changed underneath the modal (pid reuse): refuses to signal', async () => {
+      gateOn();
+      activate(context as any);
+      mockDiscovery.getProcessesForSessionFresh
+        .mockResolvedValueOnce([rcProc()])
+        .mockResolvedValue([rcProc({ startedAt: 1_788_403_999_999 })]);
+      vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce('Bring here' as any);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(expect.stringContaining('changed underneath'), expect.any(Number));
+      });
+      expect(killSpy).not.toHaveBeenCalled();
+    });
+
+    it('the phone process refuses to die: warns, never escalates, never rewrites', async () => {
+      // The suite runs on fake timers (beforeEach), so the 5 s release
+      // timeout is advanced, not waited for.
+      {
+        gateOn();
+        activate(context as any);
+        mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([rcProc()]);
+        vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce('Bring here' as any);
+        getHandler()(SID);
+        await vi.advanceTimersByTimeAsync(6_000);
+        expect(killSpy).toHaveBeenCalledTimes(1);
+        expect(killSpy).toHaveBeenCalledWith(63717, 'SIGTERM');
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('did not exit within 5 seconds'));
+        const te = await import('./transcriptEntrypoint.js');
+        expect(te.rewriteTranscriptEntrypoint).not.toHaveBeenCalled();
+        expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+      }
+    });
+
+    it('sibling-worktree session (not tracked here): refused with a hint, nothing touched', async () => {
+      gateOn();
+      activate(context as any);
+      mockDiscovery.getEntrypointOf.mockReturnValue(undefined);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(expect.stringContaining('another worktree'), expect.any(Number));
+      });
+      const te = await import('./transcriptEntrypoint.js');
+      expect(te.rewriteTranscriptEntrypoint).not.toHaveBeenCalled();
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+    });
+
+    it('stale registry entry (pid now belongs to something else): no modal, no signal', async () => {
+      gateOn();
+      activate(context as any);
+      mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([rcProc()]);
+      const pi = await import('./processIdentity.js');
+      vi.mocked(pi.verifyClaudeProcess).mockResolvedValueOnce({ kind: 'not-claude', command: '-zsh' });
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('stale registry entry'));
+      });
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalledWith('Bring this phone session here?', expect.anything(), 'Bring here');
+      expect(killSpy).not.toHaveBeenCalled();
+    });
+
+    it('a second activation while one is in flight is ignored (one modal, one rewrite)', async () => {
+      gateOn();
+      activate(context as any);
+      let alive = true;
+      mockDiscovery.getProcessesForSessionFresh.mockImplementation(async () => (alive ? [rcProc()] : []));
+      killSpy.mockImplementation((() => { alive = false; return true; }) as any);
+      vi.mocked(vscode.window.showWarningMessage).mockResolvedValue('Bring here' as any);
+      const h = getHandler();
+      h(SID); h(SID); h(SID);
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+      }, { timeout: 3000 });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+      const te = await import('./transcriptEntrypoint.js');
+      expect(te.rewriteTranscriptEntrypoint).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-verifies the process identity after the modal, right before signalling', async () => {
+      gateOn();
+      activate(context as any);
+      let alive = true;
+      mockDiscovery.getProcessesForSessionFresh.mockImplementation(async () => (alive ? [rcProc()] : []));
+      killSpy.mockImplementation((() => { alive = false; return true; }) as any);
+      vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce('Bring here' as any);
+      const pi = await import('./processIdentity.js');
+      vi.mocked(pi.verifyClaudeProcess)
+        .mockResolvedValueOnce({ kind: 'verified' })                      // before the modal
+        .mockResolvedValueOnce({ kind: 'not-claude', command: '-zsh' }); // pid recycled while it sat open
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('stale registry entry'));
+      });
+      expect(pi.verifyClaudeProcess).toHaveBeenCalledTimes(2);
+      expect(killSpy).not.toHaveBeenCalled();
+    });
+
+    it('open fails: no focus highlight is taken for a session that did not open here', async () => {
+      gateOn();
+      activate(context as any);
+      vi.mocked(vscode.commands.executeCommand).mockRejectedValueOnce(new Error('no claude'));
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('Could not open the session here'));
+      });
+      expect(mockPanelProvider.focusSession).not.toHaveBeenCalledWith(SID);
+    });
+
+    it('gate switched off while the modal is open: nothing happens after confirm', async () => {
+      gateOn();
+      activate(context as any);
+      mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([rcProc()]);
+      vi.mocked(vscode.window.showWarningMessage).mockImplementationOnce(async () => {
+        vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+          get: <T>(_key: string, defaultValue?: T): T | undefined => defaultValue,
+        } as any);
+        return 'Bring here' as any;
+      });
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith('Bring this phone session here?', expect.anything(), 'Bring here');
+      });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(killSpy).not.toHaveBeenCalled();
+    });
+
+    it('after a transfer the card takes the focus highlight (no teal-unseen on a just-opened session)', async () => {
+      gateOn();
+      activate(context as any);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(mockPanelProvider.focusSession).toHaveBeenCalledWith(SID);
+      });
+    });
+
+    it('rewrite failure: warns, no reload, no open', async () => {
+      gateOn();
+      const te = await import('./transcriptEntrypoint.js');
+      vi.mocked(te.rewriteTranscriptEntrypoint).mockRejectedValueOnce(new Error('EACCES'));
+      activate(context as any);
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('Could not rewrite'));
+      });
+      expect(mockDiscovery.reloadSessionAfterReplayed).toBe(false);
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+    });
+
+    it('card body click on a phone-originated session (gate on) is a hint, not an open', async () => {
+      gateOn();
+      activate(context as any);
+      mockDiscovery.getEntrypointOf.mockReturnValue('sdk-cli');
+      const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0] as (id: string) => void;
+      focusHandler(SID);
+      expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(expect.stringContaining('chip to bring it here'), expect.any(Number));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+      mockDiscovery.getEntrypointOf.mockReturnValue(undefined);
+    });
+
+    it('card body click on a phone-originated session with the gate OFF opens as before', async () => {
+      activate(context as any);
+      mockDiscovery.getEntrypointOf.mockReturnValue('sdk-cli');
+      const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0] as (id: string) => void;
+      focusHandler(SID);
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
+      });
+      mockDiscovery.getEntrypointOf.mockReturnValue(undefined);
     });
   });
 
@@ -1589,6 +1939,7 @@ describe('extension — activation wiring assertions (test-gap single)', () => {
       'setNewChatHandler', 'setCleanupHandler', 'setArchiveRangeHandler',
       'setUndismissTeamHandler', 'setOpenDetailHandler',
       'setDismissWorkflowHandler', 'setUndismissWorkflowHandler', 'setOpenWorkspaceHandler',
+      'setResolveDualWriterHandler', 'setTransferSessionHandler',
     ] as const) {
       expect(mockPanelProvider[setter], setter + ' must be wired during activate()')
         .toHaveBeenCalled();

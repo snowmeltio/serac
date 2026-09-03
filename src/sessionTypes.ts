@@ -158,6 +158,12 @@ export interface SessionState {
    *  it will not come back on its own). Unset until a `bridge-session`
    *  record is seen. */
   bridgeState?: BridgeState;
+  /** Most recent `entrypoint` seen on the transcript's records (see
+   *  JsonlRecord.entrypoint). `'sdk-cli'` = a phone-driven session hosted by
+   *  a `claude rc` server, which the Claude Code panel cannot restore.
+   *  Most-recent-seen rather than first-seen so the value self-corrects once
+   *  a transferred session resumes here and starts writing `claude-vscode`. */
+  entrypoint?: string;
 }
 
 /** Outcome of a completed tool, captured from the `PostToolUse` hook. */
@@ -209,6 +215,9 @@ export interface SessionSnapshot {
    *  (logged on transition) since v1.21.x; the dropped-chip surface is the
    *  next step (plan: serac-rc-reconnect-plan). */
   bridgeState?: BridgeState;
+  /** Most recent transcript `entrypoint` — see SessionState.entrypoint.
+   *  `'sdk-cli'` renders the 📡→ bring-here chip (gated). */
+  entrypoint?: string;
   /** How confident we are in the displayed status */
   confidence: StatusConfidence;
   /** The session's originating worktree CWD. TAGGING INVARIANT: every local

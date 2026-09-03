@@ -170,7 +170,9 @@ describe('AgentPanelProvider', () => {
         transcript: vi.fn(),
         newChat: vi.fn(),
         cleanup: vi.fn(),
+        transfer: vi.fn(),
       };
+      provider.setTransferSessionHandler(handlers.transfer);
 
       provider.setFocusHandler(handlers.focus);
       provider.setDismissHandler(handlers.dismiss);
@@ -187,6 +189,15 @@ describe('AgentPanelProvider', () => {
       const h = setupWithHandlers();
       webview._fireMessage({ type: 'focusSession', sessionId: 'abc123' });
       expect(h.focus).toHaveBeenCalledWith('abc123');
+    });
+
+    it('routes transferSession to the transfer handler, validated like every sessionId command', () => {
+      const h = setupWithHandlers();
+      webview._fireMessage({ type: 'transferSession', sessionId: 'abc123' });
+      expect(h.transfer).toHaveBeenCalledWith('abc123');
+      webview._fireMessage({ type: 'transferSession', sessionId: '../traversal' });
+      expect(h.transfer).toHaveBeenCalledTimes(1);
+      expect(h.focus).not.toHaveBeenCalled();
     });
 
     it('routes dismissSession to dismiss handler', () => {

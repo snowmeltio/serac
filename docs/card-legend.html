@@ -379,6 +379,11 @@ h2 .count {
   pointer-events: none;
 }
 .rc-off-chip:hover { opacity: 1; }
+/* 📡→ bring-here chip — phone-originated transcript (entrypoint sdk-cli);
+ * clicking runs the transfer flow. Action tint, not conflict. Gated behind
+ * serac.experimental.transferPhoneSessions. */
+.transfer-chip { color: var(--accent-running-text); }
+.transfer-chip:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.14); }
 
 .bg-shell-badge {
   font-size: 9px; line-height: 1.2; padding: 0 5px;
@@ -708,6 +713,16 @@ h2 .count {
         <p class="entry-when">📡 with a slash · only while the process is alive</p>
         <p class="entry-what">The session was on your phone and now isn't: Remote Control was switched off <strong>for that one session</strong> — the × on Claude Code's "Remote Control is active" popup does it, and so does <span class="inline-code">/remote-control</span> in the chat. It won't come back by itself.</p>
         <p class="entry-what">Click to open the chat, then type <span class="inline-code">/remote-control</span>. It reconnects in place in a few seconds and reappears on your phone as a new session. On a card from another worktree or window, the click takes you there instead.</p>
+      </div>
+    </div>
+
+    <div class="entry">
+      <div class="swatch"><span class="wf-tag wf-view-chip transfer-chip">📡<span class="wf-arrow">→</span></span></div>
+      <div class="entry-body">
+        <p class="entry-name">Started from your phone; bring it here <span class="tag-new">new</span></p>
+        <p class="entry-when">📡→ · experimental (<span class="inline-code">serac.experimental.transferPhoneSessions</span>) · transcript entrypoint <span class="inline-code">sdk-cli</span></p>
+        <p class="entry-what">Claude Code's panel refuses to reopen sessions your phone started through a <span class="inline-code">claude rc</span> server, so a plain click on such a card lands in an empty chat. With the gate on, <strong>this chip is the way in</strong> and the card body only points at it.</p>
+        <p class="entry-what">Click to bring the session here. If the phone's copy is running and idle, Serac asks first, ends that process (never forced), rewrites the transcript's <span class="inline-code">entrypoint</span> so the panel will restore it, and opens the chat. It reappears on your phone as a new remote session once open here. Mid-turn on the phone: you are told to try again when it goes quiet.</p>
       </div>
     </div>
 

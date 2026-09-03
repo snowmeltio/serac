@@ -257,7 +257,7 @@ export function resolveParentPid(pid: number): Promise<number | null> {
 function execPs(field: string, pid: number): Promise<string | null> {
   return new Promise(resolve => {
     const guard = setTimeout(() => resolve(null), PS_TIMEOUT_MS + 1000);
-    execFile('ps', ['-o', field, '-p', String(pid)], { timeout: PS_TIMEOUT_MS, encoding: 'utf-8' },
+    execFile('ps', ['-o', field, '-p', String(pid)], { timeout: PS_TIMEOUT_MS, encoding: 'utf-8', env: { ...process.env, LC_ALL: 'C' } },
       (err, stdout) => {
         clearTimeout(guard);
         resolve(err || !stdout || !stdout.trim() ? null : stdout);

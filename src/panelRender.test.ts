@@ -456,6 +456,56 @@ describe('renderCardInner', () => {
     expect(html).toContain('rc-off-chip');
   });
 
+  describe('📡→ transfer chip (serac.experimental.transferPhoneSessions)', () => {
+    const gated = () => makeCtx({ settings: { ...DEFAULT_PANEL_SETTINGS, experimental: { transferPhoneSessions: true } } });
+
+    it('renders only for an sdk-cli transcript with the gate on', () => {
+      expect(renderCardInner(makeCtx(), makeSession({ entrypoint: 'sdk-cli' }), NOW, false)).not.toContain('transfer-chip');
+      expect(renderCardInner(gated(), makeSession(), NOW, false)).not.toContain('transfer-chip');
+      expect(renderCardInner(gated(), makeSession({ entrypoint: 'claude-vscode' }), NOW, false)).not.toContain('transfer-chip');
+      expect(renderCardInner(gated(), makeSession({ entrypoint: 'sdk-ts' }), NOW, false)).not.toContain('transfer-chip');
+      const html = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli' }), NOW, false);
+      expect(html).toContain('transfer-chip');
+      expect(html).toContain('data-transfer="sess-1234abcd"');
+      expect(html).toContain('role="button"');
+      expect(html).toContain('📡<span class="wf-arrow">→</span>');
+    });
+
+    it('tooltip: live wording names the phone copy ending; ended wording explains the panel gap', () => {
+      const live = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', processLive: true }), NOW, false);
+      expect(live).toContain('phone’s copy ends');
+      const unknown = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli' }), NOW, false);
+      expect(unknown).toContain('phone’s copy ends');
+      const ended = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', processLive: false, status: 'done' }), NOW, false);
+      expect(ended).toContain('can’t restore phone sessions');
+      expect(ended).not.toContain('copy ends');
+    });
+
+    it('not on a sibling-worktree card (foreign project key; its tailer lives elsewhere)', () => {
+      const html = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', worktreeRoot: '/Users/me/repos/proj-wt/feature-x', worktreeLabel: 'feature-x' }), NOW, false);
+      expect(html).not.toContain('transfer-chip');
+      const local = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', worktreeRoot: '/Users/me/repos/proj' }), NOW, false);
+      expect(local).toContain('transfer-chip');
+    });
+
+    it('yields to the ⛔/⚠ conflict chips', () => {
+      expect(renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', externalWriter: true }), NOW, false)).not.toContain('transfer-chip');
+      expect(renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', dualWriter: true }), NOW, false)).not.toContain('transfer-chip');
+    });
+
+    it('escapes the session id in data-transfer', () => {
+      const html = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', sessionId: 'a"b' }), NOW, false);
+      expect(html).toContain('data-transfer="a&quot;b"');
+    });
+
+    it('sits after the rc-off chip and before the actions', () => {
+      const html = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', bridgeState: 'dropped', processLive: true }), NOW, false);
+      const idx = html.indexOf('transfer-chip');
+      expect(idx).toBeGreaterThan(html.indexOf('rc-off-chip'));
+      expect(idx).toBeLessThan(html.indexOf('card-actions'));
+    });
+  });
+
   it('rc-off chip sits after the agents chip and before the ⛔/⚠ chips and the actions', () => {
     const s = makeSession({
       bridgeState: 'dropped', externalWriter: true,

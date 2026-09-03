@@ -1050,6 +1050,16 @@ body.vscode-light .wf-badge { background: rgba(var(--sm-arctic-teal-rgb), 0.12);
  * chip; the card itself stays undimmed (this window's claim is real too). */
 .dual-writer-chip { color: var(--accent-failed-text); }
 .dual-writer-chip:hover { background: rgba(var(--sm-salmon-red-rgb), 0.14); }
+/* 📡→ bring-here chip — the session was started from the phone (transcript
+ * entrypoint sdk-cli), which the Claude Code panel cannot restore; clicking
+ * runs the transfer flow. Action tint (the running blue), not the conflict
+ * salmon: nothing is wrong, there is just one way in. Gated behind
+ * serac.experimental.transferPhoneSessions. */
+.transfer-chip { color: var(--accent-running-text); }
+.transfer-chip:hover { background: rgba(var(--sm-blizzard-blue-rgb), 0.14); }
+/* A phone-originated card whose body click is a no-op (the chip is the way
+ * in) drops the pointer cursor so the body doesn't promise an open. */
+.card.card-rc-origin { cursor: default; }
 /* 📡 with a slash — Remote Control was switched off for this session (the
  * chat popup's × or /remote-control); it is not on the phone and won't come
  * back by itself. Neutral tint: an off state, not a conflict. The slash is a
