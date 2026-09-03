@@ -211,3 +211,26 @@ describe('ProcessRegistry', () => {
     expect(reg.isSessionLive('live-9999')).toBe(false);
   });
 });
+
+describe('procStartMs', () => {
+  it('parses the registry procStart (UTC, ps lstart form) to epoch ms, null when absent or malformed', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'preg-ps-'));
+    try {
+      fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({
+        pid: process.pid, sessionId: 'aaaaaaaa-0000-4000-8000-000000000001', cwd: '/x',
+        startedAt: 1788403936724, procStart: 'Thu Sep  3 02:52:16 2026', entrypoint: 'sdk-cli',
+      }));
+      const reg = new ProcessRegistry(dir, { info() {}, warn() {}, error() {}, debug() {}, trace() {} } as never);
+      await reg.scan();
+      const p = reg.getLiveProcesses()[0]!;
+      expect(p.procStartMs).toBe(Date.UTC(2026, 8, 3, 2, 52, 16));
+      fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({
+        pid: process.pid, sessionId: 'aaaaaaaa-0000-4000-8000-000000000001', cwd: '/x', procStart: 'not a date',
+      }));
+      await reg.scan();
+      expect(reg.getLiveProcesses()[0]!.procStartMs).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

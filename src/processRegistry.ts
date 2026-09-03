@@ -16,6 +16,10 @@ export interface LiveProcess {
   kind: string | null;        // e.g. 'interactive'
   entrypoint: string | null;  // e.g. 'claude-vscode'
   version: string | null;
+  /** The registry's `procStart` ("Thu Sep  3 04:37:49 2026", UTC) as epoch
+   *  ms — the process's real start to the second, matching `ps`. Optional:
+   *  older entries lack it. `startedAt` is stamped up to ~1 s later. */
+  procStartMs?: number | null;
 }
 
 /** Is a pid alive? `kill(pid, 0)` sends no signal; it throws `ESRCH` when the
@@ -205,6 +209,8 @@ function parseEntry(rec: unknown): LiveProcess | null {
     startedAt: typeof r.startedAt === 'number' ? r.startedAt : null,
     kind: typeof r.kind === 'string' ? r.kind : null,
     entrypoint: typeof r.entrypoint === 'string' ? r.entrypoint : null,
+    procStartMs: typeof r.procStart === 'string' && !Number.isNaN(Date.parse(r.procStart.replace(/\s+/g, ' ') + ' UTC'))
+      ? Date.parse(r.procStart.replace(/\s+/g, ' ') + ' UTC') : null,
     version: typeof r.version === 'string' ? r.version : null,
   };
 }

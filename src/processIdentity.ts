@@ -4,19 +4,26 @@
  * is a file a Claude process writes at start and removes at exit; a crashed or
  * SIGKILLed child leaves its file behind, and once the kernel recycles the pid
  * the entry reads as live to `kill(pid, 0)`. The transfer flow would then send
- * SIGTERM to a stranger. So: ask `ps` for the process's start time and command
- * line, require a Claude CLI command, and require the start time to sit within
- * a few seconds of the registry's `startedAt`. Anything short of that is
- * "not verified" and the caller refuses to signal.
+ * SIGTERM to a stranger. So: ask `ps` for the process's elapsed time and
+ * command line, require a Claude CLI command, and require the implied start
+ * time to sit within a few seconds of the registry's own start stamp.
+ * Anything short of that is "not verified" and the caller refuses to signal.
+ *
+ * Elapsed time (`etime`) rather than `lstart`: it is digits only, so it is
+ * immune to the locale of the exthost's `LANG` and to the DST fall-back hour
+ * that makes a local wall-clock start ambiguous. `LC_ALL=C` is set anyway so
+ * the column layout is fixed.
  *
  * Pure apart from the injected `exec`, so every branch is unit-testable.
  */
 
 import { execFile } from 'child_process';
+import type { LiveProcess } from './processRegistry.js';
 
 export const PS_TIMEOUT_MS = 2000;
-/** How far the ps start time may sit from the registry's `startedAt`. The
- *  registry stamps milliseconds; `ps lstart` is whole seconds in local time. */
+/** `etime` has one-second granularity and the registry's `startedAt` is
+ *  stamped up to ~1.2 s after the process actually started (measured on 15
+ *  live entries); `procStart` matches ps to the second. */
 export const START_TOLERANCE_MS = 5_000;
 
 export type ExecPs = (pid: number) => Promise<string | null>;
@@ -37,48 +44,58 @@ export function looksLikeClaudeCommand(command: string): boolean {
   return /(^|[\s/])claude(\s|$|\/)/.test(c) || c.includes('--sdk-url');
 }
 
-/** Parse `ps -o lstart=` ("Thu Sep  3 02:52:16 2026", local time). */
-export function parseLstart(text: string): number | null {
-  const t = Date.parse(text.trim().replace(/\s+/g, ' '));
-  return Number.isNaN(t) ? null : t;
+/** Parse `ps -o etime=` — `[[dd-]hh:]mm:ss` — into milliseconds. */
+export function parseEtime(text: string): number | null {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d{1,2}):(\d{2})$/.exec(text.trim());
+  if (!m) { return null; }
+  const days = Number(m[1] ?? 0), hours = Number(m[2] ?? 0), mins = Number(m[3]), secs = Number(m[4]);
+  return (((days * 24 + hours) * 60 + mins) * 60 + secs) * 1000;
 }
 
-/** Split one `ps -o lstart=,command=` line: lstart is always five
- *  whitespace-separated fields (dow mon dd hh:mm:ss yyyy); the rest is the
- *  command. */
-export function splitPsLine(line: string): { lstart: string; command: string } | null {
+/** Split one `ps -o etime=,command=` line: etime is the first field, the rest
+ *  is the command (whitespace-collapsed; only ever pattern-matched). */
+export function splitPsLine(line: string): { etime: string; command: string } | null {
   const parts = line.trim().split(/\s+/);
-  if (parts.length < 6) { return null; }
-  return { lstart: parts.slice(0, 5).join(' '), command: parts.slice(5).join(' ') };
+  if (parts.length < 2) { return null; }
+  return { etime: parts[0]!, command: parts.slice(1).join(' ') };
+}
+
+/** The registry's best start stamp: `procStart` (ps-accurate, UTC) when the
+ *  entry carries it, else `startedAt` (ms, stamped slightly late). */
+export function registryStartMs(p: Pick<LiveProcess, 'startedAt' | 'procStartMs'>): number | null {
+  return p.procStartMs ?? p.startedAt;
 }
 
 export async function verifyClaudeProcess(
   pid: number,
-  registryStartedAt: number | null,
-  exec: ExecPs = execPsLstartCommand,
+  registryStart: number | null,
+  exec: ExecPs = execPsEtimeCommand,
+  nowMs: () => number = Date.now,
 ): Promise<ProcessIdentity> {
-  if (registryStartedAt === null) { return { kind: 'no-started-at' }; }
+  if (registryStart === null) { return { kind: 'no-started-at' }; }
   const out = await exec(pid);
   if (!out) { return { kind: 'unknown' }; }
   const line = out.split('\n').find(l => l.trim().length > 0);
   const split = line ? splitPsLine(line) : null;
   if (!split) { return { kind: 'unknown' }; }
   if (!looksLikeClaudeCommand(split.command)) { return { kind: 'not-claude', command: split.command }; }
-  const psStartMs = parseLstart(split.lstart);
-  if (psStartMs === null) { return { kind: 'unknown' }; }
-  if (Math.abs(psStartMs - registryStartedAt) > START_TOLERANCE_MS) {
-    return { kind: 'start-mismatch', psStartMs, registryStartMs: registryStartedAt };
+  const elapsed = parseEtime(split.etime);
+  if (elapsed === null) { return { kind: 'unknown' }; }
+  const psStartMs = nowMs() - elapsed;
+  if (Math.abs(psStartMs - registryStart) > START_TOLERANCE_MS) {
+    return { kind: 'start-mismatch', psStartMs, registryStartMs: registryStart };
   }
   return { kind: 'verified' };
 }
 
 /** Same invocation contract as writerOwnership's execPs: timeout, settle
  *  guard (execFile's timeout only SENDS SIGTERM), null on any failure. */
-function execPsLstartCommand(pid: number): Promise<string | null> {
+function execPsEtimeCommand(pid: number): Promise<string | null> {
   if (process.platform === 'win32') { return Promise.resolve(null); }
   return new Promise(resolve => {
     const guard = setTimeout(() => resolve(null), PS_TIMEOUT_MS + 1000);
-    execFile('ps', ['-o', 'lstart=,command=', '-p', String(pid)], { timeout: PS_TIMEOUT_MS, encoding: 'utf-8' },
+    execFile('ps', ['-o', 'etime=,command=', '-p', String(pid)],
+      { timeout: PS_TIMEOUT_MS, encoding: 'utf-8', env: { ...process.env, LC_ALL: 'C' } },
       (err, stdout) => {
         clearTimeout(guard);
         resolve(err || !stdout || !stdout.trim() ? null : stdout);

@@ -100,6 +100,11 @@ const mockDiscovery = {
   getProcessesForSessionFresh: vi.fn().mockResolvedValue([]),
   getEntrypointOf: vi.fn().mockReturnValue(undefined),
   reloadSession: vi.fn().mockResolvedValue(undefined),
+  // Runs the write and reports whether a replay would have followed.
+  reloadSessionAfter: vi.fn(async (_id: string, fn: () => Promise<unknown>, needs: (r: unknown) => boolean) => {
+    const r = await fn(); mockDiscovery.reloadSessionAfterReplayed = needs(r); return r;
+  }),
+  reloadSessionAfterReplayed: false as boolean,
   getOwnershipOf: vi.fn().mockReturnValue(undefined),
   getOwnerPidOf: vi.fn().mockReturnValue(undefined),
   getSessionFilePath: vi.fn().mockReturnValue(null),
@@ -180,6 +185,7 @@ vi.mock('./transcriptEntrypoint.js', () => ({
 }));
 vi.mock('./processIdentity.js', () => ({
   verifyClaudeProcess: vi.fn().mockResolvedValue({ kind: 'verified' }),
+  registryStartMs: (p: { startedAt: number | null; procStartMs?: number | null }) => p.procStartMs ?? p.startedAt,
 }));
 vi.mock('./writerActivity.js', () => ({
   getSessionLastWriteMtime: vi.fn().mockReturnValue(null),
@@ -680,9 +686,11 @@ describe('extension', () => {
       mockDiscovery.getProcessesForSessionFresh.mockResolvedValue([]);
       mockDiscovery.isSessionRunning.mockReturnValue(false);
       mockDiscovery.getEntrypointOf.mockReturnValue('sdk-cli'); // a local session this window tracks
+      mockDiscovery.reloadSessionAfterReplayed = false;
     });
     afterEach(async () => {
       killSpy.mockRestore();
+      vi.mocked(vscode.window.showWarningMessage).mockReset();
       mockDiscovery.getEntrypointOf.mockReturnValue(undefined);
       const pi = await import('./processIdentity.js');
       vi.mocked(pi.verifyClaudeProcess).mockResolvedValue({ kind: 'verified' });
@@ -717,7 +725,7 @@ describe('extension', () => {
       expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
       expect(killSpy).not.toHaveBeenCalled();
       expect(te.rewriteTranscriptEntrypoint).toHaveBeenCalledWith(expect.stringContaining(SID), { from: 'sdk-cli', to: 'claude-vscode', sessionId: SID });
-      expect(mockDiscovery.reloadSession).toHaveBeenCalledWith(SID);
+      expect(mockDiscovery.reloadSessionAfterReplayed).toBe(true);
     });
 
     it('already claude-vscode: skipped rewrite means no reload, still opens', async () => {
@@ -729,7 +737,7 @@ describe('extension', () => {
       await vi.waitFor(() => {
         expect(vscode.commands.executeCommand).toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
       });
-      expect(mockDiscovery.reloadSession).not.toHaveBeenCalled();
+      expect(mockDiscovery.reloadSessionAfterReplayed).toBe(false);
     });
 
     it('busy on the phone (status running): refused, nothing signalled or rewritten', async () => {
@@ -792,7 +800,7 @@ describe('extension', () => {
       expect(killSpy).toHaveBeenCalledWith(63717, 'SIGTERM');
       const te = await import('./transcriptEntrypoint.js');
       expect(te.rewriteTranscriptEntrypoint).toHaveBeenCalledTimes(1);
-      expect(mockDiscovery.reloadSession).toHaveBeenCalledWith(SID);
+      expect(mockDiscovery.reloadSessionAfterReplayed).toBe(true);
     });
 
     it('idle on the phone, cancelled: nothing happens', async () => {
@@ -887,7 +895,36 @@ describe('extension', () => {
       expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
       const te = await import('./transcriptEntrypoint.js');
       expect(te.rewriteTranscriptEntrypoint).toHaveBeenCalledTimes(1);
-      vi.mocked(vscode.window.showWarningMessage).mockReset();
+    });
+
+    it('re-verifies the process identity after the modal, right before signalling', async () => {
+      gateOn();
+      activate(context as any);
+      let alive = true;
+      mockDiscovery.getProcessesForSessionFresh.mockImplementation(async () => (alive ? [rcProc()] : []));
+      killSpy.mockImplementation((() => { alive = false; return true; }) as any);
+      vi.mocked(vscode.window.showWarningMessage).mockResolvedValueOnce('Bring here' as any);
+      const pi = await import('./processIdentity.js');
+      vi.mocked(pi.verifyClaudeProcess)
+        .mockResolvedValueOnce({ kind: 'verified' })                      // before the modal
+        .mockResolvedValueOnce({ kind: 'not-claude', command: '-zsh' }); // pid recycled while it sat open
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('stale registry entry'));
+      });
+      expect(pi.verifyClaudeProcess).toHaveBeenCalledTimes(2);
+      expect(killSpy).not.toHaveBeenCalled();
+    });
+
+    it('open fails: no focus highlight is taken for a session that did not open here', async () => {
+      gateOn();
+      activate(context as any);
+      vi.mocked(vscode.commands.executeCommand).mockRejectedValueOnce(new Error('no claude'));
+      getHandler()(SID);
+      await vi.waitFor(() => {
+        expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('Could not open the session here'));
+      });
+      expect(mockPanelProvider.focusSession).not.toHaveBeenCalledWith(SID);
     });
 
     it('gate switched off while the modal is open: nothing happens after confirm', async () => {
@@ -926,7 +963,7 @@ describe('extension', () => {
       await vi.waitFor(() => {
         expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('Could not rewrite'));
       });
-      expect(mockDiscovery.reloadSession).not.toHaveBeenCalled();
+      expect(mockDiscovery.reloadSessionAfterReplayed).toBe(false);
       expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith('claude-vscode.editor.open', SID, undefined, 1);
     });
 

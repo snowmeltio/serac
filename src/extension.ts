@@ -20,7 +20,7 @@ import {
   TRANSFER_QUIET_MS, RELEASE_TIMEOUT_MS, RELEASE_POLL_MS, RELEASE_SETTLE_MS,
 } from './transferClassifier.js';
 import { rewriteTranscriptEntrypoint, VSCODE_ENTRYPOINT } from './transcriptEntrypoint.js';
-import { verifyClaudeProcess } from './processIdentity.js';
+import { verifyClaudeProcess, registryStartMs } from './processIdentity.js';
 import { readCompactSettings, getClaudeSettingsPath, readRemoteControlAtStartup, type CompactSettings } from './claudeSettings.js';
 import {
   rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems, isDefaultProfile,
@@ -98,6 +98,9 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
    *  flows re-render either way). */
   function openClaudeEditor(sessionId: string | undefined, opts: {
     onSettled?: () => void;
+    /** Runs only when the editor actually opened the session HERE — not on
+     *  a hand-off to another window and not on failure. */
+    onOpened?: () => void;
     failMessage?: string;
     onFail?: (err: unknown) => void;
   } = {}): void {
@@ -193,6 +196,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
           if (sessionId !== undefined && discovery.isMarkedExternalWriter(sessionId)) {
             panelProvider.focusSession(sessionId);
           }
+          opts.onOpened?.();
           opts.onSettled?.();
         },
         (err: unknown) => {
@@ -461,22 +465,27 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       // The registry entry is a file the process wrote; a crashed child leaves
       // it behind and a recycled pid then reads as live. Ask the OS who the
       // pid is before offering to signal it.
-      const identity = await verifyClaudeProcess(target.pid, target.startedAt);
-      if (identity.kind !== 'verified') {
+      const identityOk = async (): Promise<boolean> => {
+        const identity = await verifyClaudeProcess(target.pid, registryStartMs(target));
+        if (identity.kind === 'verified') { return true; }
         log.warn(`Transfer: refusing to signal pid ${target.pid} for session ${sessionId} — identity ${identity.kind}`);
         void vscode.window.showWarningMessage(
           identity.kind === 'not-claude' || identity.kind === 'start-mismatch'
             ? 'The process registered for this phone session is not the one that started it (a stale registry entry). Nothing was changed. Try again shortly.'
             : 'Could not confirm which process is driving this phone session. Nothing was changed.');
-        return;
-      }
+        return false;
+      };
+      if (!(await identityOk())) { return; }
       const picked = await vscode.window.showWarningMessage(
         'Bring this phone session here?',
         { modal: true, detail: 'This ends the phone\u2019s copy of the session. It reappears on your phone once it is open here.' },
         'Bring here',
       );
       if (picked !== 'Bring here') { return; }
-      if (!gateOn()) { return; } // switched off while the modal sat open
+      if (!gateOn()) { // switched off while the modal sat open
+        vscode.window.setStatusBarMessage('Phone-session transfer is off (serac.experimental.transferPhoneSessions).', 5000);
+        return;
+      }
       // Re-verify after the modal — it can sit open for a while, and the
       // phone may have started a turn or the process may have gone.
       verdict = await classify();
@@ -487,6 +496,10 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
           vscode.window.setStatusBarMessage('The phone\u2019s process changed underneath the prompt \u2014 nothing done. Try again.', 5000);
           return;
         }
+        // The registry file cannot tell us the child died and its pid was
+        // recycled while the modal sat open — only the OS can. Ask again,
+        // right before the signal.
+        if (!(await identityOk())) { return; }
         try {
           process.kill(target.pid, 'SIGTERM');
           log.info(`Transfer: sent SIGTERM to phone process ${target.pid} for session ${sessionId}`);
@@ -521,16 +534,21 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       // its own while the prompt sat open — nothing to release, fall through.
     }
 
+    // The rewrite runs INSIDE the session's update chain so no poll read can
+    // land between the rename and the replay (see SessionManager.runThenReplay).
     let result: { changed: number; skipped: boolean };
     try {
-      result = await rewriteTranscriptEntrypoint(jsonlPath, { from: RC_ENTRYPOINT, to: VSCODE_ENTRYPOINT, sessionId });
+      result = await discovery.reloadSessionAfter(
+        sessionId,
+        () => rewriteTranscriptEntrypoint(jsonlPath, { from: RC_ENTRYPOINT, to: VSCODE_ENTRYPOINT, sessionId }),
+        r => !r.skipped,
+      );
     } catch (err) {
       log.warn(`Transfer: rewrite failed for ${jsonlPath}:`, err);
       void vscode.window.showWarningMessage('Could not rewrite the transcript. Nothing was changed.');
       return;
     }
     log.info(`Transfer: ${result.skipped ? 'no sdk-cli records to rewrite' : `rewrote ${result.changed} record(s)`} for session ${sessionId}`);
-    if (!result.skipped) { await discovery.reloadSession(sessionId); }
     // The same bookkeeping tail a card click gets: the user is moving onto
     // this session, so the previous one is acknowledged and this one takes
     // the highlight — otherwise the replayed running→done flip would leave a
@@ -539,7 +557,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     previouslyFocusedSessionId = sessionId;
     sendUpdate();
     openClaudeEditor(sessionId, {
-      onSettled: () => { panelProvider.focusSession(sessionId); sendUpdate(); },
+      onOpened: () => panelProvider.focusSession(sessionId),
+      onSettled: sendUpdate,
       failMessage: 'Could not open the session here. Is the Claude Code extension installed?',
     });
   }

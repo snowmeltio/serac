@@ -709,16 +709,31 @@ export class SessionManager {
    *  only self-resets on a SHRINK. Mirrors the truncation branch of update():
    *  reset the tailer, reset derived state (titles survive), replay. */
   forceReplay(): Promise<void> {
+    return this.runThenReplay(async () => undefined, () => true).then(() => undefined);
+  }
+
+  /** Run `fn` (typically a rewrite of this transcript) INSIDE the update
+   *  chain, then replay when `needsReplay(result)` says so. Running the write
+   *  on the chain matters: the rename bumps the file's mtime, which wakes the
+   *  poll loop, and a poll `update()` queued between the rename and a separate
+   *  replay call would read the grown file from the old offset — a torn line,
+   *  then already-processed records re-run as live. Here nothing can read the
+   *  file between the write and the reset. */
+  runThenReplay<T>(fn: () => Promise<T>, needsReplay: (result: T) => boolean): Promise<T> {
     const p = this.updateChain.then(async () => {
-      this.tailer.reset();
-      this.resetState();
-      this.initialReplayDone = false;
-      // Unlike compaction, the writer HAS changed: the phone's process is
-      // gone and a new one will resume here. A stale pid would make
-      // isProcessAlive() answer "dead" and cut the thinking grace short.
-      this.writerPid = null;
-      this.pidCaptureAttempted = false;
-      await this.updateInner();
+      const result = await fn();
+      if (needsReplay(result)) {
+        this.tailer.reset();
+        this.resetState();
+        this.initialReplayDone = false;
+        // Unlike compaction, the writer HAS changed: the phone's process is
+        // gone and a new one will resume here. A stale pid would make
+        // isProcessAlive() answer "dead" and cut the thinking grace short.
+        this.writerPid = null;
+        this.pidCaptureAttempted = false;
+        await this.updateInner();
+      }
+      return result;
     });
     this.updateChain = p.catch(() => undefined);
     return p;

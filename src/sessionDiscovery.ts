@@ -1054,6 +1054,15 @@ export class SessionDiscovery {
     await this.sessions.get(sessionId)?.forceReplay();
   }
 
+  /** Run a transcript write for `sessionId` inside its manager's update
+   *  chain, replaying afterwards when `needsReplay` says so (see
+   *  SessionManager.runThenReplay). For a session this window does not track,
+   *  `fn` simply runs. */
+  reloadSessionAfter<T>(sessionId: string, fn: () => Promise<T>, needsReplay: (result: T) => boolean): Promise<T> {
+    const mgr = this.sessions.get(sessionId);
+    return mgr ? mgr.runThenReplay(fn, needsReplay) : fn();
+  }
+
   /** The resolved parent (extension-host) pid of `pid`, when known — see
    *  WriterOwnership.getOwnerPid. */
   getOwnerPidOf(pid: number): number | undefined {

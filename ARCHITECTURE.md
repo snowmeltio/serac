@@ -41,7 +41,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `rcOrigin.ts` | Dependency-free `RC_ENTRYPOINT` / `isRcOriginTranscript()` shared by the webview bundle and the host (re-exported by `rcDetector.ts`, which itself pulls in `path`). |
 | `transferClassifier.ts` | Pure decision logic for the phone-session transfer: `classifyTransfer()` (dead / rc-idle / rc-busy / desktop), `isSameProcess()` (pid + startedAt, the pid-reuse guard), `waitForRelease()` (poll until the target leaves the registry, or time out — never escalates). |
 | `transcriptEntrypoint.ts` | Streams a transcript (read bounded to its size at start) to a same-directory temp file with every `"entrypoint":"sdk-cli"` token rewritten to `claude-vscode`, appends one `serac-transfer` marker record, fsyncs, re-stats (any growth aborts), renames. Zero changed lines = nothing written, no marker. Callers must first ensure no process is writing the file. |
-| `processIdentity.ts` | `verifyClaudeProcess(pid, startedAt)`: before the transfer flow signals a pid it did not start, `ps -o lstart=,command=` must show a Claude CLI command whose start time sits within 5 s of the registry's `startedAt`. A crashed child's leftover registry file plus a recycled pid otherwise reads as live. |
+| `processIdentity.ts` | `verifyClaudeProcess(pid, registryStart)`: before the transfer flow signals a pid it did not start, `ps -o etime=,command=` (under `LC_ALL=C`; elapsed time is digits-only, so no locale or DST ambiguity) must show a Claude CLI command whose implied start sits within 5 s of the registry's `procStart` (falling back to `startedAt`). A crashed child's leftover registry file plus a recycled pid otherwise reads as live. Checked before the modal and again right before the signal. |
 | `rcDetector.ts` | Pure filter over the process registry answering one question: is a **Remote Control** (`claude rc`) server hosting sessions in this workspace? Each session such a server hosts registers with `entrypoint: "sdk-cli"` and a real cwd — the workspace root for the session pre-created in the serving directory, or `<workspace>/.claude/worktrees/bridge-cse_<id>` for each phone-spawned one. `isRcServing()` matches either, segment-wise (so a sibling path sharing our prefix never counts). One of the two facts behind the top-bar signal indicator; nothing is gated on it. |
 | `rcState.ts` | Webview-safe fold of the two Remote Control facts (`remoteControlAtStartup` auto-enrol, server serving here) into a signal level 0–2 plus the tooltip/aria words. Level = count of facts on; the tooltip says which. |
 | `rcLauncher.ts` | Pure half of the indicator's click: terminal env overrides (strip `VSCODE_*`/`ELECTRON_RUN_AS_NODE`, keep `CLAUDE_CONFIG_DIR`), CLI location, the `claude rc` and `install.sh` command strings (with `--spawn worktree` per `serac.rc.spawnMode`: `worktree`, or `auto` where a git repo exists), the quick-pick rows for whatever is off, the reuse rule for an already-open server terminal (`findLiveRcTerminal`), and the watch that notices a started server going away (`rcWatchTick`). |
@@ -472,10 +472,12 @@ handler):
 3. `rc-idle` only: first `processIdentity.verifyClaudeProcess()` — the registry
    entry is a file the child wrote, and a crashed child's leftover file plus a
    recycled pid reads as live to `kill(pid, 0)`; anything but `verified`
-   (not a Claude command, start time off by >5 s, no `startedAt`, ps failed)
+   (not a Claude command, start time off by >5 s, no start stamp, ps failed)
    refuses without offering the modal. Then the modal "Bring this phone
-   session here?" naming that the phone's copy ends. Re-read the gate and
-   re-classify after the modal; the target must still be
+   session here?" naming that the phone's copy ends. Re-read the gate,
+   re-classify, and **verify the identity again** after the modal (it can sit
+   open long enough for the child to die and its pid to be reused); the
+   target must still be
    the same process (`isSameProcess`: pid **and** `startedAt`, the pid-reuse
    guard). `process.kill(pid, 'SIGTERM')` (ESRCH = already gone, continue;
    anything else = warn, stop). `waitForRelease()` polls the fresh registry
@@ -492,13 +494,17 @@ handler):
    transcript untouched); a torn last record aborts. Token safety: inside a
    JSON string value both quotes are escaped, so the bare token can only be a
    real key.
-5. `discovery.reloadSession()` → `SessionManager.forceReplay()`: the file grew
-   in place (each record +6 bytes) and `JsonlTailer` only self-resets on a
-   shrink, so the tailer is reset and the transcript replayed (titles survive,
+5. Steps 4 and 5 run as one unit inside the session's update chain
+   (`discovery.reloadSessionAfter()` → `SessionManager.runThenReplay()`): the
+   rewrite executes on the chain, then — if anything changed — the tailer is
+   reset and the transcript replayed. The file grew in place (each record +6
+   bytes) and `JsonlTailer` only self-resets on a shrink; and the rename bumps
+   the mtime, which wakes the poll loop, so a poll `update()` queued between
+   a separate rename and replay would read the grown file from the old offset
+   (a torn line, then already-processed records re-run as live). On the chain
+   nothing can read between the write and the reset. Titles survive the reset
    as on compaction; `writerPid` is cleared because, unlike compaction, the
-   writer has changed). `update()` and `forceReplay()` are serialised on one
-   promise chain per manager — the poll loop wakes on the rename's mtime bump,
-   and two interleaved reads through one tailer would double every record.
+   writer has changed.
    Then the focus-handler bookkeeping (acknowledge the previous session, take
    the highlight) and `openClaudeEditor` as usual.
 
