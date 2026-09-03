@@ -86,6 +86,14 @@ The session was on your phone and now isn't. That happens when Remote Control ge
 
 Click to open the chat, then type **`/remote-control`** — it reconnects in place in a few seconds and reappears on your phone as a new session. On a card from another worktree or window, the click takes you there instead. Shown only while the session's process is alive; a finished-and-gone session has nothing to reconnect, and resuming it re-enrols anyway.
 
+### 📡→ — started from your phone; bring it here
+
+*Experimental: `serac.experimental.transferPhoneSessions`, off by default.*
+
+The transcript was written by a session your phone started through a `claude rc` server. Claude Code's own panel refuses to reopen those (it hides every session whose records say `entrypoint: sdk-cli`), so with the gate off a click on the card lands in an empty chat. With it on, the dish-and-arrow chip is the way in, and the card body does nothing but point at it.
+
+Click the chip to bring the session here. If the phone's copy is still running and idle, Serac asks first, then ends that process (a plain terminate, never forced) and waits for it to go; if it is mid-turn you are told to try again when it goes quiet. Serac then rewrites the transcript's `entrypoint` so the panel will restore it, adds one `serac-transfer` record noting the original value, and opens the chat. A minute later it is back on your phone as a new remote session, because this window's Remote Control enrols it like any other.
+
 ### Still going, quietly
 
 Three ways a finished-looking card isn't finished. All tinted with the running colour: a *done* card that will start itself again in four minutes is idle, not finished. None of them change the status.

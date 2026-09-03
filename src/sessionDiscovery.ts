@@ -1033,6 +1033,27 @@ export class SessionDiscovery {
     return this.processRegistry.getProcessesForSession(sessionId);
   }
 
+  /** Same as getProcessesForSession but after a forced registry rescan —
+   *  for the moment of a decision that signals a process (the transfer flow),
+   *  where the poll tier's cache is exactly stale when it matters. Unfiltered:
+   *  RC-hosted (sdk-cli) processes are the point. */
+  async getProcessesForSessionFresh(sessionId: string): Promise<LiveProcess[]> {
+    await this.processRegistry.scan();
+    return this.processRegistry.getProcessesForSession(sessionId);
+  }
+
+  /** Most recent transcript `entrypoint` for a session this window tracks
+   *  (see SessionState.entrypoint); undefined for unknown/sibling sessions. */
+  getEntrypointOf(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.getEntrypoint();
+  }
+
+  /** Re-read a session's transcript from the start (see
+   *  SessionManager.forceReplay) — after the transfer flow rewrites it. */
+  async reloadSession(sessionId: string): Promise<void> {
+    await this.sessions.get(sessionId)?.forceReplay();
+  }
+
   /** The resolved parent (extension-host) pid of `pid`, when known — see
    *  WriterOwnership.getOwnerPid. */
   getOwnerPidOf(pid: number): number | undefined {

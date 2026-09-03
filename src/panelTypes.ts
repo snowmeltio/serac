@@ -222,6 +222,10 @@ export type WebviewCommand =
   | { type: 'undismissWorkflow'; runId: string }
   /** ⚠ dual-writer chip: ask the host to run the keep-here/release-here picker. */
   | { type: 'resolveDualWriter'; sessionId: string }
+  /** 📡→ bring-here chip on a phone-originated (sdk-cli) card: ask the host
+   *  to run the transfer flow (release the phone's process, rewrite the
+   *  transcript's entrypoint, open here). */
+  | { type: 'transferSession'; sessionId: string }
   /** Top-bar Remote Control indicator below full: ask the host for the
    *  turn-it-on picker (start/install a server, open settings.json). */
   | { type: 'rcIndicatorClick' };

@@ -31,6 +31,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private rcCompanionProfile = false;
   private onFocusSession: ((sessionId: string) => void) | undefined;
   private onResolveDualWriter: ((sessionId: string) => void) | undefined;
+  private onTransferSession: ((sessionId: string) => void) | undefined;
   private onRcIndicatorClick: (() => void) | undefined;
   private onDismissSession: ((sessionId: string) => void) | undefined;
   private onUndismissSession: ((sessionId: string) => void) | undefined;
@@ -57,6 +58,10 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
   setResolveDualWriterHandler(handler: (sessionId: string) => void): void {
     this.onResolveDualWriter = handler;
+  }
+
+  setTransferSessionHandler(handler: (sessionId: string) => void): void {
+    this.onTransferSession = handler;
   }
 
   setDismissHandler(handler: (sessionId: string) => void): void {
@@ -161,6 +166,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
         this.onFocusSession(message.sessionId);
       } else if (message.type === 'resolveDualWriter' && this.onResolveDualWriter) {
         this.onResolveDualWriter(message.sessionId);
+      } else if (message.type === 'transferSession' && this.onTransferSession) {
+        this.onTransferSession(message.sessionId);
       } else if (message.type === 'rcIndicatorClick' && this.onRcIndicatorClick) {
         this.onRcIndicatorClick();
       } else if (message.type === 'dismissSession' && this.onDismissSession) {

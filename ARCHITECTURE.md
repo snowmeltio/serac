@@ -38,6 +38,9 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `workflowScript.ts` | Static (never-eval) extractors. `extractWorkflowMeta()` pulls `name`/`description`/`phases` from a workflow script's `meta` literal; `extractAgentCalls()` pulls each `agent(prompt, {label, phase})` call's static prompt segments + opts, plus the prompt/label split into ordered `TemplateParts` (statics + interpolation exprs); `matchAgentCall()` correlates a running agent's record-0 prompt back to its call; `recoverInterpolatedLabel()` rebuilds an interpolated label (`audit:${d.key}`) into its real per-agent value (`audit:privacy`) by aligning the prompt template's statics against the expanded prompt. All via brace/string matching. Used for the live tier. |
 | `workflowDiscovery.ts` | Two-tier workflow discovery, parallel to `teamDiscovery`. Scans each session dir for sidecars (Tier 1) and live run dirs (Tier 2), caches by mtime, prunes, applies the 7-day age gate and dismiss overlay. |
 | `processRegistry.ts` | Reads Claude Code's live process registry (`~/.claude/sessions/<pid>.json`) and confirms each pid with `kill(pid, 0)`. The one source of *actual* process liveness in an otherwise disk-tailing monitor. Owned by `SessionDiscovery` (scanned on a relaxed cadence); exposes `getLiveProcesses()` / `isSessionLive()` / `isActive()`. Injected into each `SessionManager` as a tri-state `livenessProbe` that powers the permission-false-positive gate (a registry-confirmed-dead session can't be `waiting` — see Status inference §6). A hit is a strong positive, a miss is "unknown" (not every session class is guaranteed to register), and an inactive registry disables the gate. `isScanClean()` distinguishes a degraded scan (a non-ENOENT read error or unparseable content on a *present* file) from genuine absence, so a transient disk error on a live session's file degrades the probe to "unknown" rather than "dead" — only a clean scan's absence is trusted as death. |
+| `rcOrigin.ts` | Dependency-free `RC_ENTRYPOINT` / `isRcOriginTranscript()` shared by the webview bundle and the host (re-exported by `rcDetector.ts`, which itself pulls in `path`). |
+| `transferClassifier.ts` | Pure decision logic for the phone-session transfer: `classifyTransfer()` (dead / rc-idle / rc-busy / desktop), `isSameProcess()` (pid + startedAt, the pid-reuse guard), `waitForRelease()` (poll until the target leaves the registry, or time out — never escalates). |
+| `transcriptEntrypoint.ts` | Streams a transcript to a same-directory temp file with every `"entrypoint":"sdk-cli"` token rewritten to `claude-vscode`, appends one `serac-transfer` marker record, fsyncs, renames. `readTranscriptEntrypoint()` is the bounded head scan used for idempotence. Callers must first ensure no process is writing the file. |
 | `rcDetector.ts` | Pure filter over the process registry answering one question: is a **Remote Control** (`claude rc`) server hosting sessions in this workspace? Each session such a server hosts registers with `entrypoint: "sdk-cli"` and a real cwd — the workspace root for the session pre-created in the serving directory, or `<workspace>/.claude/worktrees/bridge-cse_<id>` for each phone-spawned one. `isRcServing()` matches either, segment-wise (so a sibling path sharing our prefix never counts). One of the two facts behind the top-bar signal indicator; nothing is gated on it. |
 | `rcState.ts` | Webview-safe fold of the two Remote Control facts (`remoteControlAtStartup` auto-enrol, server serving here) into a signal level 0–2 plus the tooltip/aria words. Level = count of facts on; the tooltip says which. |
 | `rcLauncher.ts` | Pure half of the indicator's click: terminal env overrides (strip `VSCODE_*`/`ELECTRON_RUN_AS_NODE`, keep `CLAUDE_CONFIG_DIR`), CLI location, the `claude rc` and `install.sh` command strings (with `--spawn worktree` per `serac.rc.spawnMode`: `worktree`, or `auto` where a git repo exists), the quick-pick rows for whatever is off, the reuse rule for an already-open server terminal (`findLiveRcTerminal`), and the watch that notices a started server going away (`rcWatchTick`). |
@@ -418,6 +421,83 @@ re-enrols in-process under a new `cse_` in ~4 s — is something the webview
 cannot send into Claude Code's chat; the tooltip carries it. `enrolled` and
 unset never render: under account-wide enrolment a positive mark is noise
 (v1.20.0 decision).
+
+### Bringing a phone session here (transfer, experimental)
+
+**The gap.** A session the phone starts through a `claude rc` server is an
+ordinary transcript under this workspace's key (same-dir spawn, v1.24.0), yet
+the Claude Code panel refuses to restore it. Verified against the 2.1.258
+bundles: the panel host hard-codes `includeProgrammaticSessions = false`, its
+session lister drops any transcript whose `entrypoint` is `sdk-cli`, `sdk-ts`,
+or `sdk-py`, and the webview's activate step only finds sessions in that list —
+so `claude-vscode.editor.open(id)` logs `restore_declined` and opens a fresh
+chat. Every RC-hosted record is stamped `sdk-cli`. No setting changes this.
+
+**Two spikes (2026-09-03) fixed the mechanism.** A copy of a phone transcript
+with every `"entrypoint":"sdk-cli"` rewritten to `"entrypoint":"claude-vscode"`
+is listed and restores with the full conversation (an unmodified control copy
+stays hidden); the resumed process is an ordinary `claude-vscode` one, and this
+window's Remote Control auto-enrol re-enrols it under a new bridge id, so it
+reappears on the phone. And a `SIGTERM` to the idle `sdk-cli` child exits it
+in ~2 s, clears its registry entry, leaves the `claude rc` server up with no
+respawn, and appends one ordinary `last-prompt` record.
+
+**Detection.** `SessionManager.processRecord()` captures `record.entrypoint`
+(most recent seen, after the sessionId guard) into `SessionState.entrypoint`
+and the snapshot. Most-recent rather than first so a transferred session's new
+`claude-vscode` records clear the mark without a restart. Nothing else keys on
+the field; `isRcOriginTranscript()` (`rcOrigin.ts`) is the one predicate.
+
+**Surface.** Gated on `serac.experimental.transferPhoneSessions` (default off;
+off is a genuine no-op — no chip, and the host handler refuses). With it on,
+`panelRender.ts` emits a `📡→` `transfer-chip` (`data-transfer`) on cards whose
+`entrypoint` is `sdk-cli` and that carry neither conflict chip (⛔/⚠ take
+precedence — another window's claim is resolved first). The webview posts
+`transferSession`; the card body's ordinary `focusSession` is answered by the
+host with a status-bar hint and no open (the only thing it could open is an
+empty chat), and the card takes `card-rc-origin` so it drops the pointer
+cursor. Transcript 📜 and dismiss × are untouched.
+
+**Host flow** (`extension.ts:transferSession`, modelled on the dual-writer
+handler):
+
+1. Gate check; resolve the transcript path.
+2. Classify with a forced registry rescan (`getProcessesForSessionFresh`) plus
+   Serac's own status and the transcript's newest mtime
+   (`writerActivity.getSessionLastWriteMtime`, 8 s quiet window):
+   `desktop` (a non-sdk-cli process holds it) → plain `openClaudeEditor`;
+   `rc-busy` (turn in flight, or a write inside the window) → status-bar
+   refusal; `rc-idle` → confirm; `dead` → straight to the rewrite.
+3. `rc-idle` only: modal "Bring this phone session here?" naming that the
+   phone's copy ends. Re-classify after the modal; the target must still be
+   the same process (`isSameProcess`: pid **and** `startedAt`, the pid-reuse
+   guard). `process.kill(pid, 'SIGTERM')` (ESRCH = already gone, continue;
+   anything else = warn, stop). `waitForRelease()` polls the fresh registry
+   every 250 ms for up to 5 s; a timeout warns and stops — **never SIGKILL,
+   never touch the transcript**. Then a 300 ms settle for the child's closing
+   record, and one final classify that aborts on any live process (guards a
+   future server that respawns).
+4. `rewriteTranscriptEntrypoint()`: stream to `<file>.<pid>.<rand>.tmp` (mode
+   copied), rewrite the exact token per line, append the `serac-transfer`
+   marker, fsync, rename. Idempotent: a file whose head already reads
+   `claude-vscode` is skipped. Token safety: inside a JSON string value both
+   quotes are escaped, so the bare token can only be a real key.
+5. `discovery.reloadSession()` → `SessionManager.forceReplay()`: the file grew
+   in place (each record +6 bytes) and `JsonlTailer` only self-resets on a
+   shrink, so the tailer is reset and the transcript replayed (titles survive,
+   as on compaction). Then `openClaudeEditor` as usual.
+
+**Serac's writes into `~/.claude/`, inventory:** the `custom-title` append
+(`sessionRepair.ts`), the teammate inbox (experimental), the hook-settings
+patch, and this rewrite (experimental). All four are gated or guarded against
+a concurrent writer.
+
+**Not covered.** `subagents/<id>/*.jsonl` are left alone (the panel restored
+with only the main file rewritten; no phone session on disk had any). A
+transcript with mixed entrypoints (a terminal `cli` resume of a phone session)
+clears the chip by most-recent-seen; the panel's behaviour on such files is
+unverified. The upstream ask — exempt RC-hosted sessions from the programmatic
+filter — is drafted in `docs/upstream-rc-sessions-not-restorable.md`.
 
 ### Writer ownership (externalWriter)
 
@@ -889,7 +969,7 @@ override — or where `Stop`/`Notification` prove unreliable enough that JSONL m
 - `focusSession` — sets `focusedSessionId`, re-renders with the highlight, and scrolls the card into view (`scrollIntoView({block:'nearest'})`, a no-op when it is already visible). Only the extension's auto-focus posts this type, so receiving it always means "a newly arrived session was auto-focused"; a user clicking a card sets focus locally without round-tripping.
 - `settings` — the current `serac.*` configuration snapshot. Posted once on `resolveWebviewView` (before the first `update` so the very first render sees the right visibility / heights) and again whenever `onDidChangeConfiguration` fires. Held separate from `update` because settings change rarely and updates are noisy.
 
-**Webview to extension:** Command messages (focusSession, dismissSession, undismissSession, viewTranscript, newChat, cleanup, copyToClipboard, requestUpdate).
+**Webview to extension:** Command messages (focusSession, dismissSession, undismissSession, viewTranscript, newChat, cleanup, copyToClipboard, requestUpdate, resolveDualWriter, rcIndicatorClick, transferSession — the 📡→ chip, see "Bringing a phone session here").
 
 ### New chat detection
 
@@ -1002,7 +1082,7 @@ The extension exposes a `serac.*` namespace via `package.json#contributes.config
 
 - **Reading:** `readSettings(): SeracSettings` returns a complete snapshot, falling back to `DEFAULT_SETTINGS` for any unset key. Defaults match the historical hardcoded constants so an upgrade with no `serac.*` keys behaves identically.
 - **Reactivity:** `onSettingsChanged(cb)` wraps `vscode.workspace.onDidChangeConfiguration` and fires the callback with a fresh snapshot whenever any `serac.*` key changes. `extension.ts` posts a new `settings` message to the webview and (when `serac.refresh.intervalSeconds` changed) rebuilds the refresh timer.
-- **Webview side:** `panel.ts` caches the last received `SettingsMessage` in `currentSettings` and snapshots it into the `RenderContext` each pass. The pure builders in `panelRender.ts` consult it for visibility gates (`show.foreignWorkspaces`, `show.worktrees`, `show.usage`, `show.subagents`, `show.fileCollisions`, `show.previewText`, `show.gitBranch`), thresholds (`usage.warnAtPercent`, `usage.criticalAtPercent`), and limits (`archive.maxDoneShown`, `worktrees.autoCollapseAfterSeconds`).
+- **Webview side:** `panel.ts` caches the last received `SettingsMessage` in `currentSettings` and snapshots it into the `RenderContext` each pass. The pure builders in `panelRender.ts` consult it for visibility gates (`show.foreignWorkspaces`, `show.worktrees`, `show.usage`, `show.subagents`, `show.fileCollisions`, `show.previewText`, `show.gitBranch`), thresholds (`usage.warnAtPercent`, `usage.criticalAtPercent`), limits (`archive.maxDoneShown`, `worktrees.autoCollapseAfterSeconds`), and the one experimental gate the webview renders on (`experimental.transferPhoneSessions`, the 📡→ chip).
 - **Discovery managers** (`foreignWorkspaceManager`, `siblingWorktreeManager`, `teamDiscovery`, `workflowDiscovery`) call `readSettings()` at the top of `scan()` / `poll()` to:
   - Short-circuit when the corresponding `show.*` setting is false (no background work for hidden sections).
   - Resolve their section's age gate via `ageGateDaysFor(section)`. `discovery.ageGateDays` is the inherited base; each section (`foreignWorkspaces`, `worktrees`, `teams`, `workflows`) may override it with `discovery.<section>AgeGateDays` (null = inherit). The resolver is the only supported read path, so the inherit-when-unset rule lives in one place; a non-positive or absent override falls back to the base rather than disabling the gate.

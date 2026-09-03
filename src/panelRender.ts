@@ -14,6 +14,7 @@
  */
 
 import { chipHue, chipMonogram, isRemoteWorktree } from './worktreeChip.js';
+import { isRcOriginTranscript } from './rcOrigin.js';
 import { rcLevel, rcTooltip, rcAriaLabel, type RcFacts } from './rcState.js';
 import {
   basename,
@@ -174,6 +175,9 @@ export interface PanelSettings {
   usage: { showWeekly: boolean; warnAtPercent: number; criticalAtPercent: number };
   animations: { enabled: boolean };
   cleanup: { confirmRequired: boolean };
+  /** Only the experimental gates the webview renders on. Optional so an
+   *  older host (or a test's partial settings message) degrades to off. */
+  experimental?: { transferPhoneSessions?: boolean };
 }
 
 /** Defaults that mirror DEFAULT_SETTINGS in settings.ts. Used as the
@@ -573,6 +577,24 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
       + escapeHtml(s.sessionId) + '" role="button" tabindex="0"'
       + ' title="' + escapeHtml(rcOffTitle) + '"'
       + ' aria-label="Remote Control off for this session; activate to open the chat">\u{1F4E1}</span>';
+  }
+  // 📡→ bring-here chip — the transcript was written by a phone-driven
+  // (Remote Control-hosted, `entrypoint: sdk-cli`) process, which the Claude
+  // Code panel refuses to restore, so a plain open would land in an empty
+  // chat. Clicking runs the host's transfer flow: release the phone's idle
+  // process (asked first), rewrite the transcript's entrypoint, open here.
+  // Gated (serac.experimental.transferPhoneSessions); never shown alongside
+  // the ⛔/⚠ conflict chips — a session another window already holds is
+  // theirs to resolve first.
+  if (ctx.settings.experimental?.transferPhoneSessions
+      && isRcOriginTranscript(s.entrypoint) && !s.externalWriter && !s.dualWriter) {
+    const transferTitle = s.processLive !== false
+      ? 'Started from your phone. Click to bring it here: the phone\u2019s copy ends and it reappears on your phone once open here.'
+      : 'Started from your phone. Click to open it here (the Claude Code panel can\u2019t restore phone sessions on its own).';
+    metaHtml += '<span class="wf-tag wf-view-chip transfer-chip" data-transfer="'
+      + escapeHtml(s.sessionId) + '" role="button" tabindex="0"'
+      + ' title="' + escapeHtml(transferTitle) + '"'
+      + ' aria-label="Started from your phone; activate to bring it into this window">\u{1F4E1}<span class="wf-arrow">\u2192</span></span>';
   }
   // Live in TWO windows at once — this window AND another both hold a live
   // interactive process for the session (two writers, one JSONL). Worse than

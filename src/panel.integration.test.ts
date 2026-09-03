@@ -41,6 +41,7 @@ function sendSettings(overrides: any = {}): void {
     usage: { showWeekly: true, warnAtPercent: 85, criticalAtPercent: 100 },
     animations: { enabled: true },
     cleanup: { confirmRequired: true },
+    experimental: { transferPhoneSessions: false },
   };
   // Shallow-merge each top-level section so callers can override one field.
   const merged: any = { ...defaults };
@@ -293,6 +294,63 @@ describe('panel.ts integration', () => {
     expect(resolveMsg).toBeTruthy();
     expect((resolveMsg as any).sessionId).toBe(sess.sessionId);
     expect(postedMessages.find((m: any) => m.type === 'focusSession')).toBeUndefined();
+  });
+
+  describe('📡→ transfer chip (phone-originated card, gate on)', () => {
+    it('posts transferSession with the id and never focusSession; card carries card-rc-origin', () => {
+      sendSettings({ experimental: { transferPhoneSessions: true } });
+      const sess = makeSession({ entrypoint: 'sdk-cli', status: 'done', processLive: true });
+      sendUpdate({ sessions: [sess] });
+      const card = document.querySelector('.card') as HTMLElement;
+      expect(card.classList.contains('card-rc-origin')).toBe(true);
+      const chip = card.querySelector('.transfer-chip') as HTMLElement;
+      expect(chip).toBeTruthy();
+      expect(chip.dataset.transfer).toBe(sess.sessionId);
+      expect(chip.title).toContain('Started from your phone');
+      chip.click();
+      const msg = postedMessages.find((m: any) => m.type === 'transferSession');
+      expect(msg).toBeTruthy();
+      expect((msg as any).sessionId).toBe(sess.sessionId);
+      expect(postedMessages.find((m: any) => m.type === 'focusSession')).toBeUndefined();
+      sendSettings();
+    });
+
+    it('activates on Enter and Space', () => {
+      sendSettings({ experimental: { transferPhoneSessions: true } });
+      sendUpdate({ sessions: [makeSession({ entrypoint: 'sdk-cli' })] });
+      const chip = document.querySelector('.transfer-chip') as HTMLElement;
+      chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      chip.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+      expect(postedMessages.filter((m: any) => m.type === 'transferSession')).toHaveLength(2);
+      sendSettings();
+    });
+
+    it('the card body still posts focusSession — the host answers with the hint, not the webview', () => {
+      sendSettings({ experimental: { transferPhoneSessions: true } });
+      const sess = makeSession({ entrypoint: 'sdk-cli' });
+      sendUpdate({ sessions: [sess] });
+      (document.querySelector('.card-name') as HTMLElement).click();
+      expect(postedMessages.find((m: any) => m.type === 'focusSession')).toBeTruthy();
+      expect(postedMessages.find((m: any) => m.type === 'transferSession')).toBeUndefined();
+      sendSettings();
+    });
+
+    it('gate off: no chip, no class, even for an sdk-cli transcript', () => {
+      sendSettings();
+      sendUpdate({ sessions: [makeSession({ entrypoint: 'sdk-cli' })] });
+      const card = document.querySelector('.card') as HTMLElement;
+      expect(card.querySelector('.transfer-chip')).toBeNull();
+      expect(card.classList.contains('card-rc-origin')).toBe(false);
+    });
+
+    it('a desktop transcript gets neither, gate on', () => {
+      sendSettings({ experimental: { transferPhoneSessions: true } });
+      sendUpdate({ sessions: [makeSession({ entrypoint: 'claude-vscode' })] });
+      const card = document.querySelector('.card') as HTMLElement;
+      expect(card.querySelector('.transfer-chip')).toBeNull();
+      expect(card.classList.contains('card-rc-origin')).toBe(false);
+      sendSettings();
+    });
   });
 
   it('the ⚠ dual-writer chip activates on Enter', () => {

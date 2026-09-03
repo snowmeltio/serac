@@ -232,3 +232,15 @@ describe('foreignWindowGate', () => {
     expect(foreignWindowGate()).toEqual({ liveOnly: false, ageGateMs: 7 * DAY });
   });
 });
+
+describe('experimental.transferPhoneSessions', () => {
+  beforeEach(() => { _resetConfig(); });
+  it('defaults off (a genuine no-op gate)', () => {
+    expect(readSettings().experimental.transferPhoneSessions).toBe(false);
+    expect(DEFAULT_SETTINGS.experimental.transferPhoneSessions).toBe(false);
+  });
+  it('reads through when set', () => {
+    _setConfigValues({ 'serac.experimental.transferPhoneSessions': true });
+    expect(readSettings().experimental.transferPhoneSessions).toBe(true);
+  });
+});

@@ -268,3 +268,14 @@ describe('parseTeammateMessageCommand', () => {
   });
 });
 
+
+describe('parseWebviewCommand: transferSession', () => {
+  it('accepts a valid session id', () => {
+    expect(parseWebviewCommand({ type: 'transferSession', sessionId: 'b6ad54a8-804d-55a1-a232-066390a18787' }))
+      .toEqual({ type: 'transferSession', sessionId: 'b6ad54a8-804d-55a1-a232-066390a18787' });
+  });
+  it('rejects a traversal id and a missing id', () => {
+    expect(parseWebviewCommand({ type: 'transferSession', sessionId: '../etc' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'transferSession' })).toBeNull();
+  });
+});

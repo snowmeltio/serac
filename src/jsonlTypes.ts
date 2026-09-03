@@ -44,6 +44,13 @@ export type JsonlRecordType =
   // reopened (new `cse_` id either way).
   // Parsed into SessionState.bridgeState (sessionTypes.ts).
   | 'bridge-session'
+  // Serac's own marker, appended once by the phone-session transfer flow
+  // (transcriptEntrypoint.ts) after it rewrites every record's `entrypoint`
+  // from `sdk-cli` to `claude-vscode`: {"type":"serac-transfer","sessionId":
+  // ...,"fromEntrypoint":"sdk-cli","toEntrypoint":"claude-vscode","at":ISO}.
+  // Records the original value so the change is visible and reversible in
+  // the file itself. Claude Code ignores record types it does not know.
+  | 'serac-transfer'
   // Harness context deltas (deferred_tools_delta, skill_listing, ...) under an
   // `attachment` object. Not session-state relevant; skipped.
   | 'attachment'
@@ -87,6 +94,12 @@ export interface JsonlRecord {
   /** Remote Control bridge session id (`cse_...`) from `bridge-session`
    *  records; the empty string is the drop marker (see JsonlRecordType). */
   bridgeSessionId?: string;
+  /** Which front end wrote the record: `claude-vscode` (the VS Code panel),
+   *  `cli`, `claude-desktop`, or `sdk-cli` for a Remote Control-hosted
+   *  session driven from the phone. Stamped on user/assistant/system records;
+   *  absent on `queue-operation`, `last-prompt`, `atis-latch`. The Claude Code
+   *  panel refuses to restore transcripts whose value is `sdk-cli`. */
+  entrypoint?: string;
   [key: string]: unknown;
 }
 

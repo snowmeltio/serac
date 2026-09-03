@@ -398,6 +398,12 @@
             "scope": "application",
             "description": "Experimental, off by default. When on, a session confirmed to have a live writer process in a different VS Code window dims on its card with an 'Active elsewhere' badge, and clicking the card switches to the window running it instead of opening here (preventing two processes appending to the same session file). Messaging such a session from here is still refused. Off by default while this is still being tuned — with it off, Serac never checks, marks, or blocks on this at all."
           },
+          "serac.experimental.transferPhoneSessions": {
+            "type": "boolean",
+            "default": false,
+            "scope": "application",
+            "description": "Experimental, off by default. Shows a 📡→ chip on sessions started from your phone (Remote Control). Clicking it brings the session into this window: if the phone's copy is still running and idle, Serac asks first, then ends that process (SIGTERM, never forced), rewrites the transcript's entrypoint so the Claude Code panel will restore it, and opens the chat here. The session reappears on your phone once it is open here. Off means no chip, no rewrite, and a click on such a card does what it does today."
+          },
           "serac.experimental.operatorName": {
             "type": "string",
             "default": "operator",

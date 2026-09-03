@@ -13,7 +13,7 @@ const VALID_COMMAND_TYPES = new Set([
   'newChat', 'copyToClipboard', 'requestUpdate', 'cleanup', 'archiveRange',
   'undismissTeam', 'openWorkspace', 'footerSlotClick',
   'openDetail', 'dismissWorkflow', 'undismissWorkflow', 'resolveDualWriter',
-  'rcIndicatorClick',
+  'rcIndicatorClick', 'transferSession',
 ]);
 
 /** Valid detail-panel sources (mirrors DetailSource in types.ts). */
@@ -75,7 +75,7 @@ export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
   // Commands with sessionId
   if (msg.type === 'focusSession' || msg.type === 'dismissSession' ||
       msg.type === 'undismissSession' || msg.type === 'viewTranscript' ||
-      msg.type === 'resolveDualWriter') {
+      msg.type === 'resolveDualWriter' || msg.type === 'transferSession') {
     if (!isValidSessionId(msg.sessionId)) { return null; }
     return { type: msg.type, sessionId: msg.sessionId } as WebviewCommand;
   }

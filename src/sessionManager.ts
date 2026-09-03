@@ -610,6 +610,7 @@ export class SessionManager {
       filePath: this.state.filePath,
       bridgeSessionId: this.state.bridgeSessionId,
       bridgeState: this.state.bridgeState,
+      entrypoint: this.state.entrypoint,
       confidence: this.computeConfidence(),
       worktreeRoot: this.worktreeRoot,
       worktreeLabel: this.worktreeLabel,
@@ -681,6 +682,23 @@ export class SessionManager {
 
   getFilePath(): string {
     return this.state.filePath;
+  }
+
+  /** Most recent transcript `entrypoint` seen (see SessionState.entrypoint). */
+  getEntrypoint(): string | undefined {
+    return this.state.entrypoint;
+  }
+
+  /** Re-read the transcript from byte 0 as a replay. Needed after the
+   *  transfer flow rewrites the file in place: every record grows by a few
+   *  bytes, so the tailer's byte offset now points mid-record, and the tailer
+   *  only self-resets on a SHRINK. Mirrors the truncation branch of update():
+   *  reset the tailer, reset derived state (titles survive), replay. */
+  async forceReplay(): Promise<void> {
+    this.tailer.reset();
+    this.resetState();
+    this.initialReplayDone = false;
+    await this.update();
   }
 
   getLastActivity(): Date {
@@ -1040,6 +1058,15 @@ export class SessionManager {
     this.glance.onGitBranch((record as { gitBranch?: unknown }).gitBranch);
     if (record.sessionId && record.sessionId !== this.state.sessionId) {
       return false;
+    }
+
+    // Who wrote this record: `claude-vscode`, `cli`, or `sdk-cli` for a
+    // phone-driven (Remote Control-hosted) session. Most-recent-seen — a
+    // transferred session's new records flip it back to `claude-vscode`
+    // without a restart. Cosmetic: never a status transition, and captured
+    // only after the sessionId guard so a foreign record can't mislabel us.
+    if (typeof record.entrypoint === 'string' && record.entrypoint) {
+      this.state.entrypoint = record.entrypoint;
     }
 
     // permissionMode gates real status transitions (unlike the cosmetic fields
