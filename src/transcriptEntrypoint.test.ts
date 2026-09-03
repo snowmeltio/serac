@@ -97,6 +97,36 @@ describe('rewriteTranscriptEntrypoint', () => {
     expect(JSON.parse(lines[2]!).type).toBe(SERAC_TRANSFER_RECORD_TYPE);
   });
 
+  it('a file with no entrypoint token at all is skipped: nothing written, no marker', async () => {
+    const p = write('none.jsonl', [QUEUE, LAST_PROMPT].join('\n') + '\n');
+    const before = fs.readFileSync(p, 'utf-8');
+    const r = await rewriteTranscriptEntrypoint(p, { sessionId: SID });
+    expect(r).toEqual({ changed: 0, skipped: true });
+    expect(fs.readFileSync(p, 'utf-8')).toBe(before);
+    expect(fs.readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('a mixed file whose head is already claude-vscode still rewrites the sdk-cli tail', async () => {
+    const head = USER.replace('"entrypoint":"sdk-cli"', '"entrypoint":"claude-vscode"');
+    const p = write('mixed.jsonl', [head, ASSISTANT].join('\n') + '\n');
+    const r = await rewriteTranscriptEntrypoint(p, { sessionId: SID });
+    expect(r).toEqual({ changed: 1, skipped: false });
+    expect(fs.readFileSync(p, 'utf-8')).not.toContain('"entrypoint":"sdk-cli"');
+  });
+
+  it('an empty file is skipped untouched', async () => {
+    const p = write('empty.jsonl', '');
+    expect(await rewriteTranscriptEntrypoint(p, { sessionId: SID })).toEqual({ changed: 0, skipped: true });
+    expect(fs.readFileSync(p, 'utf-8')).toBe('');
+  });
+
+  it('a torn last record aborts: original untouched, no temp file', async () => {
+    const p = write('torn.jsonl', USER + '\n' + USER.slice(0, 40));
+    await expect(rewriteTranscriptEntrypoint(p, { sessionId: SID })).rejects.toThrow(/complete record/);
+    expect(fs.readFileSync(p, 'utf-8')).toBe(USER + '\n' + USER.slice(0, 40));
+    expect(fs.readdirSync(dir).filter(f => f.endsWith('.tmp'))).toEqual([]);
+  });
+
   it('is idempotent: a file already reading claude-vscode is skipped, no second marker', async () => {
     const p = write('i.jsonl', [QUEUE, USER].join('\n') + '\n');
     await rewriteTranscriptEntrypoint(p, { sessionId: SID });

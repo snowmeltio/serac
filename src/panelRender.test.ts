@@ -481,6 +481,13 @@ describe('renderCardInner', () => {
       expect(ended).not.toContain('copy ends');
     });
 
+    it('not on a sibling-worktree card (foreign project key; its tailer lives elsewhere)', () => {
+      const html = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', worktreeRoot: '/Users/me/repos/proj-wt/feature-x', worktreeLabel: 'feature-x' }), NOW, false);
+      expect(html).not.toContain('transfer-chip');
+      const local = renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', worktreeRoot: '/Users/me/repos/proj' }), NOW, false);
+      expect(local).toContain('transfer-chip');
+    });
+
     it('yields to the ⛔/⚠ conflict chips', () => {
       expect(renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', externalWriter: true }), NOW, false)).not.toContain('transfer-chip');
       expect(renderCardInner(gated(), makeSession({ entrypoint: 'sdk-cli', dualWriter: true }), NOW, false)).not.toContain('transfer-chip');

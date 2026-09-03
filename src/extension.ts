@@ -20,6 +20,7 @@ import {
   TRANSFER_QUIET_MS, RELEASE_TIMEOUT_MS, RELEASE_POLL_MS, RELEASE_SETTLE_MS,
 } from './transferClassifier.js';
 import { rewriteTranscriptEntrypoint, VSCODE_ENTRYPOINT } from './transcriptEntrypoint.js';
+import { verifyClaudeProcess } from './processIdentity.js';
 import { readCompactSettings, getClaudeSettingsPath, readRemoteControlAtStartup, type CompactSettings } from './claudeSettings.js';
 import {
   rcTerminalEnvOverrides, locateClaudeCli, rcStartCommand, rcInstallCommand, rcQuickPickItems, isDefaultProfile,
@@ -398,9 +399,30 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
    *  file grew in place); (4) open. This window's Remote Control auto-enrol
    *  then puts the session back on the phone under a new bridge id.
    *  Verified end to end 2026-09-03 (Claude Code 2.1.258). */
+  const transferInFlight = new Set<string>();
   async function transferSession(sessionId: string): Promise<void> {
-    if (!readSettings().experimental.transferPhoneSessions) {
+    if (transferInFlight.has(sessionId)) { return; } // a second activation while the first runs
+    transferInFlight.add(sessionId);
+    try {
+      await transferSessionInner(sessionId);
+    } catch (err) {
+      log.warn(`Transfer: unexpected failure for session ${sessionId}:`, err);
+      void vscode.window.showWarningMessage('Bringing the session here failed part-way. Nothing was changed on disk unless the log says otherwise.');
+    } finally {
+      transferInFlight.delete(sessionId);
+    }
+  }
+  const gateOn = () => readSettings().experimental.transferPhoneSessions;
+  async function transferSessionInner(sessionId: string): Promise<void> {
+    if (!gateOn()) {
       vscode.window.setStatusBarMessage('Phone-session transfer is off (serac.experimental.transferPhoneSessions).', 5000);
+      return;
+    }
+    // Local sessions only: a sibling-worktree card's transcript sits under a
+    // project key this window's panel cannot restore from, and the tailer
+    // that would need replaying belongs to that worktree's own window.
+    if (discovery.getEntrypointOf(sessionId) === undefined) {
+      vscode.window.setStatusBarMessage('This phone session belongs to another worktree \u2014 bring it in from that folder\u2019s window.', 6000);
       return;
     }
     const jsonlPath = discovery.getSessionFilePath(sessionId);
@@ -418,6 +440,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         sessionRunning: discovery.isSessionRunning(sessionId),
       });
     };
+    const busy = () => vscode.window.setStatusBarMessage('This session is still working from your phone. Try again when it goes quiet.', 5000);
 
     let verdict = await classify();
     if (verdict.kind === 'desktop') {
@@ -429,29 +452,36 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     }
     if (verdict.kind === 'rc-busy') {
       log.info(`Transfer: session ${sessionId} busy on the phone (${verdict.reason}) — refused`);
-      vscode.window.setStatusBarMessage('This session is still working from your phone. Try again when it goes quiet.', 5000);
+      busy();
       return;
     }
 
     if (verdict.kind === 'rc-idle') {
       const target = verdict.proc;
+      // The registry entry is a file the process wrote; a crashed child leaves
+      // it behind and a recycled pid then reads as live. Ask the OS who the
+      // pid is before offering to signal it.
+      const identity = await verifyClaudeProcess(target.pid, target.startedAt);
+      if (identity.kind !== 'verified') {
+        log.warn(`Transfer: refusing to signal pid ${target.pid} for session ${sessionId} — identity ${identity.kind}`);
+        void vscode.window.showWarningMessage(
+          identity.kind === 'not-claude' || identity.kind === 'start-mismatch'
+            ? 'The process registered for this phone session is not the one that started it (a stale registry entry). Nothing was changed. Try again shortly.'
+            : 'Could not confirm which process is driving this phone session. Nothing was changed.');
+        return;
+      }
       const picked = await vscode.window.showWarningMessage(
         'Bring this phone session here?',
         { modal: true, detail: 'This ends the phone\u2019s copy of the session. It reappears on your phone once it is open here.' },
         'Bring here',
       );
       if (picked !== 'Bring here') { return; }
+      if (!gateOn()) { return; } // switched off while the modal sat open
       // Re-verify after the modal — it can sit open for a while, and the
       // phone may have started a turn or the process may have gone.
       verdict = await classify();
-      if (verdict.kind === 'rc-busy') {
-        vscode.window.setStatusBarMessage('This session is still working from your phone. Try again when it goes quiet.', 5000);
-        return;
-      }
-      if (verdict.kind === 'desktop') {
-        openClaudeEditor(sessionId, { onSettled: sendUpdate });
-        return;
-      }
+      if (verdict.kind === 'rc-busy') { busy(); return; }
+      if (verdict.kind === 'desktop') { openClaudeEditor(sessionId, { onSettled: sendUpdate }); return; }
       if (verdict.kind === 'rc-idle') {
         if (!isSameProcess(verdict.proc, target)) {
           vscode.window.setStatusBarMessage('The phone\u2019s process changed underneath the prompt \u2014 nothing done. Try again.', 5000);
@@ -487,6 +517,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
           return;
         }
       }
+      // verdict.kind === 'dead' after the modal: the phone's process went on
+      // its own while the prompt sat open — nothing to release, fall through.
     }
 
     let result: { changed: number; skipped: boolean };
@@ -497,10 +529,19 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       void vscode.window.showWarningMessage('Could not rewrite the transcript. Nothing was changed.');
       return;
     }
-    log.info(`Transfer: ${result.skipped ? 'transcript already claude-vscode, no rewrite' : `rewrote ${result.changed} record(s)`} for session ${sessionId}`);
+    log.info(`Transfer: ${result.skipped ? 'no sdk-cli records to rewrite' : `rewrote ${result.changed} record(s)`} for session ${sessionId}`);
     if (!result.skipped) { await discovery.reloadSession(sessionId); }
+    // The same bookkeeping tail a card click gets: the user is moving onto
+    // this session, so the previous one is acknowledged and this one takes
+    // the highlight — otherwise the replayed running→done flip would leave a
+    // just-opened session teal-unseen.
+    if (previouslyFocusedSessionId && previouslyFocusedSessionId !== sessionId) { acknowledgePrevious(); }
+    previouslyFocusedSessionId = sessionId;
     sendUpdate();
-    openClaudeEditor(sessionId, { onSettled: sendUpdate, failMessage: 'Could not open the session here. Is the Claude Code extension installed?' });
+    openClaudeEditor(sessionId, {
+      onSettled: () => { panelProvider.focusSession(sessionId); sendUpdate(); },
+      failMessage: 'Could not open the session here. Is the Claude Code extension installed?',
+    });
   }
   panelProvider.setTransferSessionHandler((sessionId: string) => { void transferSession(sessionId); });
 

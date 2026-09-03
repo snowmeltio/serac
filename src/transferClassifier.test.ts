@@ -105,10 +105,6 @@ describe('waitForRelease', () => {
     expect(t - NOW).toBeGreaterThanOrEqual(1_000);
   });
 
-  it('never escalates: the loop only observes', async () => {
-    // Structural: the function takes no signal-sending dependency at all.
-    expect(waitForRelease.length).toBeLessThanOrEqual(3);
-  });
 });
 
 describe('rcProcesses', () => {

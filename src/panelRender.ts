@@ -586,8 +586,13 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
   // Gated (serac.experimental.transferPhoneSessions); never shown alongside
   // the ⛔/⚠ conflict chips — a session another window already holds is
   // theirs to resolve first.
+  // Not on a sibling-worktree card either: its transcript sits under a
+  // project key the panel here cannot restore from anyway, and the tailer
+  // that would need replaying lives in that worktree's own window.
+  const foreignWorktree = !!(s.worktreeRoot && ctx.workspacePath
+    && normPath(s.worktreeRoot) !== normPath(ctx.workspacePath));
   if (ctx.settings.experimental?.transferPhoneSessions
-      && isRcOriginTranscript(s.entrypoint) && !s.externalWriter && !s.dualWriter) {
+      && isRcOriginTranscript(s.entrypoint) && !s.externalWriter && !s.dualWriter && !foreignWorktree) {
     const transferTitle = s.processLive !== false
       ? 'Started from your phone. Click to bring it here: the phone\u2019s copy ends and it reappears on your phone once open here.'
       : 'Started from your phone. Click to open it here (the Claude Code panel can\u2019t restore phone sessions on its own).';

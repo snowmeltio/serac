@@ -515,8 +515,22 @@ export class SessionManager {
     if (this.state.compacting) { this.openCompactWindow(); }
   }
 
+  /** Serialises update() and forceReplay(): both read through the one
+   *  JsonlTailer, whose stat→read→advance-offset sequence is not safe to
+   *  interleave (two concurrent reads from the same offset double every
+   *  record and leave the offset past EOF). The poll loop was the sole caller
+   *  until forceReplay() arrived; this keeps them one at a time. Rejections are
+   *  swallowed on the chain only, never on the caller's own promise. */
+  private updateChain: Promise<unknown> = Promise.resolve();
+
   /** Process all new records from the JSONL file. Returns true if state changed. */
-  async update(): Promise<boolean> {
+  update(): Promise<boolean> {
+    const p = this.updateChain.then(() => this.updateInner());
+    this.updateChain = p.catch(() => undefined);
+    return p;
+  }
+
+  private async updateInner(): Promise<boolean> {
     const records = await this.tailer.readNewRecords();
     // The first read replays whatever is already on disk; everything after
     // it is live. Decided before the early returns below so an empty first
@@ -694,11 +708,20 @@ export class SessionManager {
    *  bytes, so the tailer's byte offset now points mid-record, and the tailer
    *  only self-resets on a SHRINK. Mirrors the truncation branch of update():
    *  reset the tailer, reset derived state (titles survive), replay. */
-  async forceReplay(): Promise<void> {
-    this.tailer.reset();
-    this.resetState();
-    this.initialReplayDone = false;
-    await this.update();
+  forceReplay(): Promise<void> {
+    const p = this.updateChain.then(async () => {
+      this.tailer.reset();
+      this.resetState();
+      this.initialReplayDone = false;
+      // Unlike compaction, the writer HAS changed: the phone's process is
+      // gone and a new one will resume here. A stale pid would make
+      // isProcessAlive() answer "dead" and cut the thinking grace short.
+      this.writerPid = null;
+      this.pidCaptureAttempted = false;
+      await this.updateInner();
+    });
+    this.updateChain = p.catch(() => undefined);
+    return p;
   }
 
   getLastActivity(): Date {

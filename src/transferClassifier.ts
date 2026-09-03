@@ -86,7 +86,8 @@ export async function waitForRelease(
   opts: { timeoutMs: number; intervalMs: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = { timeoutMs: RELEASE_TIMEOUT_MS, intervalMs: RELEASE_POLL_MS },
 ): Promise<'released' | 'timeout'> {
   const sleep = opts.sleep ?? realSleep;
-  const now = opts.now ?? Date.now;
+  // Monotonic by default: a wall-clock step would stretch or cut the wait.
+  const now = opts.now ?? (() => performance.now());
   const deadline = now() + opts.timeoutMs;
   for (;;) {
     const procs = await poll();

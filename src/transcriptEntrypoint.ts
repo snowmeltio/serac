@@ -95,15 +95,23 @@ function entrypointOnLine(line: string): string | null {
 export interface RewriteResult {
   /** Lines that carried the `from` token and were changed. */
   changed: number;
-  /** True when the file already read as `to` and nothing was written. */
+  /** True when no line carried the token: nothing was written, no marker. */
   skipped: boolean;
 }
 
 /**
  * Stream `jsonlPath` to a same-directory temp file with every `from`
  * entrypoint token rewritten to `to`, append the marker record, fsync, and
- * rename over the original. The original's mode is preserved. Any error
- * removes the temp file and rethrows; the original is never touched.
+ * rename over the original. The original's mode is preserved.
+ *
+ * Decided on the whole file, not a head scan: when no line changes the temp
+ * file is discarded and nothing is written (so a repeat click, a file with no
+ * token, or a mixed file whose tail is already `to` all leave the transcript
+ * exactly as it was). The read is bounded to the size at start and the file is
+ * re-stat'ed after the pass: any growth or mtime change aborts before rename,
+ * because a writer was still appending. The last line must parse as JSON for
+ * the same reason (a torn tail is a writer mid-record). Any error removes the
+ * temp file and rethrows; the original is never touched.
  */
 export async function rewriteTranscriptEntrypoint(
   jsonlPath: string,
@@ -111,21 +119,22 @@ export async function rewriteTranscriptEntrypoint(
 ): Promise<RewriteResult> {
   const from = opts.from ?? RC_ENTRYPOINT;
   const to = opts.to ?? VSCODE_ENTRYPOINT;
-  const current = await readTranscriptEntrypoint(jsonlPath);
-  if (current === to) { return { changed: 0, skipped: true }; }
 
-  const stat = await fs.promises.stat(jsonlPath);
+  const before = await fs.promises.stat(jsonlPath);
+  if (before.size === 0) { return { changed: 0, skipped: true }; }
   const tmp = `${jsonlPath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-  const out = await fs.promises.open(tmp, 'wx', stat.mode & 0o777);
+  const out = await fs.promises.open(tmp, 'wx', before.mode & 0o777);
   let changed = 0;
+  let renamed = false;
   try {
-    const input = fs.createReadStream(jsonlPath, { encoding: 'utf-8' });
+    const input = fs.createReadStream(jsonlPath, { encoding: 'utf-8', end: before.size - 1 });
     const rl = createInterface({ input, crlfDelay: Infinity });
     // readline strips the terminator; every line we emit gets one, so a file
     // lacking a trailing newline gains it before the marker (Claude Code
     // always terminates its lines, so this only ever matters for a torn tail).
     let pending: string[] = [];
     let pendingBytes = 0;
+    let lastLine = '';
     const flush = async (): Promise<void> => {
       if (pending.length === 0) { return; }
       await out.write(pending.join(''));
@@ -135,19 +144,30 @@ export async function rewriteTranscriptEntrypoint(
     for await (const raw of rl) {
       const { line, changed: didChange } = rewriteEntrypointLine(raw, from, to);
       if (didChange) { changed++; }
+      lastLine = raw;
       pending.push(line + '\n');
       pendingBytes += line.length + 1;
       if (pendingBytes >= 1 << 20) { await flush(); }
     }
+    if (changed === 0) {
+      return { changed: 0, skipped: true };
+    }
+    try { JSON.parse(lastLine); } catch {
+      throw new Error('transcript tail is not a complete record (a writer may still be appending)');
+    }
     pending.push(buildTransferMarker(opts.sessionId, from, to, (opts.now ?? (() => new Date()))()) + '\n');
     await flush();
     await out.sync();
+    const after = await fs.promises.stat(jsonlPath);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+      throw new Error('transcript changed during the rewrite (a writer is still appending)');
+    }
     await out.close();
     await fs.promises.rename(tmp, jsonlPath);
-  } catch (err) {
+    renamed = true;
+  } finally {
     try { await out.close(); } catch { /* already closed */ }
-    try { await fs.promises.unlink(tmp); } catch { /* best effort */ }
-    throw err;
+    if (!renamed) { try { await fs.promises.unlink(tmp); } catch { /* best effort */ } }
   }
   return { changed, skipped: false };
 }
