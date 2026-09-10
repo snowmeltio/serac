@@ -325,103 +325,134 @@ export class SessionDiscovery {
    *  the reentrancy note on the poll loop's every-10th-cycle rescan gate);
    *  each stage is followed by a disposed check (a dispose() mid-start must
    *  not resurrect timers or fire further callbacks), a `[startup]` timing
-   *  line, and the onChange callback. */
+   *  line, and the onChange callback.
+   *
+   *  If any stage throws, the `finally` below forces the phase to 'ready'
+   *  (with one last onChange) before the error propagates — so a startup
+   *  failure degrades to the honest empty/partial state the panel showed
+   *  before this progressive-paint change, rather than an infinite
+   *  "Loading…" (extension.ts only logs start()'s rejection, it never
+   *  inspects discoveryPhase on failure). Skipped entirely when the abort
+   *  is a dispose() rather than a genuine failure — stop() already means
+   *  "nothing more happens here". */
   async start(onChange: () => void): Promise<void> {
     this.onChangeCallback = onChange;
     const startedAt = Date.now();
     let stageStart = startedAt;
     const elapsed = () => Date.now() - stageStart;
     const mb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
+    let currentStage = 'preamble';
 
-    // Load session metadata (with legacy migration)
-    await this.meta.load();
-
-    // Resolve local repoRoot before any scanning so the sibling manager knows
-    // which other workspace dirs share our repo. Failure is non-fatal — we just
-    // run without sibling-worktree consolidation.
     try {
-      const repoRoot = await resolveRepoRoot(this.localCwd);
-      this.localRepoRoot = repoRoot;
-      this.siblingManager.setLocalRepoRoot(repoRoot);
-      // The foreign manager needs it too, so it can evict workspace keys that
-      // turn out to be OUR worktrees — including ones the sibling manager has
-      // pruned because their directory is gone.
-      this.foreignManager.setLocalRepoRoot(repoRoot);
-    } catch (err) {
-      this.log.warn('Failed to resolve local repoRoot:', err);
+      // Load session metadata (with legacy migration)
+      currentStage = 'meta.load';
+      await this.meta.load();
+
+      // Resolve local repoRoot before any scanning so the sibling manager knows
+      // which other workspace dirs share our repo. Failure is non-fatal — we just
+      // run without sibling-worktree consolidation.
+      currentStage = 'resolveRepoRoot';
+      try {
+        const repoRoot = await resolveRepoRoot(this.localCwd);
+        this.localRepoRoot = repoRoot;
+        this.siblingManager.setLocalRepoRoot(repoRoot);
+        // The foreign manager needs it too, so it can evict workspace keys that
+        // turn out to be OUR worktrees — including ones the sibling manager has
+        // pruned because their directory is gone.
+        this.foreignManager.setLocalRepoRoot(repoRoot);
+      } catch (err) {
+        this.log.warn('Failed to resolve local repoRoot:', err);
+      }
+
+      // Worktree enumeration is independent of session discovery — a worktree
+      // is real even when no CC chats exist in it. Initial sweep, then poll
+      // periodically; cheap (just reads .git/worktrees/*).
+      currentStage = 'refreshDiscoveredWorktrees';
+      await this.refreshDiscoveredWorktrees();
+      this.scheduleWorktreeRefresh();
+
+      if (this.disposed) { return; }
+      this.log.info(`[startup] preamble ${elapsed()}ms`);
+      // No onChange here: phase is still 'pending' and nothing user-visible
+      // has changed yet. The first onChange fires after the local scan below,
+      // once there's something to paint.
+      stageStart = Date.now();
+
+      // Initial scan (local + sibling worktrees + foreign + teams).
+      // Sibling scan must run before foreign scan so foreign can exclude sibling keys.
+      currentStage = 'local scan';
+      await this.scan();
+      if (this.disposed) { return; }
+      {
+        let bytes = 0;
+        for (const session of this.sessions.values()) { bytes += session.getBytesRead(); }
+        this.log.info(`[startup] local scan ${elapsed()}ms (${this.sessions.size} sessions, ${mb(bytes)}MB)`);
+      }
+      this.discoveryPhase = 'partial';
+      this.onChangeCallback?.();
+      stageStart = Date.now();
+
+      currentStage = 'sibling scan';
+      await this.siblingManager.scan();
+      if (this.disposed) { return; }
+      {
+        const stats = this.siblingManager.getScanStats();
+        this.log.info(`[startup] sibling scan ${elapsed()}ms (${stats.sessions} sessions, ${stats.siblings} siblings, ${mb(stats.bytes)}MB)`);
+      }
+      this.onChangeCallback?.();
+      stageStart = Date.now();
+
+      currentStage = 'foreign scan';
+      await this.foreignManager.scan();
+      if (this.disposed) { return; }
+      {
+        const stats = this.foreignManager.getScanStats();
+        this.log.info(`[startup] foreign scan ${elapsed()}ms (${stats.sessions} sessions, ${stats.workspaces} workspaces, ${mb(stats.bytes)}MB)`);
+      }
+      this.onChangeCallback?.();
+      stageStart = Date.now();
+
+      currentStage = 'teams scan';
+      await this.teamDiscovery.scan();
+      if (this.disposed) { return; }
+      this.log.info(`[startup] teams scan ${elapsed()}ms (${this.getTeamSnapshots().length} teams)`);
+      this.onChangeCallback?.();
+      stageStart = Date.now();
+
+      currentStage = 'workflows scan';
+      await this.workflowDiscovery.scan();
+      if (this.disposed) { return; }
+      this.log.info(`[startup] workflows scan ${elapsed()}ms (${this.getWorkflowSnapshots().length} workflows)`);
+      this.onChangeCallback?.();
+      stageStart = Date.now();
+
+      currentStage = 'process registry scan';
+      await this.processRegistry.scan();
+      if (this.disposed) { return; }
+      this.log.info(`[startup] process registry scan ${elapsed()}ms (${this.processRegistry.getLiveProcesses().length} live)`);
+      this.onChangeCallback?.();
+      stageStart = Date.now();
+
+      currentStage = 'writer ownership refresh';
+      await this.writerOwnership.refresh(this.windowWriterCandidates());
+      if (this.disposed) { return; }
+      this.log.info(`[startup] writer ownership refresh ${elapsed()}ms`);
+      this.discoveryPhase = 'ready';
+      this.log.info(`[startup] ready ${Date.now() - startedAt}ms`);
+      this.onChangeCallback?.();
+
+      // Start adaptive poll loop
+      this.schedulePoll();
+    } finally {
+      // Any exit other than a clean finish or a dispose() must still leave
+      // the panel able to show something rather than "Loading…" forever.
+      // The error (if any) propagates as normal once this block completes.
+      if (!this.disposed && this.discoveryPhase !== 'ready') {
+        this.discoveryPhase = 'ready';
+        this.log.warn(`[startup] aborted at ${currentStage}; forcing ready`);
+        this.onChangeCallback?.();
+      }
     }
-
-    // Worktree enumeration is independent of session discovery — a worktree
-    // is real even when no CC chats exist in it. Initial sweep, then poll
-    // periodically; cheap (just reads .git/worktrees/*).
-    await this.refreshDiscoveredWorktrees();
-    this.scheduleWorktreeRefresh();
-
-    if (this.disposed) { return; }
-    this.log.info(`[startup] preamble ${elapsed()}ms`);
-    // No onChange here: phase is still 'pending' and nothing user-visible
-    // has changed yet. The first onChange fires after the local scan below,
-    // once there's something to paint.
-    stageStart = Date.now();
-
-    // Initial scan (local + sibling worktrees + foreign + teams).
-    // Sibling scan must run before foreign scan so foreign can exclude sibling keys.
-    await this.scan();
-    if (this.disposed) { return; }
-    {
-      let bytes = 0;
-      for (const session of this.sessions.values()) { bytes += session.getBytesRead(); }
-      this.log.info(`[startup] local scan ${elapsed()}ms (${this.sessions.size} sessions, ${mb(bytes)}MB)`);
-    }
-    this.discoveryPhase = 'partial';
-    this.onChangeCallback?.();
-    stageStart = Date.now();
-
-    await this.siblingManager.scan();
-    if (this.disposed) { return; }
-    {
-      const stats = this.siblingManager.getScanStats();
-      this.log.info(`[startup] sibling scan ${elapsed()}ms (${stats.sessions} sessions, ${stats.siblings} siblings, ${mb(stats.bytes)}MB)`);
-    }
-    this.onChangeCallback?.();
-    stageStart = Date.now();
-
-    await this.foreignManager.scan();
-    if (this.disposed) { return; }
-    {
-      const stats = this.foreignManager.getScanStats();
-      this.log.info(`[startup] foreign scan ${elapsed()}ms (${stats.sessions} sessions, ${stats.workspaces} workspaces, ${mb(stats.bytes)}MB)`);
-    }
-    this.onChangeCallback?.();
-    stageStart = Date.now();
-
-    await this.teamDiscovery.scan();
-    if (this.disposed) { return; }
-    this.log.info(`[startup] teams scan ${elapsed()}ms (${this.getTeamSnapshots().length} teams)`);
-    this.onChangeCallback?.();
-    stageStart = Date.now();
-
-    await this.workflowDiscovery.scan();
-    if (this.disposed) { return; }
-    this.log.info(`[startup] workflows scan ${elapsed()}ms (${this.getWorkflowSnapshots().length} workflows)`);
-    this.onChangeCallback?.();
-    stageStart = Date.now();
-
-    await this.processRegistry.scan();
-    if (this.disposed) { return; }
-    this.log.info(`[startup] process registry scan ${elapsed()}ms (${this.processRegistry.getLiveProcesses().length} live)`);
-    this.onChangeCallback?.();
-    stageStart = Date.now();
-
-    await this.writerOwnership.refresh(this.windowWriterCandidates());
-    if (this.disposed) { return; }
-    this.log.info(`[startup] writer ownership refresh ${elapsed()}ms`);
-    this.discoveryPhase = 'ready';
-    this.log.info(`[startup] ready ${Date.now() - startedAt}ms`);
-    this.onChangeCallback?.();
-
-    // Start adaptive poll loop
-    this.schedulePoll();
   }
 
   /** Schedule the next poll with adaptive interval */

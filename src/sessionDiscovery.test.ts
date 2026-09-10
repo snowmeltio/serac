@@ -2497,5 +2497,53 @@ describe('SessionDiscovery', () => {
 
       expect(calls).toBe(1);
     });
+
+    it('forces discoveryPhase to "ready" and fires one final onChange when a startup stage throws, while still propagating the error', async () => {
+      createJsonlFile('pfp-fail-1');
+      const discovery = makeDiscovery();
+
+      const boom = new Error('team scan exploded');
+      (discovery as unknown as {
+        teamDiscovery: { scan: () => Promise<void> };
+      }).teamDiscovery.scan = () => Promise.reject(boom);
+
+      const phasesSeen: string[] = [];
+      await expect(discovery.start(() => {
+        phasesSeen.push(discovery.getDiscoveryPhase());
+      })).rejects.toThrow('team scan exploded');
+
+      // Failure must not leave the panel stuck on "Loading…" forever — the
+      // phase is forced to 'ready' and one last onChange tells the panel so.
+      expect(discovery.getDiscoveryPhase()).toBe('ready');
+      expect(phasesSeen.length).toBeGreaterThanOrEqual(2);
+      expect(phasesSeen[0]).toBe('partial'); // the local-scan onChange, before the failure
+      expect(phasesSeen[phasesSeen.length - 1]).toBe('ready'); // the forced final onChange
+
+      discovery.stop();
+    });
+
+    it('does not force ready or fire onChange when stop() was already called before a later stage throws', async () => {
+      createJsonlFile('pfp-fail-2');
+      const discovery = makeDiscovery();
+
+      const boom = new Error('sibling scan exploded');
+      (discovery as unknown as {
+        siblingManager: { scan: () => Promise<boolean> };
+      }).siblingManager.scan = () => Promise.reject(boom);
+
+      let calls = 0;
+      await expect(discovery.start(() => {
+        calls++;
+        // Stop right after the local-scan onChange — the sibling scan
+        // (mocked to throw) runs next, so the exception fires with
+        // this.disposed already true.
+        if (calls === 1) { discovery.stop(); }
+      })).rejects.toThrow('sibling scan exploded');
+
+      // dispose() already means "nothing more happens here" — the finally
+      // guard must not override that by forcing 'ready' or firing onChange.
+      expect(calls).toBe(1);
+      expect(discovery.getDiscoveryPhase()).toBe('partial');
+    });
   });
 });
