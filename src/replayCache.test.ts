@@ -453,6 +453,31 @@ describe('FileReplayCacheStore', () => {
     expect(readSpy).not.toHaveBeenCalled();
   });
 
+  it('flush() re-reads when another window\'s rename lands right after ours', async () => {
+    // Our diskStamp must be the stamp of what WE wrote (statted on the tmp
+    // file before the rename), not whatever sits at cachePath after the
+    // rename — otherwise a foreign write landing in that gap is mistaken for
+    // our own, the next flush skips the merge, and the other window's entry
+    // is overwritten.
+    const otherWindowEntry = entry({ cachedAt: Date.now() + 1 });
+    const realRename = fs.promises.rename.bind(fs.promises);
+    vi.spyOn(fs.promises, 'rename').mockImplementationOnce(async (from, to) => {
+      await realRename(from, to);
+      // Another window's rename lands immediately after ours.
+      fs.writeFileSync(cachePath, serialiseReplayCache(new Map([[pathOther, otherWindowEntry]])));
+    });
+    store.put(pathMine, entry());
+    await store.flush(Date.now());
+
+    store.put(pathA, entry());
+    await store.flush(Date.now() + 40_000, { force: true });
+    const onDisk = JSON.parse(fs.readFileSync(cachePath, 'utf-8')).entries as Record<string, unknown>;
+    // pathOther proves the second flush re-read and merged; pathMine survives
+    // from memory (the other window's write was missing it, the acknowledged
+    // lost-update case, healed by our own re-flush).
+    expect(Object.keys(onDisk).sort()).toEqual([pathA, pathMine, pathOther].sort());
+  });
+
   it('flush() only existence-checks entries newly seen from disk, not ones it already knew', async () => {
     // pathMine is already known (our own put()) — must NOT be existence
     // checked even though it's a real file we could stat.

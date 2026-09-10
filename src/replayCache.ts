@@ -519,8 +519,17 @@ class FileReplayCacheStore implements ReplayCacheStore {
       // reload) can never share — and clobber — one tmp file.
       const tmpPath = `${this.cachePath}.${process.pid}.${++this.saveSeq}.tmp`;
       const serialised = serialiseReplayCache(pruned);
+      let writtenStamp: FileStamp | null = null;
       try {
         await fs.promises.writeFile(tmpPath, serialised, 'utf-8');
+        // Stamp the TMP file, before the rename: POSIX rename preserves the
+        // inode (size and mtime carry over exactly), so this is the stamp the
+        // cache file will have the instant it lands. Statting the cache path
+        // AFTER the rename would race another window's rename landing in
+        // between — we would record THEIR stamp as our own, skip the
+        // re-read+merge on the next flush, and overwrite their entries.
+        const tmpStat = await fs.promises.stat(tmpPath);
+        writtenStamp = { size: tmpStat.size, mtimeMs: tmpStat.mtimeMs };
         await fs.promises.rename(tmpPath, this.cachePath);
       } catch (err) {
         // Awaited (unlike sessionMetaStore.ts's fire-and-forget unlink) so
@@ -530,10 +539,9 @@ class FileReplayCacheStore implements ReplayCacheStore {
         await fs.promises.unlink(tmpPath).catch(() => { /* already gone */ });
         throw err;
       }
-      // Record OUR OWN write's stat so the next flush can skip the re-read
+      // Record OUR OWN write's stamp so the next flush can skip the re-read
       // if nothing else touches the file before then.
-      const postWriteStat = await statOrNull(this.cachePath);
-      if (postWriteStat) { this.diskStamp = { size: postWriteStat.size, mtimeMs: postWriteStat.mtimeMs }; }
+      this.diskStamp = writtenStamp;
     } catch (err) {
       // The write never landed — this.entries may already hold merged/pruned
       // state that hasn't been persisted. Re-arm dirty so the next flush()
