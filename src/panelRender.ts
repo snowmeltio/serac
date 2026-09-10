@@ -273,15 +273,11 @@ export function emptyStateHtml(olderSessionCount: number): string {
     + escapeHtml(headline) + '</div><div class="hint">' + escapeHtml(hint) + '</div></div>';
 }
 
-/** Card-section placeholder while discovery's startup scan is still in
- *  flight (DiscoveryPhase 'pending' — see panelTypes.ts). Deliberately the
- *  same markup as the static HTML shell in panelProvider.ts's getHtml(), so
- *  the very first real render is a visual no-op rather than a flash of
- *  "No Claude Code sessions detected" followed by the loading text vanishing
- *  once local sessions land. */
-export function loadingStateHtml(): string {
-  return '<div class="empty-state"><div class="icon">⊘</div><div>Loading...</div></div>';
-}
+// loadingStateHtml lives in panelUtils.ts (not here) so panelProvider.ts on
+// the extension-host side can share it too — panelUtils.ts is already a
+// host+webview module, panelRender.ts is webview-only. Re-exported for
+// existing panel.ts / panelRender.test.ts import sites.
+export { loadingStateHtml } from './panelUtils.js';
 
 /** Inner content of the archive time-range bar. */
 export function timeRangePillsHtml(activeRange: string): string {

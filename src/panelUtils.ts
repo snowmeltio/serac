@@ -660,6 +660,21 @@ export function normPath(p: string): string {
   return p.replace(/\/+$/, '');
 }
 
+/** Card-section placeholder while discovery's startup scan is still in
+ *  flight (DiscoveryPhase 'pending' — see panelTypes.ts). Lives here (rather
+ *  than panelRender.ts, conceptually the webview-only render layer) because
+ *  it is also the static HTML shell `panelProvider.ts`'s `getHtml()` writes
+ *  for the pre-mount page and the string `panel.ts`'s error-boundary reload
+ *  button resets to — three call sites, one source of truth, so the "first
+ *  real render is a visual no-op" guarantee is structural rather than three
+ *  literals that happen to agree. panelUtils.ts is already imported by both
+ *  extension-host modules (extension.ts, sessionDiscovery.ts, and others)
+ *  and the webview bundle, unlike panelRender.ts, which ARCHITECTURE.md
+ *  scopes to webview rendering only. */
+export function loadingStateHtml(): string {
+  return '<div class="empty-state"><div class="icon">⊘</div><div>Loading...</div></div>';
+}
+
 /** The compact W/R/D/S status-count chips shared by workspace, worktree, and
  *  picker rows. Pure; returns '' when every count is zero. */
 export function countsChipsHtml(counts: Record<string, number | undefined>): string {

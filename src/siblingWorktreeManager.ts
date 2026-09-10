@@ -14,7 +14,7 @@ import type { WriterAggregate } from './writerOwnership.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate, sumBytesRead } from './sessionPolling.js';
 import { readSettings, ageGateMsFor } from './settings.js';
 
 /** Should sibling-worktree discovery run at all? The Worktrees pane is one
@@ -305,11 +305,7 @@ export class SiblingWorktreeManager {
    *  total bytes read across every tracked sibling session, for the
    *  `[startup]` log line. */
   getScanStats(): { sessions: number; siblings: number; bytes: number } {
-    let bytes = 0;
-    for (const session of this.sessions.values()) {
-      bytes += session.getBytesRead();
-    }
-    return { sessions: this.sessions.size, siblings: this.siblingKeys.size, bytes };
+    return { sessions: this.sessions.size, siblings: this.siblingKeys.size, bytes: sumBytesRead(this.sessions.values()) };
   }
 
   /** Resolve a CWD for a sibling workspace key (used when the panel passes

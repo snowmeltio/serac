@@ -2485,9 +2485,19 @@ describe('SessionDiscovery', () => {
       discovery.stop();
     });
 
-    it('stop() called from inside the first onChange stops further onChange callbacks', async () => {
+    it('stop() called from inside the first onChange stops further onChange callbacks, and the next stage never even starts', async () => {
       createJsonlFile('pfp-local-3');
       const discovery = makeDiscovery();
+      // The stage right after the 'partial' onChange (local scan) is sibling
+      // scan — spy on it to prove runStage's pre-run disposed check actually
+      // skips invoking it, not just its onChange/log. A disposed manager's
+      // scan() still runs to completion if invoked, silently re-creating
+      // SessionManagers (timers, hook-router subscriptions) nothing then
+      // disposes — so the stage must never even start.
+      const siblingScanSpy = vi.spyOn(
+        (discovery as unknown as { siblingManager: { scan: () => Promise<boolean> } }).siblingManager,
+        'scan',
+      );
 
       let calls = 0;
       await discovery.start(() => {
@@ -2496,11 +2506,14 @@ describe('SessionDiscovery', () => {
       });
 
       expect(calls).toBe(1);
+      expect(discovery.getDiscoveryPhase()).toBe('partial');
+      expect(siblingScanSpy).not.toHaveBeenCalled();
     });
 
-    it('forces discoveryPhase to "ready" and fires one final onChange when a startup stage throws, while still propagating the error', async () => {
+    it('a rejecting stage does not abort start(): it resolves, phase still reaches "ready", the stage is logged as failed, later stages still ran, and the poll loop is scheduled', async () => {
       createJsonlFile('pfp-fail-1');
-      const discovery = makeDiscovery();
+      const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn() };
+      const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', log });
 
       const boom = new Error('team scan exploded');
       (discovery as unknown as {
@@ -2508,42 +2521,90 @@ describe('SessionDiscovery', () => {
       }).teamDiscovery.scan = () => Promise.reject(boom);
 
       const phasesSeen: string[] = [];
-      await expect(discovery.start(() => {
+      // Resolves — a stage failure is absorbed by runStage, never fatal.
+      await discovery.start(() => {
         phasesSeen.push(discovery.getDiscoveryPhase());
-      })).rejects.toThrow('team scan exploded');
+      });
 
-      // Failure must not leave the panel stuck on "Loading…" forever — the
-      // phase is forced to 'ready' and one last onChange tells the panel so.
       expect(discovery.getDiscoveryPhase()).toBe('ready');
-      expect(phasesSeen.length).toBeGreaterThanOrEqual(2);
-      expect(phasesSeen[0]).toBe('partial'); // the local-scan onChange, before the failure
-      expect(phasesSeen[phasesSeen.length - 1]).toBe('ready'); // the forced final onChange
+      expect(phasesSeen[0]).toBe('partial'); // the local-scan onChange still landed
+      expect(phasesSeen[phasesSeen.length - 1]).toBe('ready'); // the final onChange still landed
+
+      const warnLines = log.warn.mock.calls.map(c => c[0]);
+      expect(warnLines.some(l => typeof l === 'string' && l.startsWith('[startup] teams scan failed:'))).toBe(true);
+
+      // A stage after the failed one (teams scan runs ahead of the local scan
+      // in the current order) still ran to completion.
+      const infoLines = log.info.mock.calls.map(c => c[0]);
+      expect(infoLines.some(l => typeof l === 'string' && l.startsWith('[startup] local scan '))).toBe(true);
+      expect(infoLines.some(l => typeof l === 'string' && l.startsWith('[startup] ready '))).toBe(true);
+
+      // The poll loop was scheduled — wait past the active-session interval
+      // (this local session is 'running') for a real cycle to run; pollInner
+      // logs its own trace line unconditionally on every cycle.
+      await new Promise(resolve => setTimeout(resolve, 700));
+      expect(log.trace.mock.calls.some(c => typeof c[0] === 'string' && c[0].startsWith('poll: '))).toBe(true);
+
+      discovery.stop();
+    }, 5000);
+
+    it('a throwing onChange callback on the partial tick does not abort start(): it resolves, remaining stages still ran, and phase reaches "ready"', async () => {
+      createJsonlFile('pfp-fail-onchange');
+      const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn() };
+      const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', log });
+
+      let calls = 0;
+      await discovery.start(() => {
+        calls++;
+        if (calls === 1) { throw new Error('webview mid-teardown'); } // the 'partial' tick
+      });
+
+      expect(calls).toBeGreaterThan(1); // later onChange calls (sibling/foreign/ready) still happened
+      expect(discovery.getDiscoveryPhase()).toBe('ready');
+      const infoLines = log.info.mock.calls.map(c => c[0]);
+      expect(infoLines.some(l => typeof l === 'string' && l.startsWith('[startup] sibling scan '))).toBe(true);
+      expect(infoLines.some(l => typeof l === 'string' && l.startsWith('[startup] foreign scan '))).toBe(true);
+      const warnLines = log.warn.mock.calls.map(c => c[0]);
+      expect(warnLines.some(l => typeof l === 'string' && l.startsWith('[startup] local scan onChange callback failed:'))).toBe(true);
 
       discovery.stop();
     });
 
-    it('does not force ready or fire onChange when stop() was already called before a later stage throws', async () => {
-      createJsonlFile('pfp-fail-2');
-      const discovery = makeDiscovery();
+    it('gates the startup writer-ownership refresh on serac.experimental.externalWriterBlock, same as the poll loop\'s equivalent call', async () => {
+      createJsonlFile('pfp-writer-gate-off');
+      _setConfigValues({ 'serac.experimental.externalWriterBlock': false });
+      const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn() };
+      const discoveryOff = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', log });
+      const refreshSpyOff = vi.spyOn(
+        (discoveryOff as unknown as { writerOwnership: { refresh: () => Promise<void> } }).writerOwnership,
+        'refresh',
+      );
 
-      const boom = new Error('sibling scan exploded');
-      (discovery as unknown as {
-        siblingManager: { scan: () => Promise<boolean> };
-      }).siblingManager.scan = () => Promise.reject(boom);
+      await discoveryOff.start(() => {});
 
-      let calls = 0;
-      await expect(discovery.start(() => {
-        calls++;
-        // Stop right after the local-scan onChange — the sibling scan
-        // (mocked to throw) runs next, so the exception fires with
-        // this.disposed already true.
-        if (calls === 1) { discovery.stop(); }
-      })).rejects.toThrow('sibling scan exploded');
+      expect(refreshSpyOff).not.toHaveBeenCalled();
+      const infoLinesOff = log.info.mock.calls.map(c => c[0]);
+      expect(infoLinesOff.some(l => l === '[startup] writer ownership refresh skipped (flag off)')).toBe(true);
+      // Distinct from the normal per-stage timing line, which must NOT
+      // appear when the stage was skipped rather than run.
+      expect(infoLinesOff.some(l => typeof l === 'string' && /^\[startup\] writer ownership refresh \d+ms$/.test(l))).toBe(false);
+      discoveryOff.stop();
 
-      // dispose() already means "nothing more happens here" — the finally
-      // guard must not override that by forcing 'ready' or firing onChange.
-      expect(calls).toBe(1);
-      expect(discovery.getDiscoveryPhase()).toBe('partial');
+      // Flag on: the stage runs and times normally.
+      _setConfigValues({ 'serac.experimental.externalWriterBlock': true });
+      const log2 = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn() };
+      const discoveryOn = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', log: log2 });
+      const refreshSpyOn = vi.spyOn(
+        (discoveryOn as unknown as { writerOwnership: { refresh: () => Promise<void> } }).writerOwnership,
+        'refresh',
+      );
+
+      await discoveryOn.start(() => {});
+
+      expect(refreshSpyOn).toHaveBeenCalledTimes(1);
+      const infoLinesOn = log2.info.mock.calls.map(c => c[0]);
+      expect(infoLinesOn.some(l => typeof l === 'string' && /^\[startup\] writer ownership refresh \d+ms$/.test(l))).toBe(true);
+      discoveryOn.stop();
     });
   });
 });

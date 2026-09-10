@@ -134,10 +134,12 @@ export interface PanelUpdate {
    *  caveat and the start routes are withheld. Constant for the life of the
    *  window; always sent. */
   rcCompanionProfile?: boolean;
-  /** Progressive-first-paint stage — see DiscoveryPhase. Always sent by
-   *  sendUpdate (not optional-by-omission); omission elsewhere means the
-   *  caller doesn't track startup phases and callers default to 'ready'. */
-  discoveryPhase?: DiscoveryPhase;
+  /** Progressive-first-paint stage — see DiscoveryPhase. Required (unlike
+   *  the optional-by-omission fields above): extension.ts's sendUpdate()
+   *  always has a real answer from discovery.getDiscoveryPhase(), so there
+   *  is no legitimate "omitted" case here for panelProvider.updateSessions
+   *  to default — every caller must state the phase explicitly. */
+  discoveryPhase: DiscoveryPhase;
 }
 
 /** A row in the Worktrees pane: one worktree of the current repo. Built in

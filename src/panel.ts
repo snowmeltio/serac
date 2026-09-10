@@ -725,7 +725,7 @@ let FOREIGN_SLIDE_MS = 220;
     const btn = document.getElementById('errorReloadBtn');
     if (btn) {
       btn.addEventListener('click', () => {
-        root.innerHTML = '<div class="empty-state"><div class="icon">\u2298</div><div>Loading...</div></div>';
+        root.innerHTML = loadingStateHtml();
         vscode.postMessage({ type: 'requestUpdate' });
       });
     }

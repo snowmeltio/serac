@@ -5,6 +5,7 @@ import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, Te
 import type { CompactSettings } from './claudeSettings.js';
 import { parseWebviewCommand } from './validation.js';
 import { readSettings, type SeracSettings } from './settings.js';
+import { loadingStateHtml } from './panelUtils.js';
 
 /**
  * WebviewViewProvider for the Agent Activity sidebar panel.
@@ -229,7 +230,9 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.rcServing = update.rcServing ?? false;
     this.rcAutoEnrol = update.rcAutoEnrol === undefined ? null : update.rcAutoEnrol;
     this.rcCompanionProfile = update.rcCompanionProfile ?? false;
-    this.discoveryPhase = update.discoveryPhase ?? 'ready';
+    // Required on PanelUpdate (unlike the ?? defaults above) — every real
+    // caller has a genuine answer, so there is no "omitted" case to default.
+    this.discoveryPhase = update.discoveryPhase;
 
     // Update badge
     if (this.view) {
@@ -309,10 +312,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="root">
-    <div class="empty-state">
-      <div class="icon">\u2298</div>
-      <div>Loading...</div>
-    </div>
+    ${loadingStateHtml()}
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>

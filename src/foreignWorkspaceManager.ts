@@ -18,7 +18,7 @@ import { resolveRepoRoot, repoRootFromClaudeWorktreePath, discoverWorktrees, wor
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, makeRescanGate } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, makeRescanGate, sumBytesRead } from './sessionPolling.js';
 import { readSettings, foreignWindowGate } from './settings.js';
 import { readIdeOpenFolders } from './claudeEnvSignals.js';
 
@@ -545,15 +545,18 @@ export class ForeignWorkspaceManager {
   }
 
   /** Startup-timing instrumentation: session/workspace counts and total bytes
-   *  read across every tracked foreign session, for the `[startup]` log line. */
+   *  read across every tracked foreign session, for the `[startup]` log line.
+   *  Deliberately cheap: the workspace key comes off the composite-id prefix
+   *  (same derivation as evictWorkspace, since compositeId is always
+   *  `${workspaceKey}/${sessionId}` — see trackJsonlSessions) rather than a
+   *  full getSnapshot() per session, which would pay for a writer-ownership
+   *  probe read just to count. */
   getScanStats(): { sessions: number; workspaces: number; bytes: number } {
     const workspaces = new Set<string>();
-    let bytes = 0;
-    for (const session of this.sessions.values()) {
-      workspaces.add(session.getSnapshot().workspaceKey);
-      bytes += session.getBytesRead();
+    for (const compositeId of this.sessions.keys()) {
+      workspaces.add(compositeId.slice(0, compositeId.indexOf('/')));
     }
-    return { sessions: this.sessions.size, workspaces: workspaces.size, bytes };
+    return { sessions: this.sessions.size, workspaces: workspaces.size, bytes: sumBytesRead(this.sessions.values()) };
   }
 
   /** Dispose all foreign sessions and clear state. */
