@@ -1,111 +1,157 @@
 /**
- * Oversized-transcript drain (PR B). JsonlTailer caps a single readNewRecords()
- * call to MAX_READ_PER_CYCLE (16 MB, see jsonlTailer.ts) so one poll can't OOM
- * on a huge append. A transcript already over that cap at window open is
- * therefore replayed across several update() calls — but the dormant poll
- * loop (sessionPolling.ts pollTrackedSessions) only calls update() again when
- * checkMtime() says the file changed. Before this fix checkMtime() compared
- * mtime only, so a dormant classification taken right after the first
- * oversized slice — mtime unchanged, unread bytes still on disk — would
- * strand the rest of the transcript forever. Uses real fs (no JsonlTailer
- * mock): the whole point is exercising the real MAX_READ_PER_CYCLE cap.
+ * Oversized-transcript drain. JsonlTailer caps a single readNewRecords() call
+ * to MAX_READ_PER_CYCLE (16 MB, see jsonlTailer.ts) so one read can't OOM on
+ * a huge append. updateInner() loops internally (mirroring detailPanel.ts's
+ * transcript-tailing loop) to drain a bigger transcript fully within ONE
+ * update() call — so a >16MB dormant transcript is never left half-read for
+ * a later poll to (maybe) finish.
+ *
+ * Two bugs this guards against, both real and both caught by the first test
+ * below:
+ *  - jsonlTailer.ts's old [H6] memory guard compared the COMBINED length
+ *    (carried-over partial line + new slice) against MAX_LINE_BUFFER, which
+ *    is always true for a capped 16MB read — so the leftover from slice N
+ *    was silently discarded and the record straddling the boundary vanished
+ *    on every oversized transcript.
+ *  - Without the internal drain loop, only the first 16MB slice would be
+ *    processed per update() call, silently dropping every record past the
+ *    cap (not just the boundary one).
+ *
+ * Uses real fs (no JsonlTailer mock): the whole point is exercising the real
+ * MAX_READ_PER_CYCLE cap and the real H6 guard.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { SessionManager } from './sessionManager.js';
+
+// Writer-pid capture (`captureWriterPid` → `execFile('fuser', …)`) must never
+// fire for a purely-replayed drain — see sessionManager.writerPid.test.ts for
+// the general contract; this file only needs to confirm the oversized case
+// doesn't regress it now that the whole file is consumed in one update().
+const fuserCalls = vi.hoisted(() => ({ count: 0 }));
+vi.mock('child_process', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('child_process')>();
+  const execFile = ((file: string, ...rest: unknown[]) => {
+    if (file === 'fuser') {
+      fuserCalls.count++;
+      const cb = rest[rest.length - 1];
+      if (typeof cb === 'function') { cb(null, '', ''); }
+      return undefined as never;
+    }
+    return (mod.execFile as unknown as (...a: unknown[]) => unknown)(file, ...rest);
+  }) as typeof mod.execFile;
+  return { ...mod, execFile, default: { ...mod, execFile } };
+});
+
+const { SessionManager } = await import('./sessionManager.js');
 
 const SESSION_ID = 'oversized-sid';
+/** 22 alternating queue-operation records, ~800KB padding each: comfortably
+ *  over the 16MB single-read cap (~17.6MB total), cheap to generate (one
+ *  join + one writeFileSync) and cheap to parse (22 lines, not tens of
+ *  thousands). */
+const RECORD_COUNT = 22;
+const PAD_SIZE = 800 * 1024;
 
-/** ~18 MB fixture: 20 padding `user` records (900 KB text payload each) —
- *  comfortably over the 16 MB single-read cap — followed by one
- *  `queue-operation: enqueue` record, which the state machine transitions to
- *  `done` on unconditionally (see the state transition table at the top of
- *  sessionManager.ts). A single writeFileSync of the whole in-memory buffer,
- *  not a loop of small appends, keeps fixture generation fast. */
-function buildOversizedFixture(): { dir: string; filePath: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'oversized-jsonl-'));
-  const filePath = path.join(dir, 'session.jsonl');
-  const text = 'x'.repeat(900 * 1024);
+/** Every record alternates the status (done → running → done → …), starting
+ *  from the constructor's initial `done`. Each record therefore causes
+ *  EXACTLY one transition: transitions.length === RECORD_COUNT is proof
+ *  every single record was processed — if even one were lost (the H6
+ *  boundary bug) or a whole tail were dropped (the missing-drain-loop bug),
+ *  the count would fall short. */
+function buildFixture(filePath: string): void {
+  const pad = 'x'.repeat(PAD_SIZE);
   const lines: string[] = [];
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < RECORD_COUNT; i++) {
     lines.push(JSON.stringify({
-      type: 'user',
+      type: 'queue-operation',
+      operation: i % 2 === 0 ? 'dequeue' : 'enqueue',
+      idx: i,
+      pad,
       sessionId: SESSION_ID,
       timestamp: '2026-01-01T00:00:00.000Z',
-      message: { content: [{ type: 'text', text }] },
     }));
   }
-  lines.push(JSON.stringify({
-    type: 'queue-operation',
-    operation: 'enqueue',
-    sessionId: SESSION_ID,
-    timestamp: '2026-01-01T00:00:01.000Z',
-  }));
   fs.writeFileSync(filePath, lines.join('\n') + '\n');
-  return { dir, filePath };
 }
 
 describe('SessionManager oversized-transcript drain', () => {
-  let tmpDir: string | undefined;
+  let tmpDir: string;
+  let filePath: string;
 
-  afterEach(() => {
-    if (tmpDir) {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-      tmpDir = undefined;
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oversized-jsonl-'));
+    filePath = path.join(tmpDir, 'session.jsonl');
+    buildFixture(filePath);
+    expect(fs.statSync(filePath).size).toBeGreaterThan(16 * 1024 * 1024);
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    fuserCalls.count = 0;
+  });
+
+  it('drains fully within a single update(): every record is seen, none lost at the 16MB slice boundary', async () => {
+    const transitions: { from: string; to: string }[] = [];
+    const mgr = new SessionManager(SESSION_ID, filePath, 'test-workspace', {
+      onTransition: (from, to) => transitions.push({ from, to }),
+    });
+    try {
+      const changed = await mgr.update();
+      expect(changed).toBe(true);
+      expect(transitions).toHaveLength(RECORD_COUNT);
+      // RECORD_COUNT is even, so the last record (idx 21, odd → 'enqueue')
+      // leaves the session done.
+      expect(mgr.getStatus()).toBe('done');
+      // Confirms the drain never spawned the writer-pid probe: every record
+      // in this call was replay (the whole file consumed in one update()),
+      // never live.
+      expect(fuserCalls.count).toBe(0);
+    } finally {
+      mgr.dispose();
     }
   });
 
-  it('checkMtime() reports unread bytes after a capped read, and a second update() drains the tail', async () => {
-    const { dir, filePath } = buildOversizedFixture();
-    tmpDir = dir;
-    const fileSize = fs.statSync(filePath).size;
-    expect(fileSize).toBeGreaterThan(16 * 1024 * 1024);
-
+  it('getReadStamp().caughtUp is true after the single drain, and checkMtime() goes quiet', async () => {
     const mgr = new SessionManager(SESSION_ID, filePath, 'test-workspace');
     try {
-      // First update(): the tailer's MAX_READ_PER_CYCLE cap means this reads
-      // only the first 16 MB — some, not all, of the padding records.
-      const firstChanged = await mgr.update();
-      expect(firstChanged).toBe(true);
-      // The file has not been touched since — mtime is provably unchanged —
-      // yet bytes remain unread past the tailer's offset.
-      const mtimeAfterFirstRead = fs.statSync(filePath).mtimeMs;
-
-      const mtimeChanged = await mgr.checkMtime();
-      expect(mtimeChanged).toBe(true);
-      expect(fs.statSync(filePath).mtimeMs).toBe(mtimeAfterFirstRead);
-
-      // Second update() drains the remainder, including the trailing
-      // queue-operation — proof the tail actually got read, not just that
-      // checkMtime() flipped true.
-      const secondChanged = await mgr.update();
-      expect(secondChanged).toBe(true);
-      expect(mgr.getStatus()).toBe('done');
-
-      // Now fully caught up: no more unread bytes, checkMtime() goes quiet.
+      await mgr.update();
+      const stamp = mgr.getReadStamp();
+      expect(stamp.caughtUp).toBe(true);
+      expect(stamp.size).toBe(fs.statSync(filePath).size);
       expect(await mgr.checkMtime()).toBe(false);
     } finally {
       mgr.dispose();
     }
   });
 
-  it('getReadStamp().caughtUp is false after the first capped read and true once drained', async () => {
-    const { dir, filePath } = buildOversizedFixture();
-    tmpDir = dir;
-
-    const mgr = new SessionManager(SESSION_ID, filePath, 'test-workspace');
+  it('checkMtime() reports true and update() processes new data appended after the drain', async () => {
+    // A fresh copy so this test's mutation can't affect the other tests
+    // sharing the beforeAll fixture.
+    const growFile = path.join(tmpDir, 'growing.jsonl');
+    fs.copyFileSync(filePath, growFile);
+    const mgr = new SessionManager(SESSION_ID, growFile, 'test-workspace');
     try {
-      await mgr.update();
-      const midStamp = mgr.getReadStamp();
-      expect(midStamp.caughtUp).toBe(false);
-      expect(midStamp.size).toBeGreaterThan(16 * 1024 * 1024);
+      await mgr.update(); // full drain
+      expect(await mgr.checkMtime()).toBe(false);
 
-      await mgr.update();
-      const finalStamp = mgr.getReadStamp();
-      expect(finalStamp.caughtUp).toBe(true);
-      expect(finalStamp.size).toBe(fs.statSync(filePath).size);
+      fs.appendFileSync(growFile, JSON.stringify({
+        type: 'queue-operation', operation: 'dequeue', idx: RECORD_COUNT,
+        sessionId: SESSION_ID, timestamp: '2026-01-01T00:00:01.000Z',
+      }) + '\n');
+      // Ensure a distinct mtime tick even on filesystems with coarse mtime resolution.
+      const growTime = new Date(Date.now() + 2000);
+      fs.utimesSync(growFile, growTime, growTime);
+
+      expect(await mgr.checkMtime()).toBe(true);
+      const changed = await mgr.update();
+      expect(changed).toBe(true);
+      expect(mgr.getStatus()).toBe('running');
+      expect(await mgr.checkMtime()).toBe(false);
     } finally {
       mgr.dispose();
     }

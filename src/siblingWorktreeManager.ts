@@ -253,6 +253,12 @@ export class SiblingWorktreeManager {
       try {
         const stat = await fs.promises.stat(path.join(wsPath, file));
         if (now - stat.mtimeMs > ageGate) { continue; }
+        // A zero-byte file is a just-created placeholder (Claude Code writes
+        // the file before its first record) with nothing to peek. Excluding
+        // it here, before the PEEK_CANDIDATES cap below, matters: several can
+        // sit among a dir's newest files at once and would otherwise occupy
+        // every slot for nothing.
+        if (stat.size === 0) { continue; }
         candidates.push({ file, mtimeMs: stat.mtimeMs });
       } catch { /* skip */ }
     }

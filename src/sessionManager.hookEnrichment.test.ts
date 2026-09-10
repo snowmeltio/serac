@@ -15,13 +15,20 @@ vi.mock('./jsonlTailer.js', () => ({
   JsonlTailer: class {
     truncated = false;
     lastMtimeMs = 0;
+    // Bumped only when a read actually returns records, so updateInner()'s
+    // internal drain loop (offset stops advancing → stop) sees exactly one
+    // productive iteration per feedRecords() call, then exits — same net
+    // effect as the pre-loop single-read behaviour these mocks were built for.
+    private offset = 0;
     async readNewRecords() {
       this.truncated = mockTruncated;
       const r = mockRecords;
       mockRecords = [];
       mockTruncated = false;
+      if (r.length > 0) { this.offset++; }
       return r;
     }
+    getOffset() { return this.offset; }
   },
 }));
 

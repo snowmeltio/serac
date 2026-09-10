@@ -203,11 +203,6 @@ export class SessionManager {
   private firstActivitySet = false;
   /** Last known mtime of the JSONL file (ms). Used for stat-based poll pruning. */
   private lastMtimeMs = 0;
-  /** Last known on-disk size of the JSONL file (bytes), from the tailer's own
-   *  stat. Paired with the tailer's byte offset so checkMtime() and
-   *  getReadStamp() can tell an unread tail (oversized transcript, capped by
-   *  MAX_READ_PER_CYCLE in jsonlTailer.ts) apart from a fully-drained file. */
-  private lastStatSize = 0;
   /** Timestamp when status last transitioned to 'running'. Used to anchor the
    *  30s idle grace period that covers extended thinking (30-60s without records).
    *  Only set on actual done/waiting → running transition, not on every setRunning(). */
@@ -536,46 +531,69 @@ export class SessionManager {
   }
 
   private async updateInner(): Promise<boolean> {
-    const records = await this.tailer.readNewRecords();
-    // The first read replays whatever is already on disk; everything after
-    // it is live. Decided before the early returns below so an empty first
-    // read (a just-created session) still counts as the replay.
+    // The whole drain below — however many capped slices it takes — is one
+    // replay/live batch, decided once before any read: an empty first read
+    // (a just-created session) still counts as the replay, and (critically)
+    // every slice of an oversized transcript is treated identically. Getting
+    // this wrong would process slice 2..N of a >16MB dormant transcript as
+    // LIVE — captureWriterPid() spawning fuser for a writer that may be long
+    // dead, bridge transitions logging as real activity instead of replay.
     const isReplay = !this.initialReplayDone;
-    this.initialReplayDone = true;
-
-    // Record mtime + size from the tailer's stat (avoids a redundant syscall).
-    // Both are set together in the same stat call, so lastMtimeMs > 0 (a real
-    // file always stats with a positive mtime) is a reliable "the stat
-    // succeeded" gate for lastStatSize too.
-    if (this.tailer.lastMtimeMs > 0) {
-      this.lastMtimeMs = this.tailer.lastMtimeMs;
-      this.lastStatSize = this.tailer.lastSize;
-    }
-
-    // Reset on truncation to avoid corrupt state from replayed records [H1]
-    if (this.tailer.truncated) {
-      this.resetState();
-    }
-
-    if (records.length === 0 && this.subagentLifecycle.getActiveTailerCount() === 0) {
-      return this.tailer.truncated;
-    }
+    this.currentReadIsReplay = isReplay;
 
     let changed = false;
-    this.currentReadIsReplay = isReplay;
-    for (const record of records) {
-      if (this.processRecord(record)) {
-        changed = true;
+    let anyRecords = false;
+    let sawTruncation = false;
+
+    // JsonlTailer caps a single readNewRecords() call to MAX_READ_PER_CYCLE
+    // (16MB) to bound memory. Loop until the offset stops advancing so an
+    // oversized transcript drains fully within this one update() call —
+    // mirrors detailPanel.ts's transcript-tailing loop. One slice held in
+    // memory at a time (the OOM guard still holds); a read that makes no
+    // progress (gone/unreadable file) stops the loop rather than spinning.
+    for (;;) {
+      const before = this.tailer.getOffset();
+      const records = await this.tailer.readNewRecords();
+
+      // Record mtime from the tailer's stat (avoids a redundant syscall).
+      if (this.tailer.lastMtimeMs > 0) {
+        this.lastMtimeMs = this.tailer.lastMtimeMs;
       }
+
+      // Reset on truncation to avoid corrupt state from replayed records
+      // [H1]. `sawTruncation` (not `this.tailer.truncated`, which the tailer
+      // resets to false at the top of every readNewRecords() call) survives
+      // across the whole loop, so a truncation on an earlier slice is never
+      // masked by a later, unremarkable one.
+      if (this.tailer.truncated) {
+        this.resetState();
+        sawTruncation = true;
+      }
+
+      if (records.length > 0) {
+        anyRecords = true;
+        for (const record of records) {
+          if (this.processRecord(record)) {
+            changed = true;
+          }
+        }
+      }
+
+      if (this.tailer.getOffset() <= before) { break; }
+    }
+    this.initialReplayDone = true;
+
+    if (!anyRecords && this.subagentLifecycle.getActiveTailerCount() === 0) {
+      return sawTruncation;
     }
 
     // Writer-pid capture happens on the first LIVE record seen while running,
-    // not on the replayed running transition (see initialReplayDone). A session
-    // mid-turn at window open gets its pid on the next poll that delivers a
-    // record; until then isProcessAlive() answers "unknown" and the registry
-    // death-gate carries liveness, as it does for every session whose writer
-    // fuser cannot see.
-    if (!isReplay && records.length > 0 && this.state.status === 'running') {
+    // not on the replayed running transition (see initialReplayDone above). A
+    // session mid-turn at window open gets its pid on the next poll that
+    // delivers a record; until then isProcessAlive() answers "unknown" and
+    // the registry death-gate carries liveness, as it does for every session
+    // whose writer fuser cannot see.
+    if (!isReplay && anyRecords && this.state.status === 'running') {
       this.captureWriterPid();
     }
 
@@ -757,15 +775,16 @@ export class SessionManager {
   }
 
   /** Stat-based mtime check. Returns true if the file has been modified since last update,
-   *  OR if bytes remain unread from a prior capped read. Used by poll pruning: dormant
+   *  OR if bytes remain unread from a prior read. Used by poll pruning: dormant
    *  sessions only need a stat(), not a full update().
    *
-   *  The size half of this matters because JsonlTailer caps a single readNewRecords()
-   *  call to MAX_READ_PER_CYCLE (16 MB, jsonlTailer.ts) to avoid OOM on a huge append.
-   *  A transcript already over that cap gets replayed across several update() calls with
-   *  the file's mtime unchanged throughout — mtime alone would let a dormant
-   *  classification taken right after the first oversized slice strand the rest of the
-   *  file forever, since nothing else would ever prompt another update(). */
+   *  updateInner() loops internally to drain an oversized (>16MB) transcript fully
+   *  within one update() call (MAX_READ_PER_CYCLE, jsonlTailer.ts), so in the normal
+   *  case the tailer's offset is always caught up to what it last read by the time
+   *  checkMtime() runs. The size half is the safety net for the one way that can
+   *  still leave unread bytes: a read that fails partway through the drain (e.g. a
+   *  transient I/O error) — without it, a dormant classification taken right after
+   *  would strand the rest of the file forever, since mtime alone never moves again. */
   async checkMtime(): Promise<boolean> {
     try {
       const stat = await fs.promises.stat(this.state.filePath);
@@ -776,14 +795,16 @@ export class SessionManager {
   }
 
   /** Snapshot of what has been read vs what's on disk. `caughtUp` is false
-   *  while unread bytes remain from a capped read (see checkMtime()) even
-   *  though update() completed normally — the replay cache (PR C) uses this
-   *  to refuse caching a session whose transcript hasn't been fully drained. */
+   *  only when a read failed partway through a drain (see checkMtime()) —
+   *  a dormant-session replay cache can use this to refuse caching a session
+   *  whose transcript hasn't been fully drained. Requires a confirmed stat
+   *  (`lastMtimeMs > 0`) so a session whose file was never successfully
+   *  statted doesn't read as trivially caught up (0 >= 0). */
   getReadStamp(): { size: number; mtimeMs: number; caughtUp: boolean } {
     return {
-      size: this.lastStatSize,
+      size: this.tailer.lastSize,
       mtimeMs: this.lastMtimeMs,
-      caughtUp: this.tailer.getOffset() >= this.lastStatSize,
+      caughtUp: this.lastMtimeMs > 0 && this.tailer.getOffset() >= this.tailer.lastSize,
     };
   }
 

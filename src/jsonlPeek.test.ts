@@ -65,14 +65,19 @@ describe('readJsonlHeadLines / peekCwd (real fs)', () => {
     return filePath;
   }
 
-  it('finds cwd on line 1 of a ~200KB file with a single bounded (<=64KB) read', async () => {
-    // A large padding field pushes the file well past the 64KB peek window,
-    // proving the cwd on line 1 is found without reading the whole file.
-    const padding = 'x'.repeat(200 * 1024);
-    const line1 = JSON.stringify({ type: 'user', cwd: '/repo/worktree-a', pad: padding.slice(0, 100) });
-    const filler = JSON.stringify({ type: 'user', pad: padding });
-    const filePath = writeFile('session.jsonl', [line1, filler, filler].join('\n') + '\n');
-    expect(fs.statSync(filePath).size).toBeGreaterThan(200 * 1024);
+  it('finds cwd on line 1 even behind a large message field, with a single bounded (<=1MB) read', async () => {
+    // Real transcripts serialise `cwd` AFTER `message`, and the first user
+    // record commonly carries a large injected CLAUDE.md/system-reminder
+    // payload ahead of the real prompt text (measured up to ~184KB on one
+    // real transcript) — well past a naive 64KB window. peekCwd's 1MB
+    // default (matching the old full-replay's MAX_LINE_BUFFER tolerance) is
+    // required for this to resolve, not just generous.
+    const bigMessage = 'x'.repeat(200 * 1024);
+    const line1 = JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: bigMessage }] }, cwd: '/repo/worktree-a' });
+    // Filler pushes the file past the 1MB window, proving the read stays bounded.
+    const filler = JSON.stringify({ type: 'user', pad: 'y'.repeat(900 * 1024) });
+    const filePath = writeFile('session.jsonl', [line1, filler].join('\n') + '\n');
+    expect(fs.statSync(filePath).size).toBeGreaterThan(1024 * 1024);
 
     // Wrap fs.promises.open so we can capture the byte length of every read()
     // issued against the returned handle — proves the peek window is bounded.
@@ -91,7 +96,23 @@ describe('readJsonlHeadLines / peekCwd (real fs)', () => {
     const cwd = await peekCwd(filePath);
     expect(cwd).toBe('/repo/worktree-a');
     expect(readLengths).toHaveLength(1);
-    expect(readLengths[0]).toBeLessThanOrEqual(64 * 1024);
+    expect(readLengths[0]).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it('returns the FIRST cwd seen, not a later one (the launch cwd, not a mid-session cd)', async () => {
+    const filePath = writeFile('multi-cwd.jsonl', [
+      JSON.stringify({ type: 'user', cwd: '/repo/worktree-a' }),
+      JSON.stringify({ type: 'user', cwd: '/repo/worktree-a/subdir-after-cd' }),
+    ].join('\n') + '\n');
+    expect(await peekCwd(filePath)).toBe('/repo/worktree-a');
+  });
+
+  it('rejects a typeless line even when it carries a cwd, matching validateRecord', async () => {
+    const filePath = writeFile('typeless.jsonl', [
+      JSON.stringify({ cwd: '/repo/typeless' }), // no `type` — validateRecord() rejects this
+      JSON.stringify({ type: 'user', cwd: '/repo/valid' }),
+    ].join('\n') + '\n');
+    expect(await peekCwd(filePath)).toBe('/repo/valid');
   });
 
   it('a file shorter than the window without a trailing newline keeps its last line', async () => {
