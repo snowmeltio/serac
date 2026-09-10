@@ -314,37 +314,110 @@ export interface SubagentSnapshot {
   background?: boolean;
 }
 
+/** The glance pack's contribution to a SessionSnapshot (display-only:
+ *  topic/branch/tracked-files/tool-errors/last-reply preview — see
+ *  trackers/glanceTracker.ts, which owns the runtime behaviour and imports
+ *  this type back from `types.ts`). Lives here rather than in
+ *  glanceTracker.ts so CachedSessionState below can `extend` it without a
+ *  domain-type module reaching into `trackers/` (and trackers/glanceTracker.ts
+ *  importing SessionSnapshot from `../types.js`, which re-exports THIS file,
+ *  would otherwise be a real import cycle). */
+export type GlanceSnapshotFields = Pick<
+  SessionSnapshot,
+  'gitBranch' | 'toolErrorCount' | 'lastAssistantText' | 'trackedFiles'
+>;
+
+/** A file's identity for staleness comparison: byte size + mtime, both from
+ *  one `fs.Stat`. Shared by `ReplayCacheEntry` (replayCache.ts), the
+ *  `hydratedFrom` stamp, and `SessionManager.getReadStamp()`, compared via
+ *  replayCache.ts's `sameStamp()`. mtimeMs round-trips losslessly through
+ *  `JSON.stringify`/`JSON.parse` (both float64, same representable range). */
+export interface FileStamp {
+  size: number;
+  mtimeMs: number;
+}
+
 /** A done subagent's contribution to a cached session snapshot — the fields
  *  needed to redraw its roster row, nothing needed to keep it running (it
- *  never is; see CachedSessionState). */
-export interface CachedSubagentState {
-  parentToolUseId: string;
-  agentId: string | null;
-  description: string;
-  resultPreview: string | null;
-  toolsCompleted: number;
-  /** Epoch ms. */
-  startedAt: number;
+ *  never is; see CachedSessionState). Picked from SubagentSnapshot (the same
+ *  fields a live done subagent already renders) plus two fields
+ *  SubagentSnapshot doesn't carry: `background` (a done `run_in_background`
+ *  agent's flag has no live-status implication once `running` is false, but
+ *  losing it on hydrate would make a hydrated card's roster diverge from
+ *  what a live replay of the same file would have produced) and
+ *  `lastActivity` (restored verbatim so hydrate() doesn't stamp "now"). */
+export interface CachedSubagentState extends Pick<SubagentSnapshot,
+  'parentToolUseId' | 'agentId' | 'description' | 'resultPreview' | 'toolsCompleted' | 'startedAt' | 'background'
+> {
+  /** Epoch ms — SubagentInfo.lastActivity. Not part of SubagentSnapshot (the
+   *  webview never renders it), but needed so a restored subagent matches
+   *  what a live replay would have produced. */
+  lastActivity: number;
 }
+
+/** `SessionState` keys copied VERBATIM (identical type, no Date<->epoch-ms
+ *  conversion, no derivation) between a live session and its cached entry —
+ *  the single source of truth `SessionManager.exportCachedState()` and
+ *  `hydrate()` both drive their plain-copy half from, instead of two
+ *  independently hand-maintained ~20-field mirrors. See the exhaustiveness
+ *  check below: adding a `SessionState` field that isn't listed here, in
+ *  `SessionStateConvertedKey`, or in `SessionStateExcludedFromCacheKey` is a
+ *  compile error, forcing an explicit cache-or-exclude decision. */
+export const CACHED_PLAIN_KEYS = [
+  'slug', 'activity', 'contextTokens',
+  'customTitle', 'aiTitle', 'userTurnCount', 'permissionMode', 'entrypoint',
+  'bridgeSessionId', 'bridgeState', 'endReason',
+] as const satisfies readonly (keyof SessionState)[];
+export type CachedPlainKey = typeof CACHED_PLAIN_KEYS[number];
+
+/** `SessionState` keys that ARE cached but need conversion (Date<->epoch ms,
+ *  forced-`done` status, identity fields threaded as `fromCache()` params
+ *  rather than through the cached blob, or a dedicated structure) — handled
+ *  by hand in `hydrate()`/`exportCachedState()`, not by `CACHED_PLAIN_KEYS`.
+ *  Part of the exhaustiveness check below, not a runtime value. */
+type SessionStateConvertedKey =
+  | 'sessionId' | 'workspaceKey' | 'filePath'   // identity — fromCache() params, not re-derived from the blob
+  | 'status'                                     // forced 'done' — see CachedSessionState.status
+  | 'lastActivity' | 'firstActivity'             // Date <-> epoch ms
+  | 'activeTools' | 'idleTimerId'                // runtime-only; always empty/unset on a cached (done) session
+  | 'subagents'                                  // CachedSubagentState[], see above
+  | 'modelId' | 'modelConfirmed';                // handled as a pair, conditional on confirmation — see CachedSessionState.modelId
+
+/** `SessionState` keys deliberately NEVER cached — see CachedSessionState's
+ *  doc comment for the reasoning behind each. Part of the exhaustiveness
+ *  check below, not a runtime value. */
+type SessionStateExcludedFromCacheKey =
+  | 'compacting'   // exportCachedState() refuses while compacting — never true of a cached entry
+  | 'lastTool';    // PostToolUse enrichment; cosmetic, not worth the bytes
+
+/** Compile-time exhaustiveness assertion: every `SessionState` key must be
+ *  accounted for above (copied plain, converted, or deliberately excluded).
+ *  If this line fails to compile, a new `SessionState` field was added
+ *  without an explicit decision about whether the replay cache carries it —
+ *  add the key to `CACHED_PLAIN_KEYS`, `SessionStateConvertedKey`, or
+ *  `SessionStateExcludedFromCacheKey` above. */
+type UncoveredSessionStateKey = Exclude<keyof SessionState, CachedPlainKey | SessionStateConvertedKey | SessionStateExcludedFromCacheKey>;
+const _assertNoUncoveredSessionStateKeys: UncoveredSessionStateKey extends never ? true : never = true;
 
 /** Dormant-session replay cache payload for one JSONL file. Produced by
  *  `SessionManager.exportCachedState()` for a boring, fully-quiet `done`
  *  session and consumed by `SessionManager.fromCache()`/`hydrate()` to paint
- *  a card without replaying the transcript from byte 0. See `replayCache.ts`.
+ *  a card without replaying the transcript from byte 0. See `replayCache.ts`
+ *  and ARCHITECTURE.md's "Replay cache" section for the full contract.
  *
  *  Restores exactly what a dormant done card and the discovery gates need:
  *  identity, cwd/initialCwd (foreign cwdCache, click-through), topic/activity
  *  (the ghost filter needs at least one — `panelUtils.ts:isGhost`), status
- *  (always coerced to `done` on hydrate — see below), lastActivity/
- *  firstActivity/enqueuedAt (zone sort, the done→stale display window),
- *  contextTokens/modelId/modelConfirmed (the model pill), customTitle/aiTitle/
- *  userTurnCount, permissionMode/jsonlPermissionMode (so a re-opened session
- *  doesn't lose the auto-accept gate on its first live record), entrypoint/
- *  bridgeSessionId/bridgeState/endReason, the glance pack (gitBranch,
- *  toolErrorCount, lastAssistantText, trackedFiles), and done subagents.
+ *  (always `done` — see below), lastActivity/firstActivity/enqueuedAt (zone
+ *  sort, the done→stale display window), the `CACHED_PLAIN_KEYS` fields
+ *  (model/title/permission-mode/bridge/entrypoint/end-reason), the glance
+ *  pack (`GlanceSnapshotFields` — gitBranch/toolErrorCount/lastAssistantText/
+ *  trackedFiles), and done subagents.
  *
- *  Deliberately NOT cached — recomputed fresh every snapshot, or simply never
- *  true of an eligible (boring, quiet, `done`) session:
+ *  Deliberately NOT cached — see `SessionStateExcludedFromCacheKey` above for
+ *  the `SessionState` fields, and this list for everything else that's
+ *  either recomputed fresh every snapshot or simply never true of an
+ *  eligible (boring, quiet, `done`) session:
  *   - probe-derived flags (processLive, externalWriter, dualWriter) — these
  *     read the LIVE process registry; a cached value would go stale the
  *     instant a process starts or stops. Always recomputed in getSnapshot().
@@ -354,8 +427,6 @@ export interface CachedSubagentState {
  *     refuses to cache a session carrying any of these (see its eligibility
  *     gates), so a cached entry never has them; a hydrated card simply shows
  *     none until a live record repopulates them.
- *   - compacting — same: exportCachedState refuses while compacting.
- *   - lastTool (PostToolUse enrichment) — cosmetic; not worth the bytes.
  *   - worktreeRoot/worktreeLabel — set by the OWNING manager
  *     (SiblingWorktreeManager etc.) after construction, not the session's
  *     own state.
@@ -365,12 +436,11 @@ export interface CachedSubagentState {
  *     cached fields at getSnapshot() time; caching them risks staleness if
  *     the derivation logic changes without a REPLAY_CACHE_VERSION bump.
  *
- *  `status` is typed as the full SessionStatus (not narrowed to 'done') so a
- *  malformed or stale cache entry still parses — `hydrate()` FORCES status to
- *  'done' unconditionally, ignoring whatever this field says, as defence in
- *  depth alongside exportCachedState's own refusal to export anything else
- *  and isHydratable()'s `state.status === 'done'` eligibility check. */
-export interface CachedSessionState {
+ *  `status` is the literal `'done'` (not the full `SessionStatus`) — a cache
+ *  entry parsed with any other value is REJECTED outright
+ *  (`replayCache.ts:tryNormaliseEntry`), so `hydrate()` can assign it as a
+ *  plain fact rather than a value it must defensively coerce. */
+export interface CachedSessionState extends GlanceSnapshotFields {
   sessionId: string;
   slug: string;
   workspaceKey: string;
@@ -378,7 +448,7 @@ export interface CachedSessionState {
   initialCwd: string;
   topic: string;
   activity: string;
-  status: SessionStatus;
+  status: 'done';
   /** Epoch ms. */
   lastActivity: number;
   /** Epoch ms. */
@@ -386,6 +456,14 @@ export interface CachedSessionState {
   /** Epoch ms; 0 = never enqueued. */
   enqueuedAt: number;
   contextTokens: number;
+  /** Meaningful ONLY when `modelConfirmed` is true — written empty otherwise.
+   *  An unconfirmed model is just the OWNING window's config-derived
+   *  `defaultModelGuess` at construction time; caching that guess verbatim
+   *  would freeze a stale model pill forever on a hydrated enqueue-only
+   *  session (the file never changes again, so nothing ever re-derives it) —
+   *  even after the user changes the default model setting and reloads.
+   *  `hydrate()` re-derives it from the CURRENT `defaultModelGuess` instead
+   *  when unconfirmed, exactly as the ordinary constructor does. */
   modelId: string;
   modelConfirmed: boolean;
   customTitle: string;
@@ -397,10 +475,6 @@ export interface CachedSessionState {
   bridgeSessionId?: string;
   bridgeState?: BridgeState;
   endReason?: string;
-  gitBranch?: string;
-  toolErrorCount?: number;
-  lastAssistantText?: string;
-  trackedFiles?: string[];
   subagents: CachedSubagentState[];
 }
 

@@ -20,7 +20,7 @@
  * be true of.
  */
 
-import type { JsonlRecord, SessionSnapshot } from '../types.js';
+import type { JsonlRecord, GlanceSnapshotFields } from '../types.js';
 import { getContentBlocks } from '../jsonlValidator.js';
 
 /** Cap on tracked-file paths kept from a file-history-snapshot record. */
@@ -67,12 +67,11 @@ export function extractAssistantPreview(text: string, cap = 200): string {
   return chosen.slice(0, cap).trim();
 }
 
-/** The glance pack's contribution to a SessionSnapshot. Empty values are
- *  omitted (undefined) so the webview renders nothing rather than blanks. */
-export type GlanceSnapshotFields = Pick<
-  SessionSnapshot,
-  'gitBranch' | 'toolErrorCount' | 'lastAssistantText' | 'trackedFiles'
->;
+// GlanceSnapshotFields (the glance pack's contribution to a SessionSnapshot;
+// empty values omitted so the webview renders nothing rather than blanks)
+// now lives in sessionTypes.ts, imported above — CachedSessionState extends
+// it, and defining it there avoids sessionTypes.ts -> trackers/ -> types.ts
+// -> sessionTypes.ts becoming a real (if type-only) import cycle.
 
 export interface GlanceTracker {
   /** Capture the branch stamped on any JSONL record. Suppresses the literal

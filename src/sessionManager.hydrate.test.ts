@@ -9,14 +9,20 @@ import * as fs from 'fs';
 import type { JsonlRecord, CachedSessionState } from './types.js';
 import { HookEventRouter } from './hookEventRouter.js';
 import { REPLAY_CACHE_QUIET_MS } from './replayCache.js';
+import { makeCachedSessionState } from './__fixtures__/replayCache.js';
 
 // Mock JsonlTailer so we can feed records without files, and so hydrate()'s
 // `new JsonlTailer(filePath, stamp.size)` seam is observable (initialOffset,
 // reset()). Tracks read-call count so "hydrate → update() never reads" is
 // directly assertable, and stamps lastMtimeMs (unlike the bare liveness-test
-// mock) so getReadStamp().caughtUp can go true in these tests.
+// mock) so getReadStamp().caughtUp can go true in these tests. `mockOpenFails`
+// mirrors the real JsonlTailer's early-return when fs.promises.open() itself
+// throws: readNewRecords() returns [] WITHOUT ever touching lastMtimeMs/
+// lastSize — the exact shape of read that must not be mistaken for "replay
+// completed".
 let mockRecords: JsonlRecord[] = [];
 let readNewRecordsCallCount = 0;
+let mockOpenFails = false;
 let tailerConstructions: Array<{ filePath: string; initialOffset: number }> = [];
 vi.mock('./jsonlTailer.js', () => ({
   JsonlTailer: class {
@@ -30,6 +36,10 @@ vi.mock('./jsonlTailer.js', () => ({
     }
     async readNewRecords() {
       readNewRecordsCallCount++;
+      if (mockOpenFails) {
+        mockOpenFails = false; // fails exactly once per arming, like a transient race
+        return [];
+      }
       const r = mockRecords;
       mockRecords = [];
       if (r.length > 0) { this.offset++; }
@@ -69,43 +79,27 @@ async function feed(mgr: InstanceType<typeof SessionManager>, records: JsonlReco
 }
 
 function cachedState(overrides: Partial<CachedSessionState> = {}): CachedSessionState {
-  return {
+  return makeCachedSessionState({
     sessionId: 'cached-session',
     slug: 'cached-slug',
     workspaceKey: 'ws-key',
-    cwd: '/Users/foo/bar',
-    initialCwd: '/Users/foo/bar',
-    topic: 'Cached topic',
-    activity: 'Cached activity',
-    status: 'done',
-    lastActivity: Date.now() - REPLAY_CACHE_QUIET_MS - 1000,
-    firstActivity: Date.now() - 60_000,
-    enqueuedAt: 0,
-    contextTokens: 42,
-    modelId: 'claude-sonnet-5',
-    modelConfirmed: true,
-    customTitle: 'Cached Title',
-    aiTitle: 'Cached AI Title',
-    userTurnCount: 3,
-    gitBranch: 'main',
-    toolErrorCount: 1,
-    lastAssistantText: 'Cached preview',
-    trackedFiles: ['a.ts'],
     subagents: [{
       parentToolUseId: 'tu-1', agentId: 'agent-1', description: 'Do the thing',
       resultPreview: 'Done thing', toolsCompleted: 4, startedAt: Date.now() - 30_000,
+      lastActivity: Date.now() - 20_000, background: true,
     }],
     ...overrides,
-  };
+  });
 }
 
-function hydratedManager(overrides: Partial<CachedSessionState> = {}): InstanceType<typeof SessionManager> {
-  return SessionManager.fromCache('cached-session', FILE_PATH, 'ws-key', {}, cachedState(overrides), STAMP);
+function hydratedManager(overrides: Partial<CachedSessionState> = {}, opts: ConstructorParameters<typeof SessionManager>[3] = {}): InstanceType<typeof SessionManager> {
+  return SessionManager.fromCache('cached-session', FILE_PATH, 'ws-key', opts, cachedState(overrides), STAMP);
 }
 
 beforeEach(() => {
   mockRecords = [];
   readNewRecordsCallCount = 0;
+  mockOpenFails = false;
   tailerConstructions = [];
   vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: STAMP.size, mtimeMs: STAMP.mtimeMs } as fs.Stats);
 });
@@ -124,12 +118,12 @@ describe('fromCache/hydrate', () => {
   });
 
   it('cached status "waiting" is coerced to done regardless of the cached value', () => {
-    const mgr = hydratedManager({ status: 'waiting' });
+    const mgr = hydratedManager({ status: 'waiting' as never });
     expect(mgr.getStatus()).toBe('done');
   });
 
   it('cached status "running" is also coerced to done', () => {
-    const mgr = hydratedManager({ status: 'running' });
+    const mgr = hydratedManager({ status: 'running' as never });
     expect(mgr.getStatus()).toBe('done');
   });
 
@@ -148,19 +142,67 @@ describe('fromCache/hydrate', () => {
     expect(mgr.getTitles()).toEqual({ aiTitle: 'Cached AI Title', customTitle: 'Cached Title' });
   });
 
-  it('rebuilds done subagents via the create/complete path — no live timers, correct fields', () => {
-    const mgr = hydratedManager();
+  it('rebuilds done subagents directly — no live timers, correct fields, background+lastActivity round-trip', () => {
+    const startedAt = Date.now() - 30_000;
+    const lastActivity = Date.now() - 20_000;
+    const mgr = hydratedManager({
+      subagents: [{
+        parentToolUseId: 'tu-1', agentId: 'agent-1', description: 'Do the thing',
+        resultPreview: 'Done thing', toolsCompleted: 4, startedAt, lastActivity, background: true,
+      }],
+    });
     const subs = mgr.getSnapshot().subagents;
     expect(subs).toHaveLength(1);
     expect(subs[0]).toMatchObject({
       parentToolUseId: 'tu-1', agentId: 'agent-1', description: 'Do the thing',
       running: false, resultPreview: 'Done thing', toolsCompleted: 4,
+      background: true,
     });
+    expect(subs[0].startedAt).toBe(startedAt);
   });
 
-  it('seeds the tailer at the cache stamp\'s size (initialOffset seam)', () => {
+  it('a cached subagent with background: false/undefined round-trips as not backgrounded', () => {
+    const mgr = hydratedManager({
+      subagents: [{
+        parentToolUseId: 'tu-1', agentId: null, description: 'desc',
+        resultPreview: null, toolsCompleted: 0, startedAt: Date.now(), lastActivity: Date.now(),
+      }],
+    });
+    expect(mgr.getSnapshot().subagents[0].background).toBeUndefined();
+  });
+
+  it('seeds the tailer at the cache stamp\'s size (initialOffset seam) and mirrors the stamp into its own fields', () => {
     hydratedManager();
-    expect(tailerConstructions.at(-1)).toEqual({ filePath: FILE_PATH, initialOffset: STAMP.size });
+    const last = tailerConstructions.at(-1);
+    expect(last).toEqual({ filePath: FILE_PATH, initialOffset: STAMP.size });
+  });
+
+  it('modelId is restored when the cached value was confirmed', () => {
+    const mgr = hydratedManager({ modelId: 'claude-opus-4-6', modelConfirmed: true });
+    expect(mgr.getSnapshot().modelLabel).not.toBe('');
+  });
+
+  // Item 15: an UNCONFIRMED cached modelId is the OLD window's config-derived
+  // defaultModelGuess, not a fact about the transcript. Caching it verbatim
+  // would freeze a stale model pill forever on a hydrated enqueue-only
+  // session (the file never changes again, so nothing ever re-derives it) —
+  // even after the user changes the default model setting and reloads.
+  it('an unconfirmed cached modelId is IGNORED — hydrate() re-derives from the CURRENT defaultModelGuess', () => {
+    const mgr = hydratedManager(
+      { modelId: 'sonnet', modelConfirmed: false },
+      { defaultModelGuess: 'opus' },
+    );
+    const snap = mgr.getSnapshot();
+    // formatModelLabel('opus') is whatever the shared label formatter
+    // produces; the point is it's NOT sonnet's, and it's unconfirmed
+    // ('*' suffix — see formatModelLabel() in sessionManager.ts).
+    expect(snap.modelLabel).not.toContain('Sonnet');
+    expect(snap.modelLabel.endsWith('*')).toBe(true);
+  });
+
+  it('an unconfirmed cached modelId with no defaultModelGuess leaves the pill blank', () => {
+    const mgr = hydratedManager({ modelId: 'sonnet', modelConfirmed: false }, {});
+    expect(mgr.getSnapshot().modelLabel).toBe('');
   });
 });
 
@@ -181,7 +223,7 @@ describe('updateInner() hydrated guard', () => {
     expect(readNewRecordsCallCount).toBe(0);
   });
 
-  it('changed size: begins a full replay from byte 0, titles survive, readNewRecords is called', async () => {
+  it('changed stamp: full replay from offset 0 (never an incremental read), titles survive, readNewRecords is called', async () => {
     vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: STAMP.size + 100, mtimeMs: STAMP.mtimeMs } as fs.Stats);
     const mgr = hydratedManager();
     expect(mgr.isHydrated()).toBe(true);
@@ -201,18 +243,42 @@ describe('updateInner() hydrated guard', () => {
     expect(mgr.isHydrated()).toBe(false);
   });
 
-  it('after a full replay, the tailer is RESET, not reconstructed a third time', async () => {
+  it('after a full replay, the tailer is RESET (offset 0), not reconstructed a third time', async () => {
     vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: STAMP.size + 100, mtimeMs: STAMP.mtimeMs } as fs.Stats);
     const before = tailerConstructions.length;
     const mgr = hydratedManager();
     // fromCache() constructs two tailers: the constructor's default (offset
-    // 0, immediately discarded) and hydrate()'s stamped one — see
-    // "seeds the tailer at the cache stamp's size" above.
+    // 0, immediately discarded) and hydrate()'s stamped one.
     expect(tailerConstructions.length).toBe(before + 2);
+    mockRecords = [userRecord('replayed from the start')];
     await mgr.update();
     // beginFullReplay() calls tailer.reset() — it must NOT construct a THIRD
-    // tailer just to rewind to offset 0.
+    // tailer just to rewind to offset 0. The mock's reset() zeroes `offset`,
+    // so the drain that follows reads from the beginning, not mid-file.
     expect(tailerConstructions.length).toBe(before + 2);
+  });
+
+  // Item 2: a read whose very first fs.promises.open() fails (ENOENT, a
+  // transient race) must NOT be mistaken for "the replay completed" — that
+  // would silently graduate the NEXT (actually successful) read to LIVE,
+  // spawning captureWriterPid()'s fuser scan for a writer that may be long
+  // dead, and logging bridge transitions as real activity instead of replay.
+  it('open() failing on the invalidation read: the SECOND update() still runs as a replay (captureWriterPid not called)', async () => {
+    vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: STAMP.size + 100, mtimeMs: STAMP.mtimeMs } as fs.Stats);
+    const captureSpy = vi.spyOn(SessionManager.prototype as unknown as { captureWriterPid(): void }, 'captureWriterPid');
+    const mgr = hydratedManager();
+
+    mockOpenFails = true;
+    const first = await mgr.update();
+    expect(first).toBe(false); // no records, nothing changed
+    expect(mgr.isHydrated()).toBe(false); // still invalidated — beginFullReplay() already ran
+
+    // Second update(): the file is now genuinely readable. If the first
+    // failed read had wrongly flipped initialReplayDone, this delivers a
+    // running-transition record as LIVE and captureWriterPid() fires.
+    await feed(mgr, [userRecord('now the file actually reads')]);
+    expect(mgr.getStatus()).toBe('running');
+    expect(captureSpy).not.toHaveBeenCalled();
   });
 
   it('a live record delivered on the SAME update() call after the reset is NOT treated as replay-suppressed forever — the drain completes within this call', async () => {
@@ -250,6 +316,18 @@ describe('checkMtime() when hydrated', () => {
   });
 });
 
+describe('getReadStamp() when hydrated', () => {
+  // Item 3: before hydrate() seeded tailer.lastSize/lastMtimeMs directly (not
+  // just this.lastMtimeMs), getReadStamp() on a freshly hydrated, never-yet-
+  // updated manager reported {size: 0, caughtUp: true} — technically
+  // "caught up" by the letter of the check, but a lie about what had
+  // actually been read.
+  it('reports the cache stamp truthfully, not {size: 0}', () => {
+    const mgr = hydratedManager();
+    expect(mgr.getReadStamp()).toEqual({ size: STAMP.size, mtimeMs: STAMP.mtimeMs, caughtUp: true });
+  });
+});
+
 describe('runThenReplay/forceReplay clears hydration', () => {
   it('forceReplay() on a hydrated manager clears isHydrated()', async () => {
     const mgr = hydratedManager();
@@ -260,8 +338,8 @@ describe('runThenReplay/forceReplay clears hydration', () => {
 });
 
 describe('exportCachedState()', () => {
-  function freshManager(): InstanceType<typeof SessionManager> {
-    return new SessionManager('live-session', FILE_PATH, 'ws-key');
+  function freshManager(opts: ConstructorParameters<typeof SessionManager>[3] = {}): InstanceType<typeof SessionManager> {
+    return new SessionManager('live-session', FILE_PATH, 'ws-key', opts);
   }
 
   it('null on a freshly constructed (not-yet-quiet) session, even though status starts done', async () => {
@@ -334,6 +412,29 @@ describe('exportCachedState()', () => {
     expect(cached!.status).toBe('done');
     expect(cached!.topic).toBe('Fix the flaky test');
     expect(cached!.subagents).toEqual([]);
+  });
+
+  // Item 15: an unconfirmed model must never be exported verbatim.
+  it('exports modelId empty when the model is unconfirmed', async () => {
+    const mgr = freshManager({ defaultModelGuess: 'opus' });
+    await feed(mgr, [enqueue()]);
+    const future = Date.now() + REPLAY_CACHE_QUIET_MS + 60_000;
+    const cached = mgr.exportCachedState(future);
+    expect(cached!.modelConfirmed).toBe(false);
+    expect(cached!.modelId).toBe('');
+  });
+
+  it('exports modelId verbatim once confirmed by a real assistant record', async () => {
+    const mgr = freshManager();
+    await feed(mgr, [{
+      type: 'assistant', timestamp: new Date().toISOString(),
+      message: { model: 'claude-opus-4-6', usage: { input_tokens: 10 }, content: [{ type: 'text', text: 'hi' }] } as Record<string, unknown>,
+    }]);
+    await feed(mgr, [enqueue()]);
+    const future = Date.now() + REPLAY_CACHE_QUIET_MS + 60_000;
+    const cached = mgr.exportCachedState(future);
+    expect(cached!.modelConfirmed).toBe(true);
+    expect(cached!.modelId).toBe('claude-opus-4-6');
   });
 
   it('caps run_in_background agents out of eligibility (still running past turn-end)', async () => {

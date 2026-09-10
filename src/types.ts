@@ -14,7 +14,9 @@ export type {
   SessionSnapshot, SubagentSnapshot,
   SessionMeta, SessionMetaFile,
   CachedSessionState, CachedSubagentState,
+  GlanceSnapshotFields, FileStamp, CachedPlainKey,
 } from './sessionTypes.js';
+export { CACHED_PLAIN_KEYS } from './sessionTypes.js';
 
 export type {
   TeamAgentEntry, TeamManifest, TeamAgentSnapshot, TeamSnapshot,

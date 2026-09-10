@@ -275,8 +275,9 @@ export function ageGateDaysFor(section: DiscoverySection, settings: SeracSetting
   return typeof override === 'number' && Number.isFinite(override) && override > 0 ? override : d.ageGateDays;
 }
 
-/** Day in ms, for the gate conversions below. */
-const DAY_MS = 24 * 60 * 60 * 1000;
+/** Day in ms, for the gate conversions below (and any caller elsewhere that
+ *  needs the same constant — e.g. replayCache.ts's 60-day hard prune ceiling). */
+export const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** {@link ageGateDaysFor} in milliseconds — the one days-to-ms conversion.
  *  Discovery managers call this instead of keeping private wrappers. */

@@ -3,50 +3,35 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  parseReplayCache, isHydratable, pruneEntries, mergeEntries, serialiseReplayCache,
+  parseReplayCache, sameStamp, isHydratable, pruneEntries, pruneMissingFiles, mergeEntries, serialiseReplayCache,
   makeReplayCacheStore, REPLAY_CACHE_VERSION, REPLAY_CACHE_QUIET_MS,
   type ReplayCacheEntry, type ReplayCacheStore,
 } from './replayCache.js';
 import type { Logger } from './sessionDiscovery.js';
 import type { CachedSessionState } from './types.js';
+import { makeCachedSessionState, makeReplayCacheEntry } from './__fixtures__/replayCache.js';
 
 const silentLog: Logger = {
   trace: () => {}, info: () => {}, warn: () => {}, error: () => {},
 };
 
 function cachedState(overrides: Partial<CachedSessionState> = {}): CachedSessionState {
-  return {
-    sessionId: 'sess-1',
-    slug: 'sess-1',
-    workspaceKey: '-Users-foo-bar',
-    cwd: '/Users/foo/bar',
-    initialCwd: '/Users/foo/bar',
-    topic: 'A topic',
-    activity: '',
-    status: 'done',
-    lastActivity: Date.now() - REPLAY_CACHE_QUIET_MS - 1000,
-    firstActivity: Date.now() - 60_000,
-    enqueuedAt: 0,
-    contextTokens: 100,
-    modelId: 'claude-sonnet-5',
-    modelConfirmed: true,
-    customTitle: '',
-    aiTitle: '',
-    userTurnCount: 1,
-    subagents: [],
-    ...overrides,
-  };
+  return makeCachedSessionState(overrides);
 }
 
 function entry(overrides: Partial<ReplayCacheEntry> = {}): ReplayCacheEntry {
-  return {
-    size: 1000,
-    mtimeMs: 123456,
-    cachedAt: Date.now(),
-    state: cachedState(),
-    ...overrides,
-  };
+  return makeReplayCacheEntry(overrides);
 }
+
+describe('sameStamp', () => {
+  it('true when both size and mtime match', () => {
+    expect(sameStamp({ size: 1, mtimeMs: 2 }, { size: 1, mtimeMs: 2 })).toBe(true);
+  });
+  it('false on any mismatch', () => {
+    expect(sameStamp({ size: 1, mtimeMs: 2 }, { size: 2, mtimeMs: 2 })).toBe(false);
+    expect(sameStamp({ size: 1, mtimeMs: 2 }, { size: 1, mtimeMs: 3 })).toBe(false);
+  });
+});
 
 describe('parseReplayCache', () => {
   it('returns an empty map for null/undefined/empty input', () => {
@@ -67,13 +52,12 @@ describe('parseReplayCache', () => {
     expect(parseReplayCache(noVersion).size).toBe(0);
   });
 
-  it('tolerates partial/malformed entries without discarding the rest of the file', () => {
+  it('tolerates structurally malformed entries without discarding the rest of the file', () => {
     const raw = JSON.stringify({
       version: REPLAY_CACHE_VERSION,
       entries: {
         good: entry(),
         missingFields: { size: 1 }, // no mtimeMs/cachedAt/state
-        badState: { size: 1, mtimeMs: 1, cachedAt: 1, state: { sessionId: 'x' } }, // no status, no subagents
         notAnObject: 'nope',
       },
     });
@@ -82,11 +66,89 @@ describe('parseReplayCache', () => {
     expect(parsed.has('good')).toBe(true);
   });
 
+  // One rejected-shape case per field the reviewer flagged as previously
+  // unchecked — a missing/non-numeric lastActivity used to hydrate an
+  // Invalid Date (NaN lastActivity → card disposed on the next poll, or
+  // zone sort silently broken); subagent fields were entirely unchecked.
+  const badStateCases: Array<[string, Partial<CachedSessionState>]> = [
+    ['status not done', { status: 'running' as never }],
+    ['non-numeric lastActivity', { lastActivity: NaN }],
+    ['missing lastActivity', { lastActivity: undefined as never }],
+    ['non-numeric firstActivity', { firstActivity: 'yesterday' as never }],
+    ['non-string cwd', { cwd: 42 as never }],
+    ['non-string slug', { slug: null as never }],
+    ['non-string workspaceKey', { workspaceKey: 7 as never }],
+    ['non-string topic', { topic: {} as never }],
+    ['non-string activity', { activity: [] as never }],
+    ['non-numeric contextTokens', { contextTokens: 'lots' as never }],
+    ['non-string modelId', { modelId: 5 as never }],
+    ['non-boolean modelConfirmed', { modelConfirmed: 'yes' as never }],
+    ['non-numeric userTurnCount', { userTurnCount: NaN }],
+    ['invalid bridgeState', { bridgeState: 'sideways' as never }],
+    ['non-array trackedFiles', { trackedFiles: 'a.ts' as never }],
+    ['trackedFiles with a non-string element', { trackedFiles: [1] as never }],
+    ['subagents not an array', { subagents: {} as never }],
+  ];
+  for (const [label, override] of badStateCases) {
+    it(`rejects an entry with ${label}`, () => {
+      const raw = JSON.stringify({
+        version: REPLAY_CACHE_VERSION,
+        entries: { bad: entry({ state: cachedState(override) }) },
+      });
+      expect(parseReplayCache(raw).size).toBe(0);
+    });
+  }
+
+  const badSubagentCases: Array<[string, Record<string, unknown>]> = [
+    ['non-string parentToolUseId', { parentToolUseId: 1 }],
+    ['non-string description', { description: null }],
+    ['non-finite startedAt', { startedAt: 'now' }],
+    ['non-finite toolsCompleted', { toolsCompleted: NaN }],
+    ['non-finite lastActivity', { lastActivity: undefined }],
+    ['agentId neither string nor null', { agentId: 42 }],
+    ['resultPreview neither string nor null', { resultPreview: 42 }],
+    ['non-boolean background', { background: 'yes' }],
+  ];
+  for (const [label, override] of badSubagentCases) {
+    it(`rejects an entry whose subagent has ${label}`, () => {
+      const goodSubagent = {
+        parentToolUseId: 'tu-1', agentId: 'agent-1', description: 'desc',
+        resultPreview: null, toolsCompleted: 0, startedAt: 1000, lastActivity: 1000,
+      };
+      const raw = JSON.stringify({
+        version: REPLAY_CACHE_VERSION,
+        entries: { bad: entry({ state: cachedState({ subagents: [{ ...goodSubagent, ...override }] as never }) }) },
+      });
+      expect(parseReplayCache(raw).size).toBe(0);
+    });
+  }
+
+  it('accepts a well-formed subagent, including background/lastActivity', () => {
+    const raw = JSON.stringify({
+      version: REPLAY_CACHE_VERSION,
+      entries: {
+        ok: entry({ state: cachedState({
+          subagents: [{
+            parentToolUseId: 'tu-1', agentId: 'agent-1', description: 'desc',
+            resultPreview: 'done', toolsCompleted: 3, startedAt: 1000, lastActivity: 2000, background: true,
+          }],
+        }) }),
+      },
+    });
+    const parsed = parseReplayCache(raw);
+    expect(parsed.get('ok')!.state.subagents[0]).toMatchObject({ background: true, lastActivity: 2000 });
+  });
+
   it('round-trips through serialiseReplayCache', () => {
     const entries = new Map([['/path/a.jsonl', entry()]]);
     const raw = serialiseReplayCache(entries);
     const parsed = parseReplayCache(raw);
     expect(parsed).toEqual(entries);
+  });
+
+  it('serialises without indentation', () => {
+    const raw = serialiseReplayCache(new Map([['/a.jsonl', entry()]]));
+    expect(raw).not.toContain('\n');
   });
 
   it('refuses an oversized file', () => {
@@ -97,70 +159,46 @@ describe('parseReplayCache', () => {
 });
 
 describe('isHydratable', () => {
-  const now = Date.now();
   const stat = { size: 1000, mtimeMs: 123456 };
 
-  it('true for an exact stat match, done status, not live, quiet window elapsed', () => {
-    expect(isHydratable(entry(), stat, undefined, now)).toBe(true);
-    expect(isHydratable(entry(), stat, false, now)).toBe(true);
-    expect(isHydratable(entry(), stat, null, now)).toBe(true);
+  it('true for an exact stat match, not live', () => {
+    expect(isHydratable(entry(), stat, undefined)).toBe(true);
+    expect(isHydratable(entry(), stat, false)).toBe(true);
+    expect(isHydratable(entry(), stat, null)).toBe(true);
   });
 
   it('false on any size or mtime mismatch', () => {
-    expect(isHydratable(entry(), { size: 999, mtimeMs: 123456 }, undefined, now)).toBe(false);
-    expect(isHydratable(entry(), { size: 1000, mtimeMs: 1 }, undefined, now)).toBe(false);
+    expect(isHydratable(entry(), { size: 999, mtimeMs: 123456 }, undefined)).toBe(false);
+    expect(isHydratable(entry(), { size: 1000, mtimeMs: 1 }, undefined)).toBe(false);
   });
 
   it('false when the registry confirms the process is live', () => {
-    expect(isHydratable(entry(), stat, true, now)).toBe(false);
+    expect(isHydratable(entry(), stat, true)).toBe(false);
   });
 
-  it('false when status is not done', () => {
-    expect(isHydratable(entry({ state: cachedState({ status: 'running' }) }), stat, undefined, now)).toBe(false);
-    expect(isHydratable(entry({ state: cachedState({ status: 'waiting' }) }), stat, undefined, now)).toBe(false);
-  });
-
-  it('false when the quiet window has not elapsed', () => {
-    const recent = entry({ state: cachedState({ lastActivity: now - 1000 }) });
-    expect(isHydratable(recent, stat, undefined, now)).toBe(false);
-  });
-
-  it('honours a custom quietMs', () => {
-    const recent = entry({ state: cachedState({ lastActivity: now - 5000 }) });
-    expect(isHydratable(recent, stat, undefined, now, 10_000)).toBe(false);
-    expect(isHydratable(recent, stat, undefined, now, 1000)).toBe(true);
-  });
+  // No quiet-window/status re-check here — both were already enforced once,
+  // at export time; status is a compile-time 'done' literal by the time an
+  // entry reaches here (tryNormaliseState rejects anything else at parse
+  // time), and re-checking the quiet window against a different wall clock
+  // would only ever make hydration needlessly MORE conservative.
 });
 
 describe('pruneEntries', () => {
   const now = Date.now();
-  const alwaysExists = () => true;
-
-  it('drops entries whose backing file is missing', () => {
-    const entries = new Map([
-      ['/a.jsonl', entry()],
-      ['/b.jsonl', entry()],
-    ]);
-    const pruned = pruneEntries(entries, now, {
-      maxAgeMs: 999_999_999, maxEntries: 100, exists: (p) => p === '/a.jsonl',
-    });
-    expect([...pruned.keys()]).toEqual(['/a.jsonl']);
-  });
 
   it('drops entries older than maxAgeMs', () => {
     const entries = new Map([
       ['/fresh.jsonl', entry({ cachedAt: now - 1000 })],
       ['/stale.jsonl', entry({ cachedAt: now - 100_000 })],
     ]);
-    const pruned = pruneEntries(entries, now, { maxAgeMs: 10_000, maxEntries: 100, exists: alwaysExists });
+    const pruned = pruneEntries(entries, now, { maxAgeMs: 10_000, maxEntries: 100 });
     expect([...pruned.keys()]).toEqual(['/fresh.jsonl']);
   });
 
   it('caps maxAgeMs at the 60-day hard ceiling regardless of caller input', () => {
     const veryOld = now - 61 * 24 * 60 * 60 * 1000;
     const entries = new Map([['/ancient.jsonl', entry({ cachedAt: veryOld })]]);
-    // Caller asks for an effectively unbounded age — the hard ceiling still applies.
-    const pruned = pruneEntries(entries, now, { maxAgeMs: Number.MAX_SAFE_INTEGER, maxEntries: 100, exists: alwaysExists });
+    const pruned = pruneEntries(entries, now, { maxAgeMs: Number.MAX_SAFE_INTEGER, maxEntries: 100 });
     expect(pruned.size).toBe(0);
   });
 
@@ -170,8 +208,79 @@ describe('pruneEntries', () => {
       ['/middle.jsonl', entry({ cachedAt: now - 2000 })],
       ['/newest.jsonl', entry({ cachedAt: now - 1000 })],
     ]);
-    const pruned = pruneEntries(entries, now, { maxAgeMs: 999_999_999, maxEntries: 2, exists: alwaysExists });
+    const pruned = pruneEntries(entries, now, { maxAgeMs: 999_999_999, maxEntries: 2 });
     expect([...pruned.keys()].sort()).toEqual(['/middle.jsonl', '/newest.jsonl'].sort());
+  });
+
+  it('is synchronous and pure — no I/O, no missing-file check', () => {
+    // pruneEntries takes no `exists` parameter any more — missing-file
+    // eviction is pruneMissingFiles()'s job (async, batched, applied only to
+    // the keys worth checking). A fictional path is kept by pruneEntries
+    // regardless of whether it exists on disk.
+    const entries = new Map([['/does/not/exist.jsonl', entry()]]);
+    const pruned = pruneEntries(entries, Date.now(), { maxAgeMs: 999_999_999, maxEntries: 100 });
+    expect(pruned.size).toBe(1);
+  });
+});
+
+describe('pruneMissingFiles', () => {
+  it('drops an entry only on a confirmed ENOENT', async () => {
+    const entries = new Map([['/gone.jsonl', entry()]]);
+    const enoent = async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); };
+    const pruned = await pruneMissingFiles(entries, ['/gone.jsonl'], () => enoent().then(() => true, () => false));
+    expect(pruned.size).toBe(0);
+  });
+
+  it('keeps an entry on any OTHER error (can\'t tell != gone)', async () => {
+    const entries = new Map([['/degraded.jsonl', entry()]]);
+    const flaky = async () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+    // Mirror existsOrUnknown's own policy via a custom exists fn for this test.
+    const existsOrUnknown = async () => {
+      try { await flaky(); return true; } catch (err) { return (err as NodeJS.ErrnoException).code !== 'ENOENT'; }
+    };
+    const pruned = await pruneMissingFiles(entries, ['/degraded.jsonl'], existsOrUnknown);
+    expect(pruned.size).toBe(1);
+  });
+
+  it('only checks the requested keys, not the whole map', async () => {
+    const entries = new Map([
+      ['/checked.jsonl', entry()],
+      ['/unchecked.jsonl', entry()],
+    ]);
+    const checked: string[] = [];
+    const exists = async (p: string) => { checked.push(p); return p !== '/checked.jsonl'; };
+    const pruned = await pruneMissingFiles(entries, ['/checked.jsonl'], exists);
+    expect(checked).toEqual(['/checked.jsonl']);
+    expect([...pruned.keys()].sort()).toEqual(['/unchecked.jsonl']);
+  });
+
+  it('batches checks in chunks (does not fire all at once beyond the batch size)', async () => {
+    const keys = Array.from({ length: 120 }, (_, i) => `/f${i}.jsonl`);
+    const entries = new Map(keys.map(k => [k, entry()]));
+    let concurrentInFlight = 0;
+    let maxConcurrent = 0;
+    const exists = async () => {
+      concurrentInFlight++;
+      maxConcurrent = Math.max(maxConcurrent, concurrentInFlight);
+      await new Promise(r => setTimeout(r, 0));
+      concurrentInFlight--;
+      return true;
+    };
+    await pruneMissingFiles(entries, keys, exists);
+    expect(maxConcurrent).toBeLessThanOrEqual(50);
+  });
+
+  it('returns the same map reference when there is nothing to check', async () => {
+    const entries = new Map([['/a.jsonl', entry()]]);
+    const result = await pruneMissingFiles(entries, [], async () => true);
+    expect(result).toBe(entries);
+  });
+
+  it('ignores keys not present in the map', async () => {
+    const entries = new Map([['/a.jsonl', entry()]]);
+    let called = false;
+    await pruneMissingFiles(entries, ['/not-in-map.jsonl'], async () => { called = true; return true; });
+    expect(called).toBe(false);
   });
 });
 
@@ -207,12 +316,14 @@ describe('FileReplayCacheStore', () => {
   let tmpDir: string;
   let cachePath: string;
   let store: ReplayCacheStore;
-  // pruneEntries() (wired into every save) drops an entry whose backing file
-  // no longer exists — exactly the real-world case where a session's JSONL
-  // was deleted between caching and flushing. So entries in these tests are
-  // keyed by REAL (if empty) files under tmpDir, not fictional paths — a
-  // fictional path would be silently pruned away on the very first save,
-  // which is correct behaviour but not what these tests are exercising.
+  // pruneMissingFiles() (wired into load(), and into save() for entries
+  // newly seen from another window) drops an entry whose backing file is
+  // CONFIRMED gone — exactly the real-world case where a session's JSONL was
+  // deleted between caching and flushing. Entries a test wants to simulate
+  // as coming from ANOTHER window's disk write therefore need a REAL (if
+  // empty) backing file; entries this store already knows about before a
+  // merge (its own put()s) are never existence-checked, so those may use
+  // fictional paths freely.
   let pathA: string;
   let pathB: string;
   let pathMine: string;
@@ -243,7 +354,18 @@ describe('FileReplayCacheStore', () => {
 
   it('load() on a missing file leaves the store empty, not an error', async () => {
     await store.load();
-    expect(store.size()).toBe(0);
+    expect(store.get(pathA)).toBeUndefined();
+  });
+
+  it('load() drops an entry whose backing file is confirmed gone', async () => {
+    const goneEntry = entry({ state: cachedState({ sessionId: 'gone' }) });
+    fs.writeFileSync(cachePath, serialiseReplayCache(new Map([
+      ['/definitely/does/not/exist.jsonl', goneEntry],
+      [pathA, entry({ state: cachedState({ sessionId: 'still-here' }) })],
+    ])));
+    await store.load();
+    expect(store.get('/definitely/does/not/exist.jsonl')).toBeUndefined();
+    expect(store.get(pathA)).toBeDefined();
   });
 
   it('put() then flush() writes to disk via tmp-then-rename', async () => {
@@ -287,6 +409,24 @@ describe('FileReplayCacheStore', () => {
     expect(writeSpy).toHaveBeenCalledTimes(2);
   });
 
+  it('flush(now, { force: true }) bypasses the interval', async () => {
+    const writeSpy = vi.spyOn(fs.promises, 'writeFile');
+    const t0 = Date.now();
+    store.put(pathA, entry());
+    await store.flush(t0);
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+
+    store.put(pathB, entry());
+    await store.flush(t0 + 1000, { force: true });
+    expect(writeSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('force flush() still no-ops when not dirty', async () => {
+    const writeSpy = vi.spyOn(fs.promises, 'writeFile');
+    await store.flush(Date.now(), { force: true });
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
   it('flush() re-reads and merges another window\'s entries before writing', async () => {
     // Simulate another window's write landing on disk between this window's
     // load() and its own flush() — its own put() must not clobber it.
@@ -298,6 +438,31 @@ describe('FileReplayCacheStore', () => {
 
     const onDisk = readDiskEntries();
     expect(Object.keys(onDisk).sort()).toEqual([pathMine, pathOther].sort());
+  });
+
+  it('flush() skips the re-read when the cache file\'s own stat is unchanged', async () => {
+    store.put(pathA, entry());
+    await store.flush(Date.now()); // first write establishes diskStamp
+
+    const readSpy = vi.spyOn(fs.promises, 'readFile');
+    store.put(pathB, entry());
+    await store.flush(Date.now() + 40_000, { force: true });
+    // Only the initial load-less path's OWN write updates diskStamp; nothing
+    // else touched the file between the two flushes, so the merge re-read
+    // must have been skipped.
+    expect(readSpy).not.toHaveBeenCalled();
+  });
+
+  it('flush() only existence-checks entries newly seen from disk, not ones it already knew', async () => {
+    // pathMine is already known (our own put()) — must NOT be existence
+    // checked even though it's a real file we could stat.
+    const statSpy = vi.spyOn(fs.promises, 'access');
+    store.put(pathMine, entry());
+    await store.flush(Date.now());
+    // No other window's entries landed on disk between load and flush, and
+    // pathMine was already known before the merge — no access() calls
+    // expected for the missing-file check.
+    expect(statSpy).not.toHaveBeenCalled();
   });
 
   it('a save failure re-arms dirty so the next flush retries', async () => {
@@ -313,10 +478,18 @@ describe('FileReplayCacheStore', () => {
     expect(fs.existsSync(cachePath)).toBe(true);
   });
 
+  it('refuses (stats before reading) an oversized cache file without reading its content', async () => {
+    fs.writeFileSync(cachePath, 'x'.repeat(17 * 1024 * 1024));
+    const readSpy = vi.spyOn(fs.promises, 'readFile');
+    await store.load();
+    expect(readSpy).not.toHaveBeenCalled();
+    expect(store.get(pathA)).toBeUndefined();
+  });
+
   it('get() returns undefined for an unknown path and the loaded entry otherwise', async () => {
-    fs.writeFileSync(cachePath, serialiseReplayCache(new Map([['/known.jsonl', entry()]])));
+    fs.writeFileSync(cachePath, serialiseReplayCache(new Map([[pathA, entry()]])));
     await store.load();
     expect(store.get('/unknown.jsonl')).toBeUndefined();
-    expect(store.get('/known.jsonl')).toBeDefined();
+    expect(store.get(pathA)).toBeDefined();
   });
 });
