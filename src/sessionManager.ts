@@ -546,11 +546,12 @@ export class SessionManager {
     let sawTruncation = false;
 
     // JsonlTailer caps a single readNewRecords() call to MAX_READ_PER_CYCLE
-    // (16MB) to bound memory. Loop until the offset stops advancing so an
-    // oversized transcript drains fully within this one update() call —
-    // mirrors detailPanel.ts's transcript-tailing loop. One slice held in
-    // memory at a time (the OOM guard still holds); a read that makes no
-    // progress (gone/unreadable file) stops the loop rather than spinning.
+    // (16MB) to bound memory. Loop until caught up (or the offset stops
+    // advancing) so an oversized transcript drains fully within this one
+    // update() call — mirrors detailPanel.ts's transcript-tailing loop. One
+    // slice held in memory at a time (the OOM guard still holds); a read
+    // that makes no progress (gone/unreadable file) stops the loop rather
+    // than spinning.
     for (;;) {
       const before = this.tailer.getOffset();
       const records = await this.tailer.readNewRecords();
@@ -579,7 +580,13 @@ export class SessionManager {
         }
       }
 
-      if (this.tailer.getOffset() <= before) { break; }
+      // Two independent reasons to stop, evaluated after this read (so
+      // lastSize reflects THIS iteration's stat): caught up (offset reached
+      // the file's last statted size — the common, hot-path case, avoiding
+      // one wasted empty-read iteration per update() on every active
+      // session) OR no progress was made (a failing/gone-mid-drain read —
+      // the safety net against spinning).
+      if (this.tailer.getOffset() >= this.tailer.lastSize || this.tailer.getOffset() <= before) { break; }
     }
     this.initialReplayDone = true;
 

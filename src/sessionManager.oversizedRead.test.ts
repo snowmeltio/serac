@@ -45,6 +45,7 @@ vi.mock('child_process', async (importOriginal) => {
 });
 
 const { SessionManager } = await import('./sessionManager.js');
+const { JsonlTailer } = await import('./jsonlTailer.js');
 
 const SESSION_ID = 'oversized-sid';
 /** 22 alternating queue-operation records, ~800KB padding each: comfortably
@@ -100,6 +101,12 @@ describe('SessionManager oversized-transcript drain', () => {
     const mgr = new SessionManager(SESSION_ID, filePath, 'test-workspace', {
       onTransition: (from, to) => transitions.push({ from, to }),
     });
+    // The drain loop's exit condition checks "caught up" (offset reached the
+    // file's last statted size) in addition to "no progress", so a call that
+    // fully reads a slice and lands exactly caught-up stops immediately —
+    // it does not spend one further empty read confirming there's nothing
+    // left. Exactly ceil(size / MAX_READ_PER_CYCLE) reads, not one more.
+    const readSpy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
     try {
       const changed = await mgr.update();
       expect(changed).toBe(true);
@@ -111,7 +118,12 @@ describe('SessionManager oversized-transcript drain', () => {
       // in this call was replay (the whole file consumed in one update()),
       // never live.
       expect(fuserCalls.count).toBe(0);
+
+      const expectedReads = Math.ceil(fs.statSync(filePath).size / (16 * 1024 * 1024));
+      expect(expectedReads).toBe(2); // sanity: this fixture is ~17.6MB, not ~33MB+
+      expect(readSpy).toHaveBeenCalledTimes(expectedReads);
     } finally {
+      readSpy.mockRestore();
       mgr.dispose();
     }
   });
