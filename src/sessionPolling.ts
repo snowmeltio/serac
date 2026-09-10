@@ -68,6 +68,14 @@ export function jsonlSessionId(file: string): string | null {
   return file.endsWith('.jsonl') ? file.slice(0, -'.jsonl'.length) : null;
 }
 
+/** Total bytes read across a set of sessions — the `[startup]` log lines'
+ *  shared MB-counting step (local, sibling, foreign all sum the same way). */
+export function sumBytesRead(sessions: Iterable<{ getBytesRead(): number }>): number {
+  let total = 0;
+  for (const session of sessions) { total += session.getBytesRead(); }
+  return total;
+}
+
 /**
  * One poll pass over a composite-keyed session map.
  *

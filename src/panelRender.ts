@@ -68,6 +68,9 @@ export interface WorkspaceGroup {
   ideOpen?: boolean;
 }
 
+/** Progressive-first-paint stage (mirrors DiscoveryPhase from panelTypes.ts). */
+export type PanelDiscoveryPhase = 'pending' | 'partial' | 'ready';
+
 /** Compact settings shape (mirrors CompactSettings from claudeSettings.ts). */
 export interface PanelCompactSettings { autoCompactWindow: number; autoCompactPct: number }
 
@@ -269,6 +272,12 @@ export function emptyStateHtml(olderSessionCount: number): string {
   return '<div class="empty-state"><div class="icon">⊘</div><div>'
     + escapeHtml(headline) + '</div><div class="hint">' + escapeHtml(hint) + '</div></div>';
 }
+
+// loadingStateHtml lives in panelUtils.ts (not here) so panelProvider.ts on
+// the extension-host side can share it too — panelUtils.ts is already a
+// host+webview module, panelRender.ts is webview-only. Re-exported for
+// existing panel.ts / panelRender.test.ts import sites.
+export { loadingStateHtml } from './panelUtils.js';
 
 /** Inner content of the archive time-range bar. */
 export function timeRangePillsHtml(activeRange: string): string {

@@ -123,6 +123,27 @@ describe('SiblingWorktreeManager', () => {
     manager.dispose();
   });
 
+  it('getScanStats() reports session/sibling counts and total bytes read (startup-timing instrumentation)', async () => {
+    const repo = path.join(tmpDir, 'repo');
+    const wt = path.join(tmpDir, 'repo-feature');
+    fs.mkdirSync(repo, { recursive: true });
+    setupRepoWithWorktree(repo, wt, 'feature');
+
+    const repoRoot = await resolveRepoRoot(wt);
+    createSession(sanitiseKey(wt), 'sib-1', wt);
+
+    const manager = new SiblingWorktreeManager(projectsDir, sanitiseKey(repo), silentLog);
+    manager.setLocalRepoRoot(repoRoot);
+    await manager.scan();
+
+    const stats = manager.getScanStats();
+    expect(stats.sessions).toBe(1);
+    expect(stats.siblings).toBe(1);
+    expect(stats.bytes).toBeGreaterThan(0);
+
+    manager.dispose();
+  });
+
   describe('discovery gate', () => {
     /** Repo + one sibling worktree carrying a session, ready to scan. */
     async function seed(): Promise<SiblingWorktreeManager> {

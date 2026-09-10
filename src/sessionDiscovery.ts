@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { SessionManager } from './sessionManager.js';
-import { jsonlSessionId } from './sessionPolling.js';
+import { jsonlSessionId, sumBytesRead } from './sessionPolling.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
@@ -19,7 +19,7 @@ import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
 import { SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
 import { makeSessionMetaStore, type SessionMetaStore } from './sessionMetaStore.js';
-import type { SessionSnapshot, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot } from './types.js';
+import type { SessionSnapshot, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, DiscoveryPhase } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 
 /** Verdict from resolveOpenGate() — see its docstring for field semantics. */
@@ -67,6 +67,10 @@ export class SessionDiscovery {
   private readonly meta: SessionMetaStore;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
   private onChangeCallback: (() => void) | undefined;
+  /** Progressive-first-paint stage of start() — see DiscoveryPhase. Read by
+   *  extension.ts and forwarded to the panel so the sidebar can distinguish
+   *  "still discovering" from a genuinely empty workspace. */
+  private discoveryPhase: DiscoveryPhase = 'pending';
   /** Prevents timer callbacks from running after dispose */
   private disposed = false;
   /** Guard against concurrent poll executions */
@@ -309,46 +313,201 @@ export class SessionDiscovery {
     this.meta.enqueueSave();
   }
 
-  /** Start watching for sessions. Calls onChange when state changes. */
+  /** Current progressive-first-paint stage — see DiscoveryPhase. */
+  getDiscoveryPhase(): DiscoveryPhase {
+    return this.discoveryPhase;
+  }
+
+  /** Runs one startup stage for start(): times it, tolerates a throw from
+   *  `run()` (logs `[startup] <name> failed: <err>` and continues — a failing
+   *  stage must not abort the whole sequence, see start()'s docblock), then
+   *  logs the `[startup] <name> <N>ms (<detail>)` timing line and fires
+   *  onChange (unless `opts.fireOnChange` is false — the preamble-ish stages
+   *  ahead of the local scan have nothing new to paint yet). The onChange
+   *  call is itself wrapped in try/catch: a webview mid-teardown
+   *  (panelProvider never nulls out `this.view`, so a disposed webview's
+   *  postMessage can still be reached and throw) must not take discovery
+   *  down with it.
+   *
+   *  `opts.phaseAfter`, when given, is assigned to `this.discoveryPhase`
+   *  immediately after the awaited `run()` — after the post-run disposed
+   *  check, before the log line and onChange. This must happen inside the
+   *  stage, not by the caller setting the phase before calling runStage: a
+   *  send that lands during the awaited `run()` (the 500ms initial timer, a
+   *  usageProvider onChange, a worktree refresh) would otherwise observe the
+   *  new phase against a still-incomplete session map — the exact flash this
+   *  progressive-first-paint work exists to remove.
+   *
+   *  Returns false — checked both before AND after running the stage — when
+   *  `this.disposed`, so the caller's `if (!await this.runStage(...)) return;`
+   *  stops the sequence outright on dispose. This matters beyond just
+   *  skipping a redundant log/onChange: a disposed ForeignWorkspaceManager or
+   *  SiblingWorktreeManager still runs its `scan()` to completion if invoked,
+   *  silently re-creating SessionManagers (timers, hook-router subscriptions)
+   *  that nothing then disposes — so a stage must never even START after
+   *  stop() landed inside a previous stage's onChange. */
+  private async runStage(
+    name: string,
+    run: () => Promise<unknown>,
+    detail?: () => string,
+    opts: { fireOnChange?: boolean; phaseAfter?: DiscoveryPhase } = {},
+  ): Promise<boolean> {
+    const { fireOnChange = true, phaseAfter } = opts;
+    if (this.disposed) { return false; }
+    const stageStart = Date.now();
+    try {
+      await run();
+    } catch (err) {
+      this.log.warn(`[startup] ${name} failed:`, err);
+    }
+    if (this.disposed) { return false; }
+    if (phaseAfter !== undefined) {
+      this.discoveryPhase = phaseAfter;
+    }
+    let suffix = '';
+    if (detail) {
+      try {
+        suffix = ` (${detail()})`;
+      } catch (err) {
+        this.log.warn(`[startup] ${name} detail computation failed:`, err);
+      }
+    }
+    this.log.info(`[startup] ${name} ${Date.now() - stageStart}ms${suffix}`);
+    if (fireOnChange) {
+      try {
+        this.onChangeCallback?.();
+      } catch (err) {
+        this.log.warn(`[startup] ${name} onChange callback failed:`, err);
+      }
+    }
+    return true;
+  }
+
+  /** Start watching for sessions. Calls onChange after every startup stage
+   *  that has something new to paint (not just once at the end) so the panel
+   *  can show local sessions well before the foreign/team/workflow scans
+   *  finish — see DiscoveryPhase and ARCHITECTURE.md's startup-phases note.
+   *  Every stage runs through runStage() (see its docblock for the
+   *  failure/dispose contract): a throwing stage is logged and skipped, never
+   *  aborts the sequence, and the phase always reaches 'ready' with
+   *  schedulePoll() still called — the one exception is dispose() itself,
+   *  which stops the sequence outright (runStage returns false).
+   *
+   *  Stage order: meta/repoRoot/worktrees (preamble) → process registry →
+   *  teams → workflows → local scan ['partial'] → sibling scan → foreign
+   *  scan → writer ownership refresh → 'ready'. Registry now runs before any
+   *  scan (moved up from its old place after foreign) so every session's
+   *  liveness probe has real data from its very first snapshot — previously
+   *  the probe read null until the first registry scan landed, on whichever
+   *  local card painted before it. The same ordering is what the later
+   *  replay-cache PR (PR D in the startup-performance plan) needs to gate
+   *  hydration eligibility on liveness from the start. Sibling must still run
+   *  before foreign (foreign excludes sibling keys), so those two — the only
+   *  load-bearing order dependency — stay serial and adjacent. The
+   *  preamble/registry/teams/workflows stages fire no onChange: phase is
+   *  still 'pending' and nothing user-visible exists yet. */
   async start(onChange: () => void): Promise<void> {
     this.onChangeCallback = onChange;
+    const startedAt = Date.now();
+    const mb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
 
-    // Load session metadata (with legacy migration)
-    await this.meta.load();
+    const preambleOk = await this.runStage('preamble', async () => {
+      // Load session metadata (with legacy migration)
+      await this.meta.load();
 
-    // Resolve local repoRoot before any scanning so the sibling manager knows
-    // which other workspace dirs share our repo. Failure is non-fatal — we just
-    // run without sibling-worktree consolidation.
-    try {
-      const repoRoot = await resolveRepoRoot(this.localCwd);
-      this.localRepoRoot = repoRoot;
-      this.siblingManager.setLocalRepoRoot(repoRoot);
-      // The foreign manager needs it too, so it can evict workspace keys that
-      // turn out to be OUR worktrees — including ones the sibling manager has
-      // pruned because their directory is gone.
-      this.foreignManager.setLocalRepoRoot(repoRoot);
-    } catch (err) {
-      this.log.warn('Failed to resolve local repoRoot:', err);
+      // Resolve local repoRoot before any scanning so the sibling manager knows
+      // which other workspace dirs share our repo. Failure is non-fatal — we
+      // just run without sibling-worktree consolidation. Handled with its own
+      // try/catch (rather than left to runStage's generic one) so the warning
+      // names the specific failure.
+      try {
+        const repoRoot = await resolveRepoRoot(this.localCwd);
+        this.localRepoRoot = repoRoot;
+        this.siblingManager.setLocalRepoRoot(repoRoot);
+        // The foreign manager needs it too, so it can evict workspace keys that
+        // turn out to be OUR worktrees — including ones the sibling manager has
+        // pruned because their directory is gone.
+        this.foreignManager.setLocalRepoRoot(repoRoot);
+      } catch (err) {
+        this.log.warn('Failed to resolve local repoRoot:', err);
+      }
+
+      // Worktree enumeration is independent of session discovery — a worktree
+      // is real even when no CC chats exist in it. Initial sweep, then poll
+      // periodically; cheap (just reads .git/worktrees/*). NOTE:
+      // refreshDiscoveredWorktrees() fires onChange itself when the set
+      // changes from empty — which it does for almost any git repo, so this
+      // routinely fires mid-preamble while the phase is still 'pending'.
+      // That's fine: sendUpdate()'s phase-transition bypass (see
+      // ARCHITECTURE.md and extension.ts) sends immediately on any phase
+      // change and otherwise just primes the throttle window harmlessly —
+      // it does not defer the 'partial' transition below.
+      await this.refreshDiscoveredWorktrees();
+      this.scheduleWorktreeRefresh();
+    }, undefined, { fireOnChange: false });
+    if (!preambleOk) { return; }
+
+    // Moved ahead of any scan (see the ordering note above): populates the
+    // liveness probe before the local scan's SessionManagers are built.
+    if (!await this.runStage('process registry scan', () => this.processRegistry.scan(),
+      () => `${this.processRegistry.getLiveProcesses().length} live`, { fireOnChange: false })) { return; }
+
+    if (!await this.runStage('teams scan', () => this.teamDiscovery.scan(),
+      () => `${this.getTeamSnapshots().length} teams`, { fireOnChange: false })) { return; }
+
+    if (!await this.runStage('workflows scan', () => this.workflowDiscovery.scan(),
+      () => `${this.getWorkflowSnapshots().length} workflows`, { fireOnChange: false })) { return; }
+
+    // Local scan is the first stage the panel actually paints. phaseAfter
+    // flips discoveryPhase to 'partial' inside runStage, right after the
+    // awaited scan() completes and before this stage's onChange fires — see
+    // runStage's docblock for why the flip cannot happen here instead.
+    if (!await this.runStage('local scan', () => this.scan(),
+      () => `${this.sessions.size} sessions, ${mb(sumBytesRead(this.sessions.values()))}MB`,
+      { phaseAfter: 'partial' })) { return; }
+
+    // Sibling scan must run before foreign scan so foreign can exclude sibling
+    // keys — the one load-bearing order dependency left in this sequence (see
+    // the reentrancy note on the poll loop's every-10th-cycle rescan gate for
+    // why stages stay serial rather than running these two concurrently).
+    if (!await this.runStage('sibling scan', () => this.siblingManager.scan(), () => {
+      const stats = this.siblingManager.getScanStats();
+      return `${stats.sessions} sessions, ${stats.siblings} siblings, ${mb(stats.bytes)}MB`;
+    })) { return; }
+
+    if (!await this.runStage('foreign scan', () => this.foreignManager.scan(), () => {
+      const stats = this.foreignManager.getScanStats();
+      return `${stats.sessions} sessions, ${stats.workspaces} workspaces, ${mb(stats.bytes)}MB`;
+    })) { return; }
+
+    // writerOwnership.refresh() spawns one `ps` per live Claude process —
+    // gated on the same flag the poll loop gates its equivalent call on (see
+    // pollInner): resolveWriterOwnership() already returns undefined with the
+    // flag off, so paying for the probe here would be pure waste.
+    if (readSettings().experimental.externalWriterBlock) {
+      if (!await this.runStage('writer ownership refresh',
+        () => this.writerOwnership.refresh(this.windowWriterCandidates()), undefined,
+        { fireOnChange: false })) { return; }
+    } else {
+      this.log.info('[startup] writer ownership refresh skipped (flag off)');
     }
 
-    // Worktree enumeration is independent of session discovery — a worktree
-    // is real even when no CC chats exist in it. Initial sweep, then poll
-    // periodically; cheap (just reads .git/worktrees/*).
-    await this.refreshDiscoveredWorktrees();
-    this.scheduleWorktreeRefresh();
+    this.discoveryPhase = 'ready';
+    this.log.info(`[startup] ready ${Date.now() - startedAt}ms`);
+    if (!this.disposed) {
+      try {
+        this.onChangeCallback?.();
+      } catch (err) {
+        this.log.warn('[startup] ready onChange callback failed:', err);
+      }
+    }
 
-    // Initial scan (local + sibling worktrees + foreign + teams).
-    // Sibling scan must run before foreign scan so foreign can exclude sibling keys.
-    await this.scan();
-    await this.siblingManager.scan();
-    await this.foreignManager.scan();
-    await this.teamDiscovery.scan();
-    await this.workflowDiscovery.scan();
-    await this.processRegistry.scan();
-    await this.writerOwnership.refresh(this.windowWriterCandidates());
-
-    // Start adaptive poll loop
-    this.schedulePoll();
+    // Always start the poll loop once startup finishes — on every path above
+    // that reaches here, including one or more stages having failed — unless
+    // dispose() landed during the final onChange above.
+    if (!this.disposed) {
+      this.schedulePoll();
+    }
   }
 
   /** Schedule the next poll with adaptive interval */

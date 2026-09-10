@@ -805,6 +805,11 @@ export class SessionManager {
     return changed;
   }
 
+  /** Bytes of the transcript read so far. Startup-timing instrumentation only. */
+  getBytesRead(): number {
+    return this.tailer.getOffset();
+  }
+
   /** Get a serialisable snapshot for the webview */
   getSnapshot(): SessionSnapshot {
     // One probe read per snapshot so the two derived flags can't disagree.

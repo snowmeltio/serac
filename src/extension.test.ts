@@ -124,6 +124,7 @@ const mockDiscovery = {
   getLocalRepoRoot: vi.fn().mockReturnValue(null),
   getDiscoveredWorktrees: vi.fn().mockReturnValue([]),
   getRcServing: vi.fn().mockReturnValue(false),
+  getDiscoveryPhase: vi.fn().mockReturnValue('ready'),
 };
 
 const mockUsageProvider = {
@@ -1210,13 +1211,18 @@ describe('extension', () => {
 
     it('warns once when the server it started disappears, and not before the grace window', async () => {
       activate(context as any);
+      const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
       mockDiscovery.getRcServing.mockReturnValue(false);
       const terminal = makeTerminal();
       pickStart();
       getHandler()();
       await vi.waitFor(() => expect(terminal.sendText).toHaveBeenCalled());
-      // The registry confirms it is up...
+      // The registry confirms it is up. Previously the extension's own
+      // deferred startup sendUpdate() (since deleted — see DiscoveryPhase's
+      // per-stage onChange callbacks) supplied this first observation; the
+      // test now drives it directly via the discovery onChange callback.
       mockDiscovery.getRcServing.mockReturnValue(true);
+      startCb();
       await vi.advanceTimersByTimeAsync(2000);
       // ...then it is gone, with the terminal still open on a stale frame.
       mockDiscovery.getRcServing.mockReturnValue(false);
@@ -1301,7 +1307,10 @@ describe('extension', () => {
 
     it('companion profile: the panel is told, so the tooltip can carry the caveat', async () => {
       activate(asCompanion() as any);
-      await vi.advanceTimersByTimeAsync(5000);
+      // The restored 500ms initial send delivers this — well before the 5s
+      // refresh tick, which is what made this assertion meaningless before
+      // (any earlier failure to reach the panel was masked by that tick).
+      await vi.advanceTimersByTimeAsync(600);
       const updates = vi.mocked(mockPanelProvider.updateSessions).mock.calls;
       expect(updates.length).toBeGreaterThan(0);
       expect((updates[updates.length - 1][0] as { rcCompanionProfile?: boolean }).rcCompanionProfile).toBe(true);
@@ -1309,7 +1318,7 @@ describe('extension', () => {
 
     it('default profile: the panel fact is false', async () => {
       activate(context as any);
-      await vi.advanceTimersByTimeAsync(5000);
+      await vi.advanceTimersByTimeAsync(600);
       const updates = vi.mocked(mockPanelProvider.updateSessions).mock.calls;
       expect(updates.length).toBeGreaterThan(0);
       expect((updates[updates.length - 1][0] as { rcCompanionProfile?: boolean }).rcCompanionProfile).toBe(false);
@@ -1619,27 +1628,148 @@ describe('extension', () => {
     });
   });
 
-  describe('sendUpdate debounce', () => {
-    it('debounces rapid updates to 200ms', () => {
+  describe('sendUpdate trailing throttle', () => {
+    // Replaces the old drop-throttle behaviour: a call inside the 200ms
+    // window is no longer discarded outright — it schedules one deferred
+    // send for the remainder of the window, so a burst never loses the
+    // latest state.
+    it('coalesces two immediate calls into one send, then fires the deferred trailing send after 200ms', () => {
       activate(context as any);
       const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
-
-      // Advance past the initial 500ms setTimeout + let debounce window expire
-      vi.advanceTimersByTime(700);
       mockPanelProvider.updateSessions.mockClear();
 
-      // First call should go through
+      // First call goes straight through.
       startCb();
       expect(vi.mocked(mockPanelProvider.updateSessions).mock.calls.length).toBe(1);
 
-      // Immediate second call should be debounced
+      // Second call lands inside the 200ms window — throttled, not dropped:
+      // no send yet, but one is now pending.
       startCb();
       expect(vi.mocked(mockPanelProvider.updateSessions).mock.calls.length).toBe(1);
 
-      // After 200ms, should go through
+      // The deferred trailing send fires once the window elapses.
       vi.advanceTimersByTime(200);
-      startCb();
       expect(vi.mocked(mockPanelProvider.updateSessions).mock.calls.length).toBe(2);
+
+      // A further window with no new call sends nothing more.
+      vi.advanceTimersByTime(200);
+      expect(vi.mocked(mockPanelProvider.updateSessions).mock.calls.length).toBe(2);
+    });
+
+    it('cancels a pending deferred send on dispose', () => {
+      activate(context as any);
+      const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
+      mockPanelProvider.updateSessions.mockClear();
+
+      startCb(); // goes straight through
+      startCb(); // schedules a deferred trailing send
+
+      // The last subscription is the dispose wrapper (see 'dispose' below).
+      const lastSub = context.subscriptions[context.subscriptions.length - 1];
+      lastSub.dispose();
+
+      // Without the cancelled-on-dispose fix this would still fire.
+      vi.advanceTimersByTime(200);
+      expect(vi.mocked(mockPanelProvider.updateSessions).mock.calls.length).toBe(1);
+    });
+
+    it('forwards the current discoveryPhase into panelProvider.updateSessions', () => {
+      activate(context as any);
+      const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
+      mockPanelProvider.updateSessions.mockClear();
+
+      mockDiscovery.getDiscoveryPhase.mockReturnValueOnce('partial');
+      startCb();
+
+      expect(mockPanelProvider.updateSessions).toHaveBeenCalledWith(
+        expect.objectContaining({ discoveryPhase: 'partial' }),
+      );
+    });
+
+    it('a discoveryPhase change bypasses the throttle: a "partial" transition at t=40 (inside the 200ms window since the t=0 send) posts immediately, not deferred to t=200', () => {
+      activate(context as any);
+      const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
+      mockPanelProvider.updateSessions.mockClear();
+
+      // t=0: first-ever send, phase 'pending' — goes straight through (as
+      // any first call does regardless of the bypass).
+      mockDiscovery.getDiscoveryPhase.mockReturnValueOnce('pending');
+      startCb();
+      expect(mockPanelProvider.updateSessions).toHaveBeenCalledTimes(1);
+      expect(mockPanelProvider.updateSessions.mock.calls[0][0]).toMatchObject({ discoveryPhase: 'pending' });
+
+      // t=40: still well inside the 200ms window from the t=0 send, but the
+      // phase differs from what was last sent — e.g. refreshDiscoveredWorktrees()
+      // firing onChange mid-preamble primed the window, then the local scan
+      // flips the phase moments later. Without the bypass this would only be
+      // scheduled as a deferred send at t=200.
+      vi.advanceTimersByTime(40);
+      mockDiscovery.getDiscoveryPhase.mockReturnValueOnce('partial');
+      startCb();
+      expect(mockPanelProvider.updateSessions).toHaveBeenCalledTimes(2);
+      expect(mockPanelProvider.updateSessions.mock.calls[1][0]).toMatchObject({ discoveryPhase: 'partial' });
+
+      // Reaching the original t=200 mark with nothing further happening must
+      // not produce a THIRD call — the bypass sent immediately, it didn't
+      // additionally arm a deferred timer alongside the immediate send.
+      vi.advanceTimersByTime(160);
+      expect(mockPanelProvider.updateSessions).toHaveBeenCalledTimes(2);
+    });
+
+    it('clamps a backwards wall-clock step to a <=200ms deferred window rather than arming one far-future timer', () => {
+      activate(context as any);
+      const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
+      mockPanelProvider.updateSessions.mockClear();
+      // Spy on the delay every deferred send is scheduled with — the direct
+      // way to prove the clamp, since a large backward jump still needs
+      // several clamped 200ms retries to fully resolve (each retry's fresh
+      // `now - lastSendTime` recompute is still negative until real elapsed
+      // time closes the gap) — the bug this guards against was ONE
+      // multi-second wait, not the retry count.
+      const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+
+      startCb(); // t=0: goes straight through, arms lastSendTime = now
+      // Wall clock steps BACKWARDS (system clock adjustment) — Date.now()
+      // returns an earlier value than lastSendTime, so the naive
+      // `200 - (now - lastSendTime)` would be > 200 (or hugely so, here
+      // 200 - (-10_000) = 10_200ms — the single far-future timer this guards
+      // against).
+      vi.setSystemTime(Date.now() - 10_000);
+      setTimeoutSpy.mockClear();
+      startCb(); // schedules a deferred send — must clamp to <= 200ms
+      expect(mockPanelProvider.updateSessions).toHaveBeenCalledTimes(1);
+
+      const delays = setTimeoutSpy.mock.calls.map(call => call[1]);
+      expect(delays.length).toBeGreaterThan(0);
+      for (const delay of delays) {
+        expect(delay).toBeGreaterThanOrEqual(0);
+        expect(delay).toBeLessThanOrEqual(200);
+      }
+
+      // Full resolution still eventually happens (self-corrects once real
+      // elapsed time closes the 10s gap), just via bounded 200ms retries
+      // rather than one 10.2s wait.
+      vi.advanceTimersByTime(10_200);
+      expect(mockPanelProvider.updateSessions).toHaveBeenCalledTimes(2);
+    });
+
+    it('a disposed flag stops sendUpdate() outright — a late async onChange after deactivation cannot re-arm the timer or post to the torn-down webview', () => {
+      activate(context as any);
+      const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
+      mockPanelProvider.updateSessions.mockClear();
+
+      startCb(); // t=0: immediate send
+      const lastSub = context.subscriptions[context.subscriptions.length - 1];
+      lastSub.dispose();
+
+      // A late async onChange after deactivation — e.g. a startup stage's
+      // callback still resolving — must be a flat no-op: no immediate send,
+      // and (unlike a live call inside the throttle window) no deferred
+      // timer armed for later either.
+      startCb();
+      expect(mockPanelProvider.updateSessions).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(200);
+      expect(mockPanelProvider.updateSessions).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -1647,7 +1777,8 @@ describe('extension', () => {
     function tick() {
       const startCb = vi.mocked(mockDiscovery.start).mock.calls[0][0];
       startCb();
-      // sendUpdate is debounced to 200ms — flush so each tick is one update.
+      // sendUpdate is throttled to one send per 200ms (trailing edge) — flush
+      // past the window so each tick is one update.
       vi.advanceTimersByTime(250);
     }
     // A snapshot that mirrors what production actually emits for a LOCAL session:
@@ -1660,9 +1791,9 @@ describe('extension', () => {
     function snap(over: Record<string, unknown>) {
       return { firstActivity: Date.now(), worktreeRoot: WS, ...over };
     }
-    // Flush the one-shot startup timers (deferred sendUpdate @500ms, focus hint
-    // @800ms) so they can't consume the 200ms sendUpdate debounce window on a
-    // later tick(). Call after the seed tick, before any further diff tick.
+    // Flush the one-shot startup timer (focus hint @800ms) so it can't fire
+    // mid-test and confuse a later assertion. Call after the seed tick,
+    // before any further diff tick.
     function drainStartupTimers() {
       vi.advanceTimersByTime(1000);
       mockPanelProvider.focusSession.mockClear();
@@ -1674,6 +1805,23 @@ describe('extension', () => {
         snap({ sessionId: 'existing-1', status: 'running' }),
       ]);
       tick();
+      expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
+    });
+
+    it('does not seed knownSessionIds on a "pending" tick, so the session already present when the phase turns "ready" is not read as new', () => {
+      activate(context as any);
+      // A 'pending' tick has no local sessions yet — if it seeded, the
+      // still-empty seed would make 'existing-1' look brand new the moment
+      // the local scan lands and wrongly auto-focus it.
+      mockDiscovery.getDiscoveryPhase.mockReturnValueOnce('pending');
+      mockDiscovery.getSnapshots.mockReturnValue([]);
+      tick(); // pending tick — must not seed
+
+      mockDiscovery.getSnapshots.mockReturnValue([
+        snap({ sessionId: 'existing-1', status: 'running' }),
+      ]);
+      tick(); // first non-pending tick — this is the real seed
+
       expect(mockPanelProvider.focusSession).not.toHaveBeenCalled();
     });
 

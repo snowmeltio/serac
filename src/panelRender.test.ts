@@ -14,6 +14,7 @@ import {
   countLiveAgents,
   detailChipState,
   emptyStateHtml,
+  loadingStateHtml,
   modelHue,
   renderCardInner,
   renderCompactRow,
@@ -817,6 +818,18 @@ describe('emptyStateHtml', () => {
     expect(emptyStateHtml(0)).toContain('No Claude Code sessions detected.');
     expect(emptyStateHtml(5)).toContain('5 older sessions beyond the 7-day window.');
     expect(emptyStateHtml(1)).toContain('1 older session beyond');
+  });
+});
+
+describe('loadingStateHtml', () => {
+  it('matches the static "Loading..." shell rendered by panelProvider.getHtml, so the first real render is a visual no-op', () => {
+    const html = loadingStateHtml();
+    expect(html).toBe('<div class="empty-state"><div class="icon">⊘</div><div>Loading...</div></div>');
+  });
+
+  it('is distinct from the ordinary empty state (no hint text, no older-session count)', () => {
+    expect(loadingStateHtml()).not.toContain('hint');
+    expect(loadingStateHtml()).not.toBe(emptyStateHtml(0));
   });
 });
 

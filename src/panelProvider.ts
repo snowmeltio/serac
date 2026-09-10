@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import { randomBytes } from 'crypto';
-import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, FooterSlotPayload, WorktreeRow, DetailSource, PanelUpdate } from './types.js';
+import type { SessionSnapshot, UsageSnapshot, WebviewMessage, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, FooterSlotPayload, WorktreeRow, DetailSource, PanelUpdate, DiscoveryPhase } from './types.js';
 import type { CompactSettings } from './claudeSettings.js';
 import { parseWebviewCommand } from './validation.js';
 import { readSettings, type SeracSettings } from './settings.js';
+import { loadingStateHtml } from './panelUtils.js';
 
 /**
  * WebviewViewProvider for the Agent Activity sidebar panel.
@@ -29,6 +30,10 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private rcServing = false;
   private rcAutoEnrol: boolean | null = null;
   private rcCompanionProfile = false;
+  /** Progressive-first-paint stage — see DiscoveryPhase. Defaults to
+   *  'pending' so the mount-time sendUpdate (before discovery has ever
+   *  called updateSessions) tells the webview to hold the loading state. */
+  private discoveryPhase: DiscoveryPhase = 'pending';
   private onFocusSession: ((sessionId: string) => void) | undefined;
   private onResolveDualWriter: ((sessionId: string) => void) | undefined;
   private onTransferSession: ((sessionId: string) => void) | undefined;
@@ -225,6 +230,9 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
     this.rcServing = update.rcServing ?? false;
     this.rcAutoEnrol = update.rcAutoEnrol === undefined ? null : update.rcAutoEnrol;
     this.rcCompanionProfile = update.rcCompanionProfile ?? false;
+    // Required on PanelUpdate (unlike the ?? defaults above) — every real
+    // caller has a genuine answer, so there is no "omitted" case to default.
+    this.discoveryPhase = update.discoveryPhase;
 
     // Update badge
     if (this.view) {
@@ -279,6 +287,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
       rcServing: this.rcServing,
       rcAutoEnrol: this.rcAutoEnrol,
       rcCompanionProfile: this.rcCompanionProfile,
+      discoveryPhase: this.discoveryPhase,
     };
 
     this.view.webview.postMessage(message);
@@ -303,10 +312,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
   <div id="root">
-    <div class="empty-state">
-      <div class="icon">\u2298</div>
-      <div>Loading...</div>
-    </div>
+    ${loadingStateHtml()}
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
