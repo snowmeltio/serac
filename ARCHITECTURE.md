@@ -1130,13 +1130,20 @@ Consolidated in `session-meta.json` per workspace:
       "dismissed": false,
       "acknowledged": false,
       "acknowledgedAt": null,
-      "firstSeen": 1741500000000
+      "firstSeen": 1741500000000,
+      "tracked": true
     }
   }
 }
 ```
 
 Reloaded every poll cycle (500ms active, 2s idle), enabling external processes to update metadata. Legacy migration from `dismissed-sessions` and `acknowledged-sessions` text files happens on first load.
+
+### Local scan age gate and `tracked`
+
+The active scan (`sessionDiscovery.ts:scanWorkspace`) skips JSONL files older than the fixed 7-day `SCAN_AGE_GATE_MS` so a workspace with a thousand dormant transcripts does not load a thousand `SessionManager`s on startup. The gate is for sessions Serac never had a card for. A session the scan once loaded is stamped `tracked: true` in its meta entry, and from then on **only a dismissal archives it**: an undismissed tracked session is loaded regardless of file age (`isUndismissedCard`), so a card the user never archived cannot silently fall off the list at day 7 while the foreign badge in another window (14-day gate by default) still counts it. `seenLive` stands in for `tracked` on metas written before the flag existed. Undismissing clears the session's `knownOldSessions` classification so the next scan re-stats it and the card returns.
+
+`scanExtendedArchive` (the widened-range title backfill) creates meta entries too, with `dismissed: false` by default, but never sets `tracked`; "not dismissed" alone is therefore not a card signal. Reported 2026-09-10: the hub workspace had 1288 transcripts, 207 ever tracked, 173 of those dismissed, and the remaining 34 undismissed cards were invisible past day 7.
 
 ## Session repair
 

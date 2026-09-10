@@ -330,6 +330,12 @@ export interface SessionMeta {
    *  registry. Persists the SessionManager seen-live latch across window
    *  reloads so the registry death gate stays armed (absent on older metas). */
   seenLive?: boolean;
+  /** True once the active scan has loaded this session as a card. Absent on
+   *  entries created only by the extended-archive title backfill, and on
+   *  metas written before the flag existed (`seenLive` stands in for those).
+   *  An undismissed tracked session survives the scan age gate: the user has
+   *  a card for it and has not archived it, so it stays a card at any age. */
+  tracked?: boolean;
   /** Cached auto-generated title from JSONL `ai-title` records. Persisted so
    *  the display name survives the 7-day archive cutoff, when the lightweight
    *  scanner stops parsing JSONL. Absent = never observed. */

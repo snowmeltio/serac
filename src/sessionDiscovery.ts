@@ -225,6 +225,9 @@ export class SessionDiscovery {
   undismissSession(sessionId: string): void {
     this.meta.getOrCreate(sessionId).dismissed = false;
     this.meta.markDirty();
+    // A tracked session past the age gate was classified old while dismissed;
+    // forget that so the next scan re-stats it and its card comes back.
+    this.knownOldSessions.delete(sessionId);
     this.meta.enqueueSave();
     this.writeThroughDismissal(sessionId, false);
   }
@@ -1300,10 +1303,14 @@ export class SessionDiscovery {
             continue;
           }
           // Age gate [Phase 6]: skip files older than SCAN_AGE_GATE_MS to avoid
-          // loading hundreds of dormant sessions on startup
+          // loading hundreds of dormant sessions on startup. The gate is for
+          // sessions Serac never had a card for; a session it once tracked
+          // and the user has not dismissed is still theirs to archive, so it
+          // stays a card at any age (see SessionMeta.tracked).
           try {
             const stat = await fs.promises.stat(filePath);
-            if (now - stat.mtimeMs > SessionDiscovery.SCAN_AGE_GATE_MS) {
+            if (now - stat.mtimeMs > SessionDiscovery.SCAN_AGE_GATE_MS
+              && !this.isUndismissedCard(sessionId)) {
               olderCount++;
               this.knownOldSessions.add(sessionId);
               continue;
@@ -1364,8 +1371,10 @@ export class SessionDiscovery {
             },
           });
           this.sessions.set(sessionId, manager);
-          // Ensure meta entry exists for newly discovered sessions
-          this.meta.getOrCreate(sessionId);
+          // Ensure meta entry exists for newly discovered sessions, and stamp
+          // it as tracked: from here on only a dismissal archives it.
+          const created = this.meta.getOrCreate(sessionId);
+          if (!created.tracked) { created.tracked = true; }
           this.meta.markDirty();
           // Do initial read
           await manager.update();
@@ -1378,6 +1387,17 @@ export class SessionDiscovery {
       // the listing and skip pruning this cycle (see scan()).
       this.lastScanSessionIds = (err as NodeJS.ErrnoException).code === 'ENOENT' ? new Set() : null;
     }
+  }
+
+  /** A session the active scan once loaded as a card and the user has not
+   *  archived. Backfill-only meta entries (title scan of old files) default to
+   *  dismissed:false without ever having been a card, so "not dismissed" alone
+   *  is not enough — the entry must also be tracked. `seenLive` stands in for
+   *  `tracked` on metas written before the flag existed. */
+  private isUndismissedCard(sessionId: string): boolean {
+    const meta = this.meta.get(sessionId);
+    if (!meta || meta.dismissed) { return false; }
+    return meta.tracked === true || meta.seenLive === true;
   }
 
   /** Number of JSONL files in the local workspace older than the active
