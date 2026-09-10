@@ -108,7 +108,11 @@ import type {
   JsonlRecord,
   JsonlContentBlock,
   BridgeTransition,
+  CachedSessionState,
+  FileStamp,
+  CachedPlainKey,
 } from './types.js';
+import { CACHED_PLAIN_KEYS } from './types.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
@@ -129,6 +133,7 @@ import { makeBackgroundShellTracker, type BackgroundShellTracker, BACKGROUND_SHE
 import { makeSessionLoopTracker, type SessionLoopTracker } from './trackers/sessionLoopTracker.js';
 import { makeGlanceTracker } from './trackers/glanceTracker.js';
 import type { HookEventRouter } from './hookEventRouter.js';
+import { REPLAY_CACHE_QUIET_MS, sameStamp } from './replayCache.js';
 
 /** Idle threshold: if no new data for 5s after a turn, mark as idle/done */
 const IDLE_DELAY_MS = 5000;
@@ -191,6 +196,31 @@ export function setConfidenceThresholds(highMs: number, mediumMs: number): void 
   CONFIDENCE_MEDIUM_MS = mediumMs;
 }
 
+
+/** Constructor options, extracted so {@link SessionManager.fromCache} can
+ *  share the exact same shape without repeating the inline literal. */
+export interface SessionManagerOptions {
+  onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
+  /** Remote Control bridge enrol/drop/re-enrol trace — see the field. */
+  onBridgeTransition?: (ev: BridgeTransition) => void;
+  hookRouter?: HookEventRouter;
+  livenessProbe?: () => boolean | null;
+  /** Reports which window(s) confirmed-own this session's live writer
+   *  process(es) right now. See writerOwnershipProbe field. */
+  writerOwnershipProbe?: () => WriterAggregate;
+  /** Seed for the seen-live-in-registry latch, persisted across window
+   *  reloads via session-meta.json — without it every reload disarmed the
+   *  registry death gate until the session was re-observed live. */
+  registrySeenLive?: boolean;
+  /** Fired once, the first time this instance observes the session live in
+   *  the registry — the caller persists the latch. */
+  onRegistrySeenLive?: () => void;
+  /** Configured default model (e.g. "sonnet"), used to seed the model pill
+   *  before the first assistant record confirms the actual model. Shown
+   *  with a trailing '*' until confirmed. Omit to leave the pill blank
+   *  until confirmed (current behaviour — used by tests). */
+  defaultModelGuess?: string;
+}
 
 /**
  * Manages state for a single Claude Code session.
@@ -329,33 +359,17 @@ export class SessionManager {
    *  snapshots can be tagged for cross-worktree display. */
   private worktreeRoot?: string;
   private worktreeLabel?: string;
+  /** Set only by hydrate() (see fromCache()): the exact {size, mtimeMs} stamp
+   *  the cache entry was keyed on. Presence is the "am I hydrated?" test
+   *  (isHydrated()) — undefined for every ordinarily-constructed manager, and
+   *  for a hydrated one once beginFullReplay() has rebuilt it from byte 0. */
+  private hydratedFrom?: FileStamp;
 
   constructor(
     sessionId: string,
     filePath: string,
     workspaceKey: string,
-    opts: {
-      onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
-      /** Remote Control bridge enrol/drop/re-enrol trace — see the field. */
-      onBridgeTransition?: (ev: BridgeTransition) => void;
-      hookRouter?: HookEventRouter;
-      livenessProbe?: () => boolean | null;
-      /** Reports which window(s) confirmed-own this session's live writer
-       *  process(es) right now. See writerOwnershipProbe field. */
-      writerOwnershipProbe?: () => WriterAggregate;
-      /** Seed for the seen-live-in-registry latch, persisted across window
-       *  reloads via session-meta.json — without it every reload disarmed the
-       *  registry death gate until the session was re-observed live. */
-      registrySeenLive?: boolean;
-      /** Fired once, the first time this instance observes the session live in
-       *  the registry — the caller persists the latch. */
-      onRegistrySeenLive?: () => void;
-      /** Configured default model (e.g. "sonnet"), used to seed the model pill
-       *  before the first assistant record confirms the actual model. Shown
-       *  with a trailing '*' until confirmed. Omit to leave the pill blank
-       *  until confirmed (current behaviour — used by tests). */
-      defaultModelGuess?: string;
-    } = {},
+    opts: SessionManagerOptions = {},
   ) {
     const now = new Date();
     this.onTransition = opts.onTransition;
@@ -471,6 +485,139 @@ export class SessionManager {
     };
   }
 
+  /** Construct a SessionManager already in the `done` state described by a
+   *  dormant-session replay cache entry, instead of replaying the JSONL from
+   *  byte 0. `stamp` is the {size, mtimeMs} the cache entry was captured
+   *  against (ReplayCacheEntry's own fields). Callers (PR D) must have
+   *  already confirmed `isHydratable()` against the file's CURRENT stat
+   *  before calling this — fromCache() does not re-check.
+   *
+   *  Note what this does NOT buy: a subsequent update() does not do an
+   *  incremental "just the new bytes" read. Any change at all to the file —
+   *  a single appended byte — invalidates the hydration entirely and the
+   *  next update() replays the WHOLE file from offset 0 (see the
+   *  updateInner() hydrated-guard and beginFullReplay()). The seeded tailer
+   *  offset exists only so getReadStamp() reports the truth about what this
+   *  manager currently represents while nothing has changed; it is not a
+   *  resume point. */
+  static fromCache(
+    sessionId: string,
+    filePath: string,
+    workspaceKey: string,
+    opts: SessionManagerOptions,
+    cached: CachedSessionState,
+    stamp: FileStamp,
+  ): SessionManager {
+    const mgr = new SessionManager(sessionId, filePath, workspaceKey, opts);
+    mgr.hydrate(cached, stamp);
+    return mgr;
+  }
+
+  /** Populate state from a cache entry in place of the normal JSONL replay.
+   *  See ARCHITECTURE.md "Replay cache" for the eligibility/invalidation
+   *  contract this pairs with (isHydratable(), exportCachedState()), and the
+   *  narrative hazard list there for why each design choice below matters —
+   *  kept in one place rather than duplicated per call site. In short: status
+   *  is FORCED to `done` regardless of the cached value; no timers are armed;
+   *  subagents are rebuilt through the ordinary createSubagent()/
+   *  completeSubagent() factory pair rather than the live onSpawn() path
+   *  (which would arm a silence timer on an already-finished subagent). */
+  private hydrate(cached: CachedSessionState, stamp: FileStamp): void {
+    // CACHED_PLAIN_KEYS (sessionTypes.ts) is the single source of truth for
+    // which SessionState fields are copied verbatim — a compile-time
+    // exhaustiveness check there forces a decision on every new field.
+    for (const key of CACHED_PLAIN_KEYS) {
+      (this.state as Record<CachedPlainKey, unknown>)[key] = cached[key];
+    }
+    this.state.status = 'done'; // forced — cached.status is 'done' by TYPE (tryNormaliseEntry rejects anything else), but never trusted implicitly
+    this.state.lastActivity = new Date(cached.lastActivity);
+    this.state.firstActivity = new Date(cached.firstActivity);
+    // modelId/modelConfirmed are handled as a pair, NOT via CACHED_PLAIN_KEYS:
+    // an UNCONFIRMED cached modelId is just the OLD window's config-derived
+    // defaultModelGuess at construction time. Caching it verbatim would
+    // freeze a stale model pill forever on a hydrated enqueue-only session
+    // (the file never changes again, so nothing ever re-derives it) — even
+    // after the user changes the default model setting and reloads. Only
+    // adopt the cached value when it was actually CONFIRMED by a real
+    // assistant record; otherwise leave the constructor's own
+    // defaultModelGuess-derived modelId/modelConfirmed (already set, since
+    // fromCache() constructs normally before calling hydrate()) untouched.
+    if (cached.modelConfirmed) {
+      this.state.modelId = cached.modelId;
+      this.state.modelConfirmed = true;
+    }
+
+    this.jsonlPermissionMode = cached.jsonlPermissionMode;
+    this.enqueuedAt = cached.enqueuedAt;
+    this.firstActivitySet = true;
+
+    this.cwdTracker.restore({ cwd: cached.cwd, initialCwd: cached.initialCwd });
+    this.glance.restore({
+      topic: cached.topic,
+      gitBranch: cached.gitBranch,
+      toolErrorCount: cached.toolErrorCount,
+      lastAssistantText: cached.lastAssistantText,
+      trackedFiles: cached.trackedFiles,
+    });
+
+    for (const cs of cached.subagents) {
+      this.state.subagents.push(this.restoreSubagent(cs));
+    }
+
+    // Seed the tailer at the cache stamp's size (the initialOffset
+    // constructor seam — jsonlTailer.ts) and mirror the stamp into the
+    // tailer's OWN public fields, not just this manager's lastMtimeMs — see
+    // getReadStamp()'s doc comment on why both matter: a real JsonlTailer's
+    // lastSize starts at 0 until an actual read, so leaving it unseeded made
+    // getReadStamp() report {size: 0, caughtUp: true} for a hydrated-but-
+    // not-yet-updated manager, silently wrong.
+    this.tailer = new JsonlTailer(this.state.filePath, stamp.size);
+    this.tailer.lastSize = stamp.size;
+    this.tailer.lastMtimeMs = stamp.mtimeMs;
+    this.lastMtimeMs = stamp.mtimeMs;
+    this.initialReplayDone = true;
+    this.hydratedFrom = stamp;
+    // No timers armed.
+  }
+
+  /** Build a terminal (never-running) SubagentInfo directly from a cached
+   *  entry — the roster-row fields plus an inert PermissionTracker, nothing
+   *  a live spawn needs. Deliberately NOT createSubagent()+completeSubagent():
+   *  that pair registers a real HookPermissionTracker on the hook router
+   *  (when one is wired) only to immediately dispose it, and stamps
+   *  toolsCompleted/startedAt/lastActivity to defaults that then need
+   *  patching after the fact. Mirrors createSubagent()'s own construction-
+   *  order comment: the tracker's host closure captures `subagent` via a
+   *  forward declaration, since the closure never actually runs (nothing
+   *  fires an already-disposed tracker). */
+  private restoreSubagent(cs: CachedSessionState['subagents'][number]): SubagentInfo {
+    let subagent!: SubagentInfo;
+    const tracker = makePermissionTracker({
+      getActiveTools: () => new Map(),
+      getLastToolResultAt: () => 0,
+      onWaitingFired: () => { /* unreachable: never armed, disposed below */ },
+    }, {});
+    tracker.dispose();
+    subagent = {
+      parentToolUseId: cs.parentToolUseId,
+      description: cs.description,
+      running: false,
+      waitingOnPermission: false,
+      lastActivity: new Date(cs.lastActivity),
+      activeTools: new Map(),
+      permissionTracker: tracker,
+      acknowledged: false,
+      tailer: null,
+      silenceTimerId: undefined,
+      agentId: cs.agentId,
+      startedAt: new Date(cs.startedAt),
+      resultPreview: cs.resultPreview,
+      toolsCompleted: cs.toolsCompleted,
+      background: cs.background ?? false,
+    };
+    return subagent;
+  }
+
   /** Reset derived state (called on JSONL truncation to avoid corrupt accumulation) [H1]
    *  Preserves topic, customTitle, and aiTitle so display names survive compaction. */
   private resetState(): void {
@@ -531,6 +678,34 @@ export class SessionManager {
   }
 
   private async updateInner(): Promise<boolean> {
+    // Hydrated-manager guard, evaluated before ANY read: a manager built via
+    // fromCache() has no tailer offset that reflects the file's true content
+    // yet (it was seeded from the cache entry's stamp, not by actually
+    // reading), and no internal state has been rebuilt record-by-record — it
+    // was assigned wholesale from the cache. Feeding it live records on top
+    // of that would double-count or corrupt state no live tailer ever
+    // produced. So: stat first, and only ever do one of two things — confirm
+    // nothing changed (cheap, common case — most hydrated sessions never
+    // change again) or blow the hydration away and replay from byte 0 before
+    // touching a single live record (see beginFullReplay()).
+    if (this.hydratedFrom) {
+      let stat: fs.Stats;
+      try {
+        stat = await fs.promises.stat(this.state.filePath);
+      } catch {
+        return false; // file gone — discovery will prune
+      }
+      if (sameStamp(stat, this.hydratedFrom)) {
+        return false; // unchanged since the cache snapshot — nothing to do
+      }
+      // Changed: the cached state can no longer be trusted to match what's
+      // actually on disk. beginFullReplay() clears hydratedFrom and rewinds
+      // the tailer to 0, so initialReplayDone below reads false and the
+      // WHOLE drain that follows — every slice, not just the first — runs as
+      // isReplay === true, exactly like a fresh (never-cached) window open.
+      this.beginFullReplay();
+    }
+
     // The whole drain below — however many capped slices it takes — is one
     // replay/live batch, decided once before any read: an empty first read
     // (a just-created session) still counts as the replay, and (critically)
@@ -588,7 +763,19 @@ export class SessionManager {
       // the safety net against spinning).
       if (this.tailer.getOffset() >= this.tailer.lastSize || this.tailer.getOffset() <= before) { break; }
     }
-    this.initialReplayDone = true;
+    // Only a read that actually STATTED the file (lastMtimeMs > 0 — the same
+    // condition getReadStamp().caughtUp uses) counts as having completed the
+    // replay. A read whose very first fs.promises.open() failed (file gone,
+    // a transient race right at window open, or — for a hydrated manager
+    // whose stat just came back mismatched — a stat that immediately fails
+    // again on the very next call) never touched the file at all: leaving
+    // initialReplayDone false means the NEXT successful read is still
+    // correctly treated as the replay (isReplay === true), instead of
+    // silently graduating to "live" (writer-pid capture, bridge-transition
+    // logging) for a transcript nothing has actually been read from yet.
+    if (this.tailer.lastMtimeMs > 0) {
+      this.initialReplayDone = true;
+    }
 
     if (!anyRecords && this.subagentLifecycle.getActiveTailerCount() === 0) {
       return sawTruncation;
@@ -751,6 +938,32 @@ export class SessionManager {
     return this.runThenReplay(async () => undefined, () => true).then(() => undefined);
   }
 
+  /** Rewind to a from-scratch replay: reset the tailer to offset 0, reset
+   *  derived state (titles/topic survive — see resetState()), and clear any
+   *  hydration. Shared by runThenReplay() (a transcript the CHAIN just
+   *  rewrote) and updateInner()'s hydrated guard (a transcript that changed
+   *  underneath a cached manager) — both need the exact same "throw away
+   *  everything not worth trusting, start the state machine over" step. */
+  private beginFullReplay(): void {
+    this.tailer.reset();
+    // JsonlTailer.reset() only rewinds `offset`/the line buffer — it does
+    // NOT touch `lastMtimeMs`/`lastSize` (both stat-derived, meant to be
+    // refreshed by the NEXT real read). For an ordinary live tailer that's
+    // fine (its lastMtimeMs already reflects a genuine prior read). For a
+    // manager that was HYDRATED, hydrate() seeded those two fields directly
+    // from the cache stamp without ever doing a real read — leaving them
+    // nonzero here would let updateInner()'s `tailer.lastMtimeMs > 0` check
+    // wrongly treat a replay whose very first read fails to open the file
+    // (ENOENT, a transient race) as having completed, silently graduating
+    // the NEXT read to "live". Zeroing here is correct for every caller: a
+    // real subsequent read overwrites it immediately in the common case.
+    this.tailer.lastMtimeMs = 0;
+    this.tailer.lastSize = 0;
+    this.resetState();
+    this.initialReplayDone = false;
+    this.hydratedFrom = undefined;
+  }
+
   /** Run `fn` (typically a rewrite of this transcript) INSIDE the update
    *  chain, then replay when `needsReplay(result)` says so. Running the write
    *  on the chain matters: the rename bumps the file's mtime, which wakes the
@@ -762,9 +975,7 @@ export class SessionManager {
     const p = this.updateChain.then(async () => {
       const result = await fn();
       if (needsReplay(result)) {
-        this.tailer.reset();
-        this.resetState();
-        this.initialReplayDone = false;
+        this.beginFullReplay();
         // Unlike compaction, the writer HAS changed: the phone's process is
         // gone and a new one will resume here. A stale pid would make
         // isProcessAlive() answer "dead" and cut the thinking grace short.
@@ -800,6 +1011,22 @@ export class SessionManager {
   async checkMtime(): Promise<boolean> {
     try {
       const stat = await fs.promises.stat(this.state.filePath);
+      if (this.hydratedFrom) {
+        // A hydrated manager compares against the STAMP the cache entry was
+        // captured against, via sameStamp() — NOT the ordinary
+        // mtime-newer-OR-unread-bytes check below. Two reasons the ordinary
+        // check doesn't apply here: (1) a rewrite that replaces the file's
+        // content without growing it (same byte count, different bytes —
+        // not a real-world JSONL append pattern today, but nothing prevents
+        // one) would leave `size` unchanged and so be missed by "size >
+        // offset"; (2) mtime is not guaranteed monotonic across processes/
+        // clock adjustments, so "mtime > last" alone can miss a genuine
+        // change whose mtime happens to read equal or earlier. Exact
+        // equality on BOTH axes sidesteps both cases outright — this is the
+        // poll loop's wake trigger for a dormant hydrated session
+        // (sessionDiscovery.ts, sessionPolling.ts).
+        return !sameStamp(stat, this.hydratedFrom);
+      }
       return stat.mtimeMs > this.lastMtimeMs || stat.size > this.tailer.getOffset();
     } catch {
       return false; // file gone — will be pruned by discovery
@@ -811,12 +1038,99 @@ export class SessionManager {
    *  a dormant-session replay cache can use this to refuse caching a session
    *  whose transcript hasn't been fully drained. Requires a confirmed stat
    *  (`lastMtimeMs > 0`) so a session whose file was never successfully
-   *  statted doesn't read as trivially caught up (0 >= 0). */
-  getReadStamp(): { size: number; mtimeMs: number; caughtUp: boolean } {
+   *  statted doesn't read as trivially caught up (0 >= 0). For a hydrated
+   *  manager this reports the CACHE STAMP truthfully (hydrate() seeds both
+   *  `tailer.lastSize`/`tailer.lastMtimeMs`, not just this.lastMtimeMs) —
+   *  without that seeding this read as {size: 0, caughtUp: true} for a
+   *  hydrated-but-not-yet-updated manager, since a real JsonlTailer's
+   *  lastSize starts at 0 until an actual read. */
+  getReadStamp(): FileStamp & { caughtUp: boolean } {
     return {
       size: this.tailer.lastSize,
       mtimeMs: this.lastMtimeMs,
       caughtUp: this.lastMtimeMs > 0 && this.tailer.getOffset() >= this.tailer.lastSize,
+    };
+  }
+
+  /** True once fromCache()/hydrate() has populated this manager from a
+   *  replay-cache entry and it has not since been invalidated by
+   *  beginFullReplay() (a live change to the underlying file). Used by
+   *  exportCachedState() (never re-cache an already-hydrated session — it
+   *  would just write back exactly what was read in, for no benefit) and by
+   *  tests/poll-loop tracing. */
+  isHydrated(): boolean {
+    return this.hydratedFrom !== undefined;
+  }
+
+  /** Export this session's state for the dormant-session replay cache, or
+   *  null when it isn't eligible. Deliberately conservative — only a boring,
+   *  fully-quiet `done` session with nothing else going on is worth caching;
+   *  see CachedSessionState's doc comment for exactly what is (and is not)
+   *  carried over, and ARCHITECTURE.md "Replay cache" for the full
+   *  eligibility contract this pairs with (isHydratable() re-checks the file
+   *  stat + liveness at HYDRATION time, independently of this export-time
+   *  check).
+   *
+   *  Refuses when: not `done`; any active tool; any subagent still running;
+   *  any outstanding background shell; a pending wakeup or session cron
+   *  (the session isn't actually finished — it's sleeping); compacting; the
+   *  tailer hasn't fully drained the file yet (getReadStamp().caughtUp,
+   *  see checkMtime()'s doc comment on the >16MB drain-loop safety net);
+   *  the registry confirms a live process right now; the quiet window
+   *  (REPLAY_CACHE_QUIET_MS since lastActivity) hasn't elapsed; or this
+   *  manager is itself already hydrated (nothing new to capture). */
+  exportCachedState(now: number = Date.now()): CachedSessionState | null {
+    if (this.state.status !== 'done') { return null; }
+    if (this.state.activeTools.size > 0) { return null; }
+    if (this.state.subagents.some(s => s.running)) { return null; }
+    if (this.backgroundShellTracker.hasOutstanding()) { return null; }
+    if (this.loopTracker.pendingWakeup(now) || this.loopTracker.cronCount(now) > 0) { return null; }
+    if (this.state.compacting) { return null; }
+    if (!this.getReadStamp().caughtUp) { return null; }
+    if (this.registryLiveness() === true) { return null; }
+    if (now - this.state.lastActivity.getTime() < REPLAY_CACHE_QUIET_MS) { return null; }
+    if (this.isHydrated()) { return null; }
+
+    // CACHED_PLAIN_KEYS (sessionTypes.ts) is the single source of truth for
+    // which SessionState fields are copied verbatim — see hydrate()'s mirror
+    // of this same loop.
+    const plain = {} as Pick<CachedSessionState, CachedPlainKey>;
+    for (const key of CACHED_PLAIN_KEYS) {
+      (plain as Record<CachedPlainKey, unknown>)[key] = this.state[key];
+    }
+
+    const cwdState = this.cwdTracker.getState();
+    return {
+      ...plain,
+      sessionId: this.state.sessionId,
+      workspaceKey: this.state.workspaceKey,
+      cwd: cwdState.cwd,
+      initialCwd: cwdState.initialCwd,
+      topic: this.glance.getTopic(),
+      status: 'done',
+      lastActivity: this.state.lastActivity.getTime(),
+      firstActivity: this.state.firstActivity.getTime(),
+      enqueuedAt: this.enqueuedAt,
+      // Handled as a pair, NOT via CACHED_PLAIN_KEYS — see hydrate()'s
+      // matching comment. Writing the guess verbatim would freeze a stale
+      // model pill on a hydrated enqueue-only session forever, since the
+      // cached file never changes again to re-derive it.
+      modelId: this.state.modelConfirmed ? this.state.modelId : '',
+      modelConfirmed: this.state.modelConfirmed,
+      jsonlPermissionMode: this.jsonlPermissionMode,
+      ...this.glance.snapshotFields(),
+      subagents: this.state.subagents
+        .filter(s => !s.running)
+        .map(s => ({
+          parentToolUseId: s.parentToolUseId,
+          agentId: s.agentId,
+          description: s.description,
+          resultPreview: s.resultPreview,
+          toolsCompleted: s.toolsCompleted,
+          startedAt: s.startedAt.getTime(),
+          lastActivity: s.lastActivity.getTime(),
+          background: s.background || undefined,
+        })),
     };
   }
 

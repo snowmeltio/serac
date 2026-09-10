@@ -51,6 +51,33 @@ describe('CwdTracker', () => {
     t.dispose();
     t.dispose();
   });
+
+  it('restore() sets cwd/initialCwd verbatim, bypassing the sanitisation-match gate', () => {
+    const t = makeCwdTracker('-Users-foo-bar');
+    // A cwd that would NOT pass onCwd()'s workspaceKey match (it sanitises to
+    // a different key) still round-trips through restore() unchanged — the
+    // cached value was already validated when it was captured.
+    t.restore({ cwd: '/Users/foo/bar/subdir', initialCwd: '/Users/foo/bar' });
+    expect(t.getState()).toEqual({ cwd: '/Users/foo/bar/subdir', initialCwd: '/Users/foo/bar' });
+  });
+
+  it('restore() round-trips whatever getState() previously produced', () => {
+    const original = makeCwdTracker('-Users-foo-bar');
+    original.onCwd('/Users/foo/bar');
+    original.onCwd('/Users/foo/bar/subdir');
+    const state = original.getState();
+
+    const restored = makeCwdTracker('-Users-foo-bar');
+    restored.restore(state);
+    expect(restored.getState()).toEqual(state);
+  });
+
+  it('restore() overwrites any prior state', () => {
+    const t = makeCwdTracker('-Users-foo-bar');
+    t.onCwd('/Users/foo/bar');
+    t.restore({ cwd: '/elsewhere', initialCwd: '' });
+    expect(t.getState()).toEqual({ cwd: '/elsewhere', initialCwd: '' });
+  });
 });
 
 describe('CwdTracker (hook overlay)', () => {
@@ -106,5 +133,12 @@ describe('CwdTracker (hook overlay)', () => {
     tracker.dispose();
     router.onHookEvent(SID, 'SessionStart', { cwd: '/should/not/apply' });
     expect(tracker.getState().cwd).toBe('');
+  });
+
+  it('restore() delegates to the JSONL-derived fallback', () => {
+    const { tracker } = setup();
+    tracker.restore({ cwd: '/cached/cwd', initialCwd: '/cached/initial' });
+    expect(tracker.getState()).toEqual({ cwd: '/cached/cwd', initialCwd: '/cached/initial' });
+    tracker.dispose();
   });
 });

@@ -26,6 +26,12 @@ export interface CwdTracker {
   onCwd(cwd: string | undefined): void;
   /** Read current cwd state. Safe to call any time. */
   getState(): Readonly<CwdState>;
+  /** Restore cwd/initialCwd verbatim from a cached snapshot (dormant-session
+   *  replay cache hydration, sessionManager.ts hydrate()). Bypasses onCwd()'s
+   *  sanitisation-match gate on initialCwd — the cached value was already
+   *  validated against workspaceKey when it was captured, so re-deriving it
+   *  here would be redundant and, for a cwd that has since drifted, wrong. */
+  restore(state: Readonly<CwdState>): void;
   /** Stop the tracker. Idempotent. */
   dispose(): void;
 }
@@ -42,6 +48,11 @@ class JsonlDerivedCwdTracker implements CwdTracker {
     if (!this.initialCwd && sanitiseWorkspaceKey(cwd) === this.workspaceKey) {
       this.initialCwd = cwd;
     }
+  }
+
+  restore(state: Readonly<CwdState>): void {
+    this.cwd = state.cwd;
+    this.initialCwd = state.initialCwd;
   }
 
   getState(): Readonly<CwdState> {
@@ -83,6 +94,7 @@ class HookCwdTracker implements CwdTracker {
   }
 
   onCwd(cwd: string | undefined): void { this.fallback.onCwd(cwd); }
+  restore(state: Readonly<CwdState>): void { this.fallback.restore(state); }
   getState(): Readonly<CwdState> { return this.fallback.getState(); }
 
   dispose(): void {

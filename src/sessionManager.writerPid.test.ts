@@ -40,11 +40,20 @@ vi.mock('./jsonlTailer.js', () => ({
     // single-read behaviour these mocks were built for.
     private offset = 0;
     lastSize = 0;
+    lastMtimeMs = 0;
+    // A real tailer stats the file on every call (even one that finds no
+    // new records) and sets lastMtimeMs from that stat — see
+    // jsonlTailer.ts's readNewRecords(). Mirror that here with a call
+    // counter, independent of whether records were found, so an empty
+    // read still "counts as the replay" the same way a real one does.
+    private reads = 0;
     async readNewRecords() {
       const r = mockRecords;
       mockRecords = [];
       if (r.length > 0) { this.offset++; }
       this.lastSize = this.offset;
+      this.reads++;
+      this.lastMtimeMs = this.reads;
       return r;
     }
     getOffset() { return this.offset; }

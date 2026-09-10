@@ -33,6 +33,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `panelRender.ts` | Pure HTML builders for the sidebar (cards, foreign/worktree rows, archive rows, usage section) plus the webview view-type mirrors. No DOM access; ambient state arrives via an explicit `RenderContext` built once per render pass, so every builder is unit-testable without jsdom. |
 | `jsonlTailer.ts` | Byte-offset file reader. Tracks read position, buffers incomplete lines across reads. Caps a single `readNewRecords()` call to `MAX_READ_PER_CYCLE` (16 MB); `SessionManager.updateInner()` loops internally (mirroring `detailPanel.ts`'s transcript-tailing loop) to drain a bigger transcript fully within one `update()` call — see `checkMtime()`/`getReadStamp()`. |
 | `jsonlPeek.ts` | Head-only JSONL reads for a single cheap field, bypassing `JsonlTailer` and the session state machine entirely. `readJsonlHeadLines()`/`findInLines()` are the pure building blocks; `peekCwd()` (bounded to 1 MB — `cwd` is serialised after `message`, and a large injected CLAUDE.md/system-reminder payload ahead of it can push past a naive small window) is the concrete lookup used by `siblingWorktreeManager.ts` to classify an unclassified workspace dir without a full `SessionManager` replay. Returns the FIRST cwd seen (the launch cwd), not the latest — deliberately not full parity with a live `SessionManager`'s snapshot, which tracks the latest and drifts on a mid-session `cd`. |
+| `replayCache.ts` | Dormant-session replay cache: one JSON file shared by every window/profile/account, sparing an unchanged `done` session a full byte-0 JSONL replay on the next window open. Pure: `parseReplayCache`/`serialiseReplayCache`, `isHydratable` (the hydration eligibility check), `pruneEntries`, `mergeEntries` (newest-`cachedAt`-wins, for the shared-file merge-on-save). I/O: `makeReplayCacheStore()` — atomic tmp-then-rename writes (mirrors `sessionMetaStore.ts`), rate-limited and dirty-only, that re-read-and-merge before every write. See "Replay cache" below and `SessionManager.fromCache()`/`hydrate()`/`exportCachedState()`. Wired into discovery in a follow-up PR — this module ships the mechanism only. |
 | `sessionRepair.ts` | JSONL metadata repair. Reads tail 64KB, appends `custom-title` record if no metadata exists. |
 | `transcriptRenderer.ts` | JSONL to markdown converter. Renders user/assistant/system records with tool summaries. |
 | `types.ts` | Central type re-export shim. Definitions live in domain modules: `sessionTypes.ts` (SessionState, SessionSnapshot, SessionMeta), `teamTypes.ts`, `workflowTypes.ts`, `panelTypes.ts` (UsageSnapshot, WebviewMessage, SeracExports), `jsonlTypes.ts` (JsonlRecord). |
@@ -95,6 +96,7 @@ waiting ──→ done          (waiting hard ceiling 10min, or registry-confirm
 running ──→ done          (registry-confirmed process death)
 any ──→ done              (queue-operation: enqueue, JSONL truncation)
 done ──→ stale            (display-only: acknowledged + 10s elapsed)
+(none) ──→ done           (hydrated from replay cache; stat mismatch → full replay from byte 0 — see "Replay cache" below)
 ```
 
 Internal statuses are `running | waiting | done`. `stale` and `idle` are display-only labels applied in `SessionDiscovery.getSnapshots()` and `panel.ts`.
@@ -1157,6 +1159,106 @@ Reloaded every poll cycle (500ms active, 2s idle), enabling external processes t
 The active scan (`sessionDiscovery.ts:scanWorkspace`) skips JSONL files older than the fixed 7-day `SCAN_AGE_GATE_MS` so a workspace with a thousand dormant transcripts does not load a thousand `SessionManager`s on startup. The gate is for sessions Serac never had a card for. A session the scan once loaded is stamped `tracked: true` in its meta entry, and from then on **only a dismissal archives it**: an undismissed tracked session is loaded regardless of file age (`isUndismissedCard`), so a card the user never archived cannot silently fall off the list at day 7 while the foreign badge in another window (14-day gate by default) still counts it. `seenLive` stands in for `tracked` on metas written before the flag existed. Undismissing clears the session's `knownOldSessions` classification so the next scan re-stats it and the card returns.
 
 `scanExtendedArchive` (the widened-range title backfill) creates meta entries too, with `dismissed: false` by default, but never sets `tracked`; "not dismissed" alone is therefore not a card signal. Reported 2026-09-10: the hub workspace had 1288 transcripts, 207 ever tracked, 173 of those dismissed, and the remaining 34 undismissed cards were invisible past day 7.
+
+### Replay cache
+
+A second on-disk file, separate from `session-meta.json` above and shared by
+every window, VS Code profile, and farmed account on the machine: one JSON
+blob keyed by each session's absolute JSONL path (`replayCache.ts`). Purpose:
+a dormant `done` session whose file hasn't changed since it was last read
+shouldn't be replayed from byte 0 again just because a new window opened.
+
+**Eligibility (writing an entry) — `SessionManager.exportCachedState(now)`.**
+Deliberately conservative: refuses unless the session is `done`, has no
+active tools, no running subagent (including a live `run_in_background`
+agent — the card can read `done` while one keeps working, see "Detached
+(run_in_background) agents" above), no outstanding background shell, no
+pending `ScheduleWakeup`/session cron, isn't mid-compaction, its tailer has
+fully drained the file (`getReadStamp().caughtUp` — see the `checkMtime()`
+doc comment on the >16 MB drain-loop safety net), the process registry
+doesn't confirm it live right now, it has been quiet (no `lastActivity`) for
+at least `REPLAY_CACHE_QUIET_MS` (`EXTERNAL_WRITER_QUIET_MS`, 10 min), and
+the manager isn't itself already hydrated (re-exporting a hydrated session
+would just write back what was read in). What's captured
+(`CachedSessionState`, `sessionTypes.ts`) is exactly what a dormant done card
+and the discovery gates need — identity, cwd/initialCwd, topic/activity,
+timestamps, the `CACHED_PLAIN_KEYS` fields (model/title/permission-mode/
+bridge/entrypoint/end-reason — a compile-time exhaustiveness check on
+`SessionState`'s keys forces every new field into an explicit
+cache-or-exclude decision, see the type's own doc comment), glance fields,
+and done subagents. `modelId` is the one field with its own rule: only
+carried over when `modelConfirmed` is true, because an unconfirmed value is
+just the OLD window's config-derived default guess — caching it verbatim
+would freeze a stale model pill forever on a session whose file never
+changes again to re-derive it.
+
+**Hydration (reading an entry) — `SessionManager.fromCache()`/`hydrate()`,
+gated by `isHydratable(entry, stat, live)`.** Requires the entry's
+`{size, mtimeMs}` stamp to match the file's CURRENT stat **exactly** on both
+axes (via `sameStamp()`) and the registry liveness probe to not read `true`.
+Doesn't re-check the quiet window or `status === 'done'`: both were already
+enforced once, at export time, and the stamp match above guarantees the file
+hasn't changed since that already-validated moment — re-checking against a
+DIFFERENT wall clock (whenever this window happens to poll) would only ever
+make hydration needlessly more conservative. `hydrate()` assigns state
+wholesale, FORCES status to `done` regardless of what the cache blob says
+(defence in depth — `status` is the literal `'done'` type and anything else
+is rejected at parse time, but a serialised value is never trusted
+implicitly), restores `cwdTracker`/`glanceTracker` via their `restore()`
+methods, and rebuilds done subagents directly (a private `restoreSubagent()`
+builds the terminal shape — inert `PermissionTracker`, `running: false` —
+rather than routing through the live spawn/complete factory pair, which
+would register-then-immediately-dispose a real hook subscription for no
+benefit). A fresh `JsonlTailer` is seeded at the cache stamp's `size` (the
+tailer's `initialOffset` constructor seam) purely so `getReadStamp()` reports
+the stamp truthfully while nothing has changed — **not** an incremental
+resume point: any change at all invalidates the whole hydration (see
+Invalidation below), and the next read replays the ENTIRE file from byte 0,
+same as an uncached session. No timers are armed.
+
+**Invalidation.** `updateInner()` gates on `isHydrated()` before any read: it
+stats the file, returns `false` unchanged if the stat still matches the
+stamp exactly (`sameStamp()`), and otherwise calls `beginFullReplay()`
+(tailer reset to offset 0 + the truncation-style `resetState()`, titles
+survive) BEFORE any live record is processed, so the whole re-read runs as
+`isReplay === true` — identical suppression of writer-pid capture,
+bridge-transition logging, etc. as a fresh, never-cached window open.
+`checkMtime()` on a hydrated manager compares via `sameStamp()` (exact
+equality on both axes), not the ordinary `mtime > last || size > offset` OR:
+the ordinary check can miss a same-size content rewrite (size axis alone
+can't see it) or a non-monotonic mtime (clock adjustment, cross-process
+skew — the ordinary check assumes mtime only ever increases). `initialReplayDone`
+is set only once a read actually STATTED the file (`tailer.lastMtimeMs > 0`,
+the same condition `getReadStamp().caughtUp` uses) — a read whose
+`fs.promises.open()` itself failed must not silently graduate the NEXT read
+to "live" for a transcript nothing has actually been read from yet.
+`demoteIfStale()` never runs against a hydrated manager: it's only invoked by
+the poll loops for sessions already active or just woken, and a hydrated
+manager starts (and until something changes, stays) `done`.
+
+**Version + concurrency.** `REPLAY_CACHE_VERSION` gates the whole file — a
+mismatch is treated as absent, never partially trusted. **Bump it whenever a
+status-machine change alters what a cached `done` snapshot means** (see
+CLAUDE.md's "State machine changes" convention). Several processes share one
+file, so the store's `flush()` re-reads (skipped when the cache file's own
+stat is unchanged since this store last touched it) and merges
+(newest-`cachedAt`-wins) before writing — never a blind overwrite — atomically
+(unique `<path>.<pid>.<seq>.tmp` + rename, mirroring `sessionMetaStore.ts`),
+rate limited to one write per 30 s and only when dirty (`flush(now, {force})`
+bypasses the interval for a shutdown-time flush). This NARROWS but does not
+CLOSE the lost-update race between two windows flushing at the same instant —
+the loser's entries are simply re-exported and re-written on its own next
+flush, one cycle later, never permanently lost; no locking is used (a lock
+file abandoned by a crashed window would be worse than an occasional
+one-cycle delay). Entries are pruned by age (capped at 60 days regardless of
+caller config) and an entry-count cap (oldest `cachedAt` evicted first) —
+both synchronous/pure — plus a SEPARATE async, batched missing-backing-file
+check (`pruneMissingFiles()`, chunks of 50, ENOENT-only eviction — any other
+stat error keeps the entry) applied to every entry on `load()` but, on each
+`flush()`, only to entries newly seen from another window's disk write (not
+the whole map every 30 s). The cache path itself and the discovery/poll-loop
+wiring that populates and consumes it are a follow-up PR — this file's
+mechanism merges dark (no store is constructed in the extension yet).
 
 ## Session repair
 
