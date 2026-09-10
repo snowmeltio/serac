@@ -107,6 +107,22 @@ describe('panel.ts integration', () => {
     expect(empty!.textContent).toContain('No Claude Code sessions');
   });
 
+  it('renders the loading state (not the empty state) when discoveryPhase is "pending" and there are no sessions yet', () => {
+    sendUpdate({ sessions: [], discoveryPhase: 'pending' });
+    const empty = document.querySelector('.empty-state');
+    expect(empty).toBeTruthy();
+    expect(empty!.textContent).toContain('Loading...');
+    expect(empty!.textContent).not.toContain('No Claude Code sessions');
+  });
+
+  it('renders the ordinary empty state once discoveryPhase is "ready" with no sessions', () => {
+    sendUpdate({ sessions: [], discoveryPhase: 'ready' });
+    const empty = document.querySelector('.empty-state');
+    expect(empty).toBeTruthy();
+    expect(empty!.textContent).toContain('No Claude Code sessions');
+    expect(empty!.textContent).not.toContain('Loading...');
+  });
+
   it('creates top bar with status summary', () => {
     sendUpdate({ sessions: [makeSession({ status: 'running' })] });
     const topBar = document.querySelector('.top-bar');

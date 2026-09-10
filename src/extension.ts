@@ -9,7 +9,7 @@ import { FooterSlotRegistry } from './footerSlots.js';
 import type { SeracExports } from './types.js';
 import { AgentPanelProvider } from './panelProvider.js';
 import { DetailPanel } from './detailPanel.js';
-import type { DetailSource } from './types.js';
+import type { DetailSource, DiscoveryPhase } from './types.js';
 import { renderTranscript } from './transcriptRenderer.js';
 import { UsageProvider } from './usageProvider.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
@@ -1100,6 +1100,26 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
 
   // Start discovery and wire updates
   let lastSendTime = 0;
+  // Trailing-edge throttle for sendUpdate: a call inside the 200ms window no
+  // longer drops silently — it schedules one deferred send for whatever's
+  // left of the window, so a burst of onChange calls (the per-stage startup
+  // callbacks, rapid-fire settings changes) still ends in a send that
+  // reflects the latest state rather than the state at the window's start.
+  let pendingSendTimer: ReturnType<typeof setTimeout> | undefined;
+  // Guards sendUpdate() (and its deferred timer callback) against running
+  // after deactivation. A pending onChange can still land asynchronously
+  // after the dispose block runs — a startup stage's callback firing late,
+  // say — and must not re-arm the timer or post to a webview panelProvider
+  // has already torn down (it never nulls `this.view`, so postMessage on a
+  // disposed view is reachable, not just theoretically possible).
+  let sendUpdateDisposed = false;
+  // Last discoveryPhase actually sent to the panel. A phase change bypasses
+  // the 200ms throttle outright (see below), so a startup transition is
+  // never delayed by an unrelated recent send — e.g. refreshDiscoveredWorktrees()
+  // firing onChange mid-preamble (still phase 'pending') primes the throttle
+  // window, and without this the 'pending' → 'partial' paint would land on
+  // the trailing edge instead of immediately.
+  let lastSentPhase: DiscoveryPhase | undefined;
   let compactSettings: CompactSettings = readCompactSettings();
   // Claude Code's remoteControlAtStartup — one of the two top-bar signal
   // facts (the other is the rc server, read per poll). Reloaded by the
@@ -1124,9 +1144,35 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   let rcTerminal: vscode.Terminal | undefined;
   let rcWatch: RcWatchState = RC_WATCH_IDLE;
   function sendUpdate() {
+    if (sendUpdateDisposed) { return; }
     const now = Date.now();
-    if (now - lastSendTime < 200) { return; }
+    const currentPhase = discovery.getDiscoveryPhase();
+    const phaseChanged = currentPhase !== lastSentPhase;
+    if (!phaseChanged && now - lastSendTime < 200) {
+      if (!pendingSendTimer) {
+        // Clamped to [0, 200]: a backwards wall-clock step (clock adjustment,
+        // fake-timer edge case) would otherwise produce a negative or huge
+        // `remaining`, arming a timer that fires immediately forever or one
+        // that sits for an effectively unbounded span, swallowing every send
+        // for it.
+        const remaining = Math.min(200, Math.max(0, 200 - (now - lastSendTime)));
+        pendingSendTimer = setTimeout(() => {
+          pendingSendTimer = undefined;
+          if (sendUpdateDisposed) { return; }
+          sendUpdate();
+        }, remaining);
+      }
+      return;
+    }
+    // A phase-change bypass or a naturally-elapsed window both proceed to an
+    // actual send below — cancel any timer still pending from an earlier
+    // throttled call so it can't fire a second, redundant send afterwards.
+    if (pendingSendTimer) {
+      clearTimeout(pendingSendTimer);
+      pendingSendTimer = undefined;
+    }
     lastSendTime = now;
+    lastSentPhase = currentPhase;
     const teams = discovery.getTeamSnapshots();
     const workflows = discovery.getWorkflowSnapshots();
     // A done/stale card with a live background workflow is still working —
@@ -1152,6 +1198,9 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       rcServing,
       rcAutoEnrol,
       rcCompanionProfile,
+      // Same phase this call bypassed/passed the throttle for — see the top
+      // of sendUpdate(); captured once so it can't drift mid-call.
+      discoveryPhase: currentPhase,
     });
     detailPanel.refresh();
 
@@ -1181,7 +1230,13 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     // absorb-every-tick logic disqualified a new chat on the first tick it
     // flickered through 'done' before its turn began — the reported bug.
     if (knownSessionIds === null) {
-      knownSessionIds = new Set(sessions.map(s => s.sessionId));
+      // Don't seed off a 'pending' tick — the local scan hasn't run yet, so
+      // sessions is empty and the seed would be an empty set. A chat started
+      // in the last NEW_CHAT_FOCUS_WINDOW_MS would then read as "new" the
+      // moment the local scan lands and wrongly auto-focus.
+      if (currentPhase !== 'pending') {
+        knownSessionIds = new Set(sessions.map(s => s.sessionId));
+      }
     } else {
       const now2 = Date.now();
       const wsNorm = normPath(wsPath);
@@ -1400,10 +1455,24 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       discovery.stop();
       usageProvider.stop();
       clearInterval(refreshTimer);
+      sendUpdateDisposed = true;
+      if (pendingSendTimer) {
+        clearTimeout(pendingSendTimer);
+        pendingSendTimer = undefined;
+      }
     },
   });
 
-  // Initial update after a short delay for panel to mount
+  // Upper bound for the facts sendUpdate() carries that discovery.start()'s
+  // per-stage onChange callbacks do NOT drive — rcAutoEnrol, rcCompanionProfile,
+  // compactSettings, usage, worktrees. Those are read fresh by sendUpdate()
+  // itself, not pushed by discovery, so a slow local scan (large JSONLs,
+  // network-mounted workspace) would otherwise leave the panel without them
+  // for however long discovery.start() takes to reach its first onChange.
+  // The startup DiscoveryPhase onChanges remain the primary first-paint
+  // trigger and land well before this on the common path — the
+  // phase-transition bypass in sendUpdate() above means they're never held
+  // up by this timer's own throttle window either.
   setTimeout(() => sendUpdate(), 500);
 
   return exports;

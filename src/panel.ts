@@ -30,6 +30,7 @@ import {
   RANGE_MS,
   archiveListHtml,
   emptyStateHtml,
+  loadingStateHtml,
   renderCardInner,
   renderForeignWorkspaceRows,
   renderUsageHtml,
@@ -38,6 +39,7 @@ import {
   rcIndicatorHtml,
   timeRangePillsHtml,
   type PanelCompactSettings,
+  type PanelDiscoveryPhase,
   type PanelFooterSlot,
   type PanelSettings,
   type PanelTeam,
@@ -80,6 +82,9 @@ interface UpdateMessage {
   /** This window is a companion profile — tooltip carries the not-reachable
    *  caveat (rcState.ts). Always sent. */
   rcCompanionProfile?: boolean;
+  /** Progressive-first-paint stage — see PanelDiscoveryPhase. Always sent by
+   *  the host; optional here only so an older host's payload still type-checks. */
+  discoveryPhase?: PanelDiscoveryPhase;
 }
 
 interface FocusMessage {
@@ -143,6 +148,11 @@ let FOREIGN_SLIDE_MS = 220;
   let lastFooterSlots: PanelFooterSlot[] = [];
   let compactSettings: PanelCompactSettings | null = null;
   let lastOlderSessionCount = 0;
+  /** Progressive-first-paint stage — see PanelDiscoveryPhase. Defaults to
+   *  'ready' so a webview that reloads mid-session (or in a test harness
+   *  that never sends the field) renders the ordinary empty state rather
+   *  than getting stuck on "Loading...". */
+  let lastDiscoveryPhase: PanelDiscoveryPhase = 'ready';
   let lastForeignHtml = '';
   let lastForeignKeys = '';
   let foreignAnimToken = 0;
@@ -652,6 +662,7 @@ let FOREIGN_SLIDE_MS = 220;
         lastRcServing = message.rcServing ?? false;
         lastRcAutoEnrol = message.rcAutoEnrol === undefined ? null : message.rcAutoEnrol;
         lastRcCompanionProfile = message.rcCompanionProfile ?? false;
+        lastDiscoveryPhase = message.discoveryPhase ?? 'ready';
         homeDir = message.home ?? '';
         const sessions = debounceStatuses(message.sessions, needsInputSince, Date.now());
         // Same-file collisions across every active session we can see —
@@ -714,7 +725,7 @@ let FOREIGN_SLIDE_MS = 220;
     const btn = document.getElementById('errorReloadBtn');
     if (btn) {
       btn.addEventListener('click', () => {
-        root.innerHTML = '<div class="empty-state"><div class="icon">\u2298</div><div>Loading...</div></div>';
+        root.innerHTML = loadingStateHtml();
         vscode.postMessage({ type: 'requestUpdate' });
       });
     }
@@ -848,7 +859,9 @@ let FOREIGN_SLIDE_MS = 220;
     const doneCards = cards.filter(c => c.status === 'done' || c.status === 'stale');
 
     if (cards.length === 0 && archived.length === 0 && activeTeams.length === 0) {
-      cardSection.innerHTML = emptyStateHtml(lastOlderSessionCount);
+      cardSection.innerHTML = lastDiscoveryPhase === 'pending'
+        ? loadingStateHtml()
+        : emptyStateHtml(lastOlderSessionCount);
     } else {
       reconcileCards(ctx, cardSection, runningCards, now, prevRects, renderedIds);
     }

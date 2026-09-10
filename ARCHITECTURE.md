@@ -18,6 +18,8 @@ panel.js (DOM reconciliation, FLIP animations)
 
 Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and parses local JSONL for per-session costs.
 
+`SessionDiscovery.start()` runs its startup stages strictly serially — preamble (metadata load, repo root, worktrees) → process registry → teams → workflows → local scan → sibling scan → foreign scan → writer ownership — firing `onChange` from local scan onward, once there is actually something new to paint; see `DiscoveryPhase` ('pending' → 'partial' → 'ready') below. Process registry now runs ahead of any scan (rather than after foreign, as it did originally) so every session's liveness probe has real data from its very first snapshot rather than reading null until the first registry scan landed on whichever card painted before it. Each stage runs through a shared `runStage()` helper that times it, logs a `[startup] <stage> <N>ms (<detail>)` line, and fires `onChange` (both wrapped in try/catch): a stage whose own work throws is logged as `[startup] <stage> failed: <err>` and skipped rather than aborting the sequence, so a failure never leaves the phase stuck at `'pending'` — every path except an explicit `stop()` mid-sequence still reaches `'ready'` and starts the poll loop. `writerOwnership.refresh()` is skipped (with its own `[startup]` line saying so) when `serac.experimental.externalWriterBlock` is off, mirroring the poll loop's equivalent gate. `extension.ts`'s `sendUpdate()` bypasses its usual 200ms throttle outright whenever the phase it would send differs from the last one actually sent, so a phase transition is never delayed by an unrelated recent send (e.g. the preamble's worktree refresh firing its own `onChange` while the phase is still `'pending'`).
+
 ## Source files
 
 | File | Role |
@@ -1004,7 +1006,7 @@ override — or where `Stop`/`Notification` prove unreliable enough that JSONL m
 ### Message protocol
 
 **Extension to webview:** Three message types:
-- `update` — all session snapshots, usage data, needs-input count, and workspace path. A 200ms debounce guard prevents double-renders when onChange callbacks and the refresh timer overlap.
+- `update` — all session snapshots, usage data, needs-input count, workspace path, and the current `discoveryPhase` (see "Data flow" above). A 200ms trailing throttle coalesces bursts from onChange callbacks and the refresh timer: a call inside the window schedules one deferred send for whatever's left of it, rather than dropping outright, so the eventual send always reflects the latest state.
 - `focusSession` — sets `focusedSessionId`, re-renders with the highlight, and scrolls the card into view (`scrollIntoView({block:'nearest'})`, a no-op when it is already visible). Only the extension's auto-focus posts this type, so receiving it always means "a newly arrived session was auto-focused"; a user clicking a card sets focus locally without round-tripping.
 - `settings` — the current `serac.*` configuration snapshot. Posted once on `resolveWebviewView` (before the first `update` so the very first render sees the right visibility / heights) and again whenever `onDidChangeConfiguration` fires. Held separate from `update` because settings change rarely and updates are noisy.
 

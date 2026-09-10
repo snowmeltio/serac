@@ -14,7 +14,7 @@ import type { WriterAggregate } from './writerOwnership.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate, sumBytesRead } from './sessionPolling.js';
 import { readSettings, ageGateMsFor } from './settings.js';
 import { peekCwd } from './jsonlPeek.js';
 
@@ -310,6 +310,13 @@ export class SiblingWorktreeManager {
       out.push(session.getSnapshot());
     }
     return out;
+  }
+
+  /** Startup-timing instrumentation: session/sibling-worktree counts and
+   *  total bytes read across every tracked sibling session, for the
+   *  `[startup]` log line. */
+  getScanStats(): { sessions: number; siblings: number; bytes: number } {
+    return { sessions: this.sessions.size, siblings: this.siblingKeys.size, bytes: sumBytesRead(this.sessions.values()) };
   }
 
   /** Resolve a CWD for a sibling workspace key (used when the panel passes

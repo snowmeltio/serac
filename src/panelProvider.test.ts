@@ -147,6 +147,16 @@ describe('AgentPanelProvider', () => {
       );
     });
 
+    it('the mount-time send carries discoveryPhase "pending" — updateSessions has not run yet', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      expect(webview.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'update', discoveryPhase: 'pending' }),
+      );
+    });
+
     it('registers message handler on webview', () => {
       const webview = createMockWebview();
       const view = createMockWebviewView(webview);
@@ -294,7 +304,7 @@ describe('AgentPanelProvider', () => {
       webview.postMessage.mockClear();
 
       const sessions = [makeSnapshot()];
-      provider.updateSessions({ sessions, waitingCount: 1, workspacePath: '/test/ws', usage: makeUsage() });
+      provider.updateSessions({ sessions, waitingCount: 1, workspacePath: '/test/ws', usage: makeUsage(), discoveryPhase: 'ready' });
 
       expect(webview.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -312,18 +322,31 @@ describe('AgentPanelProvider', () => {
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       webview.postMessage.mockClear();
 
-      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: false });
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: false, discoveryPhase: 'ready' });
       const off = webview.postMessage.mock.calls.at(-1)![0];
       // The empty-array-omission idiom used by the list fields would erase the
       // off state; the webview must be able to tell "off" from "no data".
       expect(off).toHaveProperty('rcServing', false);
       expect(off).toHaveProperty('rcAutoEnrol', null);
-      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: false, rcAutoEnrol: true });
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: false, rcAutoEnrol: true, discoveryPhase: 'ready' });
       const on = webview.postMessage.mock.calls.at(-1)![0];
       expect(on).toHaveProperty('rcAutoEnrol', true);
 
-      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: true });
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: true, discoveryPhase: 'ready' });
       expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('rcServing', true);
+    });
+
+    it('discoveryPhase is required on PanelUpdate (unlike rcServing\'s ?? false idiom) and is forwarded as-is', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview.postMessage.mockClear();
+
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, discoveryPhase: 'ready' });
+      expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('discoveryPhase', 'ready');
+
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, discoveryPhase: 'partial' });
+      expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('discoveryPhase', 'partial');
     });
 
     it('defaults rcServing to false when the host omits it', () => {
@@ -332,7 +355,7 @@ describe('AgentPanelProvider', () => {
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       webview.postMessage.mockClear();
 
-      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null });
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, discoveryPhase: 'ready' });
       expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('rcServing', false);
     });
 
@@ -343,7 +366,7 @@ describe('AgentPanelProvider', () => {
       webview.postMessage.mockClear();
 
       const workflows = [makeWorkflow()];
-      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, workflows });
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, workflows, discoveryPhase: 'ready' });
 
       expect(webview.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'update', workflows }),
@@ -356,7 +379,7 @@ describe('AgentPanelProvider', () => {
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       webview.postMessage.mockClear();
 
-      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null });
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, discoveryPhase: 'ready' });
 
       const payload = webview.postMessage.mock.calls.at(-1)![0];
       expect(payload.type).toBe('update');
@@ -368,7 +391,7 @@ describe('AgentPanelProvider', () => {
       const view = createMockWebviewView(webview);
       provider.resolveWebviewView(view as any, {} as any, {} as any);
 
-      provider.updateSessions({ sessions: [], waitingCount: 3, workspacePath: '/test/ws', usage: null });
+      provider.updateSessions({ sessions: [], waitingCount: 3, workspacePath: '/test/ws', usage: null, discoveryPhase: 'ready' });
 
       expect(view.badge).toEqual({
         value: 3,
@@ -381,10 +404,10 @@ describe('AgentPanelProvider', () => {
       const view = createMockWebviewView(webview);
       provider.resolveWebviewView(view as any, {} as any, {} as any);
 
-      provider.updateSessions({ sessions: [], waitingCount: 2, workspacePath: '/test/ws', usage: null });
+      provider.updateSessions({ sessions: [], waitingCount: 2, workspacePath: '/test/ws', usage: null, discoveryPhase: 'ready' });
       expect(view.badge).toBeDefined();
 
-      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/test/ws', usage: null });
+      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/test/ws', usage: null, discoveryPhase: 'ready' });
       expect(view.badge).toBeUndefined();
     });
 
@@ -393,13 +416,13 @@ describe('AgentPanelProvider', () => {
       const view = createMockWebviewView(webview);
       provider.resolveWebviewView(view as any, {} as any, {} as any);
 
-      provider.updateSessions({ sessions: [], waitingCount: 1, workspacePath: '/test/ws', usage: null });
+      provider.updateSessions({ sessions: [], waitingCount: 1, workspacePath: '/test/ws', usage: null, discoveryPhase: 'ready' });
       expect(view.badge?.tooltip).toBe('1 session waiting');
     });
 
     it('does not send if view not resolved', () => {
       // No resolveWebviewView called — should not throw
-      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/test/ws', usage: null });
+      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/test/ws', usage: null, discoveryPhase: 'ready' });
     });
   });
 
@@ -431,7 +454,7 @@ describe('AgentPanelProvider', () => {
       provider.setFooterSlotBridge(() => [slot], () => {});
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       webview.postMessage.mockClear();
-      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/ws', usage: null });
+      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/ws', usage: null, discoveryPhase: 'ready' });
       expect(webview.postMessage).toHaveBeenCalledWith(
         expect.objectContaining({ footerSlots: [slot] }),
       );
@@ -443,7 +466,7 @@ describe('AgentPanelProvider', () => {
       provider.setFooterSlotBridge(() => [], () => {});
       provider.resolveWebviewView(view as any, {} as any, {} as any);
       webview.postMessage.mockClear();
-      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/ws', usage: null });
+      provider.updateSessions({ sessions: [], waitingCount: 0, workspacePath: '/ws', usage: null, discoveryPhase: 'ready' });
       const msg = webview.postMessage.mock.calls[0][0];
       expect(msg.footerSlots).toBeUndefined();
     });
