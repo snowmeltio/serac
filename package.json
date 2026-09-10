@@ -270,6 +270,11 @@
             "minimum": 1,
             "description": "Staleness window (days) for Workflow runs. Leave empty to inherit serac.discovery.ageGateDays."
           },
+          "serac.discovery.replayCache": {
+            "type": "boolean",
+            "default": true,
+            "description": "Skip replaying a dormant, finished session's transcript from byte zero when another window (or profile, or farmed account) on this machine has already read it unchanged. Speeds up opening a new window with many old sessions. Turning this off disables both reading from and writing to the shared replay cache file — a genuine no-op, not just a hidden UI toggle."
+          },
           "serac.refresh.intervalSeconds": {
             "type": "number",
             "default": 5,

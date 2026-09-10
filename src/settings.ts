@@ -59,6 +59,12 @@ export interface SeracSettings {
     worktreesAgeGateDays: number | null;
     teamsAgeGateDays: number | null;
     workflowsAgeGateDays: number | null;
+    /** Kill switch for the dormant-session replay cache (replayCache.ts):
+     *  skip replaying a finished session's JSONL from byte 0 when another
+     *  window/profile/account already read it unchanged. Off is a genuine
+     *  no-op — the cache file is never loaded, and nothing hydrates from or
+     *  is written to it — not just a hidden affordance. Default on. */
+    replayCache: boolean;
   };
   foreignWorkspaces: {
     /** Pixel cap on the foreign workspaces pane. 0 = auto (no cap). */
@@ -157,6 +163,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     worktreesAgeGateDays: null,
     teamsAgeGateDays: null,
     workflowsAgeGateDays: null,
+    replayCache: true,
   },
   foreignWorkspaces: { maxHeightPx: 280 },
   worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20, consolidateTmp: false, squash: false },
@@ -204,6 +211,7 @@ export function readSettings(): SeracSettings {
       worktreesAgeGateDays: cfg.get<number | null>('discovery.worktreesAgeGateDays', d.discovery.worktreesAgeGateDays),
       teamsAgeGateDays: cfg.get<number | null>('discovery.teamsAgeGateDays', d.discovery.teamsAgeGateDays),
       workflowsAgeGateDays: cfg.get<number | null>('discovery.workflowsAgeGateDays', d.discovery.workflowsAgeGateDays),
+      replayCache: cfg.get<boolean>('discovery.replayCache', d.discovery.replayCache),
     },
     foreignWorkspaces: {
       maxHeightPx: cfg.get<number>('foreignWorkspaces.maxHeightPx', d.foreignWorkspaces.maxHeightPx),

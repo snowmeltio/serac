@@ -20,6 +20,8 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 
 `SessionDiscovery.start()` runs its startup stages strictly serially — preamble (metadata load, repo root, worktrees) → process registry → teams → workflows → local scan → sibling scan → foreign scan → writer ownership — firing `onChange` from local scan onward, once there is actually something new to paint; see `DiscoveryPhase` ('pending' → 'partial' → 'ready') below. Process registry now runs ahead of any scan (rather than after foreign, as it did originally) so every session's liveness probe has real data from its very first snapshot rather than reading null until the first registry scan landed on whichever card painted before it. Each stage runs through a shared `runStage()` helper that times it, logs a `[startup] <stage> <N>ms (<detail>)` line, and fires `onChange` (both wrapped in try/catch): a stage whose own work throws is logged as `[startup] <stage> failed: <err>` and skipped rather than aborting the sequence, so a failure never leaves the phase stuck at `'pending'` — every path except an explicit `stop()` mid-sequence still reaches `'ready'` and starts the poll loop. `writerOwnership.refresh()` is skipped (with its own `[startup]` line saying so) when `serac.experimental.externalWriterBlock` is off, mirroring the poll loop's equivalent gate. `extension.ts`'s `sendUpdate()` bypasses its usual 200ms throttle outright whenever the phase it would send differs from the last one actually sent, so a phase transition is never delayed by an unrelated recent send (e.g. the preamble's worktree refresh firing its own `onChange` while the phase is still `'pending'`).
 
+The local/sibling/foreign scans above each check the dormant-session replay cache (`replayCache.ts`, see "Replay cache" below) before replaying a session's JSONL from byte 0: a second window, VS Code profile, or farmed account opening against the same disk after the first has gone quiet hydrates most of its dormant `done` sessions from the shared cache file instead of re-reading their transcripts.
+
 ## Source files
 
 | File | Role |
@@ -33,7 +35,7 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `panelRender.ts` | Pure HTML builders for the sidebar (cards, foreign/worktree rows, archive rows, usage section) plus the webview view-type mirrors. No DOM access; ambient state arrives via an explicit `RenderContext` built once per render pass, so every builder is unit-testable without jsdom. |
 | `jsonlTailer.ts` | Byte-offset file reader. Tracks read position, buffers incomplete lines across reads. Caps a single `readNewRecords()` call to `MAX_READ_PER_CYCLE` (16 MB); `SessionManager.updateInner()` loops internally (mirroring `detailPanel.ts`'s transcript-tailing loop) to drain a bigger transcript fully within one `update()` call — see `checkMtime()`/`getReadStamp()`. |
 | `jsonlPeek.ts` | Head-only JSONL reads for a single cheap field, bypassing `JsonlTailer` and the session state machine entirely. `readJsonlHeadLines()`/`findInLines()` are the pure building blocks; `peekCwd()` (bounded to 1 MB — `cwd` is serialised after `message`, and a large injected CLAUDE.md/system-reminder payload ahead of it can push past a naive small window) is the concrete lookup used by `siblingWorktreeManager.ts` to classify an unclassified workspace dir without a full `SessionManager` replay. Returns the FIRST cwd seen (the launch cwd), not the latest — deliberately not full parity with a live `SessionManager`'s snapshot, which tracks the latest and drifts on a mid-session `cd`. |
-| `replayCache.ts` | Dormant-session replay cache: one JSON file shared by every window/profile/account, sparing an unchanged `done` session a full byte-0 JSONL replay on the next window open. Pure: `parseReplayCache`/`serialiseReplayCache`, `isHydratable` (the hydration eligibility check), `pruneEntries`, `mergeEntries` (newest-`cachedAt`-wins, for the shared-file merge-on-save). I/O: `makeReplayCacheStore()` — atomic tmp-then-rename writes (mirrors `sessionMetaStore.ts`), rate-limited and dirty-only, that re-read-and-merge before every write. See "Replay cache" below and `SessionManager.fromCache()`/`hydrate()`/`exportCachedState()`. Wired into discovery in a follow-up PR — this module ships the mechanism only. |
+| `replayCache.ts` | Dormant-session replay cache: one JSON file shared by every window/profile/account, sparing an unchanged `done` session a full byte-0 JSONL replay on the next window open. Pure: `parseReplayCache`/`serialiseReplayCache`, `isHydratable` (the hydration eligibility check), `pruneEntries`, `mergeEntries` (newest-`cachedAt`-wins, for the shared-file merge-on-save). I/O: `makeReplayCacheStore()` — atomic tmp-then-rename writes (mirrors `sessionMetaStore.ts`), rate-limited and dirty-only, that re-read-and-merge before every write. See "Replay cache" below and `SessionManager.fromCache()`/`hydrate()`/`exportCachedState()`. Wired into `SessionDiscovery`/`ForeignWorkspaceManager`/`SiblingWorktreeManager` — see "Replay cache" → Wiring. |
 | `sessionRepair.ts` | JSONL metadata repair. Reads tail 64KB, appends `custom-title` record if no metadata exists. |
 | `transcriptRenderer.ts` | JSONL to markdown converter. Renders user/assistant/system records with tool summaries. |
 | `types.ts` | Central type re-export shim. Definitions live in domain modules: `sessionTypes.ts` (SessionState, SessionSnapshot, SessionMeta), `teamTypes.ts`, `workflowTypes.ts`, `panelTypes.ts` (UsageSnapshot, WebviewMessage, SeracExports), `jsonlTypes.ts` (JsonlRecord). |
@@ -1256,9 +1258,96 @@ both synchronous/pure — plus a SEPARATE async, batched missing-backing-file
 check (`pruneMissingFiles()`, chunks of 50, ENOENT-only eviction — any other
 stat error keeps the entry) applied to every entry on `load()` but, on each
 `flush()`, only to entries newly seen from another window's disk write (not
-the whole map every 30 s). The cache path itself and the discovery/poll-loop
-wiring that populates and consumes it are a follow-up PR — this file's
-mechanism merges dark (no store is constructed in the extension yet).
+the whole map every 30 s).
+
+**Wiring.** `SessionDiscovery` constructs one `ReplayCacheStore` (always —
+construction is cheap) at `path.join(path.dirname(projectsDir), 'serac-
+replay-cache.json')`, the same directory the sessions registry sits next to
+(`path.join(path.dirname(projectsDir), 'sessions')`) — **not**
+`claudeStateDir()`, which is the per-account alias: a farmed account's
+`~/.claude-personal` is a symlink to the real `~/.claude`, so keying off the
+alias would fork the cache per account for the identical underlying
+transcripts, defeating the whole point of a machine-wide cache. `maxAgeMs` is
+the widest of every configured discovery gate (worktrees / foreign
+workspaces / teams / workflows / the fixed local `SCAN_AGE_GATE_MS` /
+`foreignWindowGate().ageGateMs`), clamped to the store's own 60-day hard
+ceiling, plus one day of slack — a session still visible in ANY section
+should never have its cache entry pruned out from under it. The store is
+injected into `ForeignWorkspaceManager` and `SiblingWorktreeManager` via
+`setReplayCache()`, the same one-shot pattern as `setLivenessProbeFactory()`.
+
+`serac.discovery.replayCache` (default **on**) is the kill switch, checked at
+every point of use rather than once at construction — `load()`/hydration/
+`put()`/the summary log are each individually skipped when it reads false, so
+turning it off is a genuine no-op (nothing is read from or written to the
+shared file), not just a hidden affordance. The setting is read where the
+class already pays the `settings.ts` → `vscode` import cost
+(`SessionDiscovery`, `ForeignWorkspaceManager`, `SiblingWorktreeManager`, all
+of which already import `readSettings`); `replayCache.ts` and
+`sessionPolling.ts` deliberately never import it, matching `replayCache.ts`'s
+own note about the blast radius that would otherwise hit every test file
+transitively importing `sessionManager.ts`.
+
+`start()`'s preamble stage calls `replayCache.load()` right after
+`meta.load()`, then independently re-reads and re-parses the same file (via
+the exported `parseReplayCache()` — read-only, `ReplayCacheStore`'s public
+interface has no enumeration method) purely to count and warn on any entry
+whose key resolves outside `projectsDir` — defence against a hand-edited
+cache file. Such an entry can never actually be used as a hydration source
+regardless, since every `get()` this codebase issues is against a path it
+itself constructed under `projectsDir`; the check is visibility/defence-in-
+depth on top of that structural guarantee, not a functional gate. The same
+pass also records the loaded entry count for the summary line below. Registry
+scan ordering matters here too: `start()` runs the process-registry scan
+before the local scan (see `start()`'s own docblock), so `livenessProbeFor()`
+already has a real answer — not `null` — by the time the local scan's
+hydration check runs; a session with a confirmed-live process must never
+hydrate from a stale cached `done`.
+
+Hydration happens at the same point in each scan that already stats the
+candidate file, reusing that stat rather than taking a second one:
+`SessionDiscovery.scanWorkspace()` for local sessions, and
+`trackJsonlSessions()` (`sessionPolling.ts`) for foreign/sibling ones via its
+optional `replayCache`/`livenessOf`/`makeHydrated` parameters — a manager
+that hydrates skips its initial `update()` entirely (no tailer read at all),
+and the sibling manager's `setWorktreeOrigin()` decoration is applied to a
+hydrated manager exactly as it is to an ordinarily-constructed one. The local
+scan factors its `SessionManagerOptions` literal into `managerOptsFor()` so
+both construction paths (`new SessionManager` / `SessionManager.fromCache`)
+share every decorator (status trace, bridge trace, probes, the
+`registrySeenLive` latch) with no risk of the two drifting apart.
+
+Population happens only at poll time, never at scan time (a scan cannot know
+a >16 MB transcript's tailer has actually drained — see `checkMtime()`'s
+doc comment above): `SessionDiscovery.pollInner()`'s dormant loop calls a
+private `offerToCache()` right next to `sweepBackgroundWork()`, and
+`pollTrackedSessions()` (`sessionPolling.ts`) takes an optional `offer`
+parameter fired from the same dormant branch, which both cross-workspace
+managers wire to the shared `offerSessionToReplayCache()` helper. That helper
+— the one eligibility/write decision both call sites funnel through — skips
+a manager that is itself hydrated (`isHydrated()`; nothing new to capture),
+calls `exportCachedState(now)` and refuses on `null`, and skips the write
+when the cache already holds an identical `{size, mtimeMs}` stamp for that
+file. `replayCache.flush(now)` runs once, at the very end of `pollInner()`
+(after the sibling/foreign/team/workflow polls, so it also picks up whatever
+those polls' own `offer` calls just wrote this cycle) beside `meta.flush()`;
+`stop()` fires a best-effort forced flush (`{force: true}`, bypassing only
+the 30s rate limit, not the dirty check) beside the meta flush, so a session
+that goes dormant just before the window closes isn't stranded until some
+other window happens to offer it again.
+
+One `[replay-cache] hydrated N, replayed M, entries K` line logs at `info`
+right after the foreign-scan startup stage — deliberately beside the
+`[startup]` timing lines whose win this measures, not inside `runStage()` as
+its own timed stage. `N`/`M` sum the local scan's own counters with
+`getReplayCacheStats()` from both cross-workspace managers; `K` is the entry
+count `validateReplayCacheKeys()` recorded at load time. Skipped entirely
+(not printed as an all-zero line) when the kill switch is off. A second
+window (or VS Code profile, or farmed account) opening against the same disk
+after the first one has gone quiet for `REPLAY_CACHE_QUIET_MS` therefore
+hydrates most of its foreign/sibling sessions instead of replaying them —
+see the `[startup] foreign scan` line's byte/session counts for the
+before/after.
 
 ## Session repair
 

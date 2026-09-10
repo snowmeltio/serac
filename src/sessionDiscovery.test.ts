@@ -39,11 +39,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { SessionDiscovery } from './sessionDiscovery.js';
-import type { SessionSnapshot } from './types.js';
+import type { SessionSnapshot, CachedSessionState } from './types.js';
 import { EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
 import { isExtensionHostPid } from './writerOwnership.js';
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
+import { JsonlTailer } from './jsonlTailer.js';
+import { REPLAY_CACHE_VERSION } from './replayCache.js';
 
 /**
  * Tests for SessionDiscovery.
@@ -2652,6 +2654,248 @@ describe('SessionDiscovery', () => {
       const infoLinesOn = log2.info.mock.calls.map(c => c[0]);
       expect(infoLinesOn.some(l => typeof l === 'string' && /^\[startup\] writer ownership refresh \d+ms$/.test(l))).toBe(true);
       discoveryOn.stop();
+    });
+  });
+
+  // ── PR D: replay cache wiring ────────────────────────────────────
+  describe('Replay cache (PR D)', () => {
+    // vi.spyOn on a shared prototype method (JsonlTailer.prototype.readNewRecords,
+    // below) returns the SAME mock — and the SAME accumulated call history —
+    // across tests unless explicitly restored; several tests below assert an
+    // exact call count from zero.
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    /** A minimal user+assistant(text, no tool_use) turn at `ts` — replays to
+     *  `running` immediately (no demotion happens during replay itself); a
+     *  later poll's demoteIfStale() flips it to `done` once `now` is well
+     *  past the turn (see driveToQuietDone). */
+    function doneTurnJsonl(ts: string): string {
+      const user = JSON.stringify({ type: 'user', timestamp: ts, message: { content: [{ type: 'text', text: 'hi' }] } });
+      const asst = JSON.stringify({ type: 'assistant', timestamp: ts, message: { role: 'assistant', content: [{ type: 'text', text: 'done answer' }] } });
+      return [user, asst].join('\n');
+    }
+
+    /** Minimal but fully valid CachedSessionState — satisfies
+     *  replayCache.ts's tryNormaliseState() so a hand-written cache file
+     *  actually parses. */
+    function minimalCachedState(sessionId: string, wsKey: string, cwd: string, overrides: Partial<CachedSessionState> = {}): CachedSessionState {
+      return {
+        sessionId, slug: sessionId, workspaceKey: wsKey,
+        cwd, initialCwd: cwd,
+        topic: 'Cached topic', activity: 'Idle',
+        status: 'done',
+        lastActivity: Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000,
+        firstActivity: Date.now() - EXTERNAL_WRITER_QUIET_MS - 60_000,
+        enqueuedAt: 0, contextTokens: 10,
+        modelId: '', modelConfirmed: false,
+        customTitle: '', aiTitle: 'Cached title',
+        userTurnCount: 1,
+        subagents: [],
+        ...overrides,
+      };
+    }
+
+    /** Hand-writes a one-entry replay cache file, keyed by `filePath`, with
+     *  the given file's real stat. */
+    function writeCacheFile(cachePath: string, filePath: string, state: CachedSessionState, stat: fs.Stats, cachedAt = Date.now()): void {
+      fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+      fs.writeFileSync(cachePath, JSON.stringify({
+        version: REPLAY_CACHE_VERSION,
+        entries: { [filePath]: { size: stat.size, mtimeMs: stat.mtimeMs, cachedAt, state } },
+      }));
+    }
+
+    /** Drives two poll cycles directly (bypassing the scheduled timer, so no
+     *  real wall-clock wait is needed — the caller has already jumped the
+     *  faked Date forward). The first demotes a stuck `running` session to
+     *  `done` (poll's own 30s stale threshold, via demoteIfStale); the
+     *  SECOND is the one that classifies it dormant at cycle-start and offers
+     *  it to the cache (offerToCache only runs for a session already `done`
+     *  when its cycle begins) — see pollInner's dormant loop. */
+    async function pollTwice(discovery: SessionDiscovery): Promise<void> {
+      const pollInner = (discovery as unknown as { pollInner: (n: number) => Promise<void> }).pollInner.bind(discovery);
+      await pollInner(Date.now());
+      await pollInner(Date.now());
+    }
+
+    it('(a) replays on first start(); after a poll with the session quiet past the window, the cache file exists, is valid JSON, and holds the entry', async () => {
+      const cachePath = path.join(tmpDir, 'replay-cache-a.json');
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        const filePath = createJsonlFile('replay-a', doneTurnJsonl(new Date(t0).toISOString()));
+
+        const readSpy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+        const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', replayCachePath: cachePath });
+        await discovery.start(() => {});
+        // No cache exists yet — the first start() always replays.
+        expect(readSpy).toHaveBeenCalled();
+        expect(fs.existsSync(cachePath)).toBe(false);
+
+        vi.setSystemTime(t0 + EXTERNAL_WRITER_QUIET_MS + 60_000);
+        await pollTwice(discovery);
+
+        expect(discovery.getSnapshots().find(s => s.sessionId === 'replay-a')?.status).toBe('done');
+        expect(fs.existsSync(cachePath)).toBe(true);
+        const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+        expect(parsed.version).toBe(REPLAY_CACHE_VERSION);
+        expect(parsed.entries[filePath]).toBeDefined();
+        expect(parsed.entries[filePath].state.sessionId).toBe('replay-a');
+        expect(parsed.entries[filePath].state.status).toBe('done');
+
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('(b) a second discovery instance against a populated cache hydrates: never reads new records for that file, and the card shows the cached topic/title', async () => {
+      const cachePath = path.join(tmpDir, 'replay-cache-b.json');
+      const filePath = createJsonlFile('replay-b', doneTurnJsonl(new Date().toISOString()));
+      const stat = fs.statSync(filePath);
+      writeCacheFile(cachePath, filePath, minimalCachedState('replay-b', workspaceKey, workspacePath), stat);
+
+      const readSpy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+      const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', replayCachePath: cachePath });
+      await discovery.start(() => {});
+
+      expect(readSpy).not.toHaveBeenCalled();
+      const snap = discovery.getSnapshots().find(s => s.sessionId === 'replay-b');
+      expect(snap).toBeDefined();
+      expect(snap?.topic).toBe('Cached topic');
+      expect(snap?.aiTitle).toBe('Cached title');
+      expect(snap?.status).toBe('done');
+
+      discovery.stop();
+    });
+
+    it('(c) a live registry entry for the session refuses hydration and replays instead', async () => {
+      const cachePath = path.join(tmpDir, 'replay-cache-c.json');
+      const filePath = createJsonlFile('replay-c', doneTurnJsonl(new Date().toISOString()));
+      const stat = fs.statSync(filePath);
+      writeCacheFile(cachePath, filePath, minimalCachedState('replay-c', workspaceKey, workspacePath), stat);
+      writeRegistryEntryWithCwd(process.pid, 'replay-c', { cwd: workspacePath });
+
+      const readSpy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+      const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', replayCachePath: cachePath });
+      await discovery.start(() => {});
+
+      expect(readSpy).toHaveBeenCalled();
+      discovery.stop();
+    });
+
+    it('(d) a modified file (stamp mismatch) refuses hydration and replays instead', async () => {
+      const cachePath = path.join(tmpDir, 'replay-cache-d.json');
+      const filePath = createJsonlFile('replay-d', doneTurnJsonl(new Date().toISOString()));
+      const staleStat = fs.statSync(filePath);
+      writeCacheFile(cachePath, filePath, minimalCachedState('replay-d', workspaceKey, workspacePath), staleStat);
+      // Append a record and force the mtime forward so size AND mtime both
+      // differ from the cache entry's stamp.
+      fs.appendFileSync(filePath, JSON.stringify({
+        type: 'user', timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text: 'more' }] },
+      }) + '\n');
+      fs.utimesSync(filePath, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+
+      const readSpy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+      const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', replayCachePath: cachePath });
+      await discovery.start(() => {});
+
+      expect(readSpy).toHaveBeenCalled();
+      discovery.stop();
+    });
+
+    it('(e) a corrupt cache file is tolerated: replays without throwing', async () => {
+      const cachePath = path.join(tmpDir, 'replay-cache-e.json');
+      fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+      fs.writeFileSync(cachePath, '{not valid json');
+      createJsonlFile('replay-e', doneTurnJsonl(new Date().toISOString()));
+
+      const readSpy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+      const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', replayCachePath: cachePath });
+      await expect(discovery.start(() => {})).resolves.toBeUndefined();
+
+      expect(readSpy).toHaveBeenCalled();
+      discovery.stop();
+    });
+
+    it('(f) an entry keyed outside projectsDir is ignored at load, with a warn logged', async () => {
+      const cachePath = path.join(tmpDir, 'replay-cache-f.json');
+      const outsidePath = path.join(os.tmpdir(), 'not-under-projects-dir.jsonl');
+      fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+      fs.writeFileSync(cachePath, JSON.stringify({
+        version: REPLAY_CACHE_VERSION,
+        entries: {
+          [outsidePath]: {
+            size: 10, mtimeMs: Date.now(), cachedAt: Date.now(),
+            state: minimalCachedState('outside', workspaceKey, workspacePath),
+          },
+        },
+      }));
+      createJsonlFile('replay-f'); // unrelated in-workspace session
+
+      const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn() };
+      const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', replayCachePath: cachePath, log });
+      await discovery.start(() => {});
+
+      const warnLines = log.warn.mock.calls.map(c => c[0]);
+      expect(warnLines.some(l => typeof l === 'string' && l.includes('[replay-cache]') && l.includes('outside the projects tree'))).toBe(true);
+      discovery.stop();
+    });
+
+    it('(g) serac.discovery.replayCache = false: no load, no hydration, no file ever written', async () => {
+      _setConfigValues({ 'serac.discovery.replayCache': false });
+      const cachePath = path.join(tmpDir, 'replay-cache-g.json');
+      createJsonlFile('replay-g', doneTurnJsonl(new Date().toISOString()));
+
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', replayCachePath: cachePath });
+        await discovery.start(() => {});
+
+        vi.setSystemTime(t0 + EXTERNAL_WRITER_QUIET_MS + 60_000);
+        await pollTwice(discovery);
+        discovery.stop();
+
+        expect(fs.existsSync(cachePath)).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('(h) stop() forces a flush of a dirty store rather than waiting out the 30s rate limit', async () => {
+      const cachePath = path.join(tmpDir, 'replay-cache-h.json');
+      const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', replayCachePath: cachePath });
+      await discovery.start(() => {});
+
+      const store = (discovery as unknown as {
+        replayCache: { put: (p: string, e: unknown) => void; flush: (n: number, o?: { force?: boolean }) => Promise<void> };
+      }).replayCache;
+
+      // First flush establishes lastFlushAt so the rate limit is actually live.
+      store.put('/fake/first.jsonl', {
+        size: 1, mtimeMs: 1, cachedAt: Date.now(), state: minimalCachedState('first', workspaceKey, workspacePath),
+      });
+      await store.flush(Date.now());
+      expect(fs.existsSync(cachePath)).toBe(true);
+
+      // A second put lands well inside the 30s window — an ordinary flush()
+      // defers it.
+      store.put('/fake/second.jsonl', {
+        size: 2, mtimeMs: 2, cachedAt: Date.now(), state: minimalCachedState('second', workspaceKey, workspacePath),
+      });
+      await store.flush(Date.now());
+      const beforeStop = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+      expect(beforeStop.entries['/fake/second.jsonl']).toBeUndefined();
+
+      discovery.stop(); // fire-and-forget forced flush
+
+      await vi.waitFor(() => {
+        const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+        expect(parsed.entries['/fake/second.jsonl']).toBeDefined();
+      });
     });
   });
 });

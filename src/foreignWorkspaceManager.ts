@@ -18,9 +18,10 @@ import { resolveRepoRoot, repoRootFromClaudeWorktreePath, discoverWorktrees, wor
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, makeRescanGate, sumBytesRead } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
 import { readSettings, foreignWindowGate } from './settings.js';
 import { readIdeOpenFolders } from './claudeEnvSignals.js';
+import type { ReplayCacheStore } from './replayCache.js';
 
 /** Resolved visibility gate for this section (live-only flag + time window in
  *  ms). Read at the top of each scan / housekeeping pass so the value is
@@ -90,6 +91,15 @@ export class ForeignWorkspaceManager {
    *  Nothing will ever resume or acknowledge these sessions, so their `done`
    *  is promoted to `stale` — see getWorkspaces(). */
   private unreachableKeys: Set<string> = new Set();
+  /** Dormant-session replay cache (PR D), injected by SessionDiscovery via
+   *  setReplayCache() — same shape as the liveness/writer-ownership probe
+   *  factories above. Undefined until wired (tests that don't call
+   *  setReplayCache get ordinary, non-hydrating behaviour). */
+  private replayCache?: ReplayCacheStore;
+  /** Hydrated-vs-replayed counts from the most recent scan() — startup
+   *  instrumentation only (the `[replay-cache]` summary line in
+   *  SessionDiscovery.start()). Reset at the top of every scan(). */
+  private replayCacheStats = { hydrated: 0, replayed: 0 };
 
   constructor(
     private readonly projectsDir: string,
@@ -111,6 +121,21 @@ export class ForeignWorkspaceManager {
 
   setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => WriterAggregate): void {
     this.writerOwnershipProbeFactory = factory;
+  }
+
+  /** Wire in the dormant-session replay cache, injected by SessionDiscovery
+   *  once (same pattern as setLivenessProbeFactory). scan()/poll() still
+   *  re-check `serac.discovery.replayCache` on every call — the store being
+   *  wired here does not itself mean the kill switch is on. */
+  setReplayCache(store: ReplayCacheStore): void {
+    this.replayCache = store;
+  }
+
+  /** Hydrated-vs-replayed counts from the most recent scan() call — read by
+   *  SessionDiscovery right after the foreign-scan startup stage for the
+   *  `[replay-cache]` summary line. */
+  getReplayCacheStats(): { hydrated: number; replayed: number } {
+    return { ...this.replayCacheStats };
   }
 
   /** Tell the manager which repo the current workspace belongs to. Workspace
@@ -157,6 +182,10 @@ export class ForeignWorkspaceManager {
     const now = Date.now();
     const gate = foreignWindowGate();
     const siblingKeys = this.getSiblingKeys();
+    this.replayCacheStats = { hydrated: 0, replayed: 0 };
+    // Genuine no-op when the kill switch is off: replayCache/makeHydrated
+    // simply aren't passed to trackJsonlSessions below, not passed-but-inert.
+    const cache = readSettings().discovery.replayCache ? this.replayCache : undefined;
     try {
       const dirs = await fs.promises.readdir(this.projectsDir);
       for (const dir of dirs) {
@@ -184,6 +213,20 @@ export class ForeignWorkspaceManager {
                 writerOwnershipProbe: this.writerOwnershipProbeFactory?.(sessionId),
               }),
             warn: (compositeId, err) => this.log.warn(`Foreign session update failed (${compositeId}):`, err),
+            replayCache: cache,
+            livenessOf: cache ? (sessionId) => this.probeFactory?.(sessionId)?.() ?? null : undefined,
+            makeHydrated: cache
+              ? (sessionId, filePath, state, stamp) =>
+                SessionManager.fromCache(sessionId, filePath, dir, {
+                  livenessProbe: this.probeFactory?.(sessionId),
+                  writerOwnershipProbe: this.writerOwnershipProbeFactory?.(sessionId),
+                }, state, stamp)
+              : undefined,
+            onTracked: cache
+              ? (hydrated) => {
+                if (hydrated) { this.replayCacheStats.hydrated++; } else { this.replayCacheStats.replayed++; }
+              }
+              : undefined,
           });
         } catch { /* unreadable directory */ }
       }
@@ -401,8 +444,10 @@ export class ForeignWorkspaceManager {
       if (siblingsEvicted) { this.pruneWorktreesByRepoRoot(); }
     }
 
+    const cache = readSettings().discovery.replayCache ? this.replayCache : undefined;
     if (await pollTrackedSessions(this.sessions, now,
-      (sessionId, lastActivityMs) => this.withinWindow(sessionId, lastActivityMs, now, gate))) {
+      (sessionId, lastActivityMs) => this.withinWindow(sessionId, lastActivityMs, now, gate),
+      cache ? (session, pollNow) => offerSessionToReplayCache(session, pollNow, cache) : undefined)) {
       changed = true;
     }
     return changed;
@@ -551,12 +596,15 @@ export class ForeignWorkspaceManager {
    *  `${workspaceKey}/${sessionId}` — see trackJsonlSessions) rather than a
    *  full getSnapshot() per session, which would pay for a writer-ownership
    *  probe read just to count. */
-  getScanStats(): { sessions: number; workspaces: number; bytes: number } {
+  getScanStats(): { sessions: number; workspaces: number; bytes: number; hydrated: number } {
     const workspaces = new Set<string>();
     for (const compositeId of this.sessions.keys()) {
       workspaces.add(compositeId.slice(0, compositeId.indexOf('/')));
     }
-    return { sessions: this.sessions.size, workspaces: workspaces.size, bytes: sumBytesRead(this.sessions.values()) };
+    return {
+      sessions: this.sessions.size, workspaces: workspaces.size, bytes: sumBytesRead(this.sessions.values()),
+      hydrated: this.replayCacheStats.hydrated,
+    };
   }
 
   /** Dispose all foreign sessions and clear state. */

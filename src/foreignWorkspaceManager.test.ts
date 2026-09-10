@@ -20,6 +20,9 @@ import * as os from 'os';
 import { ForeignWorkspaceManager, shouldPromoteDoneToStale } from './foreignWorkspaceManager.js';
 import { _setConfigValues, _resetConfig } from './__mocks__/vscode.js';
 import { PSEUDO_TMP_REPO_ROOT } from './panelUtils.js';
+import { JsonlTailer } from './jsonlTailer.js';
+import type { ReplayCacheEntry, ReplayCacheStore } from './replayCache.js';
+import type { CachedSessionState } from './types.js';
 
 const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {}, trace: () => {} };
 
@@ -513,5 +516,99 @@ describe('ForeignWorkspaceManager: getScanStats (startup-timing instrumentation)
     expect(stats.sessions).toBe(2);
     expect(stats.workspaces).toBe(2);
     expect(stats.bytes).toBeGreaterThan(0);
+  });
+});
+
+describe('ForeignWorkspaceManager: replay-cache hydration (PR D)', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-replay-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks(); // JsonlTailer.prototype spy below
+  });
+
+  function fakeStore(entries: Map<string, ReplayCacheEntry>): ReplayCacheStore {
+    return {
+      load: async () => {},
+      get: (p: string) => entries.get(p),
+      put: () => {},
+      flush: async () => {},
+    };
+  }
+
+  it('hydrates a dormant foreign session from the cache — no re-read, and the cached cwd resolves the workspace label', async () => {
+    const wsCwd = path.join(tmpDir, 'foreign-repo');
+    fs.mkdirSync(wsCwd, { recursive: true });
+    const wsKey = sanitiseKey(wsCwd);
+    createForeignSession(wsKey, 'foreign-hydrate-1', wsCwd);
+    const filePath = path.join(projectsDir, wsKey, 'foreign-hydrate-1.jsonl');
+    const stat = fs.statSync(filePath);
+
+    const state: CachedSessionState = {
+      sessionId: 'foreign-hydrate-1', slug: 'foreign-hydrate-1', workspaceKey: wsKey,
+      cwd: '/cached/from/hydration', initialCwd: '/cached/from/hydration',
+      topic: 'Cached foreign topic', activity: 'Idle', status: 'done',
+      lastActivity: Date.now() - 20 * 60_000, firstActivity: Date.now() - 20 * 60_000,
+      enqueuedAt: 0, contextTokens: 10, modelId: '', modelConfirmed: false,
+      customTitle: '', aiTitle: 'Cached foreign title', userTurnCount: 1, subagents: [],
+    };
+    const entries = new Map<string, ReplayCacheEntry>([
+      [filePath, { size: stat.size, mtimeMs: stat.mtimeMs, cachedAt: Date.now(), state }],
+    ]);
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setReplayCache(fakeStore(entries));
+
+    const readSpy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+    await manager.scan();
+
+    expect(readSpy).not.toHaveBeenCalled();
+    const stats = manager.getReplayCacheStats();
+    expect(stats.hydrated).toBe(1);
+    expect(stats.replayed).toBe(0);
+
+    const group = manager.getWorkspaces().find(g => g.workspaceKey === wsKey);
+    expect(group).toBeDefined();
+    // The label/cwd came from the HYDRATED (cached) initialCwd, not re-derived
+    // from the JSONL's own real cwd record.
+    expect(group?.cwd).toBe('/cached/from/hydration');
+  });
+
+  it('does not hydrate (and reports a normal replay) when serac.discovery.replayCache is off', async () => {
+    const wsCwd = path.join(tmpDir, 'foreign-repo-2');
+    fs.mkdirSync(wsCwd, { recursive: true });
+    const wsKey = sanitiseKey(wsCwd);
+    createForeignSession(wsKey, 'foreign-hydrate-2', wsCwd);
+    const filePath = path.join(projectsDir, wsKey, 'foreign-hydrate-2.jsonl');
+    const stat = fs.statSync(filePath);
+    const state: CachedSessionState = {
+      sessionId: 'foreign-hydrate-2', slug: 'foreign-hydrate-2', workspaceKey: wsKey,
+      cwd: wsCwd, initialCwd: wsCwd,
+      topic: 'x', activity: 'Idle', status: 'done',
+      lastActivity: Date.now() - 20 * 60_000, firstActivity: Date.now() - 20 * 60_000,
+      enqueuedAt: 0, contextTokens: 0, modelId: '', modelConfirmed: false,
+      customTitle: '', aiTitle: '', userTurnCount: 1, subagents: [],
+    };
+    const entries = new Map<string, ReplayCacheEntry>([
+      [filePath, { size: stat.size, mtimeMs: stat.mtimeMs, cachedAt: Date.now(), state }],
+    ]);
+
+    _setConfigValues({ 'serac.discovery.replayCache': false });
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setReplayCache(fakeStore(entries));
+
+    const readSpy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+    await manager.scan();
+
+    expect(readSpy).toHaveBeenCalled();
+    // The kill switch also disables the onTracked instrumentation callback
+    // itself (not just hydration) — a genuine no-op, so both counts stay 0
+    // rather than counting the replay as "replayed: 1".
+    expect(manager.getReplayCacheStats()).toEqual({ hydrated: 0, replayed: 0 });
+    _resetConfig();
   });
 });

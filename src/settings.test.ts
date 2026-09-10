@@ -45,6 +45,7 @@ describe('readSettings', () => {
       'serac.discovery.worktreesAgeGateDays': 30,
       'serac.discovery.teamsAgeGateDays': 1,
       'serac.discovery.workflowsAgeGateDays': 90,
+      'serac.discovery.replayCache': false,
       'serac.foreignWorkspaces.maxHeightPx': 0,
       'serac.worktrees.maxHeightPx': 500,
       'serac.worktrees.autoCollapseAfterSeconds': 60,
@@ -68,6 +69,7 @@ describe('readSettings', () => {
     expect(s.discovery.worktreesAgeGateDays).toBe(30);
     expect(s.discovery.teamsAgeGateDays).toBe(1);
     expect(s.discovery.workflowsAgeGateDays).toBe(90);
+    expect(s.discovery.replayCache).toBe(false);
     expect(s.foreignWorkspaces.maxHeightPx).toBe(0);
     expect(s.worktrees.maxHeightPx).toBe(500);
     expect(s.worktrees.autoCollapseAfterSeconds).toBe(60);
