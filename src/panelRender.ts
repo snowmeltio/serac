@@ -514,9 +514,11 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     metaHtml += '<span class="bg-shell-badge" title="' + bgShells + ' background shell' + (bgShells === 1 ? '' : 's')
       + ' launched with run_in_background still running">' + bgLabel + '</span>';
   }
-  // Loops badge — the card is sleeping (ScheduleWakeup pending) or looping
-  // (session crons live). Same quiet running-tinted chip as the shell badge:
-  // a "done" card that will re-invoke itself is not finished, just idle.
+  // Loops badge — the card is sleeping (ScheduleWakeup pending, 💤 + time
+  // to fire) or looping (session crons live, 🔁 + count when >1). Glyph-led
+  // like the shell badge to keep the meta row short; the tooltip carries the
+  // words. Same quiet running-tinted chip as the shell badge: a "done" card
+  // that will re-invoke itself is not finished, just idle.
   if (s.pendingWakeupAt && s.pendingWakeupAt > now) {
     const wakeTitle = 'Wakes at ' + new Date(s.pendingWakeupAt).toLocaleTimeString()
       + (s.pendingWakeupReason ? ' — ' + s.pendingWakeupReason : '');
@@ -528,7 +530,7 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     const cronTitle = 'Session cron' + (cronN === 1 ? '' : 's') + ' — re-invokes on schedule'
       + (s.sessionCronLabel ? ': ' + s.sessionCronLabel : '');
     metaHtml += '<span class="bg-shell-badge" title="' + escapeHtml(cronTitle) + '">'
-      + 'loop' + (cronN > 1 ? ' · ' + cronN : '') + '</span>';
+      + '\u{1F501}' + (cronN > 1 ? ' ' + cronN : '') + '</span>';
   }
   // A session's agents can come from workflow run(s) and/or plain Task
   // subagents. Both open the same detail panel (keyed to this session), which

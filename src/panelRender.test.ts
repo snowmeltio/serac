@@ -533,6 +533,15 @@ describe('renderCardInner', () => {
     expect(html).toContain('bypass');
   });
 
+  it('session-cron badge renders the 🔁 glyph, count only when more than one', () => {
+    const one = renderCardInner(makeCtx(), makeSession({ sessionCronCount: 1, sessionCronLabel: 'every 5m' }), NOW, false);
+    expect(one).toContain('class="bg-shell-badge" title="Session cron — re-invokes on schedule: every 5m">\u{1F501}</span>');
+    expect(one).not.toContain('loop');
+    const two = renderCardInner(makeCtx(), makeSession({ sessionCronCount: 2 }), NOW, false);
+    expect(two).toContain('title="Session crons — re-invokes on schedule">\u{1F501} 2</span>');
+    expect(renderCardInner(makeCtx(), makeSession({ sessionCronCount: 0 }), NOW, false)).not.toContain('\u{1F501}');
+  });
+
   it('permission-mode badge is absent for an unrecognised mode or when unset', () => {
     expect(renderCardInner(makeCtx(), makeSession(), NOW, false)).not.toContain('mode-badge');
     const html = renderCardInner(makeCtx(), makeSession({ permissionMode: 'dontAsk' }), NOW, false);
