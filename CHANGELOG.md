@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Shorter card meta row.** The session-cron chip is now a 🔁 glyph (`🔁 2` when more than one cron) instead of the word `loop`, matching its 💤 and 🐚 siblings; the tooltip still names it. The gap between meta-row pills drops from 6px to 4px and the bordered chips (mode, shells/sleep/loop, agents, conflict chips) lose 1px of side padding each, so a fully loaded row (`Fable 5.1 ⚡ auto 2 🐚 💤 23m 🔁 🤖 1 →`) fits the sidebar width without pushing the hover actions onto a second line.
+
 ## v1.25.0 (2026-09-03) — Bring a phone session here
 
 ### Added

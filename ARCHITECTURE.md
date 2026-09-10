@@ -241,7 +241,7 @@ non-status** (same charter as `ToolOutcomeTracker`) and never moves
   the file forever, since mtime alone never moves again.)
 - **Surface:** `SessionSnapshot.backgroundShellCount` (undefined when none),
   carried through to the webview on `PanelSession`.
-- **Display:** rendered as a quiet `.bg-shell-badge` ("⚙ N shell(s) running",
+- **Display:** rendered as a quiet `.bg-shell-badge` ("N 🐚", tooltip names the shells;
   running-accent tint) in the card meta row by `panelRender.ts:renderCardInner`,
   whenever the count is `> 0` — on any status, including `done`. The badge is
   additive and never changes the card's status class, so the flicker-prone
@@ -260,8 +260,9 @@ server-side 7-day expiry ceiling). When hooks are live, every `Stop` payload's
 `session_crons` is applied as ground truth (empty clears, populated replaces).
 Registry-confirmed death clears everything (a dead session has no scheduler).
 Surfaced as `SessionSnapshot.pendingWakeupAt/-Reason` and
-`sessionCronCount/-Label`; rendered as quiet `sleeping · Xm` / `loop` chips in
-the card meta row (same `.bg-shell-badge` chrome).
+`sessionCronCount/-Label`; rendered as quiet glyph-led `💤 Xm` / `🔁` (`🔁 N`
+when more than one cron) chips in the card meta row (same `.bg-shell-badge`
+chrome); the tooltips carry the wording.
 
 ### Orphan/live annotation (processLive)
 

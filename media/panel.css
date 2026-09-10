@@ -560,7 +560,7 @@ body.vscode-light .ws-row-done:hover { background: rgba(var(--sm-arctic-teal-rgb
 .card-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   margin-bottom: 3px;
   /* Wrap when a card is unusually loaded (e.g. bg-shell badge + view-workflows
    * + view-subagents + actions) so the row never overflows the panel width and
@@ -648,7 +648,7 @@ body.vscode-light .worktree-chip {
   color: var(--accent-failed-text);
   border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
   border-radius: 7px;
-  padding: 0 5px;
+  padding: 0 4px;
   flex-shrink: 0;
 }
 
@@ -659,7 +659,7 @@ body.vscode-light .worktree-chip {
 .bg-shell-badge {
   font-size: 9px;
   line-height: 1.2;
-  padding: 0 5px;
+  padding: 0 4px;
   border: 1px solid currentColor;
   border-radius: 3px;
   color: var(--accent-running-text);
@@ -678,7 +678,7 @@ body.vscode-light .worktree-chip {
 .mode-badge {
   font-size: 9px;
   line-height: 1.2;
-  padding: 0 5px;
+  padding: 0 4px;
   border: 1px solid currentColor;
   border-radius: 3px;
   opacity: 0.85;
@@ -983,7 +983,7 @@ body.vscode-light .wf-badge { background: rgba(var(--sm-arctic-teal-rgb), 0.12);
 .wf-tag {
   font-size: 9px;
   font-weight: 400;
-  padding: 0 5px;
+  padding: 0 4px;
   border-radius: 3px;
   line-height: 1.2;
   white-space: nowrap;
