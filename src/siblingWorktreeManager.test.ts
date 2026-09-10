@@ -22,6 +22,7 @@ import * as os from 'os';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
 import { _setConfigValues } from './__mocks__/vscode.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
+import { JsonlTailer } from './jsonlTailer.js';
 
 const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {}, trace: () => {} };
 
@@ -32,13 +33,14 @@ function sanitiseKey(p: string): string {
   return p.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
-/** Create a Claude Code JSONL for a workspace key with a `cwd` record. */
-function createSession(workspaceKey: string, sessionId: string, cwd: string): void {
+/** Create a Claude Code JSONL for a workspace key. Omit `cwd` to produce a
+ *  transcript whose head can't be peeked for a worktree CWD. */
+function createSession(workspaceKey: string, sessionId: string, cwd?: string): void {
   const dir = path.join(projectsDir, workspaceKey);
   fs.mkdirSync(dir, { recursive: true });
   const record = JSON.stringify({
     type: 'user',
-    cwd,
+    ...(cwd ? { cwd } : {}),
     timestamp: new Date().toISOString(),
     message: { content: [{ type: 'text', text: 'Hello' }] },
   });
@@ -181,6 +183,101 @@ describe('SiblingWorktreeManager', () => {
       const manager = await seed();
       await manager.scan();
       expect(manager.getSnapshots().map(s => s.sessionId)).toContain('sib-1');
+      manager.dispose();
+    });
+  });
+
+  describe('head-only cwd peek', () => {
+    it('classifies a sibling dir with only the tracked manager\'s own tailer doing any reading', async () => {
+      const repo = path.join(tmpDir, 'repo');
+      const wt = path.join(tmpDir, 'repo-feature');
+      fs.mkdirSync(repo, { recursive: true });
+      setupRepoWithWorktree(repo, wt, 'feature');
+      const repoRoot = await resolveRepoRoot(wt);
+      createSession(sanitiseKey(wt), 'sib-1', wt);
+
+      const manager = new SiblingWorktreeManager(projectsDir, sanitiseKey(repo), silentLog);
+      manager.setLocalRepoRoot(repoRoot);
+
+      const spy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+      await manager.scan();
+      expect(manager.getSnapshots().map(s => s.sessionId)).toContain('sib-1');
+      // Before the head-only peek: peekCwdInDir() classified the dir by fully
+      // replaying the file through a throwaway SessionManager — its OWN
+      // JsonlTailer instance — then trackJsonlSessions constructed a SECOND
+      // manager (a second tailer) to actually track the session and replayed
+      // the same file again. That's the double-replay this removes: peekCwd()
+      // (jsonlPeek.ts) reads the head with a plain file read that never
+      // constructs a JsonlTailer at all, so only ONE tailer instance — the
+      // tracked manager's own — ever calls readNewRecords(), however many
+      // times its internal drain loop needs (an implementation detail this
+      // assertion doesn't pin down; see sessionManager.oversizedRead.test.ts
+      // for that).
+      const distinctTailers = new Set(spy.mock.instances);
+      expect(distinctTailers.size).toBe(1);
+
+      spy.mockRestore();
+      manager.dispose();
+    });
+
+    it('falls through to the next-newest file when the newest one has no cwd in its head', async () => {
+      const repo = path.join(tmpDir, 'repo');
+      const wt = path.join(tmpDir, 'repo-feature');
+      fs.mkdirSync(repo, { recursive: true });
+      setupRepoWithWorktree(repo, wt, 'feature');
+      const repoRoot = await resolveRepoRoot(wt);
+
+      const key = sanitiseKey(wt);
+      createSession(key, 'sib-old', wt);         // carries cwd
+      createSession(key, 'sib-new');              // no cwd — this is the newest file
+      const dir = path.join(projectsDir, key);
+      const oldTime = new Date(Date.now() - 60_000);
+      const newTime = new Date();
+      fs.utimesSync(path.join(dir, 'sib-old.jsonl'), oldTime, oldTime);
+      fs.utimesSync(path.join(dir, 'sib-new.jsonl'), newTime, newTime);
+
+      const manager = new SiblingWorktreeManager(projectsDir, sanitiseKey(repo), silentLog);
+      manager.setLocalRepoRoot(repoRoot);
+
+      await manager.scan();
+      // The dir still gets classified as a sibling (via the older file's cwd)
+      // and, once classified, every session in it — including the one whose
+      // own head had no cwd — is tracked.
+      const ids = manager.getSnapshots().map(s => s.sessionId);
+      expect(ids).toEqual(expect.arrayContaining(['sib-old', 'sib-new']));
+
+      manager.dispose();
+    });
+
+    it('excludes zero-byte placeholder transcripts from the peek candidates so they cannot crowd out a usable file', async () => {
+      const repo = path.join(tmpDir, 'repo');
+      const wt = path.join(tmpDir, 'repo-feature');
+      fs.mkdirSync(repo, { recursive: true });
+      setupRepoWithWorktree(repo, wt, 'feature');
+      const repoRoot = await resolveRepoRoot(wt);
+
+      const key = sanitiseKey(wt);
+      const dir = path.join(projectsDir, key);
+      fs.mkdirSync(dir, { recursive: true });
+      // Three empty placeholders (Claude Code creates the file before writing
+      // its first record) newer than the one real, cwd-bearing session — if
+      // the zero-byte files weren't excluded before the newest-3 cap, they'd
+      // fill every peek slot and the dir would never classify.
+      const now = Date.now();
+      createSession(key, 'sib-real', wt);
+      fs.utimesSync(path.join(dir, 'sib-real.jsonl'), new Date(now - 60_000), new Date(now - 60_000));
+      for (let i = 0; i < 3; i++) {
+        const placeholder = path.join(dir, `sib-empty-${i}.jsonl`);
+        fs.writeFileSync(placeholder, '');
+        fs.utimesSync(placeholder, new Date(now), new Date(now));
+      }
+
+      const manager = new SiblingWorktreeManager(projectsDir, sanitiseKey(repo), silentLog);
+      manager.setLocalRepoRoot(repoRoot);
+
+      await manager.scan();
+      expect(manager.getSnapshots().map(s => s.sessionId)).toContain('sib-real');
+
       manager.dispose();
     });
   });

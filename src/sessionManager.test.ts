@@ -3,19 +3,30 @@ import type { JsonlRecord } from './types.js';
 
 // Mock JsonlTailer so we can feed records without files
 let mockRecords: JsonlRecord[] = [];
-// Controls what getOffset() reports — see the getBytesRead() delegation test
-// below (startup-timing instrumentation, PR A).
-let mockOffset = 0;
+// Explicit override for getOffset() — see the getBytesRead() delegation test
+// below (startup-timing instrumentation, PR A). `null` (the default) means
+// "fall through to the real drain-loop-driven `offset` field" so every other
+// test keeps the PR #101 semantics described below.
+let mockOffsetOverride: number | null = null;
 vi.mock('./jsonlTailer.js', () => ({
   JsonlTailer: class {
     truncated = false;
+    // Bumped only when a read actually returns records; lastSize mirrors it
+    // so updateInner()'s internal drain loop (caught up, OR offset stops
+    // advancing → stop) sees exactly one productive iteration per
+    // feedRecords() call, then exits — same net effect as the pre-loop
+    // single-read behaviour these mocks were built for.
+    private offset = 0;
+    lastSize = 0;
     async readNewRecords() {
       const r = mockRecords;
       mockRecords = [];
+      if (r.length > 0) { this.offset++; }
+      this.lastSize = this.offset;
       return r;
     }
     getOffset() {
-      return mockOffset;
+      return mockOffsetOverride !== null ? mockOffsetOverride : this.offset;
     }
   },
 }));
@@ -82,14 +93,14 @@ describe('SessionManager state machine', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    mockOffset = 0;
+    mockOffsetOverride = null;
   });
 
   // ── Basic lifecycle ─────────────────────────────────────────────
 
   it('getBytesRead() delegates to the tailer\'s byte offset (startup-timing instrumentation)', () => {
     const mgr = makeManager();
-    mockOffset = 12345;
+    mockOffsetOverride = 12345;
     expect(mgr.getBytesRead()).toBe(12345);
   });
 
