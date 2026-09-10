@@ -322,11 +322,21 @@ export class SessionDiscovery {
    *  `run()` (logs `[startup] <name> failed: <err>` and continues — a failing
    *  stage must not abort the whole sequence, see start()'s docblock), then
    *  logs the `[startup] <name> <N>ms (<detail>)` timing line and fires
-   *  onChange (unless `fireOnChange` is false — the preamble-ish stages ahead
-   *  of the local scan have nothing new to paint yet). The onChange call is
-   *  itself wrapped in try/catch: a webview mid-teardown (panelProvider never
-   *  nulls out `this.view`, so a disposed webview's postMessage can still be
-   *  reached and throw) must not take discovery down with it.
+   *  onChange (unless `opts.fireOnChange` is false — the preamble-ish stages
+   *  ahead of the local scan have nothing new to paint yet). The onChange
+   *  call is itself wrapped in try/catch: a webview mid-teardown
+   *  (panelProvider never nulls out `this.view`, so a disposed webview's
+   *  postMessage can still be reached and throw) must not take discovery
+   *  down with it.
+   *
+   *  `opts.phaseAfter`, when given, is assigned to `this.discoveryPhase`
+   *  immediately after the awaited `run()` — after the post-run disposed
+   *  check, before the log line and onChange. This must happen inside the
+   *  stage, not by the caller setting the phase before calling runStage: a
+   *  send that lands during the awaited `run()` (the 500ms initial timer, a
+   *  usageProvider onChange, a worktree refresh) would otherwise observe the
+   *  new phase against a still-incomplete session map — the exact flash this
+   *  progressive-first-paint work exists to remove.
    *
    *  Returns false — checked both before AND after running the stage — when
    *  `this.disposed`, so the caller's `if (!await this.runStage(...)) return;`
@@ -340,8 +350,9 @@ export class SessionDiscovery {
     name: string,
     run: () => Promise<unknown>,
     detail?: () => string,
-    fireOnChange = true,
+    opts: { fireOnChange?: boolean; phaseAfter?: DiscoveryPhase } = {},
   ): Promise<boolean> {
+    const { fireOnChange = true, phaseAfter } = opts;
     if (this.disposed) { return false; }
     const stageStart = Date.now();
     try {
@@ -350,6 +361,9 @@ export class SessionDiscovery {
       this.log.warn(`[startup] ${name} failed:`, err);
     }
     if (this.disposed) { return false; }
+    if (phaseAfter !== undefined) {
+      this.discoveryPhase = phaseAfter;
+    }
     let suffix = '';
     if (detail) {
       try {
@@ -430,24 +444,27 @@ export class SessionDiscovery {
       // it does not defer the 'partial' transition below.
       await this.refreshDiscoveredWorktrees();
       this.scheduleWorktreeRefresh();
-    }, undefined, false);
+    }, undefined, { fireOnChange: false });
     if (!preambleOk) { return; }
 
     // Moved ahead of any scan (see the ordering note above): populates the
     // liveness probe before the local scan's SessionManagers are built.
     if (!await this.runStage('process registry scan', () => this.processRegistry.scan(),
-      () => `${this.processRegistry.getLiveProcesses().length} live`, false)) { return; }
+      () => `${this.processRegistry.getLiveProcesses().length} live`, { fireOnChange: false })) { return; }
 
     if (!await this.runStage('teams scan', () => this.teamDiscovery.scan(),
-      () => `${this.getTeamSnapshots().length} teams`, false)) { return; }
+      () => `${this.getTeamSnapshots().length} teams`, { fireOnChange: false })) { return; }
 
     if (!await this.runStage('workflows scan', () => this.workflowDiscovery.scan(),
-      () => `${this.getWorkflowSnapshots().length} workflows`, false)) { return; }
+      () => `${this.getWorkflowSnapshots().length} workflows`, { fireOnChange: false })) { return; }
 
-    // Local scan is the first stage the panel actually paints.
-    this.discoveryPhase = 'partial';
+    // Local scan is the first stage the panel actually paints. phaseAfter
+    // flips discoveryPhase to 'partial' inside runStage, right after the
+    // awaited scan() completes and before this stage's onChange fires — see
+    // runStage's docblock for why the flip cannot happen here instead.
     if (!await this.runStage('local scan', () => this.scan(),
-      () => `${this.sessions.size} sessions, ${mb(sumBytesRead(this.sessions.values()))}MB`)) { return; }
+      () => `${this.sessions.size} sessions, ${mb(sumBytesRead(this.sessions.values()))}MB`,
+      { phaseAfter: 'partial' })) { return; }
 
     // Sibling scan must run before foreign scan so foreign can exclude sibling
     // keys — the one load-bearing order dependency left in this sequence (see
@@ -469,7 +486,8 @@ export class SessionDiscovery {
     // flag off, so paying for the probe here would be pure waste.
     if (readSettings().experimental.externalWriterBlock) {
       if (!await this.runStage('writer ownership refresh',
-        () => this.writerOwnership.refresh(this.windowWriterCandidates()), undefined, false)) { return; }
+        () => this.writerOwnership.refresh(this.windowWriterCandidates()), undefined,
+        { fireOnChange: false })) { return; }
     } else {
       this.log.info('[startup] writer ownership refresh skipped (flag off)');
     }

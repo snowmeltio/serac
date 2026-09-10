@@ -2468,6 +2468,53 @@ describe('SessionDiscovery', () => {
       discovery.stop();
     });
 
+    it('does not flip to "partial" until the awaited local scan actually completes, and the first onChange after it resolves sees the local session already present', async () => {
+      // Regression test for the phase/state race this PR fixes: the old code
+      // set `this.discoveryPhase = 'partial'` BEFORE awaiting the local
+      // scan's `run()`, so any send landing during the scan (usageProvider's
+      // first onChange, the 500ms initial timer, a worktree refresh) saw
+      // phase 'partial' against a still half-populated session map — the
+      // "No Claude Code sessions detected" flash this PR exists to remove.
+      // A real local scan on one small fixture file resolves too fast for a
+      // fixed-length JSONL to ever observe the bug, so the scan is stubbed
+      // with a deferred promise under direct control.
+      createJsonlFile('pfp-slow-scan');
+      const discovery = makeDiscovery();
+
+      let resolveScan!: () => void;
+      const gate = new Promise<void>(resolve => { resolveScan = resolve; });
+      const scanTarget = discovery as unknown as { scan: () => Promise<void> };
+      const originalScan = scanTarget.scan.bind(discovery);
+      scanTarget.scan = async () => {
+        await gate;
+        await originalScan();
+      };
+
+      const observed: Array<{ phase: string; sessionIds: string[] }> = [];
+      const startPromise = discovery.start(() => {
+        observed.push({
+          phase: discovery.getDiscoveryPhase(),
+          sessionIds: discovery.getSnapshots().map(s => s.sessionId),
+        });
+      });
+
+      // Let the preamble/registry/teams/workflows stages (all real, no gate)
+      // run to completion and reach the now-in-flight local scan.
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(discovery.getDiscoveryPhase()).toBe('pending');
+
+      const onChangesBeforeResolve = observed.length;
+      resolveScan();
+      await startPromise;
+
+      const afterLocalScan = observed.slice(onChangesBeforeResolve)[0];
+      expect(afterLocalScan).toBeDefined();
+      expect(afterLocalScan.phase).toBe('partial');
+      expect(afterLocalScan.sessionIds).toContain('pfp-slow-scan');
+
+      discovery.stop();
+    });
+
     it('emits [startup] timing lines through the injected logger, including preamble and ready totals', async () => {
       createJsonlFile('pfp-local-2');
       const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn() };
