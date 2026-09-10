@@ -1381,10 +1381,14 @@ foreign/sibling sessions instead of replaying them — see the
 offset equals the file size and would otherwise misreport the whole file as
 freshly read).
 
-**Follow-up, not yet wired.** `teamDiscovery.ts` builds team-lead managers
-with its own `new SessionManager` + `update()` call and does not go through
-`tryHydrate()` — a team lead's dormant session always replays. Left as a
-known gap rather than folded into this pass.
+**Team leads are wired too.** `TeamDiscovery` receives the store via
+`setReplayCache()` from `SessionDiscovery`'s constructor, the same one-shot
+pattern as the two cross-workspace managers (defaulting to
+`NULL_REPLAY_CACHE` itself until wired). `ensureSessionManager()` reuses the
+stat it already takes (previously just an existence check) to `tryHydrate()`
+a lead's manager before falling back to `update()`, and `poll()`'s dormant
+branch offers each dormant lead to the cache via `offerSessionToReplayCache()`
+after any wake-driven update, mirroring the cross-workspace managers exactly.
 
 ## Session repair
 

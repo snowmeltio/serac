@@ -23,7 +23,8 @@ import type {
 } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { ageGateMsFor } from './settings.js';
-import { makeRescanGate } from './sessionPolling.js';
+import { makeRescanGate, offerSessionToReplayCache } from './sessionPolling.js';
+import { NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
 
 /** A strict identifier used as a single on-disk path component for the inbox
  *  write path — no traversal, no separators, no leading dot. Stricter than
@@ -61,6 +62,18 @@ export class TeamDiscovery {
 
   setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => WriterAggregate): void {
     this.writerOwnershipProbeFactory = factory;
+  }
+
+  /** Dormant-session replay cache, injected by SessionDiscovery via
+   *  setReplayCache(). Defaults to the no-op store so the kill switch is
+   *  decided once, at construction, in SessionDiscovery — see
+   *  ARCHITECTURE.md "Replay cache" → Wiring. */
+  private replayCache: ReplayCacheStore = NULL_REPLAY_CACHE;
+
+  /** Wire in the dormant-session replay cache, injected by SessionDiscovery
+   *  once (same pattern as setLivenessProbeFactory). */
+  setReplayCache(store: ReplayCacheStore): void {
+    this.replayCache = store;
   }
 
   constructor(
@@ -222,22 +235,32 @@ export class TeamDiscovery {
     const workspaceKey = sanitiseWorkspaceKey(cwd);
     const jsonlPath = path.join(this.projectsDir, workspaceKey, `${sessionId}.jsonl`);
 
+    let stat: fs.Stats;
     try {
-      await fs.promises.access(jsonlPath);
+      stat = await fs.promises.stat(jsonlPath);
     } catch {
       // JSONL doesn't exist yet (agent still starting) — skip, will be picked up next scan
       return;
     }
 
+    // Single construction path: build the manager first (probes wired exactly
+    // as before), then try to hydrate it from the replay cache — reusing the
+    // stat just taken above — before falling back to an ordinary update().
+    // A finished team lead's transcript is often the largest on disk, so this
+    // is the same win the local/sibling/foreign scans already get. See
+    // ARCHITECTURE.md "Replay cache" → Wiring.
     const manager = new SessionManager(sessionId, jsonlPath, workspaceKey, {
       livenessProbe: this.probeFactory?.(sessionId),
       writerOwnershipProbe: this.writerOwnershipProbeFactory?.(sessionId),
     });
     this.agents.set(sessionId, manager);
-    try {
-      await manager.update();
-    } catch (err) {
-      this.log.warn(`[teams] Initial update failed for ${sessionId}:`, err);
+    const entry = this.replayCache.get(jsonlPath);
+    if (!(entry && manager.tryHydrate(entry, stat))) {
+      try {
+        await manager.update();
+      } catch (err) {
+        this.log.warn(`[teams] Initial update failed for ${sessionId}:`, err);
+      }
     }
   }
 
@@ -336,6 +359,16 @@ export class TeamDiscovery {
     // Demote stale active sessions
     for (const session of active) {
       if (session.demoteIfStale(30_000)) { changed = true; }
+    }
+
+    // Offer dormant sessions (including any just woken and updated above) to
+    // the replay cache — mirrors SessionDiscovery.pollInner's dormant loop
+    // and pollTrackedSessions' `offer` hook used by the foreign/sibling
+    // managers. Population happens at poll time only, never at scan time
+    // (see ARCHITECTURE.md "Replay cache" → Wiring).
+    const offerNow = Date.now();
+    for (const session of dormant) {
+      offerSessionToReplayCache(session, offerNow, this.replayCache);
     }
 
     // Try to pick up JSONLs for agents we don't have managers for yet
