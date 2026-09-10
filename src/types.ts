@@ -13,6 +13,7 @@ export type {
   SubagentInfo, SessionState, ToolOutcome,
   SessionSnapshot, SubagentSnapshot,
   SessionMeta, SessionMetaFile,
+  CachedSessionState, CachedSubagentState,
 } from './sessionTypes.js';
 
 export type {

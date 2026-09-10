@@ -314,6 +314,96 @@ export interface SubagentSnapshot {
   background?: boolean;
 }
 
+/** A done subagent's contribution to a cached session snapshot — the fields
+ *  needed to redraw its roster row, nothing needed to keep it running (it
+ *  never is; see CachedSessionState). */
+export interface CachedSubagentState {
+  parentToolUseId: string;
+  agentId: string | null;
+  description: string;
+  resultPreview: string | null;
+  toolsCompleted: number;
+  /** Epoch ms. */
+  startedAt: number;
+}
+
+/** Dormant-session replay cache payload for one JSONL file. Produced by
+ *  `SessionManager.exportCachedState()` for a boring, fully-quiet `done`
+ *  session and consumed by `SessionManager.fromCache()`/`hydrate()` to paint
+ *  a card without replaying the transcript from byte 0. See `replayCache.ts`.
+ *
+ *  Restores exactly what a dormant done card and the discovery gates need:
+ *  identity, cwd/initialCwd (foreign cwdCache, click-through), topic/activity
+ *  (the ghost filter needs at least one — `panelUtils.ts:isGhost`), status
+ *  (always coerced to `done` on hydrate — see below), lastActivity/
+ *  firstActivity/enqueuedAt (zone sort, the done→stale display window),
+ *  contextTokens/modelId/modelConfirmed (the model pill), customTitle/aiTitle/
+ *  userTurnCount, permissionMode/jsonlPermissionMode (so a re-opened session
+ *  doesn't lose the auto-accept gate on its first live record), entrypoint/
+ *  bridgeSessionId/bridgeState/endReason, the glance pack (gitBranch,
+ *  toolErrorCount, lastAssistantText, trackedFiles), and done subagents.
+ *
+ *  Deliberately NOT cached — recomputed fresh every snapshot, or simply never
+ *  true of an eligible (boring, quiet, `done`) session:
+ *   - probe-derived flags (processLive, externalWriter, dualWriter) — these
+ *     read the LIVE process registry; a cached value would go stale the
+ *     instant a process starts or stops. Always recomputed in getSnapshot().
+ *   - confidence — derived fresh from status + lastActivity age
+ *     (computeConfidence()); always 'high' for a done card regardless.
+ *   - background shells / pending wakeups / session crons — exportCachedState
+ *     refuses to cache a session carrying any of these (see its eligibility
+ *     gates), so a cached entry never has them; a hydrated card simply shows
+ *     none until a live record repopulates them.
+ *   - compacting — same: exportCachedState refuses while compacting.
+ *   - lastTool (PostToolUse enrichment) — cosmetic; not worth the bytes.
+ *   - worktreeRoot/worktreeLabel — set by the OWNING manager
+ *     (SiblingWorktreeManager etc.) after construction, not the session's
+ *     own state.
+ *   - meta overlay (title, dismissed) — lives in session-meta.json, merged in
+ *     by SessionDiscovery at snapshot time, never by SessionManager itself.
+ *   - derived searchText/modelLabel — cheap to recompute from the other
+ *     cached fields at getSnapshot() time; caching them risks staleness if
+ *     the derivation logic changes without a REPLAY_CACHE_VERSION bump.
+ *
+ *  `status` is typed as the full SessionStatus (not narrowed to 'done') so a
+ *  malformed or stale cache entry still parses — `hydrate()` FORCES status to
+ *  'done' unconditionally, ignoring whatever this field says, as defence in
+ *  depth alongside exportCachedState's own refusal to export anything else
+ *  and isHydratable()'s `state.status === 'done'` eligibility check. */
+export interface CachedSessionState {
+  sessionId: string;
+  slug: string;
+  workspaceKey: string;
+  cwd: string;
+  initialCwd: string;
+  topic: string;
+  activity: string;
+  status: SessionStatus;
+  /** Epoch ms. */
+  lastActivity: number;
+  /** Epoch ms. */
+  firstActivity: number;
+  /** Epoch ms; 0 = never enqueued. */
+  enqueuedAt: number;
+  contextTokens: number;
+  modelId: string;
+  modelConfirmed: boolean;
+  customTitle: string;
+  aiTitle: string;
+  userTurnCount: number;
+  permissionMode?: string;
+  jsonlPermissionMode?: string;
+  entrypoint?: string;
+  bridgeSessionId?: string;
+  bridgeState?: BridgeState;
+  endReason?: string;
+  gitBranch?: string;
+  toolErrorCount?: number;
+  lastAssistantText?: string;
+  trackedFiles?: string[];
+  subagents: CachedSubagentState[];
+}
+
 /** Persistent per-session metadata stored in session-meta.json */
 export interface SessionMeta {
   /** User-set or auto-generated title. Null = fall back to topic extraction. */

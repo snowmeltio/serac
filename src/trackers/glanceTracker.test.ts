@@ -122,6 +122,59 @@ describe('assistant preview + tool errors', () => {
   });
 });
 
+describe('restore', () => {
+  it('sets every field, including topic, from a cached snapshot', () => {
+    tracker.restore({
+      topic: 'Cached topic',
+      gitBranch: 'main',
+      toolErrorCount: 3,
+      lastAssistantText: 'Cached preview',
+      trackedFiles: ['a.ts', 'b.ts'],
+    });
+    expect(tracker.getTopic()).toBe('Cached topic');
+    expect(tracker.snapshotFields()).toEqual({
+      gitBranch: 'main',
+      toolErrorCount: 3,
+      lastAssistantText: 'Cached preview',
+      trackedFiles: ['a.ts', 'b.ts'],
+    });
+  });
+
+  it('omitted optional fields restore to empty, matching a fresh tracker', () => {
+    tracker.restore({ topic: 'Only a topic' });
+    expect(tracker.getTopic()).toBe('Only a topic');
+    expect(tracker.snapshotFields()).toEqual({
+      gitBranch: undefined,
+      toolErrorCount: undefined,
+      lastAssistantText: undefined,
+      trackedFiles: undefined,
+    });
+  });
+
+  it('round-trips whatever snapshotFields()/getTopic() previously produced', () => {
+    const original = makeGlanceTracker();
+    original.onUserRecord(userRecord('Original topic'));
+    original.onGitBranch('feature/x');
+    original.onToolError();
+    original.onAssistantText('Some preview text that is long enough to keep.');
+    original.onFileHistorySnapshot(fileHistoryRecord(['a.ts']));
+    const snapshot = { topic: original.getTopic(), ...original.snapshotFields() };
+
+    const restored = makeGlanceTracker();
+    restored.restore(snapshot);
+    expect(restored.getTopic()).toBe(original.getTopic());
+    expect(restored.snapshotFields()).toEqual(original.snapshotFields());
+  });
+
+  it('overwrites any prior state', () => {
+    tracker.onUserRecord(userRecord('Live topic'));
+    tracker.onGitBranch('main');
+    tracker.restore({ topic: 'Restored topic' });
+    expect(tracker.getTopic()).toBe('Restored topic');
+    expect(tracker.snapshotFields().gitBranch).toBeUndefined();
+  });
+});
+
 describe('reset', () => {
   it('clears everything except topic', () => {
     tracker.onUserRecord(userRecord('Sticky topic'));

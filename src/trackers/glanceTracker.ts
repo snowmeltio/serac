@@ -95,6 +95,12 @@ export interface GlanceTracker {
   getTopic(): string;
   /** Snapshot contribution; empty values omitted. */
   snapshotFields(): GlanceSnapshotFields;
+  /** Restore the full glance pack (including topic) from a cached snapshot
+   *  (dormant-session replay cache hydration, sessionManager.ts hydrate()).
+   *  Unlike reset(), this DOES set topic — a hydrated session has no replay
+   *  to re-derive it from. Omitted fields reset to their empty default,
+   *  mirroring the cache's own omission-means-empty convention. */
+  restore(fields: { topic: string } & GlanceSnapshotFields): void;
   /** Truncation reset: clears everything EXCEPT topic (see module doc). */
   reset(): void;
   /** Stop the tracker. Idempotent. */
@@ -172,6 +178,14 @@ class JsonlDerivedGlanceTracker implements GlanceTracker {
 
   getTopic(): string {
     return this.topic;
+  }
+
+  restore(fields: { topic: string } & GlanceSnapshotFields): void {
+    this.topic = fields.topic;
+    this.gitBranch = fields.gitBranch ?? '';
+    this.trackedFiles = fields.trackedFiles ?? [];
+    this.toolErrorCount = fields.toolErrorCount ?? 0;
+    this.lastAssistantText = fields.lastAssistantText ?? '';
   }
 
   snapshotFields(): GlanceSnapshotFields {
