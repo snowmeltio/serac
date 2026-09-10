@@ -32,6 +32,11 @@ export class JsonlTailer {
   /** mtime from the last successful stat (ms since epoch). 0 if never read. */
   lastMtimeMs = 0;
 
+  /** File size from the last successful stat (bytes). 0 if never read. Lets
+   *  callers detect unread bytes left behind by the MAX_READ_PER_CYCLE cap
+   *  without a second stat() of their own. */
+  lastSize = 0;
+
   /** Read all new complete lines since last call. Returns parsed records. */
   async readNewRecords(): Promise<JsonlRecord[]> {
     const records: JsonlRecord[] = [];
@@ -47,6 +52,7 @@ export class JsonlTailer {
     try {
       const stat = await fh.stat();
       this.lastMtimeMs = stat.mtimeMs;
+      this.lastSize = stat.size;
 
       // File shrank (truncation or rotation) — reset to beginning
       if (stat.size < this.offset) {

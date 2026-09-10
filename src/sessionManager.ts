@@ -203,6 +203,11 @@ export class SessionManager {
   private firstActivitySet = false;
   /** Last known mtime of the JSONL file (ms). Used for stat-based poll pruning. */
   private lastMtimeMs = 0;
+  /** Last known on-disk size of the JSONL file (bytes), from the tailer's own
+   *  stat. Paired with the tailer's byte offset so checkMtime() and
+   *  getReadStamp() can tell an unread tail (oversized transcript, capped by
+   *  MAX_READ_PER_CYCLE in jsonlTailer.ts) apart from a fully-drained file. */
+  private lastStatSize = 0;
   /** Timestamp when status last transitioned to 'running'. Used to anchor the
    *  30s idle grace period that covers extended thinking (30-60s without records).
    *  Only set on actual done/waiting → running transition, not on every setRunning(). */
@@ -538,9 +543,13 @@ export class SessionManager {
     const isReplay = !this.initialReplayDone;
     this.initialReplayDone = true;
 
-    // Record mtime from the tailer's stat (avoids redundant syscall)
+    // Record mtime + size from the tailer's stat (avoids a redundant syscall).
+    // Both are set together in the same stat call, so lastMtimeMs > 0 (a real
+    // file always stats with a positive mtime) is a reliable "the stat
+    // succeeded" gate for lastStatSize too.
     if (this.tailer.lastMtimeMs > 0) {
       this.lastMtimeMs = this.tailer.lastMtimeMs;
+      this.lastStatSize = this.tailer.lastSize;
     }
 
     // Reset on truncation to avoid corrupt state from replayed records [H1]
@@ -747,15 +756,35 @@ export class SessionManager {
     return this.enqueuedAt;
   }
 
-  /** Stat-based mtime check. Returns true if the file has been modified since last update.
-   *  Used by poll pruning: dormant sessions only need a stat(), not a full update(). */
+  /** Stat-based mtime check. Returns true if the file has been modified since last update,
+   *  OR if bytes remain unread from a prior capped read. Used by poll pruning: dormant
+   *  sessions only need a stat(), not a full update().
+   *
+   *  The size half of this matters because JsonlTailer caps a single readNewRecords()
+   *  call to MAX_READ_PER_CYCLE (16 MB, jsonlTailer.ts) to avoid OOM on a huge append.
+   *  A transcript already over that cap gets replayed across several update() calls with
+   *  the file's mtime unchanged throughout — mtime alone would let a dormant
+   *  classification taken right after the first oversized slice strand the rest of the
+   *  file forever, since nothing else would ever prompt another update(). */
   async checkMtime(): Promise<boolean> {
     try {
       const stat = await fs.promises.stat(this.state.filePath);
-      return stat.mtimeMs > this.lastMtimeMs;
+      return stat.mtimeMs > this.lastMtimeMs || stat.size > this.tailer.getOffset();
     } catch {
       return false; // file gone — will be pruned by discovery
     }
+  }
+
+  /** Snapshot of what has been read vs what's on disk. `caughtUp` is false
+   *  while unread bytes remain from a capped read (see checkMtime()) even
+   *  though update() completed normally — the replay cache (PR C) uses this
+   *  to refuse caching a session whose transcript hasn't been fully drained. */
+  getReadStamp(): { size: number; mtimeMs: number; caughtUp: boolean } {
+    return {
+      size: this.lastStatSize,
+      mtimeMs: this.lastMtimeMs,
+      caughtUp: this.tailer.getOffset() >= this.lastStatSize,
+    };
   }
 
   /** Mark completed subagents as acknowledged (triggers pruning from snapshot) */

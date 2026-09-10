@@ -16,6 +16,13 @@ import type { SessionSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate } from './sessionPolling.js';
 import { readSettings, ageGateMsFor } from './settings.js';
+import { peekCwd } from './jsonlPeek.js';
+
+/** Cap on how many of the newest candidate JSONLs in an unclassified dir get
+ *  a head-only cwd peek. Most dirs resolve on the newest file; a handful of
+ *  fallbacks covers a newest file that predates the `cwd` field (compacted
+ *  away, or an old transcript) without unbounded work on a busy workspace. */
+const PEEK_CANDIDATES = 3;
 
 /** Should sibling-worktree discovery run at all? The Worktrees pane is one
  *  consumer; squash mode is the other, and it renders those sessions as cards
@@ -228,8 +235,12 @@ export class SiblingWorktreeManager {
   }
 
   /** Read enough of a JSONL in `wsPath` to extract a CWD. We try the most
-   *  recently-modified file first because old files may pre-date the cwd
-   *  field or have been compacted in ways that strip it. */
+   *  recently-modified file(s) first because old files may pre-date the cwd
+   *  field or have been compacted in ways that strip it — capped at the
+   *  newest PEEK_CANDIDATES so a dir with no usable head never costs more
+   *  than a handful of bounded reads. Head-only (jsonlPeek.ts) rather than a
+   *  full SessionManager replay: this only needs one field, not a state
+   *  machine run over the whole transcript. */
   private async peekCwdInDir(
     wsPath: string,
     files: string[],
@@ -247,14 +258,8 @@ export class SiblingWorktreeManager {
     }
     candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-    for (const { file } of candidates) {
-      const sessionId = jsonlSessionId(file)!;
-      const probe = new SessionManager(sessionId, path.join(wsPath, file), path.basename(wsPath));
-      try {
-        await probe.update();
-      } catch { /* skip */ }
-      const cwd = probe.getSnapshot().cwd;
-      probe.dispose();
+    for (const { file } of candidates.slice(0, PEEK_CANDIDATES)) {
+      const cwd = await peekCwd(path.join(wsPath, file));
       if (cwd) { return cwd; }
     }
     return null;

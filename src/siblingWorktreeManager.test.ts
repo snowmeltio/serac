@@ -22,6 +22,7 @@ import * as os from 'os';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
 import { _setConfigValues } from './__mocks__/vscode.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
+import { JsonlTailer } from './jsonlTailer.js';
 
 const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {}, trace: () => {} };
 
@@ -39,6 +40,19 @@ function createSession(workspaceKey: string, sessionId: string, cwd: string): vo
   const record = JSON.stringify({
     type: 'user',
     cwd,
+    timestamp: new Date().toISOString(),
+    message: { content: [{ type: 'text', text: 'Hello' }] },
+  });
+  fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), record + '\n');
+}
+
+/** Same as createSession but with no `cwd` field on the record — a
+ *  transcript whose head can't be peeked for a worktree CWD. */
+function createSessionNoCwd(workspaceKey: string, sessionId: string): void {
+  const dir = path.join(projectsDir, workspaceKey);
+  fs.mkdirSync(dir, { recursive: true });
+  const record = JSON.stringify({
+    type: 'user',
     timestamp: new Date().toISOString(),
     message: { content: [{ type: 'text', text: 'Hello' }] },
   });
@@ -160,6 +174,64 @@ describe('SiblingWorktreeManager', () => {
       const manager = await seed();
       await manager.scan();
       expect(manager.getSnapshots().map(s => s.sessionId)).toContain('sib-1');
+      manager.dispose();
+    });
+  });
+
+  describe('head-only cwd peek (PR B)', () => {
+    it('classifies a sibling dir through a single readNewRecords() call, not two', async () => {
+      const repo = path.join(tmpDir, 'repo');
+      const wt = path.join(tmpDir, 'repo-feature');
+      fs.mkdirSync(repo, { recursive: true });
+      setupRepoWithWorktree(repo, wt, 'feature');
+      const repoRoot = await resolveRepoRoot(wt);
+      createSession(sanitiseKey(wt), 'sib-1', wt);
+
+      const manager = new SiblingWorktreeManager(projectsDir, sanitiseKey(repo), silentLog);
+      manager.setLocalRepoRoot(repoRoot);
+
+      const spy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+      await manager.scan();
+      expect(manager.getSnapshots().map(s => s.sessionId)).toContain('sib-1');
+      // Before PR B: peekCwdInDir() classified the dir by fully replaying the
+      // file through a throwaway SessionManager (1 readNewRecords() call),
+      // then trackJsonlSessions constructed its OWN manager to actually track
+      // the session and replayed the same file again (2nd call) — the exact
+      // double-replay this change removes. peekCwd() (jsonlPeek.ts) reads the
+      // head directly with a plain file read, bypassing JsonlTailer entirely,
+      // so only the tracked manager's update() touches readNewRecords now.
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      spy.mockRestore();
+      manager.dispose();
+    });
+
+    it('falls through to the next-newest file when the newest one has no cwd in its head', async () => {
+      const repo = path.join(tmpDir, 'repo');
+      const wt = path.join(tmpDir, 'repo-feature');
+      fs.mkdirSync(repo, { recursive: true });
+      setupRepoWithWorktree(repo, wt, 'feature');
+      const repoRoot = await resolveRepoRoot(wt);
+
+      const key = sanitiseKey(wt);
+      createSession(key, 'sib-old', wt);        // carries cwd
+      createSessionNoCwd(key, 'sib-new');        // no cwd — this is the newest file
+      const dir = path.join(projectsDir, key);
+      const oldTime = new Date(Date.now() - 60_000);
+      const newTime = new Date();
+      fs.utimesSync(path.join(dir, 'sib-old.jsonl'), oldTime, oldTime);
+      fs.utimesSync(path.join(dir, 'sib-new.jsonl'), newTime, newTime);
+
+      const manager = new SiblingWorktreeManager(projectsDir, sanitiseKey(repo), silentLog);
+      manager.setLocalRepoRoot(repoRoot);
+
+      await manager.scan();
+      // The dir still gets classified as a sibling (via the older file's cwd)
+      // and, once classified, every session in it — including the one whose
+      // own head had no cwd — is tracked.
+      const ids = manager.getSnapshots().map(s => s.sessionId);
+      expect(ids).toEqual(expect.arrayContaining(['sib-old', 'sib-new']));
+
       manager.dispose();
     });
   });
