@@ -696,6 +696,111 @@ describe('SessionDiscovery', () => {
     discovery.stop();
   });
 
+  // ── Undismissed cards survive the age gate ─────────────────────
+  // The gate exists to keep hundreds of never-seen dormant sessions off the
+  // card list. A session Serac once tracked is a different thing: the user has
+  // a card for it and has not archived it, so it stays a card at any age.
+  // Reported 2026-09-10: 32 undismissed hub sessions aged 7-25d were
+  // invisible locally while the foreign badge (14d gate) still counted them.
+
+  function seedMeta(entries: Record<string, Record<string, unknown>>): void {
+    const dir = path.join(projectsDir, workspaceKey);
+    fs.mkdirSync(dir, { recursive: true });
+    const sessions: Record<string, unknown> = {};
+    for (const [id, extra] of Object.entries(entries)) {
+      sessions[id] = {
+        title: null, dismissed: false, acknowledged: false, acknowledgedAt: null,
+        firstSeen: Date.now() - 10 * 24 * 60 * 60 * 1000, ...extra,
+      };
+    }
+    fs.writeFileSync(path.join(dir, 'session-meta.json'), JSON.stringify({ version: 1, sessions }));
+  }
+
+  it('age gate: a tracked, undismissed session older than 7 days is still a card', async () => {
+    const filePath = createJsonlFile('tracked-old');
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(filePath, tenDaysAgo, tenDaysAgo);
+    seedMeta({ 'tracked-old': { tracked: true } });
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    const snap = discovery.getSnapshots().find(s => s.sessionId === 'tracked-old');
+    expect(snap).toBeDefined();
+    expect(snap!.dismissed).toBe(false);
+    expect(discovery.getOlderSessionCount()).toBe(0);
+    discovery.stop();
+  });
+
+  it('age gate: a tracked but dismissed old session stays out of the active scan', async () => {
+    const filePath = createJsonlFile('tracked-dismissed');
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(filePath, tenDaysAgo, tenDaysAgo);
+    seedMeta({ 'tracked-dismissed': { tracked: true, dismissed: true } });
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    expect(discovery.getSnapshots().map(s => s.sessionId)).not.toContain('tracked-dismissed');
+    expect(discovery.getOlderSessionCount()).toBe(1);
+    discovery.stop();
+  });
+
+  it('age gate: an old session with a backfill-only meta entry (never tracked) is still skipped', async () => {
+    const filePath = createJsonlFile('backfill-only');
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(filePath, tenDaysAgo, tenDaysAgo);
+    // What scanExtendedArchive's title backfill leaves behind: an entry with
+    // dismissed:false and no tracked flag. "Undismissed" is meaningless here.
+    seedMeta({ 'backfill-only': { aiTitle: 'Some old chat', customTitle: '' } });
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    expect(discovery.getSnapshots().map(s => s.sessionId)).not.toContain('backfill-only');
+    expect(discovery.getOlderSessionCount()).toBe(1);
+    discovery.stop();
+  });
+
+  it('age gate: legacy seenLive stands in for tracked on metas written before the flag existed', async () => {
+    const filePath = createJsonlFile('seen-live-old');
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(filePath, tenDaysAgo, tenDaysAgo);
+    seedMeta({ 'seen-live-old': { seenLive: true } });
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    expect(discovery.getSnapshots().map(s => s.sessionId)).toContain('seen-live-old');
+    discovery.stop();
+  });
+
+  it('age gate: the active scan stamps tracked on every session it loads', async () => {
+    createJsonlFile('fresh');
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    const metaPath = path.join(projectsDir, workspaceKey, 'session-meta.json');
+    await vi.waitFor(() => {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      expect(meta.sessions['fresh'].tracked).toBe(true);
+    });
+    discovery.stop();
+  });
+
+  it('age gate: undismissing a tracked old session brings its card back on the next scan', async () => {
+    const filePath = createJsonlFile('tracked-return');
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(filePath, tenDaysAgo, tenDaysAgo);
+    seedMeta({ 'tracked-return': { tracked: true, dismissed: true } });
+
+    const discovery = makeDiscovery();
+    await discovery.start(() => {});
+    expect(discovery.getSnapshots().map(s => s.sessionId)).not.toContain('tracked-return');
+
+    discovery.undismissSession('tracked-return');
+    await (discovery as unknown as { scan(): Promise<void> }).scan();
+    const snap = discovery.getSnapshots().find(s => s.sessionId === 'tracked-return');
+    expect(snap).toBeDefined();
+    expect(snap!.dismissed).toBe(false);
+    discovery.stop();
+  });
+
   // ── Audit perf-io-3: knownOld stat-skip + readdir-based prune ──
 
   it('age gate: does not re-stat a known-old file on subsequent scans, count stays correct', async () => {
