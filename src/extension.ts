@@ -1100,6 +1100,12 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
 
   // Start discovery and wire updates
   let lastSendTime = 0;
+  // Trailing-edge throttle for sendUpdate: a call inside the 200ms window no
+  // longer drops silently — it schedules one deferred send for whatever's
+  // left of the window, so a burst of onChange calls (the per-stage startup
+  // callbacks, rapid-fire settings changes) still ends in a send that
+  // reflects the latest state rather than the state at the window's start.
+  let pendingSendTimer: ReturnType<typeof setTimeout> | undefined;
   let compactSettings: CompactSettings = readCompactSettings();
   // Claude Code's remoteControlAtStartup — one of the two top-bar signal
   // facts (the other is the rc server, read per poll). Reloaded by the
@@ -1125,7 +1131,16 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   let rcWatch: RcWatchState = RC_WATCH_IDLE;
   function sendUpdate() {
     const now = Date.now();
-    if (now - lastSendTime < 200) { return; }
+    if (now - lastSendTime < 200) {
+      if (!pendingSendTimer) {
+        const remaining = 200 - (now - lastSendTime);
+        pendingSendTimer = setTimeout(() => {
+          pendingSendTimer = undefined;
+          sendUpdate();
+        }, remaining);
+      }
+      return;
+    }
     lastSendTime = now;
     const teams = discovery.getTeamSnapshots();
     const workflows = discovery.getWorkflowSnapshots();
@@ -1145,6 +1160,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     const olderSessionCount = discovery.getOlderSessionCount();
     const worktrees = buildWorktreeRows(discovery.getDiscoveredWorktrees(), sessions, wsPath);
     const rcServing = discovery.getRcServing();
+    const discoveryPhase = discovery.getDiscoveryPhase();
     panelProvider.updateSessions({
       sessions, waitingCount, workspacePath: wsPath, usage,
       foreignWorkspaces, compactSettings, teams, foreignWaiting,
@@ -1152,6 +1168,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       rcServing,
       rcAutoEnrol,
       rcCompanionProfile,
+      discoveryPhase,
     });
     detailPanel.refresh();
 
@@ -1181,7 +1198,13 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     // absorb-every-tick logic disqualified a new chat on the first tick it
     // flickered through 'done' before its turn began — the reported bug.
     if (knownSessionIds === null) {
-      knownSessionIds = new Set(sessions.map(s => s.sessionId));
+      // Don't seed off a 'pending' tick — the local scan hasn't run yet, so
+      // sessions is empty and the seed would be an empty set. A chat started
+      // in the last NEW_CHAT_FOCUS_WINDOW_MS would then read as "new" the
+      // moment the local scan lands and wrongly auto-focus.
+      if (discoveryPhase !== 'pending') {
+        knownSessionIds = new Set(sessions.map(s => s.sessionId));
+      }
     } else {
       const now2 = Date.now();
       const wsNorm = normPath(wsPath);
@@ -1400,11 +1423,16 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       discovery.stop();
       usageProvider.stop();
       clearInterval(refreshTimer);
+      if (pendingSendTimer) {
+        clearTimeout(pendingSendTimer);
+        pendingSendTimer = undefined;
+      }
     },
   });
 
-  // Initial update after a short delay for panel to mount
-  setTimeout(() => sendUpdate(), 500);
+  // No initial delayed sendUpdate() here: discovery.start()'s per-stage
+  // onChange callbacks (see DiscoveryPhase) cover the first paint, and the
+  // webview's own mount-time requestUpdate covers a panel that mounts late.
 
   return exports;
 }

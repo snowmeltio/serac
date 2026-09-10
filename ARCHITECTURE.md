@@ -18,6 +18,8 @@ panel.js (DOM reconciliation, FLIP animations)
 
 Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and parses local JSONL for per-session costs.
 
+`SessionDiscovery.start()` runs its startup stages (metadata load, repo root, worktrees, local scan, sibling scan, foreign scan, teams, workflows, process registry, writer ownership) strictly serially, firing `onChange` after each one so the panel can paint local sessions as soon as they're known rather than waiting for every stage to finish — see `DiscoveryPhase` ('pending' → 'partial' → 'ready') below. Each stage's duration and result are logged as a `[startup] <stage> <N>ms (<detail>)` line to the Serac output channel, ending in a `[startup] ready <N>ms` total once `writerOwnership.refresh()` completes.
+
 ## Source files
 
 | File | Role |
@@ -993,7 +995,7 @@ override — or where `Stop`/`Notification` prove unreliable enough that JSONL m
 ### Message protocol
 
 **Extension to webview:** Three message types:
-- `update` — all session snapshots, usage data, needs-input count, and workspace path. A 200ms debounce guard prevents double-renders when onChange callbacks and the refresh timer overlap.
+- `update` — all session snapshots, usage data, needs-input count, workspace path, and the current `discoveryPhase` (see "Data flow" above). A 200ms trailing throttle coalesces bursts from onChange callbacks and the refresh timer: a call inside the window schedules one deferred send for whatever's left of it, rather than dropping outright, so the eventual send always reflects the latest state.
 - `focusSession` — sets `focusedSessionId`, re-renders with the highlight, and scrolls the card into view (`scrollIntoView({block:'nearest'})`, a no-op when it is already visible). Only the extension's auto-focus posts this type, so receiving it always means "a newly arrived session was auto-focused"; a user clicking a card sets focus locally without round-tripping.
 - `settings` — the current `serac.*` configuration snapshot. Posted once on `resolveWebviewView` (before the first `update` so the very first render sees the right visibility / heights) and again whenever `onDidChangeConfiguration` fires. Held separate from `update` because settings change rarely and updates are noisy.
 

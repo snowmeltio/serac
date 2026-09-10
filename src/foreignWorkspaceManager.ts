@@ -544,6 +544,18 @@ export class ForeignWorkspaceManager {
     return result;
   }
 
+  /** Startup-timing instrumentation: session/workspace counts and total bytes
+   *  read across every tracked foreign session, for the `[startup]` log line. */
+  getScanStats(): { sessions: number; workspaces: number; bytes: number } {
+    const workspaces = new Set<string>();
+    let bytes = 0;
+    for (const session of this.sessions.values()) {
+      workspaces.add(session.getSnapshot().workspaceKey);
+      bytes += session.getBytesRead();
+    }
+    return { sessions: this.sessions.size, workspaces: workspaces.size, bytes };
+  }
+
   /** Dispose all foreign sessions and clear state. */
   dispose(): void {
     for (const session of this.sessions.values()) {

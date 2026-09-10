@@ -301,6 +301,17 @@ export class SiblingWorktreeManager {
     return out;
   }
 
+  /** Startup-timing instrumentation: session/sibling-worktree counts and
+   *  total bytes read across every tracked sibling session, for the
+   *  `[startup]` log line. */
+  getScanStats(): { sessions: number; siblings: number; bytes: number } {
+    let bytes = 0;
+    for (const session of this.sessions.values()) {
+      bytes += session.getBytesRead();
+    }
+    return { sessions: this.sessions.size, siblings: this.siblingKeys.size, bytes };
+  }
+
   /** Resolve a CWD for a sibling workspace key (used when the panel passes
    *  back a workspaceKey for "open in VS Code"). */
   getCwdForWorkspace(workspaceKey: string): string | null {

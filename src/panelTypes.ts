@@ -10,6 +10,16 @@ import type { TeamSnapshot } from './teamTypes.js';
 import type { WorkflowSnapshot } from './workflowTypes.js';
 import type { DetailSource } from './detailShared.js';
 
+/** Progressive-first-paint stage of SessionDiscovery.start(): 'pending' until
+ *  the local scan completes (nothing to show yet, so the sidebar stays in its
+ *  loading state rather than flashing the empty state), 'partial' once local
+ *  sessions are known but sibling/foreign/teams/workflows scans are still in
+ *  flight, 'ready' once every startup stage (through writerOwnership.refresh)
+ *  has completed. Three states, not two: a user with zero local sessions
+ *  must still see the honest empty state once the local scan is done, not
+ *  "Loading…" for the whole foreign-scan window. */
+export type DiscoveryPhase = 'pending' | 'partial' | 'ready';
+
 /** Full usage snapshot sent to the webview */
 export interface UsageSnapshot {
   /** 5-hour session utilisation as 0-100 (from Anthropic API) */
@@ -124,6 +134,10 @@ export interface PanelUpdate {
    *  caveat and the start routes are withheld. Constant for the life of the
    *  window; always sent. */
   rcCompanionProfile?: boolean;
+  /** Progressive-first-paint stage — see DiscoveryPhase. Always sent by
+   *  sendUpdate (not optional-by-omission); omission elsewhere means the
+   *  caller doesn't track startup phases and callers default to 'ready'. */
+  discoveryPhase?: DiscoveryPhase;
 }
 
 /** A row in the Worktrees pane: one worktree of the current repo. Built in
@@ -197,6 +211,8 @@ export type WebviewMessage =
       /** This window is a companion profile — the tooltip carries the
        *  not-reachable caveat (rcState.ts). Always sent. */
       rcCompanionProfile?: boolean;
+      /** Progressive-first-paint stage — see DiscoveryPhase. Always sent. */
+      discoveryPhase?: DiscoveryPhase;
     }
   | {
       type: 'focusSession';

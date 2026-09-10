@@ -486,3 +486,32 @@ describe('ForeignWorkspaceManager: removed Claude worktrees', () => {
     expect(manager.getRepoRootForWorkspace(plainKey)).toBe(fs.realpathSync(plain));
   });
 });
+
+describe('ForeignWorkspaceManager: getScanStats (startup-timing instrumentation)', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-stats-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reports session/workspace counts and total bytes read across tracked foreign sessions', async () => {
+    const wsA = path.join(tmpDir, 'ws-a');
+    const wsB = path.join(tmpDir, 'ws-b');
+    fs.mkdirSync(wsA, { recursive: true });
+    fs.mkdirSync(wsB, { recursive: true });
+    createForeignSession(sanitiseKey(wsA), 'sess-a', wsA);
+    createForeignSession(sanitiseKey(wsB), 'sess-b', wsB);
+
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    const stats = manager.getScanStats();
+    expect(stats.sessions).toBe(2);
+    expect(stats.workspaces).toBe(2);
+    expect(stats.bytes).toBeGreaterThan(0);
+  });
+});

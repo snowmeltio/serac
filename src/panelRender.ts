@@ -68,6 +68,9 @@ export interface WorkspaceGroup {
   ideOpen?: boolean;
 }
 
+/** Progressive-first-paint stage (mirrors DiscoveryPhase from panelTypes.ts). */
+export type PanelDiscoveryPhase = 'pending' | 'partial' | 'ready';
+
 /** Compact settings shape (mirrors CompactSettings from claudeSettings.ts). */
 export interface PanelCompactSettings { autoCompactWindow: number; autoCompactPct: number }
 
@@ -268,6 +271,16 @@ export function emptyStateHtml(olderSessionCount: number): string {
     : 'Sessions appear when you start Claude Code.';
   return '<div class="empty-state"><div class="icon">⊘</div><div>'
     + escapeHtml(headline) + '</div><div class="hint">' + escapeHtml(hint) + '</div></div>';
+}
+
+/** Card-section placeholder while discovery's startup scan is still in
+ *  flight (DiscoveryPhase 'pending' — see panelTypes.ts). Deliberately the
+ *  same markup as the static HTML shell in panelProvider.ts's getHtml(), so
+ *  the very first real render is a visual no-op rather than a flash of
+ *  "No Claude Code sessions detected" followed by the loading text vanishing
+ *  once local sessions land. */
+export function loadingStateHtml(): string {
+  return '<div class="empty-state"><div class="icon">⊘</div><div>Loading...</div></div>';
 }
 
 /** Inner content of the archive time-range bar. */

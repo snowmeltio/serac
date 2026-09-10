@@ -147,6 +147,16 @@ describe('AgentPanelProvider', () => {
       );
     });
 
+    it('the mount-time send carries discoveryPhase "pending" — updateSessions has not run yet', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+
+      expect(webview.postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'update', discoveryPhase: 'pending' }),
+      );
+    });
+
     it('registers message handler on webview', () => {
       const webview = createMockWebview();
       const view = createMockWebviewView(webview);
@@ -324,6 +334,19 @@ describe('AgentPanelProvider', () => {
 
       provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, rcServing: true });
       expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('rcServing', true);
+    });
+
+    it('discoveryPhase: an omitted field defaults to "ready" (same idiom as rcServing ?? false); an explicit phase is forwarded as-is', () => {
+      const webview = createMockWebview();
+      const view = createMockWebviewView(webview);
+      provider.resolveWebviewView(view as any, {} as any, {} as any);
+      webview.postMessage.mockClear();
+
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null });
+      expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('discoveryPhase', 'ready');
+
+      provider.updateSessions({ sessions: [makeSnapshot()], waitingCount: 0, workspacePath: '/test/ws', usage: null, discoveryPhase: 'partial' });
+      expect(webview.postMessage.mock.calls.at(-1)![0]).toHaveProperty('discoveryPhase', 'partial');
     });
 
     it('defaults rcServing to false when the host omits it', () => {

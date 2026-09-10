@@ -28,6 +28,7 @@ export type {
   UsageSnapshot, WorkspaceGroup, PanelUpdate, WorktreeRow,
   WebviewMessage, WebviewCommand,
   FooterSlotSpec, UsageFooterSlot, FooterSlotPayload, SeracExports,
+  DiscoveryPhase,
 } from './panelTypes.js';
 
 export type {

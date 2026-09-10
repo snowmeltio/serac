@@ -2443,4 +2443,59 @@ describe('SessionDiscovery', () => {
       discovery.stop();
     }, 5000);
   });
+
+  // ── PR A: progressive first paint ──────────────────────────────────
+  describe('DiscoveryPhase / progressive first paint', () => {
+    it('is "pending" before start(), "partial" on the first onChange with the local session already in getSnapshots(), and "ready" on the last onChange', async () => {
+      createJsonlFile('pfp-local-1');
+      const discovery = makeDiscovery();
+      expect(discovery.getDiscoveryPhase()).toBe('pending');
+
+      const observed: Array<{ phase: string; sessionIds: string[] }> = [];
+      await discovery.start(() => {
+        observed.push({
+          phase: discovery.getDiscoveryPhase(),
+          sessionIds: discovery.getSnapshots().map(s => s.sessionId),
+        });
+      });
+
+      expect(observed.length).toBeGreaterThan(0);
+      expect(observed[0].phase).toBe('partial');
+      expect(observed[0].sessionIds).toContain('pfp-local-1');
+      expect(observed[observed.length - 1].phase).toBe('ready');
+      expect(discovery.getDiscoveryPhase()).toBe('ready');
+
+      discovery.stop();
+    });
+
+    it('emits [startup] timing lines through the injected logger, including preamble and ready totals', async () => {
+      createJsonlFile('pfp-local-2');
+      const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn() };
+      const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', log });
+
+      await discovery.start(() => {});
+
+      const lines = log.info.mock.calls
+        .map(call => call[0])
+        .filter((msg): msg is string => typeof msg === 'string' && msg.startsWith('[startup]'));
+      expect(lines.some(l => l.startsWith('[startup] preamble '))).toBe(true);
+      expect(lines.some(l => l.startsWith('[startup] local scan '))).toBe(true);
+      expect(lines.some(l => l.startsWith('[startup] ready '))).toBe(true);
+
+      discovery.stop();
+    });
+
+    it('stop() called from inside the first onChange stops further onChange callbacks', async () => {
+      createJsonlFile('pfp-local-3');
+      const discovery = makeDiscovery();
+
+      let calls = 0;
+      await discovery.start(() => {
+        calls++;
+        if (calls === 1) { discovery.stop(); }
+      });
+
+      expect(calls).toBe(1);
+    });
+  });
 });

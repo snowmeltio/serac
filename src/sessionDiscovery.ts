@@ -19,7 +19,7 @@ import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
 import { SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
 import { makeSessionMetaStore, type SessionMetaStore } from './sessionMetaStore.js';
-import type { SessionSnapshot, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot } from './types.js';
+import type { SessionSnapshot, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, DiscoveryPhase } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 
 /** Verdict from resolveOpenGate() — see its docstring for field semantics. */
@@ -67,6 +67,10 @@ export class SessionDiscovery {
   private readonly meta: SessionMetaStore;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
   private onChangeCallback: (() => void) | undefined;
+  /** Progressive-first-paint stage of start() — see DiscoveryPhase. Read by
+   *  extension.ts and forwarded to the panel so the sidebar can distinguish
+   *  "still discovering" from a genuinely empty workspace. */
+  private discoveryPhase: DiscoveryPhase = 'pending';
   /** Prevents timer callbacks from running after dispose */
   private disposed = false;
   /** Guard against concurrent poll executions */
@@ -309,9 +313,25 @@ export class SessionDiscovery {
     this.meta.enqueueSave();
   }
 
-  /** Start watching for sessions. Calls onChange when state changes. */
+  /** Current progressive-first-paint stage — see DiscoveryPhase. */
+  getDiscoveryPhase(): DiscoveryPhase {
+    return this.discoveryPhase;
+  }
+
+  /** Start watching for sessions. Calls onChange after every startup stage
+   *  (not just once at the end) so the panel can paint local sessions well
+   *  before the foreign/team/workflow scans finish — see DiscoveryPhase and
+   *  ARCHITECTURE.md's startup-phases note. Stages stay strictly serial (see
+   *  the reentrancy note on the poll loop's every-10th-cycle rescan gate);
+   *  each stage is followed by a disposed check (a dispose() mid-start must
+   *  not resurrect timers or fire further callbacks), a `[startup]` timing
+   *  line, and the onChange callback. */
   async start(onChange: () => void): Promise<void> {
     this.onChangeCallback = onChange;
+    const startedAt = Date.now();
+    let stageStart = startedAt;
+    const elapsed = () => Date.now() - stageStart;
+    const mb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
 
     // Load session metadata (with legacy migration)
     await this.meta.load();
@@ -337,15 +357,68 @@ export class SessionDiscovery {
     await this.refreshDiscoveredWorktrees();
     this.scheduleWorktreeRefresh();
 
+    if (this.disposed) { return; }
+    this.log.info(`[startup] preamble ${elapsed()}ms`);
+    // No onChange here: phase is still 'pending' and nothing user-visible
+    // has changed yet. The first onChange fires after the local scan below,
+    // once there's something to paint.
+    stageStart = Date.now();
+
     // Initial scan (local + sibling worktrees + foreign + teams).
     // Sibling scan must run before foreign scan so foreign can exclude sibling keys.
     await this.scan();
+    if (this.disposed) { return; }
+    {
+      let bytes = 0;
+      for (const session of this.sessions.values()) { bytes += session.getBytesRead(); }
+      this.log.info(`[startup] local scan ${elapsed()}ms (${this.sessions.size} sessions, ${mb(bytes)}MB)`);
+    }
+    this.discoveryPhase = 'partial';
+    this.onChangeCallback?.();
+    stageStart = Date.now();
+
     await this.siblingManager.scan();
+    if (this.disposed) { return; }
+    {
+      const stats = this.siblingManager.getScanStats();
+      this.log.info(`[startup] sibling scan ${elapsed()}ms (${stats.sessions} sessions, ${stats.siblings} siblings, ${mb(stats.bytes)}MB)`);
+    }
+    this.onChangeCallback?.();
+    stageStart = Date.now();
+
     await this.foreignManager.scan();
+    if (this.disposed) { return; }
+    {
+      const stats = this.foreignManager.getScanStats();
+      this.log.info(`[startup] foreign scan ${elapsed()}ms (${stats.sessions} sessions, ${stats.workspaces} workspaces, ${mb(stats.bytes)}MB)`);
+    }
+    this.onChangeCallback?.();
+    stageStart = Date.now();
+
     await this.teamDiscovery.scan();
+    if (this.disposed) { return; }
+    this.log.info(`[startup] teams scan ${elapsed()}ms (${this.getTeamSnapshots().length} teams)`);
+    this.onChangeCallback?.();
+    stageStart = Date.now();
+
     await this.workflowDiscovery.scan();
+    if (this.disposed) { return; }
+    this.log.info(`[startup] workflows scan ${elapsed()}ms (${this.getWorkflowSnapshots().length} workflows)`);
+    this.onChangeCallback?.();
+    stageStart = Date.now();
+
     await this.processRegistry.scan();
+    if (this.disposed) { return; }
+    this.log.info(`[startup] process registry scan ${elapsed()}ms (${this.processRegistry.getLiveProcesses().length} live)`);
+    this.onChangeCallback?.();
+    stageStart = Date.now();
+
     await this.writerOwnership.refresh(this.windowWriterCandidates());
+    if (this.disposed) { return; }
+    this.log.info(`[startup] writer ownership refresh ${elapsed()}ms`);
+    this.discoveryPhase = 'ready';
+    this.log.info(`[startup] ready ${Date.now() - startedAt}ms`);
+    this.onChangeCallback?.();
 
     // Start adaptive poll loop
     this.schedulePoll();
