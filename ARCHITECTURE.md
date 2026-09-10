@@ -29,7 +29,8 @@ Separately, UsageProvider polls the Anthropic OAuth API every 4-6 minutes and pa
 | `panelProvider.ts` | Webview provider. Generates full HTML/CSS inline, handles webview commands, updates panel badge. |
 | `panel.js` | Webview frontend (bundled from `panel.ts` + `panelRender.ts`). `panel.ts` owns the mutable state, keyed DOM reconciler with FLIP animations, status debouncing, ghost filtering, and event wiring. |
 | `panelRender.ts` | Pure HTML builders for the sidebar (cards, foreign/worktree rows, archive rows, usage section) plus the webview view-type mirrors. No DOM access; ambient state arrives via an explicit `RenderContext` built once per render pass, so every builder is unit-testable without jsdom. |
-| `jsonlTailer.ts` | Byte-offset file reader. Tracks read position, buffers incomplete lines across reads. |
+| `jsonlTailer.ts` | Byte-offset file reader. Tracks read position, buffers incomplete lines across reads. Caps a single `readNewRecords()` call to `MAX_READ_PER_CYCLE` (16 MB); `SessionManager.updateInner()` loops internally (mirroring `detailPanel.ts`'s transcript-tailing loop) to drain a bigger transcript fully within one `update()` call — see `checkMtime()`/`getReadStamp()`. |
+| `jsonlPeek.ts` | Head-only JSONL reads for a single cheap field, bypassing `JsonlTailer` and the session state machine entirely. `readJsonlHeadLines()`/`findInLines()` are the pure building blocks; `peekCwd()` (bounded to 1 MB — `cwd` is serialised after `message`, and a large injected CLAUDE.md/system-reminder payload ahead of it can push past a naive small window) is the concrete lookup used by `siblingWorktreeManager.ts` to classify an unclassified workspace dir without a full `SessionManager` replay. Returns the FIRST cwd seen (the launch cwd), not the latest — deliberately not full parity with a live `SessionManager`'s snapshot, which tracks the latest and drifts on a mid-session `cd`. |
 | `sessionRepair.ts` | JSONL metadata repair. Reads tail 64KB, appends `custom-title` record if no metadata exists. |
 | `transcriptRenderer.ts` | JSONL to markdown converter. Renders user/assistant/system records with tool summaries. |
 | `types.ts` | Central type re-export shim. Definitions live in domain modules: `sessionTypes.ts` (SessionState, SessionSnapshot, SessionMeta), `teamTypes.ts`, `workflowTypes.ts`, `panelTypes.ts` (UsageSnapshot, WebviewMessage, SeracExports), `jsonlTypes.ts` (JsonlRecord). |
@@ -221,7 +222,17 @@ non-status** (same charter as `ToolOutcomeTracker`) and never moves
   pushes the cleared badge (a `done` card's status never changes, so the demote
   path alone would never trigger a push). The death clear reuses the conservative
   registry tri-state (`isConfirmedDeadByRegistry()`, same as the permission-FP
-  gate above).
+  gate above). (A dormant session is only handed back to `update()` at all
+  when `SessionManager.checkMtime()` reports a change or it has live
+  background agents (see "Dormant pumping" above). `checkMtime()` itself
+  fires on mtime moving **or** bytes remaining unread past `JsonlTailer`'s
+  `MAX_READ_PER_CYCLE` cap — `updateInner()` loops internally to drain an
+  oversized (>16 MB) transcript fully within one `update()` call, so in the
+  ordinary case the tailer is always caught up by the time `checkMtime()`
+  runs; the size clause is the safety net for the one way that can still
+  leave unread bytes — a read that fails partway through the drain — without
+  which a dormant classification taken right after would strand the rest of
+  the file forever, since mtime alone never moves again.)
 - **Surface:** `SessionSnapshot.backgroundShellCount` (undefined when none),
   carried through to the webview on `PanelSession`.
 - **Display:** rendered as a quiet `.bg-shell-badge` ("⚙ N shell(s) running",

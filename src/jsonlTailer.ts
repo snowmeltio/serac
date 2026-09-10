@@ -32,6 +32,11 @@ export class JsonlTailer {
   /** mtime from the last successful stat (ms since epoch). 0 if never read. */
   lastMtimeMs = 0;
 
+  /** File size from the last successful stat (bytes). 0 if never read. Lets
+   *  callers detect unread bytes left behind by the MAX_READ_PER_CYCLE cap
+   *  without a second stat() of their own. */
+  lastSize = 0;
+
   /** Read all new complete lines since last call. Returns parsed records. */
   async readNewRecords(): Promise<JsonlRecord[]> {
     const records: JsonlRecord[] = [];
@@ -47,6 +52,7 @@ export class JsonlTailer {
     try {
       const stat = await fh.stat();
       this.lastMtimeMs = stat.mtimeMs;
+      this.lastSize = stat.size;
 
       // File shrank (truncation or rotation) — reset to beginning
       if (stat.size < this.offset) {
@@ -67,8 +73,14 @@ export class JsonlTailer {
 
       const readSlice = actualRead < bytesToRead ? readBuf.subarray(0, actualRead) : readBuf;
 
-      // Guard against transient memory spike from concat [H6]
-      if (this.lineBuffer.length + readSlice.length > MAX_LINE_BUFFER) {
+      // Guard against an unbounded carried-over partial line only [H6]. A
+      // capped MAX_READ_PER_CYCLE (16MB) slice concatenated with a <=1MB
+      // leftover is not a memory hazard — that's ~17MB, held once, briefly.
+      // The old guard compared the SUM against MAX_LINE_BUFFER (1MB), which
+      // is always true for any capped read (16MB alone exceeds 1MB), so it
+      // discarded the real leftover on every oversized read and silently
+      // dropped whichever record straddled the slice boundary.
+      if (this.lineBuffer.length > MAX_LINE_BUFFER) {
         this.lineBuffer = Buffer.alloc(0);
       }
 
