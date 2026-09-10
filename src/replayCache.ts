@@ -2,25 +2,29 @@
  * ReplayCache — a single JSON file shared by every window, profile, and
  * farmed account on this machine, letting a dormant `done` session's card
  * paint without replaying its JSONL from byte 0 (see the "Replay cache"
- * section of ARCHITECTURE.md).
+ * section of ARCHITECTURE.md, including its Wiring subsection for how
+ * `SessionDiscovery`/`ForeignWorkspaceManager`/`SiblingWorktreeManager`
+ * consume this module).
  *
  * Split, same shape as sessionMetaStore.ts: pure functions for parsing,
  * eligibility, pruning, and merging (this file); a store class doing the I/O
  * (also this file, but exercised only through the pure functions in tests).
- * PR D locates the file beside the realpath'd `claudeProjectsDir()` and
- * wires `makeReplayCacheStore` into SessionDiscovery — this PR ships the
- * mechanism only ("merges dark").
+ * `makeReplayCacheStore()` is located beside the realpath'd
+ * `claudeProjectsDir()` by its caller; `NULL_REPLAY_CACHE` is the no-op
+ * substitute used when the `serac.discovery.replayCache` kill switch is off.
  *
  * Concurrency: several windows/profiles/accounts share one file. `flush()`
  * RE-READS and merges before writing (unlike sessionMetaStore, which owns
  * its file alone) so a window's flush folds in whatever any other window has
  * written since this window last read the file — narrowing, not closing,
  * the lost-update race: two windows flushing at the same instant can still
- * each miss the other's just-landed write (last rename wins), but the
- * loser's own entries are simply re-exported and re-written on ITS next
- * flush, so nothing is permanently lost, only delayed by one cycle. No
- * locking — a session card painting a poll cycle late is cheap; a lock file
- * that can be abandoned by a crashed window is not.
+ * each miss the other's just-landed write (last rename wins). The LOSER's
+ * own entries are recovered on its own next `flush()` call even with
+ * nothing new `put()` — see the reconciliation branch below — so nothing is
+ * permanently lost, only delayed by however long it takes that window's
+ * next dormant poll to call `flush()` again. No locking — a session card
+ * painting a poll cycle late is cheap; a lock file that can be abandoned by
+ * a crashed window is not.
  */
 
 import * as fs from 'fs';
@@ -28,6 +32,7 @@ import * as path from 'path';
 import type { CachedSessionState, FileStamp } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
+import { isAtOrUnder } from './gitWorktreeUtil.js';
 
 /** Bump whenever CachedSessionState's shape or the status-machine semantics
  *  it captures change (per CLAUDE.md's "State machine changes" convention) —
@@ -269,13 +274,23 @@ export function isHydratable(
   return true;
 }
 
-/** Drop entries older than `maxAgeMs` (capped at REPLAY_CACHE_HARD_MAX_AGE_MS
- *  regardless of what the caller passes), then cap the remainder to
- *  `maxEntries`, keeping the newest `cachedAt` first. Pure — the missing-file
- *  check is a SEPARATE, async, I/O-touching step (see `pruneMissingFiles`
- *  below); folding it in here would make this synchronous function block on
- *  disk, and — more importantly — would re-stat every entry (up to 1000) on
- *  every 30 s flush instead of only the ones actually worth checking. */
+/** Drop entries whose underlying FILE's `mtimeMs` (not `cachedAt`) is older
+ *  than `maxAgeMs` (capped at REPLAY_CACHE_HARD_MAX_AGE_MS regardless of what
+ *  the caller passes), then cap the remainder to `maxEntries`, keeping the
+ *  newest `cachedAt` first. Ages by `mtimeMs` deliberately: `cachedAt` only
+ *  advances when an entry is re-written (offerSessionToReplayCache() skips
+ *  the write entirely once an entry's stamp stops changing), so keying the
+ *  age gate off it would age out — and then immediately re-cache on the very
+ *  next dormant poll — a session whose transcript has not changed AT ALL
+ *  since it first went dormant, purely because time has passed since the
+ *  write, not because the underlying content is any less relevant. `mtimeMs`
+ *  is stable for a truly static file, so a never-changing tracked session's
+ *  entry is judged by how old its content actually is, not how long ago this
+ *  process happened to cache it. Pure — the missing-file check is a
+ *  SEPARATE, async, I/O-touching step (see `pruneMissingFiles` below);
+ *  folding it in here would make this synchronous function block on disk,
+ *  and — more importantly — would re-stat every entry (up to 1000) on every
+ *  30 s flush instead of only the ones actually worth checking. */
 export function pruneEntries(
   entries: Map<string, ReplayCacheEntry>,
   now: number,
@@ -284,7 +299,7 @@ export function pruneEntries(
   const maxAgeMs = Math.min(opts.maxAgeMs, REPLAY_CACHE_HARD_MAX_AGE_MS);
   let kept: Array<[string, ReplayCacheEntry]> = [];
   for (const [filePath, entry] of entries) {
-    if (now - entry.cachedAt > maxAgeMs) { continue; }
+    if (now - entry.mtimeMs > maxAgeMs) { continue; }
     kept.push([filePath, entry]);
   }
   if (kept.length > opts.maxEntries) {
@@ -365,8 +380,11 @@ export function serialiseReplayCache(entries: Map<string, ReplayCacheEntry>): st
 export interface ReplayCacheStore {
   /** Load from disk. Missing/unreadable/corrupt/oversized/wrong-version → an
    *  empty in-memory cache (never throws). Also runs the missing-file prune
-   *  across every loaded entry once (see `pruneMissingFiles`). */
-  load(): Promise<void>;
+   *  across every loaded entry once (see `pruneMissingFiles`), and drops any
+   *  entry keyed outside `opts.keyRoot` (see `ReplayCacheStoreOptions`).
+   *  Resolves with the resulting entry count and how many keys the latter
+   *  check dropped, so the caller can log. */
+  load(): Promise<{ entries: number; droppedKeys: number }>;
   get(filePath: string): ReplayCacheEntry | undefined;
   /** Record (or overwrite) one entry in memory and mark the store dirty. Does
    *  not write to disk — see flush(). */
@@ -376,8 +394,12 @@ export interface ReplayCacheStore {
    *  Re-reads the file and merges (newest-`cachedAt`-wins) before writing,
    *  since other windows/profiles/accounts share this file — SKIPPED when
    *  the cache file's own stat is unchanged since this store last read or
-   *  wrote it (nothing to fold in). Serialised — concurrent flush() calls
-   *  from the same store queue rather than race. */
+   *  wrote it (nothing to fold in). When NOT dirty, still performs a cheap
+   *  reconciliation pass (one stat; a re-read only if the file changed) that
+   *  recovers this store's own entries if a prior flush lost a concurrent
+   *  rename race against another window — see the class doc comment and
+   *  ARCHITECTURE.md "Replay cache" → Wiring. Serialised — concurrent
+   *  flush() calls from the same store queue rather than race. */
   flush(now: number, opts?: { force?: boolean }): Promise<void>;
 }
 
@@ -388,6 +410,12 @@ export interface ReplayCacheStoreOptions {
   maxEntries?: number;
   /** Minimum ms between writes. Default: REPLAY_CACHE_MIN_FLUSH_INTERVAL_MS. */
   minFlushIntervalMs?: number;
+  /** When set, every entry read from disk (by `load()` and by the merge step
+   *  inside a write) whose key is not `isAtOrUnder(key, keyRoot)` is dropped —
+   *  defence against a hand-edited cache file pointing an entry outside the
+   *  caller's projects tree. Applied at the one I/O choke point (`readDisk()`)
+   *  so it's enforced on every read, not just at startup. */
+  keyRoot?: string;
 }
 
 async function statOrNull(p: string): Promise<fs.Stats | null> {
@@ -398,17 +426,25 @@ async function statOrNull(p: string): Promise<fs.Stats | null> {
   }
 }
 
+/** Unique-tmp-filename counter. Module-level (NOT per-instance): two
+ *  `FileReplayCacheStore`s on the SAME cachePath in one process (e.g. two
+ *  `SessionDiscovery` instances in one extension host, or a test harness)
+ *  must never both produce `<path>.<pid>.1.tmp` — an instance-scoped counter
+ *  restarts at 1 for each new store and defeats the uniqueness the pid
+ *  suffix is there for. */
+let globalSaveSeq = 0;
+
 class FileReplayCacheStore implements ReplayCacheStore {
   private entries: Map<string, ReplayCacheEntry> = new Map();
   private dirty = false;
   private lastFlushAt = 0;
-  private saveSeq = 0;
   /** The cache FILE's own {size, mtimeMs} as of the last time this store
    *  actually read or wrote it — distinct from each per-session
    *  ReplayCacheEntry's stamp. Lets saveInner() skip the re-read+merge+parse
    *  when nothing has touched the shared file since (the common case: no
    *  other window/profile/account happened to flush in the same 30 s
-   *  window). */
+   *  window), and lets flush()'s not-dirty reconciliation pass tell "file
+   *  unchanged" from "someone else wrote" with one stat. */
   private diskStamp: FileStamp | null = null;
   /** Serialises overlapping flush() calls onto one write at a time — same
    *  rationale as SessionMetaStore's saveQueue: two concurrent writers to one
@@ -422,12 +458,14 @@ class FileReplayCacheStore implements ReplayCacheStore {
   ) {}
 
   /** Read + parse the cache file, shared by load() and the merge step in
-   *  saveInner(). Stats FIRST so the 16 MB cap is enforced before a large
-   *  file is even read into memory — parseReplayCache()'s own string-length
-   *  check is a secondary guard for callers with only raw text in hand.
-   *  Returns null on any failure (missing, oversized, unreadable) — never
-   *  throws. */
-  private async readDisk(): Promise<{ entries: Map<string, ReplayCacheEntry>; stamp: FileStamp } | null> {
+   *  saveInner()/flush()'s reconciliation pass. Stats FIRST so the 16 MB cap
+   *  is enforced before a large file is even read into memory —
+   *  parseReplayCache()'s own string-length check is a secondary guard for
+   *  callers with only raw text in hand. Applies the `keyRoot` filter (see
+   *  `ReplayCacheStoreOptions`) so an out-of-tree key never survives a read,
+   *  from ANY caller, not just load(). Returns null on any failure (missing,
+   *  oversized, unreadable) — never throws. */
+  private async readDisk(): Promise<{ entries: Map<string, ReplayCacheEntry>; stamp: FileStamp; droppedKeys: number } | null> {
     const stat = await statOrNull(this.cachePath);
     if (!stat || stat.size > REPLAY_CACHE_MAX_FILE_BYTES) { return null; }
     let raw: string;
@@ -436,14 +474,25 @@ class FileReplayCacheStore implements ReplayCacheStore {
     } catch {
       return null;
     }
-    return { entries: parseReplayCache(raw), stamp: { size: stat.size, mtimeMs: stat.mtimeMs } };
+    let entries = parseReplayCache(raw);
+    let droppedKeys = 0;
+    const keyRoot = this.opts.keyRoot;
+    if (keyRoot) {
+      const filtered = new Map<string, ReplayCacheEntry>();
+      for (const [key, value] of entries) {
+        if (isAtOrUnder(key, keyRoot)) { filtered.set(key, value); } else { droppedKeys++; }
+      }
+      entries = filtered;
+    }
+    return { entries, stamp: { size: stat.size, mtimeMs: stat.mtimeMs }, droppedKeys };
   }
 
-  async load(): Promise<void> {
+  async load(): Promise<{ entries: number; droppedKeys: number }> {
     const disk = await this.readDisk();
-    if (!disk) { return; }
+    if (!disk) { return { entries: 0, droppedKeys: 0 }; }
     this.entries = await pruneMissingFiles(disk.entries, disk.entries.keys());
     this.diskStamp = disk.stamp;
+    return { entries: this.entries.size, droppedKeys: disk.droppedKeys };
   }
 
   get(filePath: string): ReplayCacheEntry | undefined {
@@ -456,17 +505,59 @@ class FileReplayCacheStore implements ReplayCacheStore {
   }
 
   async flush(now: number, opts: { force?: boolean } = {}): Promise<void> {
-    if (!this.dirty) { return; }
-    if (!opts.force) {
+    if (this.dirty && !opts.force) {
       const minInterval = this.opts.minFlushIntervalMs ?? REPLAY_CACHE_MIN_FLUSH_INTERVAL_MS;
       if (this.lastFlushAt > 0 && now - this.lastFlushAt < minInterval) { return; }
     }
-    this.lastFlushAt = now;
-    this.saveQueue = this.saveQueue.then(() => this.saveInner(now));
+    this.saveQueue = this.saveQueue.then(() => this.flushInner(now));
     await this.saveQueue;
   }
 
-  private async saveInner(now: number): Promise<void> {
+  /** Dirty → an ordinary rate-limited save. Not dirty → a cheap lost-update
+   *  reconciliation: this store may be the LOSER of a concurrent rename race
+   *  (its own flush() saw the file unchanged and skipped the merge, then
+   *  another window's write landed and renamed over it) — in which case
+   *  entries THIS store holds are missing from, or older on, disk. One stat
+   *  in the common case (file unchanged since we last touched it, nothing to
+   *  do); a re-read only when the file's own stamp moved; a write only when
+   *  our memory actually holds something disk doesn't yet have. */
+  private async flushInner(now: number): Promise<void> {
+    if (this.dirty) {
+      this.lastFlushAt = now;
+      await this.saveInner(now);
+      return;
+    }
+    const currentStat = await statOrNull(this.cachePath);
+    if (!currentStat) { return; }
+    if (this.diskStamp && sameStamp(currentStat, this.diskStamp)) { return; }
+    const disk = await this.readDisk();
+    if (!disk) { return; }
+    let staleOrMissing = false;
+    for (const [filePath, entry] of this.entries) {
+      const onDisk = disk.entries.get(filePath);
+      if (!onDisk || entry.cachedAt > onDisk.cachedAt) { staleOrMissing = true; break; }
+    }
+    if (!staleOrMissing) {
+      // Disk already reflects everything we know (or knows more, from other
+      // windows) — adopt it (already pruned by whoever wrote it) with no
+      // write of our own.
+      this.entries = disk.entries;
+      this.diskStamp = disk.stamp;
+      return;
+    }
+    this.lastFlushAt = now;
+    await this.saveInner(now, disk);
+  }
+
+  /** `preloadedDisk`, when given, is a disk snapshot the caller (flushInner's
+   *  reconciliation branch) already fetched — skips the redundant stat+read
+   *  below and merges against it directly. Omitted (the ordinary dirty path)
+   *  does the usual "skip the re-read if the file's own stat hasn't moved"
+   *  check itself. */
+  private async saveInner(
+    now: number,
+    preloadedDisk?: { entries: Map<string, ReplayCacheEntry>; stamp: FileStamp },
+  ): Promise<void> {
     // Optimistic clear BEFORE the read/merge/write below: a put() landing at
     // ANY point from here on (mid-read, mid-write) unconditionally re-sets
     // dirty=true, so it is never silently dropped — it just waits for the
@@ -485,17 +576,20 @@ class FileReplayCacheStore implements ReplayCacheStore {
       const knownKeysBeforeMerge = new Set(this.entries.keys());
       let merged = this.entries;
 
-      const currentStat = await statOrNull(this.cachePath);
-      const fileUnchanged = currentStat && this.diskStamp && sameStamp(currentStat, this.diskStamp);
-      if (!fileUnchanged) {
-        // this.entries reflects any put() that landed during the stat above
-        // (JS has no preemption between an await resuming and this line), so
-        // folding disk knowledge in here can't drop it.
-        const disk = await this.readDisk();
-        if (disk) {
-          merged = mergeEntries(disk.entries, this.entries);
-          this.diskStamp = disk.stamp;
+      let disk = preloadedDisk;
+      if (disk === undefined) {
+        const currentStat = await statOrNull(this.cachePath);
+        const fileUnchanged = currentStat && this.diskStamp && sameStamp(currentStat, this.diskStamp);
+        if (!fileUnchanged) {
+          // this.entries reflects any put() that landed during the stat above
+          // (JS has no preemption between an await resuming and this line), so
+          // folding disk knowledge in here can't drop it.
+          disk = (await this.readDisk()) ?? undefined;
         }
+      }
+      if (disk) {
+        merged = mergeEntries(disk.entries, this.entries);
+        this.diskStamp = disk.stamp;
       }
 
       // Missing-file prune, but ONLY for keys this window didn't already
@@ -514,10 +608,11 @@ class FileReplayCacheStore implements ReplayCacheStore {
       this.entries = pruned;
 
       await fs.promises.mkdir(path.dirname(this.cachePath), { recursive: true });
-      // Unique per pid+seq so two overlapping writers (different SessionDiscovery
+      // Unique per pid+seq (seq is a MODULE-level counter — see
+      // globalSaveSeq) so two overlapping writers (different SessionDiscovery
       // instances in the SAME process, or a stale queued write from before a
       // reload) can never share — and clobber — one tmp file.
-      const tmpPath = `${this.cachePath}.${process.pid}.${++this.saveSeq}.tmp`;
+      const tmpPath = `${this.cachePath}.${process.pid}.${++globalSaveSeq}.tmp`;
       const serialised = serialiseReplayCache(pruned);
       let writtenStamp: FileStamp | null = null;
       try {
@@ -552,8 +647,9 @@ class FileReplayCacheStore implements ReplayCacheStore {
   }
 }
 
-/** Factory. `cachePath` is supplied by the caller — PR D locates it beside
- *  the realpath'd claudeProjectsDir(); this PR does not compute a default. */
+/** Factory. `cachePath` is supplied by the caller, located beside the
+ *  realpath'd `claudeProjectsDir()` — see `SessionDiscovery`'s constructor
+ *  and ARCHITECTURE.md "Replay cache" → Wiring. */
 export function makeReplayCacheStore(
   cachePath: string,
   log: Logger,
@@ -561,3 +657,16 @@ export function makeReplayCacheStore(
 ): ReplayCacheStore {
   return new FileReplayCacheStore(cachePath, log, opts);
 }
+
+/** No-op substitute used when `serac.discovery.replayCache` is off — decided
+ *  ONCE (in `SessionDiscovery`'s constructor) and passed down unconditionally
+ *  to every consumer, so nothing downstream needs its own settings check:
+ *  `load()` never touches disk, `get()` always misses, `put()` is dropped,
+ *  `flush()` resolves immediately. A genuine no-op, not a hidden affordance —
+ *  see ARCHITECTURE.md "Replay cache" → Wiring. */
+export const NULL_REPLAY_CACHE: ReplayCacheStore = {
+  async load() { return { entries: 0, droppedKeys: 0 }; },
+  get: () => undefined,
+  put: () => { /* dropped — kill switch off */ },
+  async flush() { /* no-op — kill switch off */ },
+};

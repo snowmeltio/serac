@@ -21,9 +21,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
+import { sameStamp, type ReplayCacheStore } from './replayCache.js';
+import type { CachedSessionState, FileStamp } from './types.js';
 
 /** The slice of SessionManager the poll loop touches — structural so tests
- *  can drive the loop without filesystem fixtures. */
+ *  can drive the loop without filesystem fixtures. The replay-cache-era
+ *  additions (getFilePath/getReadStamp/exportCachedState/isHydrated) are
+ *  exercised only via offerSessionToReplayCache() below — everything else in
+ *  this module only needs the original members. */
 export interface PollableSession {
   getStatus(): string;
   getLastActivity(): Date;
@@ -32,6 +37,30 @@ export interface PollableSession {
   demoteIfStale(thresholdMs: number): boolean;
   sweepBackgroundWork(now: number): boolean;
   dispose(): void;
+  getFilePath(): string;
+  getReadStamp(): FileStamp & { caughtUp: boolean };
+  exportCachedState(now?: number): CachedSessionState | null;
+  isHydrated(): boolean;
+}
+
+/** Shared dormant-session replay-cache population — see ARCHITECTURE.md
+ *  "Replay cache" → Wiring for the call sites and the eligibility contract.
+ *  Ordered to avoid the expensive check when a cheap one already answers:
+ *  hydrated / already-cached-at-this-stamp are checked BEFORE
+ *  exportCachedState() builds a full snapshot-shaped export. */
+export function offerSessionToReplayCache(
+  session: PollableSession,
+  now: number,
+  replayCache: ReplayCacheStore,
+): void {
+  if (session.isHydrated()) { return; }
+  const stamp = session.getReadStamp();
+  const filePath = session.getFilePath();
+  const existing = replayCache.get(filePath);
+  if (existing && sameStamp(existing, stamp)) { return; }
+  const state = session.exportCachedState(now);
+  if (!state) { return; }
+  replayCache.put(filePath, { size: stamp.size, mtimeMs: stamp.mtimeMs, cachedAt: now, state });
 }
 
 /** Visibility predicate: is the session still inside its window? Foreign
@@ -92,6 +121,10 @@ export async function pollTrackedSessions(
   sessions: Map<string, PollableSession>,
   now: number,
   withinWindow: WithinWindow,
+  /** Replay-cache population hook, fired for every dormant session each
+   *  cycle — mirrors the call site next to sweepBackgroundWork in
+   *  SessionDiscovery.pollInner. See ARCHITECTURE.md "Replay cache" → Wiring. */
+  offer?: (session: PollableSession, now: number) => void,
 ): Promise<boolean> {
   let changed = false;
   for (const [compositeId, session] of sessions) {
@@ -112,6 +145,7 @@ export async function pollTrackedSessions(
         }
       } catch { /* skip */ }
       if (session.sweepBackgroundWork(now)) { changed = true; }
+      offer?.(session, now);
       continue;
     }
     try {
@@ -150,6 +184,9 @@ export interface TrackJsonlOptions {
   makeManager: (sessionId: string, filePath: string) => SessionManager;
   /** Initial-update failure sink (manager is kept; update retries next poll). */
   warn: (compositeId: string, err: unknown) => void;
+  /** Replay cache — see ARCHITECTURE.md "Replay cache" → Wiring. Omitted by a
+   *  caller with nothing wired (or the kill switch off, at the manager). */
+  replayCache?: ReplayCacheStore;
 }
 
 /**
@@ -170,8 +207,9 @@ export async function trackJsonlSessions(opts: TrackJsonlOptions): Promise<boole
     if (opts.sessions.has(compositeId)) { continue; }
 
     const filePath = path.join(opts.wsPath, file);
+    let fstat: fs.Stats;
     try {
-      const fstat = await fs.promises.stat(filePath);
+      fstat = await fs.promises.stat(filePath);
       if (!opts.withinWindow(sessionId, fstat.mtimeMs)) { continue; }
       // An empty JSONL has no session in it yet. SessionManager's initial
       // state is `done` with lastActivity = now, so tracking one manufactures
@@ -182,12 +220,25 @@ export async function trackJsonlSessions(opts: TrackJsonlOptions): Promise<boole
       if (fstat.size === 0) { continue; }
     } catch { continue; }
 
+    // Single construction path: makeManager() always builds (and decorates —
+    // liveness probe, worktree origin) the manager first; tryHydrate() then
+    // either populates it from the cache (reusing the stat just taken above)
+    // or the caller falls back to an ordinary update(). See ARCHITECTURE.md
+    // "Replay cache" → Wiring.
     const manager = opts.makeManager(sessionId, filePath);
-    try {
-      await manager.update();
-    } catch (err) {
-      opts.warn(compositeId, err);
+    const entry = opts.replayCache?.get(filePath);
+    if (!(entry && manager.tryHydrate(entry, fstat))) {
+      try {
+        await manager.update();
+      } catch (err) {
+        opts.warn(compositeId, err);
+      }
     }
+    // The re-gate below matters just as much for a hydrated manager as a
+    // freshly-replayed one: hydrate() restores the cached lastActivity onto
+    // the manager, so this reads the SAME (restored) timestamp a full replay
+    // would have produced — a hydrated session that has actually aged out of
+    // the window since it was cached is still evicted here.
     if (!opts.withinWindow(sessionId, manager.getLastActivity().getTime())) {
       manager.dispose();
       continue;

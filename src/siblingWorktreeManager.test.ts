@@ -23,6 +23,8 @@ import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
 import { _setConfigValues } from './__mocks__/vscode.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import { JsonlTailer } from './jsonlTailer.js';
+import type { ReplayCacheEntry, ReplayCacheStore } from './replayCache.js';
+import type { CachedSessionState } from './types.js';
 
 const silentLog = { warn: () => {}, error: () => {}, info: () => {}, debug: () => {}, trace: () => {} };
 
@@ -277,6 +279,63 @@ describe('SiblingWorktreeManager', () => {
 
       await manager.scan();
       expect(manager.getSnapshots().map(s => s.sessionId)).toContain('sib-real');
+
+      manager.dispose();
+    });
+  });
+
+  describe('replay-cache hydration', () => {
+    afterEach(() => { vi.restoreAllMocks(); }); // JsonlTailer.prototype spy below
+
+    function fakeStore(entries: Map<string, ReplayCacheEntry>): ReplayCacheStore {
+      return {
+        load: async () => ({ entries: entries.size, droppedKeys: 0 }),
+        get: (p: string) => entries.get(p),
+        put: () => {},
+        flush: async () => {},
+      };
+    }
+
+    it('hydrates a dormant sibling session from the cache — no re-read, and worktree origin is still tagged', async () => {
+      const repo = path.join(tmpDir, 'repo');
+      const wt = path.join(tmpDir, 'repo-feature');
+      fs.mkdirSync(repo, { recursive: true });
+      setupRepoWithWorktree(repo, wt, 'feature');
+      const repoRoot = await resolveRepoRoot(wt);
+      expect(repoRoot).toBeTruthy();
+
+      const key = sanitiseKey(wt);
+      createSession(key, 'sib-hydrate-1', wt);
+      const filePath = path.join(projectsDir, key, 'sib-hydrate-1.jsonl');
+      const stat = fs.statSync(filePath);
+
+      const state: CachedSessionState = {
+        sessionId: 'sib-hydrate-1', slug: 'sib-hydrate-1', workspaceKey: key,
+        cwd: wt, initialCwd: wt,
+        topic: 'Cached sibling topic', activity: 'Idle', status: 'done',
+        lastActivity: Date.now() - 20 * 60_000, firstActivity: Date.now() - 20 * 60_000,
+        enqueuedAt: 0, contextTokens: 10, modelId: '', modelConfirmed: false,
+        customTitle: '', aiTitle: 'Cached sibling title', userTurnCount: 1, subagents: [],
+      };
+      const entries = new Map<string, ReplayCacheEntry>([
+        [filePath, { size: stat.size, mtimeMs: stat.mtimeMs, cachedAt: Date.now(), state }],
+      ]);
+
+      const manager = new SiblingWorktreeManager(projectsDir, sanitiseKey(repo), silentLog);
+      manager.setLocalRepoRoot(repoRoot);
+      manager.setReplayCache(fakeStore(entries));
+
+      const readSpy = vi.spyOn(JsonlTailer.prototype, 'readNewRecords');
+      await manager.scan();
+
+      expect(readSpy).not.toHaveBeenCalled();
+      const snap = manager.getSnapshots().find(s => s.sessionId === 'sib-hydrate-1');
+      expect(snap).toBeDefined();
+      expect(snap?.topic).toBe('Cached sibling topic');
+      // setWorktreeOrigin() must reach a hydrated manager exactly as it does
+      // an ordinarily-constructed one — otherwise a hydrated sibling card
+      // would silently lose its worktree chip.
+      expect(snap?.worktreeRoot).toBe(wt);
 
       manager.dispose();
     });

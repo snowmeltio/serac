@@ -14,9 +14,10 @@ import type { WriterAggregate } from './writerOwnership.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate, sumBytesRead } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
 import { readSettings, ageGateMsFor } from './settings.js';
 import { peekCwd } from './jsonlPeek.js';
+import { NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
 
 /** Cap on how many of the newest candidate JSONLs in an unclassified dir get
  *  a head-only cwd peek. Most dirs resolve on the newest file; a handful of
@@ -47,6 +48,11 @@ export class SiblingWorktreeManager {
    *  subsequent scans can skip them without re-reading JSONLs. */
   private nonSiblingKeys: Set<string> = new Set();
   private localRepoRoot: string | null = null;
+  /** Dormant-session replay cache, injected by SessionDiscovery via
+   *  setReplayCache(). Defaults to the no-op store so the kill switch is
+   *  decided once, at construction, in SessionDiscovery — see
+   *  ARCHITECTURE.md "Replay cache" → Wiring. */
+  private replayCache: ReplayCacheStore = NULL_REPLAY_CACHE;
 
   constructor(
     private readonly projectsDir: string,
@@ -68,6 +74,12 @@ export class SiblingWorktreeManager {
 
   setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => WriterAggregate): void {
     this.writerOwnershipProbeFactory = factory;
+  }
+
+  /** Wire in the dormant-session replay cache, injected by SessionDiscovery
+   *  once (same pattern as setLivenessProbeFactory). */
+  setReplayCache(store: ReplayCacheStore): void {
+    this.replayCache = store;
   }
 
   /** Resolve and cache the local CWD's repoRoot. Until this resolves to a
@@ -194,6 +206,7 @@ export class SiblingWorktreeManager {
           return manager;
         },
         warn: (compositeId, err) => this.log.warn(`Sibling session update failed (${compositeId}):`, err),
+        replayCache: this.replayCache,
       })) {
         changed = true;
       }
@@ -280,7 +293,8 @@ export class SiblingWorktreeManager {
     const ageGate = ageGateMsFor('worktrees');
 
     if (await pollTrackedSessions(this.sessions, now,
-      (_sessionId, lastActivityMs) => now - lastActivityMs <= ageGate)) {
+      (_sessionId, lastActivityMs) => now - lastActivityMs <= ageGate,
+      (session, pollNow) => offerSessionToReplayCache(session, pollNow, this.replayCache))) {
       changed = true;
     }
     return changed;
@@ -315,8 +329,15 @@ export class SiblingWorktreeManager {
   /** Startup-timing instrumentation: session/sibling-worktree counts and
    *  total bytes read across every tracked sibling session, for the
    *  `[startup]` log line. */
-  getScanStats(): { sessions: number; siblings: number; bytes: number } {
-    return { sessions: this.sessions.size, siblings: this.siblingKeys.size, bytes: sumBytesRead(this.sessions.values()) };
+  getScanStats(): { sessions: number; siblings: number; bytes: number; hydrated: number } {
+    let hydrated = 0;
+    for (const session of this.sessions.values()) {
+      if (session.isHydrated()) { hydrated++; }
+    }
+    return {
+      sessions: this.sessions.size, siblings: this.siblingKeys.size, bytes: sumBytesRead(this.sessions.values()),
+      hydrated,
+    };
   }
 
   /** Resolve a CWD for a sibling workspace key (used when the panel passes

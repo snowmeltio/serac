@@ -159,7 +159,7 @@ describe('parseReplayCache', () => {
 });
 
 describe('isHydratable', () => {
-  const stat = { size: 1000, mtimeMs: 123456 };
+  const stat = { size: entry().size, mtimeMs: entry().mtimeMs };
 
   it('true for an exact stat match, not live', () => {
     expect(isHydratable(entry(), stat, undefined)).toBe(true);
@@ -168,8 +168,8 @@ describe('isHydratable', () => {
   });
 
   it('false on any size or mtime mismatch', () => {
-    expect(isHydratable(entry(), { size: 999, mtimeMs: 123456 }, undefined)).toBe(false);
-    expect(isHydratable(entry(), { size: 1000, mtimeMs: 1 }, undefined)).toBe(false);
+    expect(isHydratable(entry(), { size: stat.size - 1, mtimeMs: stat.mtimeMs }, undefined)).toBe(false);
+    expect(isHydratable(entry(), { size: stat.size, mtimeMs: stat.mtimeMs - 1 }, undefined)).toBe(false);
   });
 
   it('false when the registry confirms the process is live', () => {
@@ -186,27 +186,40 @@ describe('isHydratable', () => {
 describe('pruneEntries', () => {
   const now = Date.now();
 
-  it('drops entries older than maxAgeMs', () => {
+  it('drops entries by file mtimeMs, not cachedAt', () => {
     const entries = new Map([
-      ['/fresh.jsonl', entry({ cachedAt: now - 1000 })],
-      ['/stale.jsonl', entry({ cachedAt: now - 100_000 })],
+      ['/fresh.jsonl', entry({ mtimeMs: now - 1000, cachedAt: now })],
+      ['/stale.jsonl', entry({ mtimeMs: now - 100_000, cachedAt: now })],
     ]);
     const pruned = pruneEntries(entries, now, { maxAgeMs: 10_000, maxEntries: 100 });
     expect([...pruned.keys()]).toEqual(['/fresh.jsonl']);
   });
 
+  it('a never-changing file is not pruned just because it was cached long ago', () => {
+    // cachedAt is 59 days old (only re-written when the entry actually
+    // changes — offerSessionToReplayCache skips the write once the stamp
+    // stops moving), but the file's own mtimeMs is fresh: a truly static
+    // dormant session must not age out, and must not be re-cached on the
+    // very next dormant poll either.
+    const entries = new Map([
+      ['/stable.jsonl', entry({ mtimeMs: now - 1000, cachedAt: now - 59 * 24 * 60 * 60 * 1000 })],
+    ]);
+    const pruned = pruneEntries(entries, now, { maxAgeMs: Number.MAX_SAFE_INTEGER, maxEntries: 100 });
+    expect(pruned.size).toBe(1);
+  });
+
   it('caps maxAgeMs at the 60-day hard ceiling regardless of caller input', () => {
     const veryOld = now - 61 * 24 * 60 * 60 * 1000;
-    const entries = new Map([['/ancient.jsonl', entry({ cachedAt: veryOld })]]);
+    const entries = new Map([['/ancient.jsonl', entry({ mtimeMs: veryOld, cachedAt: now })]]);
     const pruned = pruneEntries(entries, now, { maxAgeMs: Number.MAX_SAFE_INTEGER, maxEntries: 100 });
     expect(pruned.size).toBe(0);
   });
 
   it('caps entry count, keeping the newest cachedAt first', () => {
     const entries = new Map([
-      ['/oldest.jsonl', entry({ cachedAt: now - 3000 })],
-      ['/middle.jsonl', entry({ cachedAt: now - 2000 })],
-      ['/newest.jsonl', entry({ cachedAt: now - 1000 })],
+      ['/oldest.jsonl', entry({ mtimeMs: now, cachedAt: now - 3000 })],
+      ['/middle.jsonl', entry({ mtimeMs: now, cachedAt: now - 2000 })],
+      ['/newest.jsonl', entry({ mtimeMs: now, cachedAt: now - 1000 })],
     ]);
     const pruned = pruneEntries(entries, now, { maxAgeMs: 999_999_999, maxEntries: 2 });
     expect([...pruned.keys()].sort()).toEqual(['/middle.jsonl', '/newest.jsonl'].sort());
@@ -217,7 +230,7 @@ describe('pruneEntries', () => {
     // eviction is pruneMissingFiles()'s job (async, batched, applied only to
     // the keys worth checking). A fictional path is kept by pruneEntries
     // regardless of whether it exists on disk.
-    const entries = new Map([['/does/not/exist.jsonl', entry()]]);
+    const entries = new Map([['/does/not/exist.jsonl', entry({ mtimeMs: Date.now() })]]);
     const pruned = pruneEntries(entries, Date.now(), { maxAgeMs: 999_999_999, maxEntries: 100 });
     expect(pruned.size).toBe(1);
   });
@@ -386,6 +399,25 @@ describe('FileReplayCacheStore', () => {
     expect(fs.readdirSync(tmpDir).filter(f => f.includes('.tmp'))).toEqual([]);
   });
 
+  it('two store instances on the same path never share a tmp filename (module-level save counter)', async () => {
+    // Two FileReplayCacheStore instances in one process (e.g. two
+    // SessionDiscovery instances in the same extension host) must never both
+    // produce the same `<path>.<pid>.<seq>.tmp` — an instance-scoped counter
+    // would restart at 1 for each new store and defeat the uniqueness the
+    // pid suffix is there for.
+    const storeB = makeReplayCacheStore(cachePath, silentLog, { minFlushIntervalMs: 30_000 });
+    const writeSpy = vi.spyOn(fs.promises, 'writeFile');
+
+    store.put(pathA, entry());
+    await store.flush(Date.now());
+    storeB.put(pathB, entry());
+    await storeB.flush(Date.now());
+
+    const tmpNames = writeSpy.mock.calls.map(call => call[0] as string);
+    expect(tmpNames.length).toBe(2);
+    expect(new Set(tmpNames).size).toBe(2);
+  });
+
   it('flush() no-ops when not dirty', async () => {
     const writeSpy = vi.spyOn(fs.promises, 'writeFile');
     await store.flush(Date.now());
@@ -476,6 +508,47 @@ describe('FileReplayCacheStore', () => {
     // from memory (the other window's write was missing it, the acknowledged
     // lost-update case, healed by our own re-flush).
     expect(Object.keys(onDisk).sort()).toEqual([pathA, pathMine, pathOther].sort());
+  });
+
+  it('lost-update recovery: a not-dirty flush() reconciles when the loser of a concurrent rename race calls it again with no new puts', async () => {
+    // Two stores, same file — a second FileReplayCacheStore instance stands
+    // in for a second window/profile/account sharing this cache path.
+    const storeB = makeReplayCacheStore(cachePath, silentLog, { minFlushIntervalMs: 30_000 });
+
+    storeB.put(pathB, entry({ mtimeMs: Date.now(), state: cachedState({ sessionId: 'b' }) }));
+    const realRename = fs.promises.rename.bind(fs.promises);
+    const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementationOnce(async (from, to) => {
+      // storeB's rename "wins" first...
+      await storeB.flush(Date.now(), { force: true });
+      // ...then this store's (already in-flight) rename lands on top of it —
+      // the SECOND rename wins outright; storeB's write is clobbered and its
+      // entry never reaches disk, even though storeB's own flush() resolved
+      // successfully (this is the acknowledged lost-update race the class
+      // doc comment and ARCHITECTURE.md describe).
+      await realRename(from, to);
+    });
+    store.put(pathA, entry({ mtimeMs: Date.now(), state: cachedState({ sessionId: 'a' }) }));
+    await store.flush(Date.now(), { force: true });
+
+    let onDisk = readDiskEntries();
+    expect(onDisk[pathA]).toBeDefined();
+    expect(onDisk[pathB]).toBeUndefined(); // storeB lost the race
+
+    // The LOSER calls flush() again with NOTHING new put() — not-dirty, so
+    // this exercises flushInner()'s reconciliation branch, not an ordinary
+    // dirty write. Its own entry (still held in memory) is missing from
+    // disk, so it re-reads, merges, and writes.
+    await storeB.flush(Date.now() + 1);
+    onDisk = readDiskEntries();
+    expect(onDisk[pathA]).toBeDefined();
+    expect(onDisk[pathB]).toBeDefined();
+
+    // A third flush from either store, with nothing changed on either side,
+    // performs no write at all (only a cheap stat, or at most a re-read).
+    renameSpy.mockClear();
+    await store.flush(Date.now() + 2);
+    await storeB.flush(Date.now() + 2);
+    expect(renameSpy).not.toHaveBeenCalled();
   });
 
   it('flush() only existence-checks entries newly seen from disk, not ones it already knew', async () => {
