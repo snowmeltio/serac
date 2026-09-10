@@ -52,6 +52,15 @@ vi.mock('./sessionManager.js', () => ({
     demoteIfStale(_ms: number): boolean { return mockManagers.get(this._id)!.staleResult; }
     dispose() { mockManagers.get(this._id)!.disposed = true; }
     getFilePath() { return mockManagers.get(this._id)!.filePath; }
+    // Replay-cache surface (offerSessionToReplayCache / tryHydrate) — these
+    // tests never wire a replay cache (default NULL_REPLAY_CACHE, whose
+    // get() always misses), so the stubs just need to exist and be inert;
+    // real hydrate/export behaviour is covered by teamDiscovery.replayCache.test.ts
+    // against the REAL SessionManager.
+    isHydrated() { return false; }
+    getReadStamp() { return { size: 0, mtimeMs: 0, caughtUp: false }; }
+    exportCachedState() { return null; }
+    tryHydrate() { return false; }
   },
 }));
 

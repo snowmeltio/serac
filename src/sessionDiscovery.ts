@@ -218,6 +218,7 @@ export class SessionDiscovery {
       : NULL_REPLAY_CACHE;
     this.foreignManager.setReplayCache(this.replayCache);
     this.siblingManager.setReplayCache(this.replayCache);
+    this.teamDiscovery.setReplayCache(this.replayCache);
   }
 
   // ── Probe factories ───────────────────────────────────────────────
