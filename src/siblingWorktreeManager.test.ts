@@ -284,12 +284,12 @@ describe('SiblingWorktreeManager', () => {
     });
   });
 
-  describe('replay-cache hydration (PR D)', () => {
+  describe('replay-cache hydration', () => {
     afterEach(() => { vi.restoreAllMocks(); }); // JsonlTailer.prototype spy below
 
     function fakeStore(entries: Map<string, ReplayCacheEntry>): ReplayCacheStore {
       return {
-        load: async () => {},
+        load: async () => ({ entries: entries.size, droppedKeys: 0 }),
         get: (p: string) => entries.get(p),
         put: () => {},
         flush: async () => {},

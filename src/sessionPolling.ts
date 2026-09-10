@@ -21,15 +21,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
-import { isHydratable, sameStamp, type ReplayCacheStore } from './replayCache.js';
+import { sameStamp, type ReplayCacheStore } from './replayCache.js';
 import type { CachedSessionState, FileStamp } from './types.js';
 
 /** The slice of SessionManager the poll loop touches — structural so tests
  *  can drive the loop without filesystem fixtures. The replay-cache-era
  *  additions (getFilePath/getReadStamp/exportCachedState/isHydrated) are
- *  exercised only via offerSessionToReplayCache() and the hydration branch of
- *  trackJsonlSessions() below — everything else in this module still only
- *  needs the original members. */
+ *  exercised only via offerSessionToReplayCache() below — everything else in
+ *  this module only needs the original members. */
 export interface PollableSession {
   getStatus(): string;
   getLastActivity(): Date;
@@ -44,32 +43,23 @@ export interface PollableSession {
   isHydrated(): boolean;
 }
 
-/** Shared dormant-session replay-cache population, used by both
- *  SessionDiscovery's own local-scan dormant loop (pollInner, next to
- *  sweepBackgroundWork) and pollTrackedSessions' dormant branch below (via
- *  the optional `offer` parameter) — one eligibility/write decision rather
- *  than two hand-copied ones. Refuses when the session is itself hydrated
- *  (nothing new to capture — see SessionManager.isHydrated()) or
- *  exportCachedState() refuses (see its own eligibility doc), and skips the
- *  write when the cache already holds an identical {size, mtimeMs} stamp for
- *  this file (no benefit to re-writing the same bytes). The `serac.discovery.
- *  replayCache` kill switch is checked by the CALLER (SessionDiscovery,
- *  ForeignWorkspaceManager, SiblingWorktreeManager) before this is ever
- *  reached — this module deliberately never imports settings.ts (see
- *  replayCache.ts's own note on the vscode-mock blast radius that would
- *  otherwise hit every test file importing this one). */
+/** Shared dormant-session replay-cache population — see ARCHITECTURE.md
+ *  "Replay cache" → Wiring for the call sites and the eligibility contract.
+ *  Ordered to avoid the expensive check when a cheap one already answers:
+ *  hydrated / already-cached-at-this-stamp are checked BEFORE
+ *  exportCachedState() builds a full snapshot-shaped export. */
 export function offerSessionToReplayCache(
   session: PollableSession,
   now: number,
   replayCache: ReplayCacheStore,
 ): void {
   if (session.isHydrated()) { return; }
-  const state = session.exportCachedState(now);
-  if (!state) { return; }
   const stamp = session.getReadStamp();
   const filePath = session.getFilePath();
   const existing = replayCache.get(filePath);
   if (existing && sameStamp(existing, stamp)) { return; }
+  const state = session.exportCachedState(now);
+  if (!state) { return; }
   replayCache.put(filePath, { size: stamp.size, mtimeMs: stamp.mtimeMs, cachedAt: now, state });
 }
 
@@ -131,12 +121,9 @@ export async function pollTrackedSessions(
   sessions: Map<string, PollableSession>,
   now: number,
   withinWindow: WithinWindow,
-  /** Replay-cache population hook (PR D), fired for every dormant session
-   *  each cycle — mirrors the call site next to sweepBackgroundWork in
-   *  SessionDiscovery.pollInner. Both cross-workspace managers pass
-   *  `(session, pollNow) => offerSessionToReplayCache(session, pollNow, store)`
-   *  when the cache is enabled and wired in; omitted entirely (not just a
-   *  no-op closure) when the kill switch is off, so there is nothing to call. */
+  /** Replay-cache population hook, fired for every dormant session each
+   *  cycle — mirrors the call site next to sweepBackgroundWork in
+   *  SessionDiscovery.pollInner. See ARCHITECTURE.md "Replay cache" → Wiring. */
   offer?: (session: PollableSession, now: number) => void,
 ): Promise<boolean> {
   let changed = false;
@@ -197,29 +184,9 @@ export interface TrackJsonlOptions {
   makeManager: (sessionId: string, filePath: string) => SessionManager;
   /** Initial-update failure sink (manager is kept; update retries next poll). */
   warn: (compositeId: string, err: unknown) => void;
-  /** Replay-cache wiring (PR D). All three of `replayCache`/`makeHydrated`
-   *  travel together — a caller omits them entirely (rather than passing a
-   *  disabled store) when `serac.discovery.replayCache` is off, so hydration
-   *  is a genuine no-op, not a runtime branch that happens to do nothing.
-   *  `livenessOf` is optional even when the other two are set: a manager with
-   *  no registry probe wired (e.g. a context that never calls
-   *  setLivenessProbeFactory) just passes `undefined` liveness to
-   *  isHydratable(), which treats "unknown" as eligible — the same tri-state
-   *  contract SessionManager's own livenessProbe uses everywhere else. */
+  /** Replay cache — see ARCHITECTURE.md "Replay cache" → Wiring. Omitted by a
+   *  caller with nothing wired (or the kill switch off, at the manager). */
   replayCache?: ReplayCacheStore;
-  /** Registry liveness for a candidate session id — must answer the same
-   *  question SessionManager's own livenessProbe does (true = confirmed
-   *  live, false = confirmed not, null/undefined = unknown), since
-   *  isHydratable() refuses only on a confirmed `true`. */
-  livenessOf?: (sessionId: string) => boolean | null;
-  /** Construct an already-hydrated manager (SessionManager.fromCache() plus
-   *  whatever decoration makeManager would otherwise apply — worktree
-   *  origin, probes) from a cache entry already confirmed isHydratable()
-   *  against the stat this function already took. */
-  makeHydrated?: (sessionId: string, filePath: string, state: CachedSessionState, stamp: FileStamp) => SessionManager;
-  /** Startup instrumentation only (the `[replay-cache]` summary line): fired
-   *  once per newly tracked session, hydrated or not. */
-  onTracked?: (hydrated: boolean) => void;
 }
 
 /**
@@ -253,20 +220,14 @@ export async function trackJsonlSessions(opts: TrackJsonlOptions): Promise<boole
       if (fstat.size === 0) { continue; }
     } catch { continue; }
 
-    // Replay-cache hydration: reuse the stat just taken above rather than
-    // re-statting. Only attempted when the caller wired both replayCache AND
-    // makeHydrated — see TrackJsonlOptions' doc comment.
-    let manager: SessionManager | undefined;
-    let hydrated = false;
-    if (opts.replayCache && opts.makeHydrated) {
-      const entry = opts.replayCache.get(filePath);
-      if (entry && isHydratable(entry, fstat, opts.livenessOf?.(sessionId))) {
-        manager = opts.makeHydrated(sessionId, filePath, entry.state, entry);
-        hydrated = true;
-      }
-    }
-    if (!manager) {
-      manager = opts.makeManager(sessionId, filePath);
+    // Single construction path: makeManager() always builds (and decorates —
+    // liveness probe, worktree origin) the manager first; tryHydrate() then
+    // either populates it from the cache (reusing the stat just taken above)
+    // or the caller falls back to an ordinary update(). See ARCHITECTURE.md
+    // "Replay cache" → Wiring.
+    const manager = opts.makeManager(sessionId, filePath);
+    const entry = opts.replayCache?.get(filePath);
+    if (!(entry && manager.tryHydrate(entry, fstat))) {
       try {
         await manager.update();
       } catch (err) {
@@ -284,7 +245,6 @@ export async function trackJsonlSessions(opts: TrackJsonlOptions): Promise<boole
     }
     opts.sessions.set(compositeId, manager);
     changed = true;
-    opts.onTracked?.(hydrated);
   }
   return changed;
 }

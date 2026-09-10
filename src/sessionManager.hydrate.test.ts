@@ -328,6 +328,62 @@ describe('getReadStamp() when hydrated', () => {
   });
 });
 
+describe('tryHydrate()', () => {
+  function freshManager(opts: ConstructorParameters<typeof SessionManager>[3] = {}): InstanceType<typeof SessionManager> {
+    return new SessionManager('cached-session', FILE_PATH, 'ws-key', opts);
+  }
+
+  function cacheEntry(overrides: Partial<CachedSessionState> = {}) {
+    return { ...STAMP, cachedAt: Date.now(), state: cachedState(overrides) };
+  }
+
+  it('hydrates and returns true when isHydratable() (against the manager\'s OWN livenessProbe) allows it', () => {
+    const mgr = freshManager();
+    const hydrated = mgr.tryHydrate(cacheEntry(), STAMP);
+    expect(hydrated).toBe(true);
+    expect(mgr.isHydrated()).toBe(true);
+    expect(mgr.getStatus()).toBe('done');
+  });
+
+  it('returns false and leaves the manager un-hydrated on a stamp mismatch', () => {
+    const mgr = freshManager();
+    const hydrated = mgr.tryHydrate(cacheEntry(), { size: STAMP.size + 1, mtimeMs: STAMP.mtimeMs });
+    expect(hydrated).toBe(false);
+    expect(mgr.isHydrated()).toBe(false);
+  });
+
+  it('reads the MANAGER\'S OWN livenessProbe (constructor option), not a caller-supplied reading — confirmed live refuses', () => {
+    const mgr = freshManager({ livenessProbe: () => true });
+    const hydrated = mgr.tryHydrate(cacheEntry(), STAMP);
+    expect(hydrated).toBe(false);
+    expect(mgr.isHydrated()).toBe(false);
+  });
+
+  it('a livenessProbe answering null/undefined (unknown) does not refuse hydration', () => {
+    const mgr = freshManager({ livenessProbe: () => null });
+    expect(mgr.tryHydrate(cacheEntry(), STAMP)).toBe(true);
+  });
+});
+
+describe('getBytesRead() when hydrated', () => {
+  // Item 6: the seeded tailer offset equals the file size, so counting it
+  // toward the `[startup]` MB-read figure misreports a hydrated session's
+  // whole file as freshly read — getBytesRead() must report 0 instead.
+  it('is 0 for a hydrated manager, even though the tailer\'s offset equals the file size', () => {
+    const mgr = hydratedManager();
+    expect(mgr.isHydrated()).toBe(true);
+    expect(mgr.getBytesRead()).toBe(0);
+  });
+
+  it('reverts to the tailer\'s real offset once hydration is invalidated by a full replay', async () => {
+    vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: STAMP.size + 100, mtimeMs: STAMP.mtimeMs } as fs.Stats);
+    const mgr = hydratedManager();
+    await mgr.update();
+    expect(mgr.isHydrated()).toBe(false);
+    expect(mgr.getBytesRead()).toBeGreaterThanOrEqual(0);
+  });
+});
+
 describe('runThenReplay/forceReplay clears hydration', () => {
   it('forceReplay() on a hydrated manager clears isHydrated()', async () => {
     const mgr = hydratedManager();

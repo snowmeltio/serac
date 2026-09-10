@@ -25,8 +25,8 @@ function fakeSession(overrides: Partial<PollableSession> = {}): PollableSession 
     demoteIfStale: () => false,
     sweepBackgroundWork: () => false,
     dispose: vi.fn(),
-    // Replay-cache-era members (PR D) — unused by most tests in this file,
-    // which predate the cache; stubbed so fakeSession() still satisfies the
+    // Replay-cache-era members — unused by most tests in this file, which
+    // predate the cache; stubbed so fakeSession() still satisfies the
     // interface without every call site having to supply them.
     getFilePath: () => '/fake/session.jsonl',
     getReadStamp: () => ({ size: 0, mtimeMs: 0, caughtUp: true }),
@@ -186,7 +186,7 @@ describe('pollTrackedSessions', () => {
     expect(sessions.size).toBe(2);
   });
 
-  // ── PR D: replay-cache population hook ──────────────────────────
+  // ── Replay-cache population hook ──────────────────────────
   it('calls offer for a dormant session each cycle, with the session and now', async () => {
     const offer = vi.fn();
     const session = fakeSession({ checkMtime: async () => false });
@@ -227,7 +227,7 @@ describe('offerSessionToReplayCache', () => {
     const entries = new Map<string, ReplayCacheEntry>();
     return {
       entries,
-      load: async () => {},
+      load: async () => ({ entries: entries.size, droppedKeys: 0 }),
       get: (p: string) => entries.get(p),
       put: (p: string, e: ReplayCacheEntry) => { entries.set(p, e); },
       flush: async () => {},
@@ -470,13 +470,13 @@ describe('trackJsonlSessions', () => {
     cleanup();
   });
 
-  // ── PR D: replay-cache hydration ────────────────────────────────
+  // ── Replay-cache hydration ────────────────────────────────
   describe('replay-cache hydration', () => {
     afterEach(() => { vi.restoreAllMocks(); }); // JsonlTailer.prototype spy below
 
     function fakeStore(entries: Map<string, ReplayCacheEntry>): ReplayCacheStore {
       return {
-        load: async () => {},
+        load: async () => ({ entries: entries.size, droppedKeys: 0 }),
         get: (p: string) => entries.get(p),
         put: () => {},
         flush: async () => {},
@@ -495,7 +495,7 @@ describe('trackJsonlSessions', () => {
       };
     }
 
-    it('hydrates via makeHydrated when eligible, and never reads the file (skips update())', async () => {
+    it('hydrates via manager.tryHydrate when eligible, and never reads the file (skips update())', async () => {
       const { wsPath, sessions, cleanup } = setup();
       const now = Date.now();
       const filePath = path.join(wsPath, 'hyd-1.jsonl');
@@ -512,12 +512,12 @@ describe('trackJsonlSessions', () => {
         sessions, now, withinWindow: () => true,
         makeManager, warn: () => {},
         replayCache: fakeStore(entries),
-        livenessOf: () => false,
-        makeHydrated: (sessionId, fp, state, stamp) => SessionManager.fromCache(sessionId, fp, 'ws', {}, state, stamp),
       });
 
       expect(changed).toBe(true);
-      expect(makeManager).not.toHaveBeenCalled();
+      // Single construction path: makeManager() is always called; it's
+      // tryHydrate() (not update()) that skips the file read.
+      expect(makeManager).toHaveBeenCalledTimes(1);
       expect(readSpy).not.toHaveBeenCalled();
       const manager = sessions.get('ws/hyd-1');
       expect(manager?.isHydrated()).toBe(true);
@@ -547,8 +547,6 @@ describe('trackJsonlSessions', () => {
         makeManager: (sessionId, fp) => new SessionManager(sessionId, fp, 'ws'),
         warn: () => {},
         replayCache: fakeStore(entries),
-        livenessOf: () => false,
-        makeHydrated: (sessionId, fp, state, stamp) => SessionManager.fromCache(sessionId, fp, 'ws', {}, state, stamp),
       });
 
       expect(changed).toBe(false);
@@ -565,15 +563,16 @@ describe('trackJsonlSessions', () => {
       const entries = new Map<string, ReplayCacheEntry>([
         [filePath, { size: stat.size, mtimeMs: stat.mtimeMs, cachedAt: now, state: minimalState('hyd-3') }],
       ]);
-      const makeManager = vi.fn((sessionId: string, fp: string) => new SessionManager(sessionId, fp, 'ws'));
+      // Confirmed live — the manager's OWN livenessProbe (tryHydrate reads
+      // it directly) must make isHydratable() refuse.
+      const makeManager = vi.fn((sessionId: string, fp: string) =>
+        new SessionManager(sessionId, fp, 'ws', { livenessProbe: () => true }));
 
       const changed = await trackJsonlSessions({
         wsPath, workspaceKey: 'ws', files: ['hyd-3.jsonl'],
         sessions, now, withinWindow: () => true,
         makeManager, warn: () => {},
         replayCache: fakeStore(entries),
-        livenessOf: () => true, // confirmed live — isHydratable() must refuse
-        makeHydrated: (sessionId, fp, state, stamp) => SessionManager.fromCache(sessionId, fp, 'ws', {}, state, stamp),
       });
 
       expect(changed).toBe(true);
@@ -583,7 +582,7 @@ describe('trackJsonlSessions', () => {
       cleanup();
     });
 
-    it('replays ordinarily when replayCache/makeHydrated are omitted entirely (kill switch off)', async () => {
+    it('replays ordinarily when replayCache is omitted entirely (kill switch off, NULL_REPLAY_CACHE upstream)', async () => {
       const { wsPath, sessions, cleanup } = setup();
       const now = Date.now();
       const filePath = path.join(wsPath, 'hyd-4.jsonl');
@@ -594,7 +593,7 @@ describe('trackJsonlSessions', () => {
         wsPath, workspaceKey: 'ws', files: ['hyd-4.jsonl'],
         sessions, now, withinWindow: () => true,
         makeManager, warn: () => {},
-        // replayCache/livenessOf/makeHydrated all omitted.
+        // replayCache omitted.
       });
 
       expect(changed).toBe(true);

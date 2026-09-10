@@ -1260,94 +1260,130 @@ stat error keeps the entry) applied to every entry on `load()` but, on each
 `flush()`, only to entries newly seen from another window's disk write (not
 the whole map every 30 s).
 
-**Wiring.** `SessionDiscovery` constructs one `ReplayCacheStore` (always —
-construction is cheap) at `path.join(path.dirname(projectsDir), 'serac-
-replay-cache.json')`, the same directory the sessions registry sits next to
+**Wiring.** The kill switch (`serac.discovery.replayCache`, default **on**)
+is decided exactly ONCE, in `SessionDiscovery`'s constructor: on, it builds a
+real `makeReplayCacheStore()`; off, `this.replayCache` is
+`NULL_REPLAY_CACHE`, an exported no-op singleton in `replayCache.ts` whose
+`load()`/`get()`/`put()`/`flush()` are all inert. That single store (real or
+null) is passed down unconditionally to `ForeignWorkspaceManager` and
+`SiblingWorktreeManager` via `setReplayCache()` (defaulting to
+`NULL_REPLAY_CACHE` themselves until wired, the same one-shot pattern as
+`setLivenessProbeFactory()`) — every downstream call site (`scan()`,
+`poll()`, `trackJsonlSessions()`, `offerSessionToReplayCache()`) uses the
+store unconditionally, with no per-call-site `readSettings()` check of its
+own. Because the decision is made at construction, toggling the setting
+takes effect on the **next window reload**, not live — documented on the
+setting itself in `package.json`. The real store is built at
+`path.join(path.dirname(projectsDir), 'serac-replay-cache.json')`, the same
+directory the sessions registry sits next to
 (`path.join(path.dirname(projectsDir), 'sessions')`) — **not**
 `claudeStateDir()`, which is the per-account alias: a farmed account's
 `~/.claude-personal` is a symlink to the real `~/.claude`, so keying off the
 alias would fork the cache per account for the identical underlying
-transcripts, defeating the whole point of a machine-wide cache. `maxAgeMs` is
-the widest of every configured discovery gate (worktrees / foreign
-workspaces / teams / workflows / the fixed local `SCAN_AGE_GATE_MS` /
-`foreignWindowGate().ageGateMs`), clamped to the store's own 60-day hard
-ceiling, plus one day of slack — a session still visible in ANY section
-should never have its cache entry pruned out from under it. The store is
-injected into `ForeignWorkspaceManager` and `SiblingWorktreeManager` via
-`setReplayCache()`, the same one-shot pattern as `setLivenessProbeFactory()`.
+transcripts, defeating the whole point of a machine-wide cache.
 
-`serac.discovery.replayCache` (default **on**) is the kill switch, checked at
-every point of use rather than once at construction — `load()`/hydration/
-`put()`/the summary log are each individually skipped when it reads false, so
-turning it off is a genuine no-op (nothing is read from or written to the
-shared file), not just a hidden affordance. The setting is read where the
-class already pays the `settings.ts` → `vscode` import cost
-(`SessionDiscovery`, `ForeignWorkspaceManager`, `SiblingWorktreeManager`, all
-of which already import `readSettings`); `replayCache.ts` and
-`sessionPolling.ts` deliberately never import it, matching `replayCache.ts`'s
-own note about the blast radius that would otherwise hit every test file
-transitively importing `sessionManager.ts`.
+The store's own policy is the WHOLE age/size policy — no per-window
+`maxAgeMs` derivation exists above it. `pruneEntries` ages entries by the
+underlying file's `mtimeMs`, not `cachedAt`: `cachedAt` only advances when an
+entry is re-written (`offerSessionToReplayCache` skips the write once the
+stamp stops moving), so keying the gate off it would age out — and then
+immediately re-cache on the very next dormant poll — a session whose
+transcript hasn't changed at all since it went dormant, purely because time
+has passed since the write. Ageing by `mtimeMs` means a truly static
+dormant file is judged by how old its content actually is, capped at the
+store's fixed 60-day hard ceiling regardless of caller config, plus a
+1000-entry cap (oldest `cachedAt` evicted first, once over the cap — a
+separate concern from the age gate).
+
+Key validation happens at one I/O choke point, not at the `SessionDiscovery`
+call site: `makeReplayCacheStore()` takes an optional `keyRoot` (the local
+`projectsDir`), and `readDisk()` — the single private method both `load()`
+and every write's merge step funnel through — drops any entry whose key
+isn't `isAtOrUnder(key, keyRoot)`, on every read, not just at startup, so an
+out-of-tree key dropped once is dropped again by the next write too.
+`load()` resolves `{ entries, droppedKeys }`; `SessionDiscovery.start()`
+logs `droppedKeys` as a warning straight from that return, with no second
+`readFile`/`parseReplayCache()` pass of its own.
 
 `start()`'s preamble stage calls `replayCache.load()` right after
-`meta.load()`, then independently re-reads and re-parses the same file (via
-the exported `parseReplayCache()` — read-only, `ReplayCacheStore`'s public
-interface has no enumeration method) purely to count and warn on any entry
-whose key resolves outside `projectsDir` — defence against a hand-edited
-cache file. Such an entry can never actually be used as a hydration source
-regardless, since every `get()` this codebase issues is against a path it
-itself constructed under `projectsDir`; the check is visibility/defence-in-
-depth on top of that structural guarantee, not a functional gate. The same
-pass also records the loaded entry count for the summary line below. Registry
-scan ordering matters here too: `start()` runs the process-registry scan
-before the local scan (see `start()`'s own docblock), so `livenessProbeFor()`
-already has a real answer — not `null` — by the time the local scan's
-hydration check runs; a session with a confirmed-live process must never
-hydrate from a stale cached `done`.
+`meta.load()` and records its `entries` count for the summary line below.
+Registry scan ordering matters here too: `start()` runs the process-registry
+scan before the local scan (see `start()`'s own docblock), so
+`livenessProbeFor()` already has a real answer — not `null` — by the time the
+local scan's hydration check runs; a session with a confirmed-live process
+must never hydrate from a stale cached `done`.
 
-Hydration happens at the same point in each scan that already stats the
-candidate file, reusing that stat rather than taking a second one:
-`SessionDiscovery.scanWorkspace()` for local sessions, and
-`trackJsonlSessions()` (`sessionPolling.ts`) for foreign/sibling ones via its
-optional `replayCache`/`livenessOf`/`makeHydrated` parameters — a manager
-that hydrates skips its initial `update()` entirely (no tailer read at all),
-and the sibling manager's `setWorktreeOrigin()` decoration is applied to a
-hydrated manager exactly as it is to an ordinarily-constructed one. The local
-scan factors its `SessionManagerOptions` literal into `managerOptsFor()` so
-both construction paths (`new SessionManager` / `SessionManager.fromCache`)
-share every decorator (status trace, bridge trace, probes, the
-`registrySeenLive` latch) with no risk of the two drifting apart.
+**Single construction path.** Both the local scan (`scanWorkspace()`) and the
+shared cross-workspace loop (`trackJsonlSessions()` in `sessionPolling.ts`)
+construct a manager unconditionally first (`makeManager()` — status trace,
+bridge trace, probes, worktree origin for siblings, all applied exactly once,
+with no risk of a second, hydration-only construction path drifting from it),
+then call `SessionManager.tryHydrate(entry, stat)` on it: the manager checks
+`isHydratable()` against its OWN `livenessProbe` (no separate `livenessOf`
+callback threaded through) and, on success, hydrates itself and returns
+`true`; on `false` the caller falls back to an ordinary `update()`.
+`TrackJsonlOptions` carries only one replay-cache field, `replayCache?`;
+`SessionManager.fromCache()` remains as a thin wrapper kept for tests. The
+sibling manager's `setWorktreeOrigin()` decoration, applied once inside
+`makeManager()`, reaches a hydrated manager exactly as it does an
+ordinarily-constructed one — no second, hydration-only call site to keep in
+sync.
 
 Population happens only at poll time, never at scan time (a scan cannot know
-a >16 MB transcript's tailer has actually drained — see `checkMtime()`'s
-doc comment above): `SessionDiscovery.pollInner()`'s dormant loop calls a
-private `offerToCache()` right next to `sweepBackgroundWork()`, and
+a >16 MB transcript's tailer has actually drained — see `checkMtime()`'s doc
+comment above): `SessionDiscovery.pollInner()`'s dormant loop calls a private
+`offerToCache()` right next to `sweepBackgroundWork()`, and
 `pollTrackedSessions()` (`sessionPolling.ts`) takes an optional `offer`
 parameter fired from the same dormant branch, which both cross-workspace
-managers wire to the shared `offerSessionToReplayCache()` helper. That helper
-— the one eligibility/write decision both call sites funnel through — skips
-a manager that is itself hydrated (`isHydrated()`; nothing new to capture),
-calls `exportCachedState(now)` and refuses on `null`, and skips the write
-when the cache already holds an identical `{size, mtimeMs}` stamp for that
-file. `replayCache.flush(now)` runs once, at the very end of `pollInner()`
-(after the sibling/foreign/team/workflow polls, so it also picks up whatever
-those polls' own `offer` calls just wrote this cycle) beside `meta.flush()`;
-`stop()` fires a best-effort forced flush (`{force: true}`, bypassing only
-the 30s rate limit, not the dirty check) beside the meta flush, so a session
-that goes dormant just before the window closes isn't stranded until some
-other window happens to offer it again.
+managers wire unconditionally to the shared `offerSessionToReplayCache()`
+helper. That helper — the one eligibility/write decision both call sites
+funnel through — checks `isHydrated()` first, then the stamp against the
+existing entry, and only then calls `exportCachedState(now)`, cheapest check
+first. `replayCache.flush(now)` is fire-and-forget (`void`, not awaited),
+fired at the very end of `pollInner()` **after** the change callback — not
+beside `meta.flush()` earlier in the cycle — so a merge or a
+`pruneMissingFiles` pass over another window's entries never delays a card
+refresh; the store serialises concurrent flushes via its own `saveQueue` and
+re-arms dirty on a write failure, so nothing is dropped by not awaiting.
+`stop()` still fires a best-effort forced flush (`{force: true}`, bypassing
+only the 30s rate limit, not the dirty check) so a session that goes dormant
+just before the window closes isn't stranded until some other window happens
+to offer it again — this one IS awaited (or best-effort fire-and-forget, per
+`stop()`'s own contract), since there's no later card refresh it could delay.
+
+Lost-update recovery: `flush()` also reconciles when the store is NOT dirty
+— a cheap `stat()` in the common case (nothing to do), a re-read only when
+the file's own stamp moved, and a write only when this store's memory
+actually holds something disk doesn't yet have. This is what recovers a
+store that LOST a concurrent rename race (its own flush saw the file
+unchanged and skipped the merge, then another window's write landed and
+renamed over it): the loser's entries are missing from, or older on, disk
+right now, but its very next `flush()` call — even with nothing newly
+`put()` — re-reads, notices the gap, merges, and writes. See the store's own
+class doc comment and `replayCache.test.ts`'s two-store race test.
 
 One `[replay-cache] hydrated N, replayed M, entries K` line logs at `info`
 right after the foreign-scan startup stage — deliberately beside the
 `[startup]` timing lines whose win this measures, not inside `runStage()` as
-its own timed stage. `N`/`M` sum the local scan's own counters with
-`getReplayCacheStats()` from both cross-workspace managers; `K` is the entry
-count `validateReplayCacheKeys()` recorded at load time. Skipped entirely
-(not printed as an all-zero line) when the kill switch is off. A second
-window (or VS Code profile, or farmed account) opening against the same disk
-after the first one has gone quiet for `REPLAY_CACHE_QUIET_MS` therefore
-hydrates most of its foreign/sibling sessions instead of replaying them —
-see the `[startup] foreign scan` line's byte/session counts for the
-before/after.
+its own timed stage. `hydrated`/`replayed` are derived by counting
+`isHydrated()` over each manager's own session map at the point
+`getScanStats()` is read (no separate `onTracked` callback or
+`replayCacheStats` field tracking counts as sessions are added); `K` is the
+entry count `load()` returned at startup. Skipped entirely (not printed as an
+all-zero line) when the kill switch is off, since a `NULL_REPLAY_CACHE`-backed
+manager never hydrates anything. A second window (or VS Code profile, or
+farmed account) opening against the same disk after the first one has gone
+quiet for `REPLAY_CACHE_QUIET_MS` therefore hydrates most of its
+foreign/sibling sessions instead of replaying them — see the
+`[startup] foreign scan` line's byte/session counts for the before/after
+(`getBytesRead()` reports 0 for a hydrated session, since its seeded tailer
+offset equals the file size and would otherwise misreport the whole file as
+freshly read).
+
+**Follow-up, not yet wired.** `teamDiscovery.ts` builds team-lead managers
+with its own `new SessionManager` + `update()` call and does not go through
+`tryHydrate()` — a team lead's dormant session always replays. Left as a
+known gap rather than folded into this pass.
 
 ## Session repair
 

@@ -6,20 +6,20 @@ import { jsonlSessionId, sumBytesRead, offerSessionToReplayCache } from './sessi
 import { sanitiseWorkspaceKey } from './panelUtils.js';
 import { ForeignWorkspaceManager } from './foreignWorkspaceManager.js';
 import { SiblingWorktreeManager } from './siblingWorktreeManager.js';
-import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, isAtOrUnder, type WorktreeInfo } from './gitWorktreeUtil.js';
+import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeInfo } from './gitWorktreeUtil.js';
 import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
 import { isRcServing, isRcHostedProcess } from './rcDetector.js';
 import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid, type WriterAggregate } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
-import { readSettings, ageGateMsFor, foreignWindowGate, DAY_MS } from './settings.js';
+import { readSettings } from './settings.js';
 import { claudeProjectsDir, sessionDirFromJsonl, subagentsDirFor, subagentJsonlPath } from './paths.js';
 import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
 import { SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
 import { makeSessionMetaStore, type SessionMetaStore } from './sessionMetaStore.js';
-import { makeReplayCacheStore, isHydratable, parseReplayCache, type ReplayCacheStore } from './replayCache.js';
+import { makeReplayCacheStore, NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
 import type { SessionSnapshot, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, DiscoveryPhase } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 
@@ -152,32 +152,16 @@ export class SessionDiscovery {
    *  real machine's settings.json. */
   private readonly defaultModelGuess: string;
 
-  /** Dormant-session replay cache (PR D — see ARCHITECTURE.md "Replay
-   *  cache"). One JSON file shared by every window/profile/account on the
-   *  machine; located beside the realpath'd projectsDir (the same directory
-   *  the sessions registry sits next to), NOT under claudeStateDir() — that's
-   *  the per-account alias and would fork the cache per farmed account for
-   *  the same underlying transcripts. Always constructed; whether it is ever
-   *  loaded from / written to is gated on `serac.discovery.replayCache` at
-   *  each use site (start()'s preamble, scanWorkspace, offerToCache, and the
-   *  foreign/sibling managers' own scan()/poll()) — see the setting's own
-   *  doc comment for why the check lives at point-of-use rather than here. */
+  /** Dormant-session replay cache — see ARCHITECTURE.md "Replay cache". One
+   *  JSON file shared by every window/profile/account on the machine, beside
+   *  the realpath'd projectsDir. The `serac.discovery.replayCache` kill
+   *  switch is decided ONCE here: `NULL_REPLAY_CACHE` when off, so every
+   *  consumer (this class, both cross-workspace managers) calls
+   *  load/get/put/flush unconditionally with no per-site settings check. */
   private readonly replayCache: ReplayCacheStore;
-  /** Path the replay cache above was constructed with — kept so start()'s
-   *  key-validation pass (see validateReplayCacheKeys()) can independently
-   *  re-read and parse the same file without adding an enumeration method to
-   *  ReplayCacheStore's I/O-facing interface. */
-  private readonly replayCachePath: string;
-  /** Entry count from the most recent replayCache load — instrumentation
+  /** Entry count from the most recent replayCache load() — instrumentation
    *  only, for the `[replay-cache]` summary line's "entries K". */
-  private replayCacheEntryCount = 0;
-  /** Hydrated-vs-replayed counts from the local workspace's scanWorkspace()
-   *  during THIS start() — instrumentation only, read once for the
-   *  `[replay-cache]` summary line right after the foreign-scan stage. Not
-   *  reset on later poll-driven scanWorkspace() calls — the summary line is
-   *  a one-shot startup measurement, not a running total. */
-  private localReplayCacheHydrated = 0;
-  private localReplayCacheReplayed = 0;
+  private replayCacheEntries = 0;
 
   constructor(workspacePath: string, opts?: {
     projectsDir?: string; log?: Logger; hookRouter?: HookEventRouter; defaultModelGuess?: string;
@@ -217,20 +201,21 @@ export class SessionDiscovery {
 
     // Replay cache: located beside the realpath'd projectsDir, same as the
     // sessions registry dir above (path.dirname(this.projectsDir)) — see the
-    // field's own doc comment for why NOT claudeStateDir(). maxAgeMs is the
-    // widest of every configured discovery gate (so a session still visible
-    // in ANY section never gets pruned out from under it), clamped to 60 days
-    // (ReplayCacheStore's own hard ceiling — this is belt-and-braces, matching
-    // it explicitly rather than relying on the store to clamp silently) plus
-    // one day of slack past that widest gate.
-    this.replayCachePath = opts?.replayCachePath
+    // field's own doc comment for why NOT claudeStateDir(). No maxAgeMs is
+    // passed — the store's own 60-day hard ceiling plus its 1000-entry cap is
+    // the whole age policy; correctness comes from the per-entry stamp and
+    // liveness gates (isHydratable()), not from a window-specific age
+    // derivation. `keyRoot` confines every loaded entry to this projects
+    // tree (see readDisk()'s doc comment in replayCache.ts). ONE decision
+    // point for the kill switch: NULL_REPLAY_CACHE when off, so nothing
+    // downstream (this class, both cross-workspace managers) needs its own
+    // settings check — see the setting's own doc comment on why this takes
+    // effect on the next window reload, not live.
+    const replayCachePath = opts?.replayCachePath
       ?? path.join(path.dirname(this.projectsDir), 'serac-replay-cache.json');
-    const widestGateMs = Math.max(
-      ageGateMsFor('worktrees'), ageGateMsFor('foreignWorkspaces'), ageGateMsFor('teams'), ageGateMsFor('workflows'),
-      SessionDiscovery.SCAN_AGE_GATE_MS, foreignWindowGate().ageGateMs,
-    );
-    const replayCacheMaxAgeMs = Math.min(widestGateMs, 60 * DAY_MS) + DAY_MS;
-    this.replayCache = makeReplayCacheStore(this.replayCachePath, this.log, { maxAgeMs: replayCacheMaxAgeMs });
+    this.replayCache = readSettings().discovery.replayCache
+      ? makeReplayCacheStore(replayCachePath, this.log, { keyRoot: this.projectsDir })
+      : NULL_REPLAY_CACHE;
     this.foreignManager.setReplayCache(this.replayCache);
     this.siblingManager.setReplayCache(this.replayCache);
   }
@@ -263,48 +248,12 @@ export class SessionDiscovery {
     return () => this.resolveWriterOwnership(sessionId);
   }
 
-  /** Defence against a hand-edited replay cache file carrying an entry keyed
-   *  outside the projects tree. Independently re-reads and re-parses the
-   *  cache file (via the same pure parseReplayCache() the store itself uses
-   *  internally) purely to COUNT and log offenders — deliberately read-only,
-   *  never mutates this.replayCache. `ReplayCacheStore`'s public interface
-   *  (load/get/put/flush) has no enumeration or delete method, and every
-   *  legitimate get() this class ever issues is against a path IT constructed
-   *  under this.projectsDir — so an out-of-tree entry can never actually be
-   *  looked up as a hydration source regardless; this is visibility/defence-
-   *  in-depth on top of that structural guarantee, not a functional gate.
-   *  Also records the loaded entry count (`entries.size`) for the
-   *  `[replay-cache]` summary line's "entries K" — a snapshot taken at load
-   *  time, before this window's own scans have offered anything new. */
-  private async validateReplayCacheKeys(): Promise<void> {
-    let raw: string | null;
-    try {
-      raw = await fs.promises.readFile(this.replayCachePath, 'utf-8');
-    } catch {
-      raw = null;
-    }
-    const entries = parseReplayCache(raw);
-    this.replayCacheEntryCount = entries.size;
-    let dropped = 0;
-    for (const key of entries.keys()) {
-      if (!isAtOrUnder(key, this.projectsDir)) { dropped++; }
-    }
-    if (dropped > 0) {
-      this.log.warn(
-        `[replay-cache] ${dropped} entr${dropped === 1 ? 'y' : 'ies'} keyed outside the projects tree ignored`
-      );
-    }
-  }
-
-  /** Offer a dormant LOCAL session to the replay cache — the kill-switch
-   *  check sessionPolling.ts's shared offerSessionToReplayCache() can't do
-   *  itself (that module deliberately never imports settings.ts). Called
-   *  from pollInner's dormant loop, next to sweepBackgroundWork — see
-   *  ARCHITECTURE.md "Replay cache" → Wiring. The foreign/sibling managers'
-   *  own poll() call the same shared helper directly via pollTrackedSessions'
-   *  `offer` parameter, gated the same way at their own call sites. */
+  /** Offer a dormant LOCAL session to the replay cache — called from
+   *  pollInner's dormant loop, next to sweepBackgroundWork. The foreign/
+   *  sibling managers' own poll() call the shared helper directly via
+   *  pollTrackedSessions' `offer` parameter. See ARCHITECTURE.md "Replay
+   *  cache" → Wiring. */
   private offerToCache(session: SessionManager, now: number): void {
-    if (!readSettings().discovery.replayCache) { return; }
     offerSessionToReplayCache(session, now, this.replayCache);
   }
 
@@ -499,7 +448,7 @@ export class SessionDiscovery {
    *  local card painted before it. Before that scan, livenessProbeFor()
    *  answers null (registry unscanned) for every session, and null reads as
    *  "unknown, not confirmed dead" to isHydratable() — this ordering is
-   *  exactly what the replay cache's hydration gate (PR D) needs: a session
+   *  exactly what the replay cache's hydration gate needs: a session
    *  with a real live process must never hydrate from a stale cached `done`,
    *  and that requires the registry scan's answer to already be current by
    *  the time the local scan's hydration check runs. Sibling must still run
@@ -516,15 +465,17 @@ export class SessionDiscovery {
       // Load session metadata (with legacy migration)
       await this.meta.load();
 
-      // Replay cache (PR D): the kill switch gates load() itself, not just
-      // hydration downstream — off means the store's in-memory map simply
-      // stays empty, so every later get() returns undefined and nothing ever
-      // hydrates. See the field's own doc comment for the settings-check
-      // convention (settings.ts imports vscode; this class already pays that
-      // cost, replayCache.ts and sessionPolling.ts deliberately don't).
-      if (readSettings().discovery.replayCache) {
-        await this.replayCache.load();
-        await this.validateReplayCacheKeys();
+      // Replay cache: the kill switch was decided once, in the constructor
+      // (NULL_REPLAY_CACHE when off), so load() here is unconditional — a
+      // no-op resolve when disabled. droppedKeys covers a hand-edited cache
+      // file carrying an entry keyed outside the projects tree (readDisk()'s
+      // keyRoot filter in replayCache.ts, applied on every read).
+      const { entries: replayCacheEntries, droppedKeys } = await this.replayCache.load();
+      this.replayCacheEntries = replayCacheEntries;
+      if (droppedKeys > 0) {
+        this.log.warn(
+          `[replay-cache] ${droppedKeys} entr${droppedKeys === 1 ? 'y' : 'ies'} keyed outside the projects tree ignored`
+        );
       }
 
       // Resolve local repoRoot before any scanning so the sibling manager knows
@@ -575,7 +526,7 @@ export class SessionDiscovery {
     // awaited scan() completes and before this stage's onChange fires — see
     // runStage's docblock for why the flip cannot happen here instead.
     if (!await this.runStage('local scan', () => this.scan(),
-      () => `${this.sessions.size} sessions, ${mb(sumBytesRead(this.sessions.values()))}MB, hydrated ${this.localReplayCacheHydrated}`,
+      () => `${this.sessions.size} sessions, ${mb(sumBytesRead(this.sessions.values()))}MB, hydrated ${this.countHydratedLocal()}`,
       { phaseAfter: 'partial' })) { return; }
 
     // Sibling scan must run before foreign scan so foreign can exclude sibling
@@ -595,15 +546,17 @@ export class SessionDiscovery {
     // One-shot replay-cache summary, deliberately placed right after the
     // foreign scan (rather than inside runStage as its own timed stage) so it
     // sits beside the `[startup]` lines measuring the win it produces — see
-    // ARCHITECTURE.md "Replay cache" → Wiring. Off (kill switch): nothing was
-    // ever loaded/hydrated/counted, so the line is skipped entirely rather
-    // than printing all-zero noise.
-    if (readSettings().discovery.replayCache) {
-      const siblingStats = this.siblingManager.getReplayCacheStats();
-      const foreignStats = this.foreignManager.getReplayCacheStats();
-      const hydrated = this.localReplayCacheHydrated + siblingStats.hydrated + foreignStats.hydrated;
-      const replayed = this.localReplayCacheReplayed + siblingStats.replayed + foreignStats.replayed;
-      this.log.info(`[replay-cache] hydrated ${hydrated}, replayed ${replayed}, entries ${this.replayCacheEntryCount}`);
+    // ARCHITECTURE.md "Replay cache" → Wiring. Prints unconditionally (kill
+    // switch off just reads "hydrated 0, entries 0" — informative, not noise).
+    {
+      const localHydrated = this.countHydratedLocal();
+      const siblingStats = this.siblingManager.getScanStats();
+      const foreignStats = this.foreignManager.getScanStats();
+      const hydrated = localHydrated + siblingStats.hydrated + foreignStats.hydrated;
+      const replayed = (this.sessions.size - localHydrated)
+        + (siblingStats.sessions - siblingStats.hydrated)
+        + (foreignStats.sessions - foreignStats.hydrated);
+      this.log.info(`[replay-cache] hydrated ${hydrated}, replayed ${replayed}, entries ${this.replayCacheEntries}`);
     }
 
     // writerOwnership.refresh() spawns one `ps` per live Claude process —
@@ -680,8 +633,8 @@ export class SessionDiscovery {
     // Force a flush of any dirty replay-cache entries so a session that went
     // dormant just before the window closed isn't lost until the next
     // window's poll happens to offer it again. force:true only bypasses the
-    // 30s rate limit — the store's own dirty check still short-circuits when
-    // the kill switch left nothing to write.
+    // 30s rate limit — NULL_REPLAY_CACHE.flush() (kill switch off) and a
+    // real store's own not-dirty check are both still a no-op regardless.
     void this.replayCache.flush(Date.now(), { force: true });
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
@@ -1565,13 +1518,10 @@ export class SessionDiscovery {
     await this.scanWorkspace(this.workspaceKey);
   }
 
-  /** Constructor options for a local session's SessionManager — shared by the
-   *  ordinary (`new SessionManager`) and hydrated (`SessionManager.fromCache`)
-   *  construction paths in scanWorkspace() below, so a hydrated manager gets
-   *  every decoration an ordinarily-constructed one does (status trace,
-   *  bridge trace, probes, the registrySeenLive latch) with no risk of the
-   *  two literals drifting apart. Extracted verbatim from the inline literal
-   *  scanWorkspace() used before PR D (startup-performance plan). */
+  /** Constructor options for a local session's SessionManager, shared by
+   *  scanWorkspace()'s one construction path — a manager is always built
+   *  through this (status trace, bridge trace, probes, the registrySeenLive
+   *  latch) whether or not it goes on to hydrate from the replay cache. */
   private managerOptsFor(sessionId: string): SessionManagerOptions {
     return {
       hookRouter: this.hookRouter,
@@ -1628,6 +1578,19 @@ export class SessionDiscovery {
     };
   }
 
+  /** Count of local sessions currently hydrated from the replay cache —
+   *  instrumentation only, for the `[startup]`/`[replay-cache]` lines.
+   *  Derived on demand from `isHydrated()` rather than tracked incrementally,
+   *  so it always reflects the CURRENT session map (including one a later
+   *  poll-driven scanWorkspace() call added), not a startup-only snapshot. */
+  private countHydratedLocal(): number {
+    let n = 0;
+    for (const session of this.sessions.values()) {
+      if (session.isHydrated()) { n++; }
+    }
+    return n;
+  }
+
   private async scanWorkspace(workspaceKey: string): Promise<void> {
     const workspacePath = path.join(this.projectsDir, workspaceKey);
     const now = Date.now();
@@ -1672,36 +1635,23 @@ export class SessionDiscovery {
             }
           } catch { continue; }
 
-          // Replay-cache hydration (PR D): reuse the stat just taken above.
-          // Genuine no-op when the kill switch is off — the store was never
-          // loaded (see start()'s preamble), so get() always returns
-          // undefined and this branch never fires.
-          let manager: SessionManager | undefined;
-          let hydrated = false;
-          if (readSettings().discovery.replayCache) {
-            const entry = this.replayCache.get(filePath);
-            if (entry && isHydratable(entry, stat, this.livenessProbeFor(sessionId)())) {
-              manager = SessionManager.fromCache(
-                sessionId, filePath, workspaceKey, this.managerOptsFor(sessionId), entry.state, entry,
-              );
-              hydrated = true;
-            }
-          }
-          if (!manager) {
-            manager = new SessionManager(sessionId, filePath, workspaceKey, this.managerOptsFor(sessionId));
-          }
+          // Single construction path: always build the manager first (so it
+          // gets every decoration managerOptsFor() applies regardless of
+          // what happens next), then try to hydrate it from the replay cache
+          // — reusing the stat just taken above — before falling back to an
+          // ordinary update(). tryHydrate() checks isHydratable() itself
+          // (against this manager's own livenessProbe) and is a no-op when
+          // the kill switch left the cache never loaded (get() always misses).
+          const manager = new SessionManager(sessionId, filePath, workspaceKey, this.managerOptsFor(sessionId));
           this.sessions.set(sessionId, manager);
           // Ensure meta entry exists for newly discovered sessions, and stamp
           // it as tracked: from here on only a dismissal archives it.
           const created = this.meta.getOrCreate(sessionId);
           if (!created.tracked) { created.tracked = true; }
           this.meta.markDirty();
-          if (hydrated) {
-            this.localReplayCacheHydrated++;
-          } else {
-            // Do initial read
+          const entry = this.replayCache.get(filePath);
+          if (!(entry && manager.tryHydrate(entry, stat))) {
             await manager.update();
-            this.localReplayCacheReplayed++;
           }
         }
       }
@@ -2002,19 +1952,6 @@ export class SessionDiscovery {
         }
       }
 
-      // Replay-cache flush (PR D), beside meta.flush() above: rate-limited
-      // and dirty-only internally, so this is cheap on every cycle where
-      // nothing was offered. Placed at the very end of the cycle — after the
-      // sibling/foreign/team/workflow polls above, whose own dormant offers
-      // (via pollTrackedSessions' `offer` parameter) land in this same
-      // this.replayCache instance — rather than beside meta.flush() earlier
-      // in this function, so one flush covers every offer made this cycle,
-      // not just the local scan's. A no-op when the kill switch is off:
-      // nothing was ever offered, so the store is never dirty.
-      if (readSettings().discovery.replayCache) {
-        await this.replayCache.flush(Date.now());
-      }
-
       // Poll performance log [v0.4]
       const updatedCount = updateResults.filter(r => r.hadNewData).length;
       const totalCount = allSessions.length;
@@ -2027,6 +1964,14 @@ export class SessionDiscovery {
       if (changed && this.onChangeCallback) {
         this.onChangeCallback();
       }
+
+      // Fire-and-forget: covers every offer made this cycle (local plus the
+      // sibling/foreign polls above, via pollTrackedSessions' `offer`
+      // parameter). Placed after the change callback, not beside
+      // meta.flush() earlier in this function, so a merge or
+      // pruneMissingFiles over another window's entries never delays a card
+      // refresh. See ARCHITECTURE.md "Replay cache" → Wiring.
+      void this.replayCache.flush(Date.now());
     } catch (err) {
       this.log.error('pollInner error:', err);
     }

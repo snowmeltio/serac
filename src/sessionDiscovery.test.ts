@@ -2657,8 +2657,8 @@ describe('SessionDiscovery', () => {
     });
   });
 
-  // ── PR D: replay cache wiring ────────────────────────────────────
-  describe('Replay cache (PR D)', () => {
+  // ── Replay cache wiring ────────────────────────────────────
+  describe('Replay cache', () => {
     // vi.spyOn on a shared prototype method (JsonlTailer.prototype.readNewRecords,
     // below) returns the SAME mock — and the SAME accumulated call history —
     // across tests unless explicitly restored; several tests below assert an
@@ -2737,7 +2737,10 @@ describe('SessionDiscovery', () => {
         await pollTwice(discovery);
 
         expect(discovery.getSnapshots().find(s => s.sessionId === 'replay-a')?.status).toBe('done');
-        expect(fs.existsSync(cachePath)).toBe(true);
+        // The end-of-cycle flush is fire-and-forget (item 8) so a card
+        // refresh is never delayed by it — wait for the write rather than
+        // asserting synchronously.
+        await vi.waitFor(() => { expect(fs.existsSync(cachePath)).toBe(true); });
         const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
         expect(parsed.version).toBe(REPLAY_CACHE_VERSION);
         expect(parsed.entries[filePath]).toBeDefined();
@@ -2874,9 +2877,14 @@ describe('SessionDiscovery', () => {
         replayCache: { put: (p: string, e: unknown) => void; flush: (n: number, o?: { force?: boolean }) => Promise<void> };
       }).replayCache;
 
+      // mtimeMs is fresh (not the fictional `1`/`2` of a same-instant stamp
+      // check) because pruneEntries now ages entries by file mtime, not
+      // cachedAt (item 5) — an ancient mtimeMs would be silently dropped by
+      // saveInner's own pruneEntries call before ever reaching disk.
+      const now = Date.now();
       // First flush establishes lastFlushAt so the rate limit is actually live.
       store.put('/fake/first.jsonl', {
-        size: 1, mtimeMs: 1, cachedAt: Date.now(), state: minimalCachedState('first', workspaceKey, workspacePath),
+        size: 1, mtimeMs: now, cachedAt: now, state: minimalCachedState('first', workspaceKey, workspacePath),
       });
       await store.flush(Date.now());
       expect(fs.existsSync(cachePath)).toBe(true);
@@ -2884,7 +2892,7 @@ describe('SessionDiscovery', () => {
       // A second put lands well inside the 30s window — an ordinary flush()
       // defers it.
       store.put('/fake/second.jsonl', {
-        size: 2, mtimeMs: 2, cachedAt: Date.now(), state: minimalCachedState('second', workspaceKey, workspacePath),
+        size: 2, mtimeMs: now, cachedAt: now, state: minimalCachedState('second', workspaceKey, workspacePath),
       });
       await store.flush(Date.now());
       const beforeStop = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));

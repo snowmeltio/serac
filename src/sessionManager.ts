@@ -133,7 +133,7 @@ import { makeBackgroundShellTracker, type BackgroundShellTracker, BACKGROUND_SHE
 import { makeSessionLoopTracker, type SessionLoopTracker } from './trackers/sessionLoopTracker.js';
 import { makeGlanceTracker } from './trackers/glanceTracker.js';
 import type { HookEventRouter } from './hookEventRouter.js';
-import { REPLAY_CACHE_QUIET_MS, sameStamp } from './replayCache.js';
+import { REPLAY_CACHE_QUIET_MS, sameStamp, isHydratable, type ReplayCacheEntry } from './replayCache.js';
 
 /** Idle threshold: if no new data for 5s after a turn, mark as idle/done */
 const IDLE_DELAY_MS = 5000;
@@ -485,21 +485,28 @@ export class SessionManager {
     };
   }
 
-  /** Construct a SessionManager already in the `done` state described by a
-   *  dormant-session replay cache entry, instead of replaying the JSONL from
-   *  byte 0. `stamp` is the {size, mtimeMs} the cache entry was captured
-   *  against (ReplayCacheEntry's own fields). Callers (PR D) must have
-   *  already confirmed `isHydratable()` against the file's CURRENT stat
-   *  before calling this — fromCache() does not re-check.
-   *
-   *  Note what this does NOT buy: a subsequent update() does not do an
-   *  incremental "just the new bytes" read. Any change at all to the file —
-   *  a single appended byte — invalidates the hydration entirely and the
-   *  next update() replays the WHOLE file from offset 0 (see the
-   *  updateInner() hydrated-guard and beginFullReplay()). The seeded tailer
-   *  offset exists only so getReadStamp() reports the truth about what this
-   *  manager currently represents while nothing has changed; it is not a
-   *  resume point. */
+  /** Attempt to hydrate this manager — freshly constructed, `update()` not
+   *  yet called — from a replay-cache entry, instead of replaying the JSONL
+   *  from byte 0. Checks `isHydratable()` itself, against the manager's OWN
+   *  `livenessProbe` (the same tri-state answer every other liveness check
+   *  on this instance already uses — a caller-supplied liveness reading
+   *  could drift from it), so a caller never has to re-derive or thread one
+   *  through separately. Returns whether hydration happened; on `false` the
+   *  caller falls back to an ordinary `update()`. See ARCHITECTURE.md
+   *  "Replay cache" → Wiring for the call sites (`SessionDiscovery.
+   *  scanWorkspace()`, `trackJsonlSessions()`). */
+  tryHydrate(entry: ReplayCacheEntry, stat: FileStamp): boolean {
+    if (!isHydratable(entry, stat, this.livenessProbe?.() ?? null)) { return false; }
+    this.hydrate(entry.state, entry);
+    return true;
+  }
+
+  /** Thin wrapper over the constructor + `hydrate()`, kept for tests and any
+   *  caller that already has a confirmed-`isHydratable()` entry in hand and
+   *  wants a hydrated manager without a liveness re-check — `tryHydrate()`
+   *  above is what live discovery code should call instead. `stamp` is the
+   *  {size, mtimeMs} the cache entry was captured against (ReplayCacheEntry's
+   *  own fields). */
   static fromCache(
     sessionId: string,
     filePath: string,
@@ -805,9 +812,14 @@ export class SessionManager {
     return changed;
   }
 
-  /** Bytes of the transcript read so far. Startup-timing instrumentation only. */
+  /** Bytes of the transcript read so far. Startup-timing instrumentation
+   *  only. Reports 0 while hydrated: the tailer's offset is seeded to the
+   *  cache stamp's `size` so `getReadStamp()` reports the manager's state
+   *  truthfully (see `hydrate()`), but no bytes were actually READ this
+   *  window — counting them would make the `[startup]` MB figure include a
+   *  hydrated session's whole file, defeating the point of the measurement. */
   getBytesRead(): number {
-    return this.tailer.getOffset();
+    return this.isHydrated() ? 0 : this.tailer.getOffset();
   }
 
   /** Get a serialisable snapshot for the webview */

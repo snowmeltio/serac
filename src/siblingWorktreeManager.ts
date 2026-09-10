@@ -17,7 +17,7 @@ import type { Logger } from './sessionDiscovery.js';
 import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
 import { readSettings, ageGateMsFor } from './settings.js';
 import { peekCwd } from './jsonlPeek.js';
-import type { ReplayCacheStore } from './replayCache.js';
+import { NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
 
 /** Cap on how many of the newest candidate JSONLs in an unclassified dir get
  *  a head-only cwd peek. Most dirs resolve on the newest file; a handful of
@@ -48,14 +48,11 @@ export class SiblingWorktreeManager {
    *  subsequent scans can skip them without re-reading JSONLs. */
   private nonSiblingKeys: Set<string> = new Set();
   private localRepoRoot: string | null = null;
-  /** Dormant-session replay cache (PR D), injected by SessionDiscovery via
-   *  setReplayCache() — same shape as the liveness/writer-ownership probe
-   *  factories above. */
-  private replayCache?: ReplayCacheStore;
-  /** Hydrated-vs-replayed counts from the most recent scan() — startup
-   *  instrumentation only (the `[replay-cache]` summary line). Reset at the
-   *  top of every scan(). */
-  private replayCacheStats = { hydrated: 0, replayed: 0 };
+  /** Dormant-session replay cache, injected by SessionDiscovery via
+   *  setReplayCache(). Defaults to the no-op store so the kill switch is
+   *  decided once, at construction, in SessionDiscovery — see
+   *  ARCHITECTURE.md "Replay cache" → Wiring. */
+  private replayCache: ReplayCacheStore = NULL_REPLAY_CACHE;
 
   constructor(
     private readonly projectsDir: string,
@@ -80,17 +77,9 @@ export class SiblingWorktreeManager {
   }
 
   /** Wire in the dormant-session replay cache, injected by SessionDiscovery
-   *  once (same pattern as setLivenessProbeFactory). scan()/poll() still
-   *  re-check `serac.discovery.replayCache` on every call. */
+   *  once (same pattern as setLivenessProbeFactory). */
   setReplayCache(store: ReplayCacheStore): void {
     this.replayCache = store;
-  }
-
-  /** Hydrated-vs-replayed counts from the most recent scan() call — read by
-   *  SessionDiscovery right after the foreign-scan startup stage for the
-   *  `[replay-cache]` summary line. */
-  getReplayCacheStats(): { hydrated: number; replayed: number } {
-    return { ...this.replayCacheStats };
   }
 
   /** Resolve and cache the local CWD's repoRoot. Until this resolves to a
@@ -150,10 +139,6 @@ export class SiblingWorktreeManager {
     if (!siblingDiscoveryWanted()) { return false; }
     const now = Date.now();
     const ageGate = ageGateMsFor('worktrees');
-    this.replayCacheStats = { hydrated: 0, replayed: 0 };
-    // Genuine no-op when the kill switch is off: replayCache/makeHydrated
-    // simply aren't passed to trackJsonlSessions below, not passed-but-inert.
-    const cache = readSettings().discovery.replayCache ? this.replayCache : undefined;
     // Drop siblings whose worktree directory has been removed (e.g. `git
     // worktree remove`). Their JSONLs linger in ~/.claude/projects, but the
     // worktree is gone — without this they'd persist as undismissable zombie
@@ -221,26 +206,7 @@ export class SiblingWorktreeManager {
           return manager;
         },
         warn: (compositeId, err) => this.log.warn(`Sibling session update failed (${compositeId}):`, err),
-        replayCache: cache,
-        livenessOf: cache ? (sessionId) => this.probeFactory?.(sessionId)?.() ?? null : undefined,
-        makeHydrated: cache
-          ? (sessionId, filePath, state, stamp) => {
-            const manager = SessionManager.fromCache(sessionId, filePath, dir, {
-              livenessProbe: this.probeFactory?.(sessionId),
-              writerOwnershipProbe: this.writerOwnershipProbeFactory?.(sessionId),
-            }, state, stamp);
-            // Origin tagging must reach a hydrated manager exactly like an
-            // ordinarily-constructed one (makeManager above) — otherwise a
-            // hydrated sibling card would silently lose its worktree chip.
-            manager.setWorktreeOrigin(wtRoot, wtLabel);
-            return manager;
-          }
-          : undefined,
-        onTracked: cache
-          ? (hydrated) => {
-            if (hydrated) { this.replayCacheStats.hydrated++; } else { this.replayCacheStats.replayed++; }
-          }
-          : undefined,
+        replayCache: this.replayCache,
       })) {
         changed = true;
       }
@@ -326,10 +292,9 @@ export class SiblingWorktreeManager {
     const now = Date.now();
     const ageGate = ageGateMsFor('worktrees');
 
-    const cache = readSettings().discovery.replayCache ? this.replayCache : undefined;
     if (await pollTrackedSessions(this.sessions, now,
       (_sessionId, lastActivityMs) => now - lastActivityMs <= ageGate,
-      cache ? (session, pollNow) => offerSessionToReplayCache(session, pollNow, cache) : undefined)) {
+      (session, pollNow) => offerSessionToReplayCache(session, pollNow, this.replayCache))) {
       changed = true;
     }
     return changed;
@@ -365,9 +330,13 @@ export class SiblingWorktreeManager {
    *  total bytes read across every tracked sibling session, for the
    *  `[startup]` log line. */
   getScanStats(): { sessions: number; siblings: number; bytes: number; hydrated: number } {
+    let hydrated = 0;
+    for (const session of this.sessions.values()) {
+      if (session.isHydrated()) { hydrated++; }
+    }
     return {
       sessions: this.sessions.size, siblings: this.siblingKeys.size, bytes: sumBytesRead(this.sessions.values()),
-      hydrated: this.replayCacheStats.hydrated,
+      hydrated,
     };
   }
 
