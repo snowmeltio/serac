@@ -91,6 +91,14 @@ export class ForeignWorkspaceManager {
    *  Nothing will ever resume or acknowledge these sessions, so their `done`
    *  is promoted to `stale` — see getWorkspaces(). */
   private unreachableKeys: Set<string> = new Set();
+  /** Keys refreshRepoRoots() evicted because they resolved to localRepoRoot:
+   *  this repo's own worktrees, live or removed. Remembered so the next
+   *  scan() skips them outright. Without this the cycle repeated on every
+   *  rescan for a removed worktree whose transcripts had aged past the
+   *  sibling manager's gate but not the (wider) foreign one: track → paint
+   *  as flat rows → resolve → evict → forget → track again. Cleared with
+   *  the other caches when localRepoRoot changes. */
+  private ownRepoKeys: Set<string> = new Set();
   /** Dormant-session replay cache, injected by SessionDiscovery via
    *  setReplayCache(). Defaults to the no-op store so the kill switch is
    *  decided once, at construction, in SessionDiscovery — see
@@ -135,6 +143,7 @@ export class ForeignWorkspaceManager {
     // The answer to "is this one of ours?" just changed for every key.
     this.repoRootCache.clear();
     this.unreachableKeys.clear();
+    this.ownRepoKeys.clear();
   }
 
   /** Whether a session falls inside the visibility window. In live-only mode
@@ -179,6 +188,11 @@ export class ForeignWorkspaceManager {
           this.evictWorkspace(dir);
           continue;
         }
+        // One of our own worktrees that an earlier refreshRepoRoots() evicted
+        // (typically a removed Remote Control worktree the sibling manager no
+        // longer classifies). Never foreign; don't re-track it only to evict
+        // it again at the end of this scan.
+        if (this.ownRepoKeys.has(dir)) { continue; }
         const wsPath = path.join(this.projectsDir, dir);
         try {
           const stat = await fs.promises.stat(wsPath);
@@ -199,20 +213,11 @@ export class ForeignWorkspaceManager {
             replayCache: this.replayCache,
           });
         } catch { /* unreadable directory */ }
-      }
-      // Cache cwd per workspace key (stable display names). Prefer
-      // `initialCwd` — the first cwd that round-trips to the workspaceKey —
-      // so the row label and click-through anchor to the workspace dir even
-      // if the agent `cd`-ed into a subfolder mid-session. Fall back to
-      // `cwd` only when no record has matched yet (older sessions, edge
-      // cases) so we never end up with a blank label.
-      for (const session of this.sessions.values()) {
-        const snapshot = session.getSnapshot();
-        if (this.cwdCache.has(snapshot.workspaceKey)) { continue; }
-        const cwd = snapshot.initialCwd || snapshot.cwd;
-        if (cwd) {
-          this.cwdCache.set(snapshot.workspaceKey, cwd);
-        }
+        // Cache the cwd as soon as the dir's sessions exist, not after the
+        // whole walk: getWorkspaces() withholds a key whose cwd is known but
+        // whose repoRoot is still unresolved, and that gate only works if the
+        // cwd lands in the same tick as the sessions it describes.
+        this.cacheCwdForWorkspace(dir);
       }
       // Re-resolve repoRoots (evicting any that turn out to be ours), then
       // enumerate worktrees for every distinct repoRoot we still track. Reads
@@ -232,6 +237,26 @@ export class ForeignWorkspaceManager {
         if (!seenKeys.has(key)) { this.metaCache.delete(key); }
       }
     } catch { /* projectsDir doesn't exist */ }
+  }
+
+  /** Cache cwd for a workspace key (stable display names). Prefer
+   *  `initialCwd` — the first cwd that round-trips to the workspaceKey — so
+   *  the row label and click-through anchor to the workspace dir even if the
+   *  agent `cd`-ed into a subfolder mid-session. Fall back to `cwd` only when
+   *  no record has matched yet (older sessions, edge cases) so we never end
+   *  up with a blank label. First tracked session with a cwd wins. */
+  private cacheCwdForWorkspace(workspaceKey: string): void {
+    if (this.cwdCache.has(workspaceKey)) { return; }
+    const prefix = `${workspaceKey}/`;
+    for (const [compositeId, session] of this.sessions) {
+      if (!compositeId.startsWith(prefix)) { continue; }
+      const snapshot = session.getSnapshot();
+      const cwd = snapshot.initialCwd || snapshot.cwd;
+      if (cwd) {
+        this.cwdCache.set(workspaceKey, cwd);
+        return;
+      }
+    }
   }
 
   /** Drop all session/cache state for a workspace key. Used when a key
@@ -338,6 +363,7 @@ export class ForeignWorkspaceManager {
     }
     for (const key of ownKeys) {
       this.evictWorkspace(key);
+      this.ownRepoKeys.add(key);
       changed = true;
     }
     return changed;
@@ -480,6 +506,12 @@ export class ForeignWorkspaceManager {
 
     const result: WorkspaceGroup[] = [];
     for (const [key, counts] of groups) {
+      // Repo root not resolved yet (mid-scan: sessions tracked, cwd cached,
+      // refreshRepoRoots still to run). Painting now would show the key as a
+      // flat row with no fold and no stale promotion — and, for one of our own
+      // worktrees, a row that the same scan is about to evict. Hold it back
+      // one render; the resolution lands before scan() returns.
+      if (this.cwdCache.has(key) && !this.repoRootCache.has(key)) { continue; }
       let repoRoot = this.repoRootCache.get(key) ?? null;
       if (!repoRoot && consolidateTmp && isTmpScratchPath(this.cwdCache.get(key))) {
         repoRoot = PSEUDO_TMP_REPO_ROOT;
@@ -586,6 +618,8 @@ export class ForeignWorkspaceManager {
     this.sessions.clear();
     this.cwdCache.clear();
     this.repoRootCache.clear();
+    this.unreachableKeys.clear();
+    this.ownRepoKeys.clear();
     this.metaCache.clear();
     this.worktreesByRepoRoot.clear();
   }
