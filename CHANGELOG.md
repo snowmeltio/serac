@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.26.1 (2026-09-10) — Other workspaces stay put
 
 ### Fixed
 - **"Other workspaces" no longer flickers in a repo's own window.** A removed Remote Control worktree of the open repo whose transcripts had aged past the worktrees gate (7 days) but not the foreign one (14 days in a typical config) fell through to the foreign scan every tenth poll cycle: tracked, painted as flat `bridge-cse_*` rows with `D` chips, resolved to the local repo, evicted, forgotten, and tracked again 20 seconds later. Each pass ran the row-set slide twice. Evicted own-repo keys are now remembered and skipped on the next scan, the way sibling keys already were.
