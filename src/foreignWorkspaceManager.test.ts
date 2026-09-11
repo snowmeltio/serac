@@ -596,3 +596,132 @@ describe('ForeignWorkspaceManager: replay-cache hydration', () => {
     expect(manager.getScanStats().hydrated).toBe(0);
   });
 });
+
+// ===== Own-repo worktree keys =====
+//
+// A removed Remote Control worktree of THIS repo: its transcripts live on
+// under ~/.claude/projects, the sibling manager has stopped classifying it
+// (transcripts older than the worktrees gate), but it is still inside the
+// wider foreign window. Before the fix every rescan re-tracked it, painted
+// it as a flat "Other workspaces" row, resolved it to localRepoRoot, evicted
+// it, and forgot it — a periodic flicker in the claudecode window.
+describe('ForeignWorkspaceManager: own-repo worktree keys', () => {
+  let repo: string;
+  let ownKey: string;
+  let otherKey: string;
+  let ownDir: string;
+  let otherDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-own-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+
+    repo = fs.realpathSync(fs.mkdtempSync(path.join(tmpDir, 'repo-')));
+    setupRepoWithWorktrees(repo, []);
+    // Removed worktree: the path shape resolves to `repo`, the dir is gone.
+    const deadWorktree = path.join(repo, '.claude', 'worktrees', 'bridge-cse_dead');
+    // Keys chosen so the own dir is walked BEFORE the other one (see the
+    // readdir spy, which pins the walk order).
+    ownKey = 'a-own-' + sanitiseKey(deadWorktree);
+    createForeignSession(ownKey, 'sess-own', deadWorktree);
+
+    const otherCwd = fs.mkdtempSync(path.join(tmpDir, 'plain-'));
+    otherKey = 'b-other-' + sanitiseKey(otherCwd);
+    createForeignSession(otherKey, 'sess-other', otherCwd);
+
+    ownDir = path.join(projectsDir, ownKey);
+    otherDir = path.join(projectsDir, otherKey);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Spy fs.promises.readdir: pin the projectsDir walk to sorted order, and
+   *  run `onDir` for every workspace-dir read (the moment just after the
+   *  previous dir's sessions were tracked). */
+  function spyReaddir(onDir?: (dir: string) => void) {
+    const original = fs.promises.readdir.bind(fs.promises);
+    return vi.spyOn(fs.promises, 'readdir').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      const result = await (original as (...a: unknown[]) => Promise<unknown>)(p, ...rest);
+      const dir = String(p);
+      if (dir === projectsDir && Array.isArray(result)) {
+        (result as string[]).sort();
+      } else if (dir.startsWith(projectsDir + path.sep)) {
+        onDir?.(dir);
+      }
+      return result;
+    }) as typeof fs.promises.readdir);
+  }
+
+  it('never paints an own-repo key mid-scan, and evicts it by the end', async () => {
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLocalRepoRoot(repo);
+
+    const midScanKeys = new Set<string>();
+    spyReaddir((dir) => {
+      // Reading the other dir means the own dir's sessions are already tracked.
+      if (dir === otherDir) {
+        for (const g of manager.getWorkspaces()) { midScanKeys.add(g.workspaceKey); }
+      }
+    });
+
+    await manager.scan();
+
+    expect(midScanKeys.has(ownKey)).toBe(false);
+    const keys = manager.getWorkspaces().map((g) => g.workspaceKey);
+    expect(keys).toEqual([otherKey]);
+  });
+
+  it('skips an evicted own-repo dir on the next scan instead of re-tracking it', async () => {
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLocalRepoRoot(repo);
+    await manager.scan();
+    expect(manager.getWorkspaces().map((g) => g.workspaceKey)).toEqual([otherKey]);
+
+    const spy = spyReaddir();
+    await manager.scan();
+
+    const readDirs = spy.mock.calls.map((c) => String(c[0]));
+    expect(readDirs).toContain(otherDir);
+    expect(readDirs).not.toContain(ownDir);
+    expect(manager.getWorkspaces().map((g) => g.workspaceKey)).toEqual([otherKey]);
+  });
+
+  it('forgets the own-repo skip set when localRepoRoot changes', async () => {
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    manager.setLocalRepoRoot(repo);
+    await manager.scan();
+
+    // Now a different repo is local: the dead worktree is a plain foreign
+    // key again and must be walked (and listed, folded to its own repo root).
+    manager.setLocalRepoRoot(path.join(tmpDir, 'elsewhere'));
+    const spy = spyReaddir();
+    await manager.scan();
+
+    expect(spy.mock.calls.map((c) => String(c[0]))).toContain(ownDir);
+    const own = manager.getWorkspaces().find((g) => g.workspaceKey === ownKey);
+    expect(own).toBeDefined();
+    expect(own!.repoRoot).toBe(repo);
+  });
+
+  it('withholds a key whose repoRoot is still unresolved, then lists it once resolved', async () => {
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    // No local repo root: nothing is "own", so both keys are foreign.
+    const midScanKeys = new Set<string>();
+    spyReaddir((dir) => {
+      if (dir === otherDir) {
+        for (const g of manager.getWorkspaces()) { midScanKeys.add(g.workspaceKey); }
+      }
+    });
+    await manager.scan();
+
+    expect(midScanKeys.has(ownKey)).toBe(false);
+    const own = manager.getWorkspaces().find((g) => g.workspaceKey === ownKey);
+    expect(own).toBeDefined();
+    expect(own!.repoRoot).toBe(repo);
+    expect(Object.values(own!.counts).reduce((a, b) => a + b, 0)).toBe(1);
+  });
+});
