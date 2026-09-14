@@ -24,6 +24,8 @@ function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     resultPreview: null,
     toolsCompleted: 0,
     background: false,
+    revivalCount: 0,
+    completedFileSize: null,
     ...overrides,
   };
 }
@@ -316,5 +318,121 @@ describe('SubagentTailerManager', () => {
       ]);
       expect(mgr.getActiveTailerCount()).toBeLessThanOrEqual(10);
     });
+  });
+});
+
+describe('reopenTailerAt (revival)', () => {
+  let tmpRoot: string;
+  let sessionFile: string;
+  let agentFile: string;
+  const AGENT = 'a1111111111111111';
+
+  beforeEach(() => {
+    vi.useRealTimers(); // real fs ops
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'serac-reopen-'));
+    sessionFile = path.join(tmpRoot, 'session.jsonl');
+    fs.writeFileSync(sessionFile, '');
+    agentFile = path.join(tmpRoot, 'session', 'subagents', `agent-${AGENT}.jsonl`);
+    fs.mkdirSync(path.dirname(agentFile), { recursive: true });
+    fs.writeFileSync(agentFile, 'x'.repeat(99) + '\n');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  function manager(subs: SubagentInfo[] = [], disposed = false): SubagentTailerManager {
+    return new SubagentTailerManager({
+      isDisposed: () => disposed,
+      getSessionFilePath: () => sessionFile,
+      getAllSubagents: () => subs,
+    });
+  }
+
+  it('opens at the explicit offset and seeds lastSize/lastMtimeMs from the stat', async () => {
+    const sub = makeSubagent({ agentId: AGENT });
+    const mgr = manager([sub]);
+    await mgr.reopenTailerAt(sub, 40);
+    const stat = fs.statSync(agentFile);
+    expect(sub.tailer).not.toBeNull();
+    expect(sub.tailer!.getOffset()).toBe(40);
+    expect(sub.tailer!.lastSize).toBe(stat.size);
+    expect(sub.tailer!.lastMtimeMs).toBe(stat.mtimeMs);
+    expect(mgr.getActiveTailerCount()).toBe(1);
+  });
+
+  it('opens at the file size when the offset is unknown (null) — never at 0', async () => {
+    const sub = makeSubagent({ agentId: AGENT });
+    const mgr = manager([sub]);
+    await mgr.reopenTailerAt(sub, null);
+    expect(sub.tailer!.getOffset()).toBe(fs.statSync(agentFile).size);
+    expect(sub.tailer!.getOffset()).toBeGreaterThan(0);
+  });
+
+  it('adopts a preopened tailer as-is', async () => {
+    const sub = makeSubagent({ agentId: AGENT });
+    const mgr = manager([sub]);
+    const preopened = { readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => agentFile } as any;
+    await mgr.reopenTailerAt(sub, 10, preopened);
+    expect(sub.tailer).toBe(preopened);
+    expect(mgr.getActiveTailerCount()).toBe(1);
+  });
+
+  it('disposes an existing tailer first so the count does not double', async () => {
+    const stale = { readNewRecords: vi.fn(), getFilePath: () => agentFile } as any;
+    const sub = makeSubagent({ agentId: AGENT, tailer: stale });
+    const mgr = manager([sub]);
+    (mgr as any).activeTailerCount = 1;
+    await mgr.reopenTailerAt(sub, 5);
+    expect(sub.tailer).not.toBe(stale);
+    expect(mgr.getActiveTailerCount()).toBe(1);
+  });
+
+  it('respects the tailer cap: the row keeps no tailer', async () => {
+    const sub = makeSubagent({ agentId: AGENT });
+    const mgr = manager([sub]);
+    (mgr as any).activeTailerCount = 10;
+    await mgr.reopenTailerAt(sub, 5);
+    expect(sub.tailer).toBeNull();
+    expect(mgr.getActiveTailerCount()).toBe(10);
+  });
+
+  it('missing file: no tailer, count unchanged', async () => {
+    fs.rmSync(agentFile);
+    const sub = makeSubagent({ agentId: AGENT });
+    const mgr = manager([sub]);
+    await mgr.reopenTailerAt(sub, 5);
+    expect(sub.tailer).toBeNull();
+    expect(mgr.getActiveTailerCount()).toBe(0);
+  });
+
+  it('no agentId: falls back to the silence timer', async () => {
+    const sub = makeSubagent({ agentId: null });
+    const mgr = manager([sub]);
+    await mgr.reopenTailerAt(sub, 5);
+    expect(sub.tailer).toBeNull();
+    expect(sub.silenceTimerId).toBeDefined();
+    mgr.cancelSilenceTimer(sub);
+  });
+
+  it('subagent no longer running when the stat resolves: nothing is opened', async () => {
+    const sub = makeSubagent({ agentId: AGENT });
+    const mgr = manager([sub]);
+    const p = mgr.reopenTailerAt(sub, 5);
+    sub.running = false; // completed again before the stat came back
+    await p;
+    expect(sub.tailer).toBeNull();
+    expect(mgr.getActiveTailerCount()).toBe(0);
+  });
+
+  it('generation mismatch: a stale reopen never assigns a second tailer', async () => {
+    const sub = makeSubagent({ agentId: AGENT, revivalCount: 1 });
+    const mgr = manager([sub]);
+    const first = mgr.reopenTailerAt(sub, 10);
+    sub.revivalCount = 2; // a newer revival landed in the same batch
+    const second = mgr.reopenTailerAt(sub, 20);
+    await Promise.all([first, second]);
+    expect(mgr.getActiveTailerCount()).toBe(1);
+    expect(sub.tailer!.getOffset()).toBe(20);
   });
 });

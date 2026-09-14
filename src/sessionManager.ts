@@ -157,6 +157,15 @@ const TASK_NOTIFICATION_PATTERN = /<task-notification>([\s\S]*?)(?:<\/task-notif
  *  dormant sweep force-completes it (missed/never-written task-notification,
  *  e.g. killed CC). A working agent writes far more often than this. */
 const BACKGROUND_AGENT_CEILING_MS = 15 * 60 * 1000;
+/** Growth-backstop cadence: sweepRevivedSubagents stats completed agent files
+ *  on every Nth poll only (5s poll → 30s, matching the replay-cache flush). */
+export const REVIVAL_SWEEP_EVERY = 6;
+/** Deterministic per-session offset into the sweep cadence (exported for tests). */
+export function revivalSweepSeed(sessionId: string): number {
+  let sum = 0;
+  for (let i = 0; i < sessionId.length; i++) { sum = (sum + sessionId.charCodeAt(i)) % REVIVAL_SWEEP_EVERY; }
+  return sum;
+}
 
 /** Clamp a record's own timestamp to wall-clock "now". JSONL timestamps are
  *  trusted for replay accuracy (see updateSubagentActivity's docstring), but a
@@ -203,6 +212,9 @@ export interface SessionManagerOptions {
   onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
   /** Remote Control bridge enrol/drop/re-enrol trace — see the field. */
   onBridgeTransition?: (ev: BridgeTransition) => void;
+  /** Completed-subagent revival trace: which path revived it (send_message /
+   *  agent_resume / growth_backstop) and the agentId. */
+  onSubagentRevival?: (reason: string, agentId: string | null) => void;
   hookRouter?: HookEventRouter;
   livenessProbe?: () => boolean | null;
   /** Reports which window(s) confirmed-own this session's live writer
@@ -315,6 +327,13 @@ export class SessionManager {
    *  Non-invasive: default no-op. Used by the replay harness to verify a
    *  captured transition stream is reproducible from JSONL. */
   private readonly onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
+  private readonly onSubagentRevival?: (reason: string, agentId: string | null) => void;
+  /** Poll tick for the growth backstop's 1-in-6 cadence (see
+   *  sweepRevivedSubagents). Seeded from the sessionId so dormant sessions
+   *  spread their stats across the six beats instead of all landing on the
+   *  same one; the first eligible sweep may therefore be up to 30s after the
+   *  window opens, by design. */
+  private revivalSweepTick: number | null = null;
   /** Optional observability hook fired when the Remote Control bridge state
    *  changes (enrol / drop / re-enrol) — see BridgeTransition. Fires on real
    *  transitions only; Claude Code re-emits the enrolled record on every
@@ -373,6 +392,7 @@ export class SessionManager {
   ) {
     const now = new Date();
     this.onTransition = opts.onTransition;
+    this.onSubagentRevival = opts.onSubagentRevival;
     this.onBridgeTransition = opts.onBridgeTransition;
     this.hookRouter = opts.hookRouter;
     this.livenessProbe = opts.livenessProbe;
@@ -621,6 +641,8 @@ export class SessionManager {
       resultPreview: cs.resultPreview,
       toolsCompleted: cs.toolsCompleted,
       background: cs.background ?? false,
+      revivalCount: 0,
+      completedFileSize: cs.completedFileSize ?? null,
     };
     return subagent;
   }
@@ -703,7 +725,15 @@ export class SessionManager {
         return false; // file gone — discovery will prune
       }
       if (sameStamp(stat, this.hydratedFrom)) {
-        return false; // unchanged since the cache snapshot — nothing to do
+        // Unchanged since the cache snapshot — nothing to read from the main
+        // file. A hydrated card can still own a live subagent tailer (the
+        // growth backstop revived one of its cached subagents), so pump that:
+        // it never touches the main tailer, so the "hydrate never reads the
+        // main file" invariant holds.
+        if (this.subagentLifecycle.getActiveTailerCount() > 0) {
+          return await this.processSubagentTailerRecords();
+        }
+        return false;
       }
       // Changed: the cached state can no longer be trusted to match what's
       // actually on disk. beginFullReplay() clears hydratedFrom and rewinds
@@ -849,6 +879,7 @@ export class SessionManager {
           toolsCompleted: s.toolsCompleted,
           blocking: s.running && this.state.activeTools.has(s.parentToolUseId),
           background: s.background || undefined,
+          revivalCount: s.revivalCount,
         } satisfies SubagentSnapshot)),
       lastActivity: this.state.lastActivity.getTime(),
       firstActivity: this.state.firstActivity.getTime(),
@@ -1142,6 +1173,7 @@ export class SessionManager {
           startedAt: s.startedAt.getTime(),
           lastActivity: s.lastActivity.getTime(),
           background: s.background || undefined,
+          completedFileSize: s.completedFileSize,
         })),
     };
   }
@@ -1281,6 +1313,73 @@ export class SessionManager {
     return changed;
   }
 
+  /** Growth backstop for completed subagents revived WITHOUT Serac seeing it
+   *  inline (a SendMessage result or Agent({resume}) skipped by the Stop
+   *  guard, a window that missed the record, or a hydrated card). A revived
+   *  agent appends to its own JSONL, so growth past the completion watermark
+   *  (`completedFileSize`) that contains an `assistant` record is the
+   *  revival discriminator — post-completion growth is otherwise hook
+   *  `attachment` lines only. Sibling of sweepBackgroundWork (which is gated
+   *  on hasLiveBackgroundAgents(), false for exactly this population).
+   *
+   *  Cheapest gates first — ~200 completed agent files on a 5s poll would
+   *  otherwise stat continuously:
+   *    1. registry-confirmed death: a dead process cannot resume anything;
+   *    2. 1-in-6 cadence (30s, matching the cache flush);
+   *    3. per subagent: done, agentId known, watermark known; a file quiet
+   *       past BACKGROUND_AGENT_CEILING_MS only advances the watermark; no
+   *       growth → skip;
+   *    4. read the delta through a fresh JsonlTailer at the watermark. An
+   *       assistant record → revive (adopting that tailer so the delta's tool
+   *       results are counted once); otherwise advance the watermark so the
+   *       same attachment bytes aren't re-read next sweep.
+   *  Returns true iff a subagent was revived. */
+  async sweepRevivedSubagents(now: number): Promise<boolean> {
+    if (this.isConfirmedDeadByRegistry()) { return false; }
+    // Lazy seed: `state` is assigned in the constructor, after field initialisers.
+    const tick = this.revivalSweepTick ?? revivalSweepSeed(this.state.sessionId);
+    this.revivalSweepTick = (tick + 1) % REVIVAL_SWEEP_EVERY;
+    if (this.revivalSweepTick !== 0) { return false; }
+    let changed = false;
+    for (const subagent of this.state.subagents) {
+      if (subagent.running || !subagent.agentId || subagent.completedFileSize === null) { continue; }
+      const file = subagentJsonlPath(sessionDirFromJsonl(this.state.filePath), subagent.agentId);
+      // Per-subagent isolation: a throwing stat/read must not abort the rest of
+      // the sweep or the caller's poll cycle (the sibling shell sweep and
+      // offerToCache run after us in the same loop).
+      try {
+        const stat = await fs.promises.stat(file);
+        // A concurrent resetState()/forceReplay() replaces the subagents array
+        // and zeroes the tailer count; reviving an orphaned struct would leak
+        // a cap slot and a hook-registered tracker forever.
+        if (this.disposed || subagent.running || !this.state.subagents.includes(subagent)) { continue; }
+        if (now - stat.mtimeMs > BACKGROUND_AGENT_CEILING_MS) {
+          subagent.completedFileSize = stat.size;
+          continue;
+        }
+        if (stat.size <= subagent.completedFileSize) { continue; }
+        const tailer = new JsonlTailer(file, subagent.completedFileSize);
+        const records = await tailer.readNewRecords();
+        if (this.disposed || subagent.running || !this.state.subagents.includes(subagent)) { continue; }
+        if (!records.some(r => r.type === 'assistant')) {
+          subagent.completedFileSize = tailer.getOffset();
+          continue;
+        }
+        this.reviveSubagent(subagent, 'growth_backstop', {
+          background: true, timestamp: new Date(stat.mtimeMs), preopened: tailer,
+        });
+        for (const record of records) {
+          if (record.type === 'assistant') { this.applySubagentAssistantRecord(subagent, record); }
+          else if (record.type === 'user') { this.applySubagentUserRecord(subagent, record); }
+        }
+        changed = true;
+      } catch {
+        continue;
+      }
+    }
+    return changed;
+  }
+
   /** Backstop for background agents whose <task-notification> never arrives
    *  (CC killed, harness crash). Registry-confirmed death completes them all at
    *  once — a dead parent has no detached children. Otherwise an agent whose
@@ -1316,10 +1415,15 @@ export class SessionManager {
    *  Sync stat is fine here: the sweep only reaches this for sessions that
    *  actually have live background agents (rare, few per session). */
   private backgroundAgentFileMtime(subagent: SubagentInfo): number | null {
+    return this.statSubagentFile(subagent)?.mtimeMs ?? null;
+  }
+
+  /** Sync stat of a subagent's own JSONL, or null when unknown/absent. */
+  private statSubagentFile(subagent: SubagentInfo): fs.Stats | null {
     if (!subagent.agentId) { return null; }
     const file = subagentJsonlPath(sessionDirFromJsonl(this.state.filePath), subagent.agentId);
     try {
-      return fs.statSync(file).mtimeMs;
+      return fs.statSync(file);
     } catch {
       return null;
     }
@@ -1622,6 +1726,20 @@ export class SessionManager {
           this.loopTracker.noteToolResult(block.tool_use_id, resultText);
         }
         const toolName = this.state.activeTools.get(block.tool_use_id);
+        // SendMessage to a COMPLETED subagent revives it (Claude Code keeps
+        // finished agents addressable). Checked before the no-name early-
+        // continue: under the Stop guard a trailing SendMessage's tool_use is
+        // skipped, so its result has no name — which also means Bash/MCP
+        // output reaches the parser, hence its strict message match. Id
+        // only, never name; an unknown id or running target is a no-op and
+        // never creates a subagent.
+        if (resultText && (toolName === undefined || toolName === 'SendMessage')) {
+          const revivedId = SessionManager.parseSendMessageRevival(resultText);
+          const target = revivedId ? this.state.subagents.find(s => s.agentId === revivedId) : undefined;
+          if (target && !target.running) {
+            this.reviveSubagent(target, 'send_message', { background: true, timestamp });
+          }
+        }
         if (toolName === undefined) {
           // tool_result arrived before its tool_use record (out-of-order JSONL writes).
           // Track the id so the late tool_use is recognised as already complete.
@@ -1753,14 +1871,28 @@ export class SessionManager {
           // Dedup by parentToolUseId to prevent duplicates on truncation replay [H3]
           const alreadyTracked = this.state.subagents.some(s => s.parentToolUseId === block.id);
           // Cap subagent tracking to prevent unbounded growth
-          if (!alreadyTracked && this.state.subagents.length < 50) {
+          // [Phase 2] Pre-extract agentId from resume input so createSubagent
+          // returns a fully-formed struct (no post-construction mutation).
+          const input = block.input as Record<string, unknown> | undefined;
+          const resumeId = input?.resume;
+          const agentId = typeof resumeId === 'string' ? resumeId : null;
+          const existing = !alreadyTracked && agentId
+            ? this.state.subagents.find(s => s.agentId === agentId)
+            : undefined;
+          if (existing) {
+            // Agent({resume}) on an agent we already track: revive the SAME row
+            // (retargeted to this tool_use id so the Agent tool_result path
+            // decides banner-vs-completion as usual) rather than a duplicate.
+            // A RUNNING target is left alone, id included: if CC answers a
+            // double-resume with an error result, a retargeted id would route
+            // that is_error into completeSubagent and kill a live agent.
+            if (!existing.running) {
+              this.reviveSubagent(existing, 'agent_resume', {
+                background: false, parentToolUseId: block.id, timestamp: parseTimestamp(record.timestamp),
+              });
+            }
+          } else if (!alreadyTracked && this.state.subagents.length < 50) {
             const description = this.extractAgentDescription(block);
-            // [Phase 2] Pre-extract agentId from resume input so createSubagent
-            // returns a fully-formed struct (no post-construction mutation).
-            const input = block.input as Record<string, unknown> | undefined;
-            const resumeId = input?.resume;
-            const agentId = typeof resumeId === 'string' ? resumeId : null;
-
             const subagent = this.createSubagent(block.id, description, agentId);
             this.state.subagents.push(subagent);
             this.subagentLifecycle.onSpawn(subagent);
@@ -1941,18 +2073,7 @@ export class SessionManager {
   private createSubagent(parentToolUseId: string, description: string, agentId: string | null): SubagentInfo {
     const activeTools = new Map<string, string>();
     let subagent!: SubagentInfo;  // definite-assignment: filled below before any closure runs
-    // Subagent permission tracker: hook variant only when we know the
-    // agent_id at construction time. PR-E spike (2026-05-25) confirmed
-    // subagent PermissionRequest events ride the parent's session_id and
-    // carry the subagent's agent_id; the hook variant filters on that.
-    const trackerOpts = (this.hookRouter && agentId)
-      ? { hookRouter: this.hookRouter, sessionId: this.state.sessionId, agentId }
-      : {};
-    const tracker = makePermissionTracker({
-      getActiveTools: () => activeTools,
-      getLastToolResultAt: () => this.lastToolResultAt,
-      onWaitingFired: (source, toolName) => this.bubbleSubagentWaitingIfAllBlocked(subagent, source, toolName),
-    }, trackerOpts);
+    const tracker = this.makeSubagentPermissionTracker(activeTools, agentId, () => subagent);
     subagent = {
       parentToolUseId,
       description,
@@ -1969,20 +2090,89 @@ export class SessionManager {
       resultPreview: null,
       toolsCompleted: 0,
       background: false,
+      revivalCount: 0,
+      completedFileSize: null,
     };
     return subagent;
   }
 
+  /** Subagent permission tracker: hook variant only when we know the
+   *  agent_id at construction time. PR-E spike (2026-05-25) confirmed
+   *  subagent PermissionRequest events ride the parent's session_id and
+   *  carry the subagent's agent_id; the hook variant filters on that.
+   *  `getSubagent` is a closure (not the struct) because createSubagent's
+   *  literal references the tracker — see its construction-order note. */
+  private makeSubagentPermissionTracker(
+    activeTools: Map<string, string>,
+    agentId: string | null,
+    getSubagent: () => SubagentInfo,
+  ): PermissionTracker {
+    const trackerOpts = (this.hookRouter && agentId)
+      ? { hookRouter: this.hookRouter, sessionId: this.state.sessionId, agentId }
+      : {};
+    return makePermissionTracker({
+      getActiveTools: () => activeTools,
+      getLastToolResultAt: () => this.lastToolResultAt,
+      onWaitingFired: (source, toolName) => this.bubbleSubagentWaitingIfAllBlocked(getSubagent(), source, toolName),
+    }, trackerOpts);
+  }
+
+  /** Revive a COMPLETED subagent that the lead addressed again (SendMessage,
+   *  Agent({resume})) or that the growth backstop caught appending to its
+   *  JSONL. Rebuilds everything completeSubagent() tore down: a fresh
+   *  permission tracker (hook variant when the agentId is known — it always
+   *  is here), cleared tools (same Map — the tracker closure holds it), and a
+   *  tailer reopened at the completion watermark. Never touches a running
+   *  target. `startedAt` is kept: the row is the same agent.
+   *
+   *  - `acknowledged` resets, or the row vanishes from the snapshot on
+   *    re-completion (already acknowledged + done → filtered out).
+   *  - `resultPreview` nulls: running rows never render one, and a kept value
+   *    would masquerade as the NEXT result if the sweep force-completes it.
+   *  - `background` is ASSIGNED, not OR-ed: a foreground Agent({resume}) of a
+   *    former background agent must block the turn and complete at turn end.
+   *  - Order: `running = true` before onRevive, or poll() disposes the
+   *    reopened tailer; `completedFileSize` nulls AFTER onRevive reads it. */
+  private reviveSubagent(
+    subagent: SubagentInfo,
+    reason: 'send_message' | 'agent_resume' | 'growth_backstop',
+    opts: { background: boolean; parentToolUseId?: string; timestamp: Date; preopened?: JsonlTailer },
+  ): void {
+    if (subagent.running) { return; }
+    if (opts.parentToolUseId) { subagent.parentToolUseId = opts.parentToolUseId; }
+    subagent.permissionTracker.dispose();
+    subagent.permissionTracker = this.makeSubagentPermissionTracker(subagent.activeTools, subagent.agentId, () => subagent);
+    subagent.running = true;
+    subagent.waitingOnPermission = false;
+    subagent.acknowledged = false;
+    this.clearTools(subagent.activeTools);
+    subagent.resultPreview = null;
+    subagent.background = opts.background;
+    subagent.revivalCount++;
+    this.updateSubagentActivity(subagent, opts.timestamp);
+    this.subagentLifecycle.onRevive(subagent, opts.preopened);
+    subagent.completedFileSize = null;
+    this.onSubagentRevival?.(reason, subagent.agentId);
+  }
+
   /** Mark a subagent finished and release its trackers + tailer. Shared by the
    *  inline Agent/Task tool_result path, the background-agent task-notification
-   *  path, and the dormant sweep's force-complete backstop. */
+   *  path, and the dormant sweep's force-complete backstop. Idempotent: an
+   *  already-done subagent returns at once — markSessionDone() re-calls this
+   *  for every subagent on every turn end, and the watermark stat below must
+   *  run once per genuine transition, not thousands of times over a replay. */
   private completeSubagent(subagent: SubagentInfo, resultPreview: string | null): void {
+    if (!subagent.running) { return; }
     subagent.running = false;
     subagent.waitingOnPermission = false;
     this.clearTools(subagent.activeTools);
     subagent.resultPreview = resultPreview;
     subagent.permissionTracker.dispose();
     this.subagentLifecycle.onComplete(subagent);
+    // Growth-backstop watermark: the agent file's size at this transition.
+    // Sync stat, once per genuine running→done transition (the idempotence
+    // guard above keeps markSessionDone's per-turn re-calls off this path).
+    subagent.completedFileSize = this.statSubagentFile(subagent)?.size ?? null;
   }
 
   /** Detect a harness-injected <task-notification> user record — the genuine
@@ -2017,6 +2207,12 @@ export class SessionManager {
    *  subagent tailers, and by the dormant sweep. */
   hasLiveBackgroundAgents(): boolean {
     return this.state.subagents.some(s => s.background && s.running);
+  }
+
+  /** Number of subagents currently tailed directly (revival tests observe
+   *  the reopen race through this). */
+  getActiveSubagentTailerCount(): number {
+    return this.subagentLifecycle.getActiveTailerCount();
   }
 
   /** Subagent's PermissionTracker fired. Mark this subagent as blocked, and
@@ -2256,6 +2452,31 @@ export class SessionManager {
       return input.prompt.slice(0, 60).replace(/\n/g, ' ').trim();
     }
     return 'Subagent';
+  }
+
+  /** Parse a SendMessage tool_result for a subagent revival. Both captured
+   *  shapes (2026-09-14) carry `pin.id` = the agentId:
+   *    {"success":true,"message":"Message queued for delivery to X at its next tool round.","pin":{"id","name"}}
+   *    {"success":true,"message":"Resuming agent X","resumedAgentId":..,"pin":{..}}
+   *  Teammate inbox sends carry no pin. The `message` prefix match is the
+   *  guard against look-alikes: under the Stop guard every trailing result is
+   *  nameless, so Bash/MCP JSON output reaches this parser too. Returns the
+   *  agentId, or null. */
+  static parseSendMessageRevival(text: string): string | null {
+    if (!text.startsWith('{')) { return null; }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object') { return null; }
+    const r = parsed as { success?: unknown; message?: unknown; resumedAgentId?: unknown; pin?: unknown };
+    if (r.success !== true || typeof r.message !== 'string') { return null; }
+    if (!r.message.startsWith('Resuming agent') && !r.message.startsWith('Message queued for delivery')) { return null; }
+    if (typeof r.resumedAgentId === 'string') { return r.resumedAgentId; }
+    const pinId = (r.pin && typeof r.pin === 'object') ? (r.pin as { id?: unknown }).id : undefined;
+    return typeof pinId === 'string' ? pinId : null;
   }
 
   /** Extract the full text of a tool_result block (all text parts joined),

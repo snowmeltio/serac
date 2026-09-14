@@ -108,6 +108,8 @@ describe('parseReplayCache', () => {
     ['agentId neither string nor null', { agentId: 42 }],
     ['resultPreview neither string nor null', { resultPreview: 42 }],
     ['non-boolean background', { background: 'yes' }],
+    ['non-finite completedFileSize', { completedFileSize: 'big' }],
+    ['negative completedFileSize', { completedFileSize: -1 }],
   ];
   for (const [label, override] of badSubagentCases) {
     it(`rejects an entry whose subagent has ${label}`, () => {
@@ -137,6 +139,25 @@ describe('parseReplayCache', () => {
     });
     const parsed = parseReplayCache(raw);
     expect(parsed.get('ok')!.state.subagents[0]).toMatchObject({ background: true, lastActivity: 2000 });
+  });
+
+  it('completedFileSize round-trips as a number or null; absent normalises to null', () => {
+    const base = {
+      parentToolUseId: 'tu-1', agentId: 'agent-1', description: 'desc',
+      resultPreview: null, toolsCompleted: 0, startedAt: 1000, lastActivity: 1000,
+    };
+    const raw = JSON.stringify({
+      version: REPLAY_CACHE_VERSION,
+      entries: {
+        num: entry({ state: cachedState({ subagents: [{ ...base, completedFileSize: 4096 }] }) }),
+        nul: entry({ state: cachedState({ subagents: [{ ...base, completedFileSize: null }] }) }),
+        absent: entry({ state: cachedState({ subagents: [base] }) }),
+      },
+    });
+    const parsed = parseReplayCache(raw);
+    expect(parsed.get('num')!.state.subagents[0].completedFileSize).toBe(4096);
+    expect(parsed.get('nul')!.state.subagents[0].completedFileSize).toBeNull();
+    expect(parsed.get('absent')!.state.subagents[0].completedFileSize).toBeNull();
   });
 
   it('round-trips through serialiseReplayCache', () => {

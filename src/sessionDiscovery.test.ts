@@ -2087,6 +2087,7 @@ describe('SessionDiscovery', () => {
           toolsCompleted: 0,
           blocking: false,
           background: true,
+          revivalCount: 0,
         }],
       });
       (discovery as unknown as {

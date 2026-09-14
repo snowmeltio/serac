@@ -6,6 +6,9 @@ import {
 } from './subagentLifecycleTracker.js';
 import type { SubagentInfo } from '../types.js';
 import { HookEventRouter } from '../hookEventRouter.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
   return {
@@ -24,6 +27,8 @@ function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     resultPreview: null,
     toolsCompleted: 0,
     background: false,
+    revivalCount: 0,
+    completedFileSize: null,
     ...overrides,
   };
 }
@@ -201,5 +206,78 @@ describe('SubagentLifecycleTracker (hook overlay)', () => {
     // Hook would have cleared silenceTimerId, but the JSONL-only variant
     // didn't subscribe — timer is still in place.
     expect(sub.silenceTimerId).toBeDefined();
+  });
+});
+
+describe('revival (onRevive + late SubagentStop)', () => {
+  const SID = 'parent-session-uuid';
+
+  it('onRevive cancels the silence timer and reopens the tailer at completedFileSize', async () => {
+    vi.useRealTimers();
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'serac-lifecycle-'));
+    try {
+      const sessionFile = path.join(tmpRoot, 'session.jsonl');
+      const agentFile = path.join(tmpRoot, 'session', 'subagents', 'agent-rev.jsonl');
+      fs.mkdirSync(path.dirname(agentFile), { recursive: true });
+      fs.writeFileSync(agentFile, 'x'.repeat(49) + '\n');
+      const sub = makeSubagent({ agentId: 'rev', completedFileSize: 30 });
+      const t = new JsonlDerivedSubagentLifecycleTracker(makeHost({ sessionFilePath: sessionFile, allSubagents: [sub] }));
+      t.onSpawn(sub);
+      expect(sub.silenceTimerId).toBeDefined();
+      t.onRevive(sub);
+      expect(sub.silenceTimerId).toBeUndefined();
+      for (let i = 0; i < 3; i++) { await new Promise(r => setImmediate(r)); }
+      expect(t.getActiveTailerCount()).toBe(1);
+      expect(sub.tailer!.getOffset()).toBe(30);
+      t.disposeAll([sub]);
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('hook overlay: a late SubagentStop for a subagent that is NOT running is a no-op', () => {
+    vi.useFakeTimers();
+    try {
+      const sub = makeSubagent({ agentId: 'agent-late', running: false });
+      sub.silenceTimerId = setTimeout(() => {}, 100_000); // a live timer that a real stop would clear
+      const host = makeHost({ allSubagents: [sub] });
+      const router = new HookEventRouter();
+      const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
+      router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-late', agent_type: 'general-purpose' });
+      expect(sub.silenceTimerId).toBeDefined();
+      clearTimeout(sub.silenceTimerId);
+      t.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hook overlay: SubagentStop on a running subagent still tears its timer down', () => {
+    vi.useFakeTimers();
+    try {
+      const sub = makeSubagent({ agentId: 'agent-live', running: true });
+      const host = makeHost({ allSubagents: [sub] });
+      const router = new HookEventRouter();
+      const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
+      t.onSpawn(sub);
+      expect(sub.silenceTimerId).toBeDefined();
+      router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-live', agent_type: 'general-purpose' });
+      expect(sub.silenceTimerId).toBeUndefined();
+      t.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hook overlay delegates onRevive (preopened adoption) to the JSONL fallback', () => {
+    const sub = makeSubagent({ agentId: 'agent-x' });
+    const router = new HookEventRouter();
+    const t = makeSubagentLifecycleTracker(makeHost({ allSubagents: [sub] }), { hookRouter: router, sessionId: SID });
+    const preopened = { readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
+    t.onRevive(sub, preopened);
+    expect(sub.tailer).toBe(preopened);
+    expect(t.getActiveTailerCount()).toBe(1);
+    t.disposeAll([sub]);
+    t.dispose();
   });
 });

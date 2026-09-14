@@ -101,6 +101,10 @@ done ──→ stale            (display-only: acknowledged + 10s elapsed)
 (none) ──→ done           (hydrated from replay cache; stat mismatch → full replay from byte 0 — see "Replay cache" below)
 ```
 
+A subagent's own done→running revival (see "Detached agents" → Revival) does
+not move the session status at machine level; the `running && background`
+display override in `getSnapshots()` presents the card as running.
+
 Internal statuses are `running | waiting | done`. `stale` and `idle` are display-only labels applied in `SessionDiscovery.getSnapshots()` and `panel.ts`.
 
 ### Timer hierarchy
@@ -178,6 +182,54 @@ read `DONE` while detached agents kept working for many minutes (found live
   becomes `resultPreview`, non-`completed` statuses are prefixed `[status]`)
   and, being a user record, reopens the turn — matching the harness, which
   re-invokes the lead.
+- **Revival** — Claude Code keeps completed subagents addressable: the lead
+  can `SendMessage({to})` or `Agent({resume})` one, the agent keeps appending
+  to the same `subagents/agent-<id>.jsonl`, and completes again via another
+  `<task-notification>`. Three sources, one path (`reviveSubagent()`,
+  `sessionManager.revival.test.ts`):
+  - a SendMessage `tool_result` whose JSON carries `pin.id` (or
+    `resumedAgentId`) matching a tracked, **completed** agent, with the
+    `message` prefixed `Resuming agent` / `Message queued for delivery` —
+    `parseSendMessageRevival()`. Revives as `background: true`. Matched by id,
+    never name; unknown id or running target → no-op, never a new row.
+  - `Agent({resume: <agentId>})` on a tracked completed agent retargets the
+    SAME row to the new tool_use id (`background: false` — the existing
+    Agent tool_result branch then decides banner-vs-completion), instead of
+    the duplicate row dedup-by-`parentToolUseId` used to create. A resume of
+    a **running** target is left alone, id included: if CC answered a
+    double-resume with an error result, a retargeted id would route that
+    `is_error` into `completeSubagent` and kill a live agent.
+  - the growth backstop (`sweepRevivedSubagents()`, the dormant sweep's
+    async sibling) for revivals Serac never saw inline: a completed agent's
+    file growing past its completion watermark (`completedFileSize`, stamped
+    by `completeSubagent()` on the genuine running→done transition only)
+    with an `assistant` record in the delta. Attachment-only growth advances
+    the watermark; a file quiet past `BACKGROUND_AGENT_CEILING_MS` is never
+    read. Gated cheapest-first: registry-confirmed death skips the sweep, then
+    a 1-in-6 poll cadence (30s), then per-agent `done && agentId && watermark
+    known`. The delta's tailer is adopted so its tool results count once.
+    Each sweep iteration is isolated (a throwing stat/read skips that agent,
+    not the poll cycle) and re-checks membership after every await, so a
+    concurrent `resetState()`/`forceReplay()` cannot revive an orphaned
+    struct. Foreign-workspace and sibling-worktree rows (`sessionPolling.ts`)
+    have no `hasLiveBackgroundAgents()` wake, so a backstop revival there is
+    tailed only on the next main-file change — a pre-existing gap for
+    ordinary background agents on those rows, not extended in code here.
+
+  `reviveSubagent()` rebuilds what completion tore down: a fresh permission
+  tracker (hook variant when a hook router is wired; the agentId is always known on a revival path), cleared `activeTools` (same
+  Map; the tracker closure holds it), `waitingOnPermission`/`acknowledged`
+  false (else the row vanishes from the snapshot on re-completion),
+  `resultPreview` null, `background` **assigned** (a foreground resume of a
+  former background agent must block the turn), `revivalCount++`, and the
+  tailer reopened at the watermark — never 0, or `toolsCompleted` double-
+  counts. `startedAt` is kept. The `revivalCount` epoch discards a reopen
+  whose stat resolved after a newer revival (two revivals in one record
+  batch would otherwise leak the tailer count). Caveats: a Stop-skipped
+  `Agent({resume})` tool_use (only the result is seen, and that carries no
+  agent id) is recoverable only by the backstop; after Reload Window the
+  watermark restores from the replay cache but the tailer reads from the
+  file's current size, so a revived phase's `toolsCompleted` reads 0.
 - **Backstops** — `sweepBackgroundWork()` (the per-poll dormant sweep, shared
   with background shells): registry-confirmed death completes all background
   agents at once; otherwise an agent whose own JSONL has sat unmodified past
@@ -848,6 +900,11 @@ after `Stop` is, by construction, trailing data of the turn that just ended.
   repopulation from a trailing `tool_use`.
 - A `user` / `dequeue` / `compact_boundary` record **clears** the flag and
   proceeds normally — a real new turn.
+- The SendMessage revival branch in the tool_result loop runs **before** the
+  no-tool-name early continue: a trailing SendMessage's tool_use was skipped
+  by the guard, so its result has no name but must still revive the target.
+  (The same nameless path is why the parser matches the `message` prefix —
+  Bash/MCP JSON output reaches it too.)
 
 State-based, ~10 lines, no timestamp/clock dependency. The flag lives at the
 **SessionManager host edge**, not inside a tracker slice, because it coordinates
@@ -1219,7 +1276,14 @@ tailer's `initialOffset` constructor seam) purely so `getReadStamp()` reports
 the stamp truthfully while nothing has changed — **not** an incremental
 resume point: any change at all invalidates the whole hydration (see
 Invalidation below), and the next read replays the ENTIRE file from byte 0,
-same as an uncached session. No timers are armed.
+same as an uncached session. No timers are armed. Each cached subagent
+carries `completedFileSize` (the revival growth-backstop watermark; optional,
+absent → null, no `REPLAY_CACHE_VERSION` bump — a bump costs every window a
+cold replay for a field the normaliser already tolerates missing). A hydrated
+card can therefore be revived by the backstop; the `sameStamp` short-circuit
+in `updateInner()` pumps `processSubagentTailerRecords()` when any subagent
+tailer is open — that pump never touches the main tailer, so the
+never-reads-the-main-file invariant holds.
 
 **Invalidation.** `updateInner()` gates on `isHydrated()` before any read: it
 stats the file, returns `false` unchanged if the stat still matches the

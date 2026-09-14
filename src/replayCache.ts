@@ -154,6 +154,14 @@ function tryNormaliseSubagent(value: unknown): CachedSessionState['subagents'][n
   if (s.agentId !== null && typeof s.agentId !== 'string') { return null; }
   if (s.resultPreview !== null && typeof s.resultPreview !== 'string') { return null; }
   if (s.background !== undefined && typeof s.background !== 'boolean') { return null; }
+  // Optional (entries written before the growth-backstop watermark existed
+  // hydrate with null); a PRESENT non-finite or negative value is corruption and
+  // rejects (a negative watermark would re-read the whole file and revive a
+  // finished agent).
+  if (s.completedFileSize !== undefined && s.completedFileSize !== null
+      && (!Number.isFinite(s.completedFileSize) || (s.completedFileSize as number) < 0)) {
+    return null;
+  }
   return {
     parentToolUseId: s.parentToolUseId,
     agentId: s.agentId ?? null,
@@ -163,6 +171,7 @@ function tryNormaliseSubagent(value: unknown): CachedSessionState['subagents'][n
     startedAt: s.startedAt as number,
     lastActivity: s.lastActivity as number,
     background: s.background,
+    completedFileSize: s.completedFileSize ?? null,
   };
 }
 
