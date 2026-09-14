@@ -48,6 +48,7 @@ function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     permissionTracker: { reschedule: () => {}, cancel: () => {}, dispose: () => {} },
     acknowledged: false, tailer: null, silenceTimerId: undefined, agentId: null,
     startedAt: new Date(), resultPreview: null, toolsCompleted: 0, background: false,
+    revivalCount: 0, completedFileSize: null,
     ...overrides,
   };
 }

@@ -161,6 +161,28 @@ describe('fromCache/hydrate', () => {
     expect(subs[0].startedAt).toBe(startedAt);
   });
 
+  it('a cached completedFileSize seeds the growth backstop watermark; an absent one disables it', async () => {
+    // Fresh mtime so the sweep's ceiling gate does not swallow the read; the
+    // main file is never stat'ed by the sweep, so the hydration stamp is moot.
+    vi.spyOn(fs.promises, 'stat').mockResolvedValue({ size: 500, mtimeMs: Date.now() } as fs.Stats);
+    const base = {
+      parentToolUseId: 'tu-1', agentId: 'agent-1', description: 'desc',
+      resultPreview: 'done', toolsCompleted: 1, startedAt: Date.now(), lastActivity: Date.now(), background: true,
+    };
+    const seeded = hydratedManager({ subagents: [{ ...base, completedFileSize: 123 }] });
+    const before = tailerConstructions.length;
+    for (let i = 0; i < 6; i++) { await seeded.sweepRevivedSubagents(Date.now()); }
+    const opened = tailerConstructions.slice(before);
+    expect(opened).toHaveLength(1);
+    expect(opened[0].filePath).toContain('agent-agent-1.jsonl');
+    expect(opened[0].initialOffset).toBe(123);
+
+    const unseeded = hydratedManager({ subagents: [base] });
+    const before2 = tailerConstructions.length;
+    for (let i = 0; i < 6; i++) { await unseeded.sweepRevivedSubagents(Date.now()); }
+    expect(tailerConstructions.length).toBe(before2);
+  });
+
   it('a cached subagent with background: false/undefined round-trips as not backgrounded', () => {
     const mgr = hydratedManager({
       subagents: [{
@@ -468,6 +490,18 @@ describe('exportCachedState()', () => {
     expect(cached!.status).toBe('done');
     expect(cached!.topic).toBe('Fix the flaky test');
     expect(cached!.subagents).toEqual([]);
+  });
+
+  it('exports completedFileSize on each done subagent (null when the agent file was never seen)', async () => {
+    const mgr = freshManager();
+    await feed(mgr, [userRecord('go')]);
+    await feed(mgr, [toolUse('Agent', 'tu-1', { description: 'worker' })]);
+    await feed(mgr, [toolResult('tu-1', 'finished')]);
+    await feed(mgr, [enqueue()]);
+    const future = Date.now() + REPLAY_CACHE_QUIET_MS + 60_000;
+    const cached = mgr.exportCachedState(future);
+    expect(cached!.subagents).toHaveLength(1);
+    expect(cached!.subagents[0]).toHaveProperty('completedFileSize', null);
   });
 
   // Item 15: an unconfirmed model must never be exported verbatim.

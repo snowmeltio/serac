@@ -87,6 +87,15 @@ export interface SubagentInfo {
    *  just the launch banner, so it outlives the parent's turn. Completion comes
    *  from the harness's <task-notification> user record, not the tool_result. */
   background: boolean;
+  /** Revival epoch: bumped each time a completed subagent is revived
+   *  (SendMessage, Agent({resume}), or the growth backstop). Guards the
+   *  async tailer-reopen race (a stat that resolves after a newer revival is
+   *  discarded) and is the test observable for revivals. */
+  revivalCount: number;
+  /** Byte size of the agent's own JSONL at the running→done transition —
+   *  the growth-backstop watermark. `null` = unknown (no agentId or no file
+   *  at completion), which disables the backstop for this subagent. */
+  completedFileSize: number | null;
 }
 
 /** Full state of a single Claude Code session */
@@ -312,6 +321,9 @@ export interface SubagentSnapshot {
   /** Detached run_in_background agent — may still be running after the parent
    *  turn ended (its card can read `done` while this agent works). */
   background?: boolean;
+  /** How many times this subagent has been revived after completing
+   *  (SendMessage / Agent({resume}) / growth backstop). 0 = never. */
+  revivalCount: number;
 }
 
 /** The glance pack's contribution to a SessionSnapshot (display-only:
@@ -353,6 +365,9 @@ export interface CachedSubagentState extends Pick<SubagentSnapshot,
    *  webview never renders it), but needed so a restored subagent matches
    *  what a live replay would have produced. */
   lastActivity: number;
+  /** SubagentInfo.completedFileSize — the growth-backstop watermark. Optional
+   *  so entries written before the field existed still hydrate (absent → null). */
+  completedFileSize?: number | null;
 }
 
 /** `SessionState` keys copied VERBATIM (identical type, no Date<->epoch-ms

@@ -1542,6 +1542,11 @@ export class SessionDiscovery {
           this.log.trace(msg);
         }
       },
+      // Completed-subagent revival trace (SendMessage / Agent({resume}) /
+      // growth backstop) — see ARCHITECTURE.md → "Detached agents" → Revival.
+      onSubagentRevival: (reason, agentId) => {
+        this.log.trace(`[revive] ${sessionId.slice(0, 8)} ${reason} agent=${agentId ?? '?'}`);
+      },
       // Remote Control bridge trace (instrumentation for the dropped-
       // bridge chip; see ARCHITECTURE.md → "Bridge enrolment state").
       // Live drops and re-enrolments surface at `info` so drop
@@ -1827,6 +1832,10 @@ export class SessionDiscovery {
       const shellSweepNow = Date.now();
       for (const session of dormantSessions) {
         if (session.sweepBackgroundWork(shellSweepNow)) { changed = true; }
+        // Revived-subagent growth backstop: cheap (registry gate + 1-in-6
+        // cadence) and runs BEFORE offerToCache, so a revived card is never
+        // cached mid-revival (exportCachedState refuses while any subagent runs).
+        if (await session.sweepRevivedSubagents(shellSweepNow)) { changed = true; }
         this.offerToCache(session, shellSweepNow);
       }
 

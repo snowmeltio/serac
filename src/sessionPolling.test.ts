@@ -24,6 +24,7 @@ function fakeSession(overrides: Partial<PollableSession> = {}): PollableSession 
     update: async () => false,
     demoteIfStale: () => false,
     sweepBackgroundWork: () => false,
+    sweepRevivedSubagents: async () => false,
     dispose: vi.fn(),
     // Replay-cache-era members — unused by most tests in this file, which
     // predate the cache; stubbed so fakeSession() still satisfies the

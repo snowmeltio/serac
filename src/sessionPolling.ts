@@ -36,6 +36,8 @@ export interface PollableSession {
   update(): Promise<boolean>;
   demoteIfStale(thresholdMs: number): boolean;
   sweepBackgroundWork(now: number): boolean;
+  /** Growth backstop for revived subagents — see SessionManager.sweepRevivedSubagents. */
+  sweepRevivedSubagents(now: number): Promise<boolean>;
   dispose(): void;
   getFilePath(): string;
   getReadStamp(): FileStamp & { caughtUp: boolean };
@@ -145,6 +147,7 @@ export async function pollTrackedSessions(
         }
       } catch { /* skip */ }
       if (session.sweepBackgroundWork(now)) { changed = true; }
+      if (await session.sweepRevivedSubagents(now)) { changed = true; }
       offer?.(session, now);
       continue;
     }

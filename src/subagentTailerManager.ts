@@ -100,6 +100,55 @@ export class SubagentTailerManager {
     return batches;
   }
 
+  /** Reopen a tailer for a REVIVED subagent (completed, then addressed again
+   *  via SendMessage / Agent({resume}) / the growth backstop). Unlike the
+   *  silence path this is exact: the file is at its known path, and the
+   *  offset is the completion watermark (`completedFileSize`), never 0 — a
+   *  byte-0 reopen would replay the agent's whole history, double-counting
+   *  `toolsCompleted` and repopulating long-resolved `activeTools`.
+   *
+   *  `preopened` (backstop path): the sweep already read the delta through
+   *  its own JsonlTailer, so that instance is adopted as-is, no stat.
+   *
+   *  Otherwise the file is stat'ed and the tailer opened at `offset ?? size`.
+   *  After the await the caller state is re-checked — disposed, no longer
+   *  running, cap, AND `revivalCount` unchanged: two revivals landing in one
+   *  record batch each get here, and the stale one must not assign a second
+   *  tailer (it would leak `activeTailerCount` and starve the cap).
+   *
+   *  Cap hit: the row stays `running` with no tool counts; the next
+   *  task-notification still completes it. */
+  async reopenTailerAt(subagent: SubagentInfo, offset: number | null, preopened?: JsonlTailer): Promise<void> {
+    this.disposeTailerAndTimer(subagent);
+    if (!subagent.agentId) {
+      this.startSilenceTimer(subagent);
+      return;
+    }
+    if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
+    if (preopened) {
+      subagent.tailer = preopened;
+      this.activeTailerCount++;
+      return;
+    }
+    const gen = subagent.revivalCount;
+    const file = subagentJsonlPath(sessionDirFromJsonl(this.ctx.getSessionFilePath()), subagent.agentId);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(file);
+    } catch {
+      return; // file gone — nothing to tail; the notification path still completes it
+    }
+    if (this.ctx.isDisposed() || !subagent.running) { return; }
+    if (subagent.revivalCount !== gen) { return; } // a newer revival owns the tailer now
+    if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
+    this.disposeTailer(subagent);
+    const tailer = new JsonlTailer(file, offset ?? stat.size);
+    tailer.lastSize = stat.size;
+    tailer.lastMtimeMs = stat.mtimeMs;
+    subagent.tailer = tailer;
+    this.activeTailerCount++;
+  }
+
   /** Dispose a single subagent's tailer (not the silence timer). */
   private disposeTailer(subagent: SubagentInfo): void {
     if (subagent.tailer) {

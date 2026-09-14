@@ -8,6 +8,7 @@
  *   - onSpawn               → SubagentTailerManager.startSilenceTimer
  *   - onProgress            → SubagentTailerManager.cancelProgressSilence
  *   - onComplete            → SubagentTailerManager.disposeTailerAndTimer (keeps agentId)
+ *   - onRevive              → SubagentTailerManager.reopenTailerAt (completion watermark)
  *   - disposeTailerAndTimer → SubagentTailerManager.disposeTailerAndTimer
  *   - pollDirect            → SubagentTailerManager.poll
  *   - getActiveTailerCount  → SubagentTailerManager.getActiveTailerCount
@@ -29,6 +30,7 @@ import {
 } from '../subagentTailerManager.js';
 import type { SubagentInfo } from '../types.js';
 import type { HookEventRouter } from '../hookEventRouter.js';
+import type { JsonlTailer } from '../jsonlTailer.js';
 
 export type { SubagentRecordBatch } from '../subagentTailerManager.js';
 
@@ -48,6 +50,11 @@ export interface SubagentLifecycleTracker {
    *  count) and stays resolvable in the detail-panel drill-in. agentId is only
    *  cleared on full teardown (disposeAll). */
   onComplete(subagent: SubagentInfo): void;
+  /** Subagent revived after completing (SendMessage / Agent({resume}) /
+   *  growth backstop) — cancel any timer and reopen its tailer at the
+   *  completion watermark (`completedFileSize`), skipping the 8s silence
+   *  delay: the path is exact. `preopened` adopts the backstop's own tailer. */
+  onRevive(subagent: SubagentInfo, preopened?: JsonlTailer): void;
   /** Release a single subagent's tailer + silence timer without clearing its
    *  agentId. Used at session-done to free I/O resources for mid-flight
    *  subagents while keeping them visible. */
@@ -87,6 +94,10 @@ export class JsonlDerivedSubagentLifecycleTracker implements SubagentLifecycleTr
     // toolsCompleted) survives and the detail panel can still open its
     // transcript. agentId is nulled only on disposeAll (session teardown).
     this.mgr.disposeTailerAndTimer(subagent);
+  }
+
+  onRevive(subagent: SubagentInfo, preopened?: JsonlTailer): void {
+    void this.mgr.reopenTailerAt(subagent, subagent.completedFileSize, preopened);
   }
 
   disposeTailerAndTimer(subagent: SubagentInfo): void {
@@ -147,13 +158,17 @@ class HookSubagentLifecycleTracker implements SubagentLifecycleTracker {
       const agentId = (event as Record<string, unknown>).agent_id;
       if (typeof agentId !== 'string' || agentId.length === 0) { return; }
       const match = host.getAllSubagents().find(s => s.agentId === agentId);
-      if (match) { this.fallback.onComplete(match); }
+      // A revived agent's earlier SubagentStop can land after the revival
+      // (observed 20s+ later); only a running subagent has a tailer to release.
+      if (!match || !match.running) { return; }
+      this.fallback.onComplete(match);
     });
   }
 
   onSpawn(subagent: SubagentInfo): void { this.fallback.onSpawn(subagent); }
   onProgress(subagent: SubagentInfo): void { this.fallback.onProgress(subagent); }
   onComplete(subagent: SubagentInfo): void { this.fallback.onComplete(subagent); }
+  onRevive(subagent: SubagentInfo, preopened?: JsonlTailer): void { this.fallback.onRevive(subagent, preopened); }
   disposeTailerAndTimer(subagent: SubagentInfo): void { this.fallback.disposeTailerAndTimer(subagent); }
   pollDirect(subagents: SubagentInfo[]): Promise<SubagentRecordBatch[]> { return this.fallback.pollDirect(subagents); }
   getActiveTailerCount(): number { return this.fallback.getActiveTailerCount(); }
