@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.26.2 (2026-09-14) — Revived subagents stay live
+
+### Fixed
+- **A card no longer reads DONE while a revived subagent is still working.** Claude Code keeps completed subagents addressable: the lead can `SendMessage` one, or `Agent({resume})` it, and the agent carries on in the same transcript before completing again through another task notification. Serac treated a subagent's completion as terminal, so the card dropped to Done at the lead's turn end with the agent still busy (seen live 2026-09-14: one agent revived twice under a Done card). A revival now flips the agent back to running, rebuilds its permission tracker and transcript tailer (resuming from where completion left off, so tool counts are not doubled), and the existing done-with-live-background presentation keeps the card in the active zone until the next notification.
+- **`Agent({resume})` no longer creates a duplicate agent row.** The resumed agent's existing row is reused and retargeted to the new call; a resume aimed at an agent that is already running is left alone.
+- **A revival Serac never saw inline is still caught.** A completed agent's transcript growing past its completion size with new assistant output revives it from the dormant sweep, gated on the process still being registered as alive and on a per-session 30-second cadence so dormant sessions do not all stat on the same beat. Hydrated cards (replay cache) now read their revived agents' transcripts too.
+
 ## v1.26.1 (2026-09-10) — Other workspaces stay put
 
 ### Fixed
