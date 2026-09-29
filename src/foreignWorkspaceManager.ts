@@ -15,7 +15,7 @@ import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
 import type { WriterAggregate } from './writerOwnership.js';
 import { resolveRepoRoot, repoRootFromClaudeWorktreePath, discoverWorktrees, worktreeSetChanged, type WorktreeInfo } from './gitWorktreeUtil.js';
-import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath } from './panelUtils.js';
+import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath, isAgentScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
@@ -467,9 +467,11 @@ export class ForeignWorkspaceManager {
     const now = Date.now();
     const groups = new Map<string, Record<string, number>>();
     const confidences = new Map<string, StatusConfidence>();
+    const hideScratch = readSettings().discovery.hideAgentScratchpads;
 
     for (const session of this.sessions.values()) {
       const snapshot = session.getSnapshot();
+      if (this.isHiddenAgentScratch(snapshot, hideScratch)) { continue; }
       const meta = this.metaCache.get(snapshot.workspaceKey)?.get(snapshot.sessionId);
 
       // Ensure the workspace shows up even if every session is dismissed
@@ -551,13 +553,24 @@ export class ForeignWorkspaceManager {
     return this.cwdCache.get(workspaceKey) ?? null;
   }
 
+  /** Whether serac.discovery.hideAgentScratchpads hides this session: its
+   *  workspace dir (cached cwd, else the session's own) is inside another
+   *  session's temp dir. Applied at read time, like the tmp overlay, so the
+   *  toggle takes effect on the next poll. */
+  private isHiddenAgentScratch(snapshot: SessionSnapshot, hide: boolean): boolean {
+    if (!hide) { return false; }
+    return isAgentScratchPath(this.cwdCache.get(snapshot.workspaceKey) || snapshot.initialCwd || snapshot.cwd);
+  }
+
   /** Foreign sessions currently waiting on user input. cwd is filled from cwdCache
    *  when the session itself doesn't carry one (older JSONL records). */
   getWaitingSnapshots(): SessionSnapshot[] {
     const result: SessionSnapshot[] = [];
+    const hideScratch = readSettings().discovery.hideAgentScratchpads;
     for (const session of this.sessions.values()) {
       if (session.getStatus() !== 'waiting') { continue; }
       const snapshot = session.getSnapshot();
+      if (this.isHiddenAgentScratch(snapshot, hideScratch)) { continue; }
       // Dismissed sessions are excluded from row counts (getWorkspaces) —
       // they must not surface in the waiting strip or bump the badge either.
       if (this.metaCache.get(snapshot.workspaceKey)?.get(snapshot.sessionId)?.dismissed) { continue; }
@@ -576,9 +589,11 @@ export class ForeignWorkspaceManager {
    *  strip below local cards; click to switch to that window. */
   getRunningSnapshots(): SessionSnapshot[] {
     const result: SessionSnapshot[] = [];
+    const hideScratch = readSettings().discovery.hideAgentScratchpads;
     for (const session of this.sessions.values()) {
       if (session.getStatus() !== 'running') { continue; }
       const snapshot = session.getSnapshot();
+      if (this.isHiddenAgentScratch(snapshot, hideScratch)) { continue; }
       if (this.metaCache.get(snapshot.workspaceKey)?.get(snapshot.sessionId)?.dismissed) { continue; }
       if (!snapshot.cwd) {
         const cached = this.cwdCache.get(snapshot.workspaceKey);

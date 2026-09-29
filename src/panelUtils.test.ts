@@ -27,6 +27,7 @@ import {
   PanelSession,
   PSEUDO_TMP_REPO_ROOT,
   isTmpScratchPath,
+  isAgentScratchPath,
   computeFileCollisions, RUNNING_QUIET_MS,
   permissionModeBadge,
 } from './panelUtils.js';
@@ -680,6 +681,27 @@ describe('isTmpScratchPath', () => {
     expect(isTmpScratchPath('/var/tmp/thing')).toBe(false);
     expect(isTmpScratchPath(null)).toBe(false);
     expect(isTmpScratchPath(undefined)).toBe(false);
+  });
+});
+
+describe('isAgentScratchPath', () => {
+  const SID = '3a8acc13-2348-426b-b74c-72b46c771ef9';
+
+  it('matches a session temp dir and anything beneath it', () => {
+    expect(isAgentScratchPath(`/private/tmp/claude-501/-Users-me-hub/${SID}`)).toBe(true);
+    expect(isAgentScratchPath(`/private/tmp/claude-501/-Users-me-hub/${SID}/scratchpad`)).toBe(true);
+    expect(isAgentScratchPath(`/private/tmp/claude-501/-Users-me-hub/${SID}/scratchpad/sub`)).toBe(true);
+    expect(isAgentScratchPath(`/tmp/claude-501/-Users-me-hub/${SID}/scratchpad`)).toBe(true);
+  });
+
+  it('excludes other temp paths and non-temp paths', () => {
+    expect(isAgentScratchPath('/private/tmp/serac-hook-spike')).toBe(false);
+    expect(isAgentScratchPath('/private/tmp/claude-501/-Users-me-hub')).toBe(false);
+    expect(isAgentScratchPath('/private/tmp/claude-501/-Users-me-hub/not-a-uuid/scratchpad')).toBe(false);
+    expect(isAgentScratchPath(`/private/tmp/claude-501/-Users-me-hub/${SID}x`)).toBe(false);
+    expect(isAgentScratchPath(`/Users/me/claude-501/-Users-me-hub/${SID}`)).toBe(false);
+    expect(isAgentScratchPath(null)).toBe(false);
+    expect(isAgentScratchPath(undefined)).toBe(false);
   });
 });
 

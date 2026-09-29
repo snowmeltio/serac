@@ -233,6 +233,54 @@ describe('ForeignWorkspaceManager: /private/tmp pseudo-repo overlay', () => {
   });
 });
 
+describe('ForeignWorkspaceManager: agent scratchpad sessions', () => {
+  beforeEach(() => {
+    _resetConfig();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-scr-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    _resetConfig();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // A `claude -p` probe run from another session's scratchpad (seen live
+  // 2026-09-29: 18 "Reply OK" sessions under two scratchpads). The dir need
+  // not exist on disk; the filter keys off the cwd string.
+  const SCRATCH = '/private/tmp/claude-501/-Users-me-hub/3a8acc13-2348-426b-b74c-72b46c771ef9/scratchpad';
+  const SID = '55555555-5555-4555-8555-555555555555';
+
+  it('hides scratchpad sessions from rows and the running strip by default', async () => {
+    createForeignSession(sanitiseKey(SCRATCH), SID, SCRATCH);
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    expect(manager.getWorkspaces()).toEqual([]);
+    expect(manager.getRunningSnapshots()).toEqual([]);
+  });
+
+  it('shows them again when serac.discovery.hideAgentScratchpads is off', async () => {
+    _setConfigValues({ 'serac.discovery.hideAgentScratchpads': false });
+    createForeignSession(sanitiseKey(SCRATCH), SID, SCRATCH);
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    expect(manager.getWorkspaces().map(g => g.workspaceKey)).toEqual([sanitiseKey(SCRATCH)]);
+    expect(manager.getRunningSnapshots().map(s => s.sessionId)).toEqual([SID]);
+  });
+
+  it('leaves other /private/tmp scratch dirs visible', async () => {
+    const plain = '/private/tmp/serac-hook-spike';
+    createForeignSession(sanitiseKey(plain), SID, plain);
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    expect(manager.getWorkspaces().map(g => g.workspaceKey)).toEqual([sanitiseKey(plain)]);
+  });
+});
+
 describe('ForeignWorkspaceManager: dismissed sessions stay out of the strips', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-dis-'));
