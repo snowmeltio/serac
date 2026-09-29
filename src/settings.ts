@@ -65,6 +65,10 @@ export interface SeracSettings {
      *  no-op — the cache file is never loaded, and nothing hydrates from or
      *  is written to it — not just a hidden affordance. Default on. */
     replayCache: boolean;
+    /** Leave foreign sessions whose cwd is inside another session's temp dir
+     *  (`isAgentScratchPath`) out of "Other workspaces" and the foreign
+     *  waiting/running strips. Read-time filter; default on. */
+    hideAgentScratchpads: boolean;
   };
   foreignWorkspaces: {
     /** Pixel cap on the foreign workspaces pane. 0 = auto (no cap). */
@@ -164,6 +168,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     teamsAgeGateDays: null,
     workflowsAgeGateDays: null,
     replayCache: true,
+    hideAgentScratchpads: true,
   },
   foreignWorkspaces: { maxHeightPx: 280 },
   worktrees: { maxHeightPx: 280, autoCollapseAfterSeconds: 20, consolidateTmp: false, squash: false },
@@ -212,6 +217,7 @@ export function readSettings(): SeracSettings {
       teamsAgeGateDays: cfg.get<number | null>('discovery.teamsAgeGateDays', d.discovery.teamsAgeGateDays),
       workflowsAgeGateDays: cfg.get<number | null>('discovery.workflowsAgeGateDays', d.discovery.workflowsAgeGateDays),
       replayCache: cfg.get<boolean>('discovery.replayCache', d.discovery.replayCache),
+      hideAgentScratchpads: cfg.get<boolean>('discovery.hideAgentScratchpads', d.discovery.hideAgentScratchpads),
     },
     foreignWorkspaces: {
       maxHeightPx: cfg.get<number>('foreignWorkspaces.maxHeightPx', d.foreignWorkspaces.maxHeightPx),

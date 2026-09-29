@@ -418,6 +418,19 @@ export function isTmpScratchPath(cwd: string | null | undefined): boolean {
   return cwd.startsWith('/private/tmp/') || cwd.startsWith('/tmp/');
 }
 
+/** Claude Code's per-session temp dir, `<tmp>/claude-<uid>/<projectKey>/<sessionId>`,
+ *  and anything beneath it (chiefly its `scratchpad/`). */
+const AGENT_SCRATCH_RE = /^\/(?:private\/)?tmp\/claude-\d+\/[^/]+\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\/|$)/;
+
+/** True when `cwd` is inside another session's temp dir. Only agents start
+ *  sessions there (e.g. `claude -p` probes run from a scratchpad), so they
+ *  are noise in "Other workspaces". Gated behind
+ *  `serac.discovery.hideAgentScratchpads`. */
+export function isAgentScratchPath(cwd: string | null | undefined): boolean {
+  if (!cwd) { return false; }
+  return AGENT_SCRATCH_RE.test(cwd);
+}
+
 /** Collapse 2+ workspaces that share a non-null `repoRoot` into a single
  *  synthetic row (summed counts, worktreeCount chip, members tooltip). Other
  *  workspaces pass through unchanged. Result is sorted alphabetically by

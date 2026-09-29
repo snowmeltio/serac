@@ -275,6 +275,11 @@
             "default": true,
             "description": "Skip replaying a dormant, finished session's transcript from byte zero when another window (or profile, or farmed account) on this machine has already read it unchanged. Speeds up opening a new window with many old sessions. Turning this off disables both reading from and writing to the shared replay cache file, a genuine no-op, not just a hidden UI toggle. Takes effect on the next window reload, not live."
           },
+          "serac.discovery.hideAgentScratchpads": {
+            "type": "boolean",
+            "default": true,
+            "description": "Hide sessions that another agent started inside its own temp directory (/private/tmp/claude-<uid>/…/<session id>/, usually its scratchpad), such as `claude -p` probes. These are left out of \"Other workspaces\" and the waiting and running strips. Turn off to show them, grouped with other /tmp sessions when serac.worktrees.consolidateTmp is on."
+          },
           "serac.refresh.intervalSeconds": {
             "type": "number",
             "default": 5,
