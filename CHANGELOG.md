@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.26.3 (2026-09-29) — Agent probes stay out of Other workspaces
+
+### Fixed
+- **Sessions an agent starts inside its own scratchpad no longer fill "Other workspaces".** When a session runs `claude -p` from its scratchpad (to check which model an alias resolves to, say), each call leaves a full transcript under a `/private/tmp/claude-<uid>/…` project key. Serac listed these as foreign work: seen live, 18 one-line "Reply OK" probes showed as a `tmp 2wt*` row with 18 unseen Done. Sessions whose workspace is inside another session's temp directory are now left out of the rows and the waiting and running strips. Other `/tmp` directories still show as before.
+
+### Added
+- **`serac.discovery.hideAgentScratchpads`** (default on). Turn it off to show those sessions again; the change applies on the next refresh, no reload needed.
+
 ## v1.26.2 (2026-09-14) — Revived subagents stay live
 
 ### Fixed
