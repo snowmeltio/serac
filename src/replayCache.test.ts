@@ -84,6 +84,8 @@ describe('parseReplayCache', () => {
     ['non-string modelId', { modelId: 5 as never }],
     ['non-boolean modelConfirmed', { modelConfirmed: 'yes' as never }],
     ['non-numeric userTurnCount', { userTurnCount: NaN }],
+    ['missing hasAssistantTurn (pre-v2 entry)', { hasAssistantTurn: undefined as never }],
+    ['non-boolean hasAssistantTurn', { hasAssistantTurn: 'yes' as never }],
     ['invalid bridgeState', { bridgeState: 'sideways' as never }],
     ['non-array trackedFiles', { trackedFiles: 'a.ts' as never }],
     ['trackedFiles with a non-string element', { trackedFiles: [1] as never }],

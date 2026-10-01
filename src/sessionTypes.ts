@@ -137,6 +137,11 @@ export interface SessionState {
   aiTitle: string;
   /** Count of main-thread user turns (for title trigger) */
   userTurnCount: number;
+  /** Whether any main-thread assistant record from a real model has landed.
+   *  False for a transcript holding only local commands (`/exit`, `/model`):
+   *  no work was done, so a foreign row must not count it as finished work.
+   *  Sticky across compaction resets, like the titles. */
+  hasAssistantTurn: boolean;
   /** Hook enrichment (PostToolUse): outcome of the most recently completed tool.
    *  Display-only; never affects status. Undefined until a PostToolUse arrives. */
   lastTool?: ToolOutcome;
@@ -211,6 +216,9 @@ export interface SessionSnapshot {
   customTitle: string;
   /** Claude Code's auto-generated title from `ai-title` JSONL records */
   aiTitle: string;
+  /** See SessionState.hasAssistantTurn. Optional so hand-built snapshots
+   *  (sibling/team fixtures) read as "unknown", which consumers treat as true. */
+  hasAssistantTurn?: boolean;
   /** Absolute path to the session's JSONL transcript. Feeds the copy pill —
    *  a path is self-identifying where a bare UUID gets mistaken for other id
    *  kinds when pasted into another session. Optional: producers that never
@@ -380,7 +388,7 @@ export interface CachedSubagentState extends Pick<SubagentSnapshot,
  *  compile error, forcing an explicit cache-or-exclude decision. */
 export const CACHED_PLAIN_KEYS = [
   'slug', 'activity', 'contextTokens',
-  'customTitle', 'aiTitle', 'userTurnCount', 'permissionMode', 'entrypoint',
+  'customTitle', 'aiTitle', 'userTurnCount', 'hasAssistantTurn', 'permissionMode', 'entrypoint',
   'bridgeSessionId', 'bridgeState', 'endReason',
 ] as const satisfies readonly (keyof SessionState)[];
 export type CachedPlainKey = typeof CACHED_PLAIN_KEYS[number];
@@ -484,6 +492,7 @@ export interface CachedSessionState extends GlanceSnapshotFields {
   customTitle: string;
   aiTitle: string;
   userTurnCount: number;
+  hasAssistantTurn: boolean;
   permissionMode?: string;
   jsonlPermissionMode?: string;
   entrypoint?: string;

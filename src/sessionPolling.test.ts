@@ -491,7 +491,7 @@ describe('trackJsonlSessions', () => {
         topic: 'cached', activity: 'Idle', status: 'done',
         lastActivity: Date.now() - 1000, firstActivity: Date.now() - 1000,
         enqueuedAt: 0, contextTokens: 0, modelId: '', modelConfirmed: false,
-        customTitle: '', aiTitle: '', userTurnCount: 1, subagents: [],
+        customTitle: '', aiTitle: '', userTurnCount: 1, hasAssistantTurn: true, subagents: [],
         ...overrides,
       };
     }

@@ -142,6 +142,11 @@ describe('fromCache/hydrate', () => {
     expect(mgr.getTitles()).toEqual({ aiTitle: 'Cached AI Title', customTitle: 'Cached Title' });
   });
 
+  it('hasAssistantTurn round-trips both ways (an /exit-only session stays uncounted after hydration)', () => {
+    expect(hydratedManager().getSnapshot().hasAssistantTurn).toBe(true);
+    expect(hydratedManager({ hasAssistantTurn: false }).getSnapshot().hasAssistantTurn).toBe(false);
+  });
+
   it('rebuilds done subagents directly — no live timers, correct fields, background+lastActivity round-trip', () => {
     const startedAt = Date.now() - 30_000;
     const lastActivity = Date.now() - 20_000;

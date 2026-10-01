@@ -20,6 +20,13 @@ let workspacePath: string;
 let projectsDir: string;
 let workspaceKey: string;
 
+/** Model reply dated 60s back — pairs with the tests' aged prompt records. */
+const replyRecord = JSON.stringify({
+  type: 'assistant',
+  timestamp: new Date(Date.now() - 60_000).toISOString(),
+  message: { model: 'claude-opus-5-5', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] },
+});
+
 function createJsonlFile(wsKey: string, sessionId: string, content = ''): string {
   const filePath = path.join(projectsDir, wsKey, `${sessionId}.jsonl`);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -283,8 +290,9 @@ describe('SessionDiscovery: foreign workspaces', () => {
       timestamp: new Date(Date.now() - 60_000).toISOString(),
       message: { content: [{ type: 'text', text }] },
     });
-    createJsonlFile('foreign-mixed', 'kept-session', oldRecord('a'));
-    createJsonlFile('foreign-mixed', 'dropped-session', oldRecord('b'));
+    // A model reply: sessions with no model output are never counted.
+    createJsonlFile('foreign-mixed', 'kept-session', oldRecord('a') + '\n' + replyRecord);
+    createJsonlFile('foreign-mixed', 'dropped-session', oldRecord('b') + '\n' + replyRecord);
 
     // Pre-write the foreign workspace's session-meta.json marking one dismissed
     const metaPath = path.join(projectsDir, 'foreign-mixed', 'session-meta.json');
@@ -317,7 +325,7 @@ describe('SessionDiscovery: foreign workspaces', () => {
       timestamp: new Date(Date.now() - 60_000).toISOString(),
       message: { content: [{ type: 'text', text: 'hi' }] },
     });
-    createJsonlFile('foreign-acked', 'acked-session', oldRecord);
+    createJsonlFile('foreign-acked', 'acked-session', oldRecord + '\n' + replyRecord);
 
     // Acknowledged 11s ago → should land as stale
     const metaPath = path.join(projectsDir, 'foreign-acked', 'session-meta.json');
