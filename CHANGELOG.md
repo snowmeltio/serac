@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.26.4 (2026-10-01) - Exit-only sessions stop holding Other workspaces on Done
+
+### Fixed
+- **A session closed with nothing but `/exit` no longer counts as unseen Done in "Other workspaces".** Opening Claude Code and leaving straight away writes a transcript with only local-command records. Serac counted it as finished work, and once it aged past the home window's archive range there was no card in view to dismiss, so the row stayed on Done (seen live in a workspace where every real session had been dismissed). A finished session now counts only if a model actually replied. Running and waiting sessions still count from the first prompt.
+
+### Changed
+- **One slower window open after updating.** The dormant-session cache now records whether a model replied, so it is rebuilt once: the first window to open replays transcripts in full, as it would without the cache.
+
 ## v1.26.3 (2026-09-29) — Agent probes stay out of Other workspaces
 
 ### Fixed
