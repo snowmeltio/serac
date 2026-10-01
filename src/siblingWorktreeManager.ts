@@ -12,9 +12,9 @@ import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
 import type { WriterAggregate } from './writerOwnership.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
-import type { SessionSnapshot } from './types.js';
+import type { SessionSnapshot, SessionStatus } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, jsonlSessionId, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, collectTrackedStatuses, trackJsonlSessions, jsonlSessionId, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
 import { readSettings, ageGateMsFor } from './settings.js';
 import { peekCwd } from './jsonlPeek.js';
 import { NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
@@ -368,6 +368,11 @@ export class SiblingWorktreeManager {
       }
     }
     return false;
+  }
+
+  /** Add every tracked session's status to `into` (registry shadow input). */
+  collectStatuses(into: Map<string, SessionStatus>): void {
+    collectTrackedStatuses(this.sessions, into);
   }
 
   /** Drop all sibling sessions and clear state. */

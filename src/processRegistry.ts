@@ -20,6 +20,24 @@ export interface LiveProcess {
    *  ms — the process's real start to the second, matching `ps`. Optional:
    *  older entries lack it. `startedAt` is stamped up to ~1 s later. */
   procStartMs?: number | null;
+  /** The CLI's own turn state (2.1.269+, VS Code sessions included): `busy`
+   *  from the turn's enqueue until it ends (and on while background agents
+   *  or workflows run), `waiting` only while a prompt is on screen, `idle`
+   *  otherwise. Null on older writers and for the ~0.4 s after an entry is
+   *  born. Optional so hand-built test fixtures needn't carry it. */
+  status?: RegistryStatus | null;
+  /** What a `waiting` process waits on, e.g. `permission prompt` or
+   *  `input needed`. Null otherwise. */
+  waitingFor?: string | null;
+  /** Epoch ms of the last `status` change — not a heartbeat. */
+  statusUpdatedAt?: number | null;
+}
+
+/** Registry `status` values; anything else parses as null. */
+export type RegistryStatus = 'busy' | 'idle' | 'waiting';
+
+function parseRegistryStatus(v: unknown): RegistryStatus | null {
+  return v === 'busy' || v === 'idle' || v === 'waiting' ? v : null;
 }
 
 /** Is a pid alive? `kill(pid, 0)` sends no signal; it throws `ESRCH` when the
@@ -195,7 +213,7 @@ export class ProcessRegistry {
 /** Validate + normalise one registry record. Returns null when it lacks the
  *  fields we rely on (`pid` + `sessionId` + `cwd`). Extra fields are ignored.
  *  `sessionId` runs through the path-traversal guard since it keys lookups. */
-function parseEntry(rec: unknown): LiveProcess | null {
+export function parseEntry(rec: unknown): LiveProcess | null {
   if (!rec || typeof rec !== 'object') { return null; }
   const r = rec as Record<string, unknown>;
   const pid = r.pid;
@@ -212,5 +230,8 @@ function parseEntry(rec: unknown): LiveProcess | null {
     procStartMs: typeof r.procStart === 'string' && !Number.isNaN(Date.parse(r.procStart.replace(/\s+/g, ' ') + ' UTC'))
       ? Date.parse(r.procStart.replace(/\s+/g, ' ') + ' UTC') : null,
     version: typeof r.version === 'string' ? r.version : null,
+    status: parseRegistryStatus(r.status),
+    waitingFor: typeof r.waitingFor === 'string' && r.waitingFor.length > 0 ? r.waitingFor : null,
+    statusUpdatedAt: typeof r.statusUpdatedAt === 'number' ? r.statusUpdatedAt : null,
   };
 }

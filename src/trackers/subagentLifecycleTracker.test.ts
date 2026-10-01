@@ -226,8 +226,9 @@ describe('revival (onRevive + late SubagentStop)', () => {
       expect(sub.silenceTimerId).toBeDefined();
       t.onRevive(sub);
       expect(sub.silenceTimerId).toBeUndefined();
-      for (let i = 0; i < 3; i++) { await new Promise(r => setImmediate(r)); }
-      expect(t.getActiveTailerCount()).toBe(1);
+      // The reopen awaits a real fs.stat; a fixed tick count raced it under
+      // full-suite load, so wait for the tailer instead.
+      await vi.waitFor(() => expect(t.getActiveTailerCount()).toBe(1));
       expect(sub.tailer!.getOffset()).toBe(30);
       t.disposeAll([sub]);
     } finally {

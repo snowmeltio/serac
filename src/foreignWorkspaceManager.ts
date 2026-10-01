@@ -16,9 +16,9 @@ import { SessionManager } from './sessionManager.js';
 import type { WriterAggregate } from './writerOwnership.js';
 import { resolveRepoRoot, repoRootFromClaudeWorktreePath, discoverWorktrees, worktreeSetChanged, type WorktreeInfo } from './gitWorktreeUtil.js';
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath, isAgentScratchPath } from './panelUtils.js';
-import type { SessionSnapshot, SessionMeta, SessionMetaFile, StatusConfidence, WorkspaceGroup } from './types.js';
+import type { SessionSnapshot, SessionMeta, SessionMetaFile, SessionStatus, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, trackJsonlSessions, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, collectTrackedStatuses, trackJsonlSessions, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
 import { readSettings, foreignWindowGate } from './settings.js';
 import { readIdeOpenFolders } from './claudeEnvSignals.js';
 import { NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
@@ -629,6 +629,11 @@ export class ForeignWorkspaceManager {
       sessions: this.sessions.size, workspaces: workspaces.size, bytes: sumBytesRead(this.sessions.values()),
       hydrated,
     };
+  }
+
+  /** Add every tracked session's status to `into` (registry shadow input). */
+  collectStatuses(into: Map<string, SessionStatus>): void {
+    collectTrackedStatuses(this.sessions, into);
   }
 
   /** Dispose all foreign sessions and clear state. */

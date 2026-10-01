@@ -10,6 +10,7 @@ import { resolveRepoRoot, discoverWorktrees, worktreeSetChanged, type WorktreeIn
 import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
+import { createRegistryShadow, deriveRegistryStatus, watchRegistryDir } from './registryShadow.js';
 import { isRcServing, isRcHostedProcess } from './rcDetector.js';
 import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid, type WriterAggregate } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
@@ -20,7 +21,7 @@ import { isValidSessionId } from './validation.js';
 import { SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
 import { makeSessionMetaStore, type SessionMetaStore } from './sessionMetaStore.js';
 import { makeReplayCacheStore, NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
-import type { SessionSnapshot, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, DiscoveryPhase } from './types.js';
+import type { SessionSnapshot, SessionStatus, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, DiscoveryPhase } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 
 /** Verdict from resolveOpenGate() — see its docstring for field semantics. */
@@ -114,6 +115,18 @@ export class SessionDiscovery {
   /** Resolves whether a live registered process belongs to a *different* VS
    *  Code window than this one. Refreshed alongside processRegistry. */
   private writerOwnership: WriterOwnership;
+  /** Registry status in shadow mode (see registryShadow.ts): a second reader
+   *  of the same registry, refreshed by a file watcher as well as the poll
+   *  cadence, whose verdicts are only compared and logged. Kept apart from
+   *  processRegistry so the faster refresh can't move the liveness gates or
+   *  writer verdicts that read it. */
+  private readonly sessionsDir: string;
+  private readonly shadowRegistry: ProcessRegistry;
+  private readonly registryShadow = createRegistryShadow();
+  private stopRegistryWatch: (() => void) | null = null;
+  /** Earliest time to retry arming the watcher (absent dir, dead watcher). */
+  private registryWatchRetryAt = 0;
+  private static readonly REGISTRY_WATCH_RETRY_MS = 30_000;
   /** Is a `claude rc` server hosting sessions in this workspace? Derived from
    *  the registry on its rescan cadence (see rcDetector.ts); render-time only. */
   private rcServing = false;
@@ -185,7 +198,10 @@ export class SessionDiscovery {
     // Sessions registry is a sibling of projects/ under the Claude state dir.
     // Constructed before WorkflowDiscovery so the workflow live tier can use it
     // as a liveness probe (abandoned-run → 'incomplete').
-    this.processRegistry = new ProcessRegistry(path.join(path.dirname(this.projectsDir), 'sessions'), this.log);
+    this.sessionsDir = path.join(path.dirname(this.projectsDir), 'sessions');
+    this.processRegistry = new ProcessRegistry(this.sessionsDir, this.log);
+    // nullLogger: processRegistry already warns about malformed entries.
+    this.shadowRegistry = new ProcessRegistry(this.sessionsDir, nullLogger);
     this.writerOwnership = new WriterOwnership();
     this.workflowDiscovery = new WorkflowDiscovery(this.projectsDir, this.workspaceKey, this.log, this.processRegistry);
     // Freshness parity: out-of-window sessions (foreign / sibling / team
@@ -654,6 +670,9 @@ export class SessionDiscovery {
     this.teamDiscovery.dispose();
     this.workflowDiscovery.dispose();
     this.processRegistry.dispose();
+    this.stopRegistryWatch?.();
+    this.stopRegistryWatch = null;
+    this.shadowRegistry.dispose();
     this.writerOwnership.dispose();
   }
 
@@ -1501,6 +1520,62 @@ export class SessionDiscovery {
     return this.siblingManager.getWaitingCount();
   }
 
+  // ── Registry status, shadow mode ──────────────────────────────────
+
+  /** Arm the registry watcher when none is running: the first poll, a
+   *  directory that appeared later, or a watcher that died. Throttled so an
+   *  absent directory isn't retried every cycle. */
+  private ensureRegistryWatch(now: number): void {
+    if (this.stopRegistryWatch || this.disposed || now < this.registryWatchRetryAt) { return; }
+    this.registryWatchRetryAt = now + SessionDiscovery.REGISTRY_WATCH_RETRY_MS;
+    this.stopRegistryWatch = watchRegistryDir(
+      this.sessionsDir,
+      () => { void this.refreshRegistryShadow(); },
+      (err) => {
+        this.stopRegistryWatch = null;
+        this.log.warn('[status] registry watcher stopped:', err);
+      },
+    );
+    if (this.stopRegistryWatch) { void this.refreshRegistryShadow(); }
+  }
+
+  /** Watcher path: rescan the shadow registry, then compare at once, so the
+   *  registry side of a disagreement is timed to the file write. */
+  private async refreshRegistryShadow(): Promise<void> {
+    if (this.disposed) { return; }
+    try {
+      await this.shadowRegistry.scan();
+    } catch (err) {
+      this.log.warn('[status] shadow registry scan failed:', err);
+      return;
+    }
+    if (!this.disposed) { this.observeRegistryShadow(); }
+  }
+
+  /** Compare every tracked session (local, sibling, foreign, team) against
+   *  the registry and log what registryShadow reports. Never throws: shadow
+   *  mode must not be able to break a poll. */
+  private observeRegistryShadow(): void {
+    try {
+      const statuses = new Map<string, SessionStatus>();
+      for (const session of this.sessions.values()) {
+        statuses.set(session.getSessionId(), session.getStatus());
+      }
+      this.siblingManager.collectStatuses(statuses);
+      this.foreignManager.collectStatuses(statuses);
+      this.teamDiscovery.collectStatuses(statuses);
+      const clean = this.shadowRegistry.isScanClean();
+      const lines = this.registryShadow.observe(
+        statuses,
+        (sessionId) => deriveRegistryStatus(this.shadowRegistry.getProcessesForSession(sessionId), clean),
+        Date.now(),
+      );
+      for (const line of lines) { this.log.info(line); }
+    } catch (err) {
+      this.log.warn('[status] registry shadow failed:', err);
+    }
+  }
+
   // ── Discovery and polling ─────────────────────────────────────────
 
   /** Discover JSONL files for the current workspace only */
@@ -1527,20 +1602,15 @@ export class SessionDiscovery {
     return {
       hookRouter: this.hookRouter,
       defaultModelGuess: this.defaultModelGuess,
-      // Status-transition trace. Permission-FP diagnostics: the waiting
-      // lifecycle (and any stale-waiting reconciliation) surfaces at `info`
-      // so it is visible without enabling trace; every other transition
-      // logs at `trace`. Reason + activeTools count discriminate the path
-      // (permission_fired / demote_waiting / subagent_permission_bubble /
-      // needs_user_input / stale_waiting_reconciled). See
-      // project_permission_false_positives.
+      // Status-transition trace, at `info` so it is readable without
+      // enabling trace. The waiting lifecycle serves permission-FP
+      // diagnostics (project_permission_false_positives); running↔done is
+      // read beside the registry shadow's lines to measure premature done.
+      // Reason + activeTools count discriminate the path (permission_fired /
+      // demote_waiting / subagent_permission_bubble / needs_user_input /
+      // stale_waiting_reconciled / enqueue / ...).
       onTransition: (from, to, reason, activeToolCount) => {
-        const msg = `[status] ${sessionId.slice(0, 8)} ${from}→${to} (${reason}) activeTools=${activeToolCount}`;
-        if (to === 'waiting' || from === 'waiting' || reason === 'stale_waiting_reconciled') {
-          this.log.info(msg);
-        } else {
-          this.log.trace(msg);
-        }
+        this.log.info(`[status] ${sessionId.slice(0, 8)} ${from}→${to} (${reason}) activeTools=${activeToolCount}`);
       },
       // Completed-subagent revival trace (SendMessage / Agent({resume}) /
       // growth backstop) — see ARCHITECTURE.md → "Detached agents" → Revival.
@@ -1960,7 +2030,15 @@ export class SessionDiscovery {
         if (readSettings().experimental.externalWriterBlock) {
           await this.writerOwnership.refresh(this.windowWriterCandidates());
         }
+        // The watcher misses a process that dies without removing its file
+        // (kill -9), so the shadow rescans on this cadence too.
+        await this.shadowRegistry.scan();
       }
+
+      // Registry status, shadow mode: compare after every cycle so Serac's
+      // side of each disagreement is at most one poll old.
+      this.ensureRegistryWatch(Date.now());
+      this.observeRegistryShadow();
 
       // Poll performance log [v0.4]
       const updatedCount = updateResults.filter(r => r.hadNewData).length;

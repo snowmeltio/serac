@@ -19,11 +19,11 @@ import { claudeStateDir, subagentsDirFor, subagentMetaPath } from './paths.js';
 import { isValidSessionId } from './validation.js';
 import type {
   TeamManifest, TeamSnapshot, TeamAgentSnapshot,
-  SessionMeta, StatusConfidence, DisplayStatus,
+  SessionMeta, SessionStatus, StatusConfidence, DisplayStatus,
 } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
 import { ageGateMsFor } from './settings.js';
-import { makeRescanGate, offerSessionToReplayCache } from './sessionPolling.js';
+import { makeRescanGate, offerSessionToReplayCache, collectTrackedStatuses } from './sessionPolling.js';
 import { NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
 
 /** A strict identifier used as a single on-disk path component for the inbox
@@ -636,6 +636,11 @@ export class TeamDiscovery {
    *  (single source of truth for the write-path confinement). */
   getTeamsDir(): string {
     return this.teamsDir;
+  }
+
+  /** Add every tracked team session's status to `into` (registry shadow input). */
+  collectStatuses(into: Map<string, SessionStatus>): void {
+    collectTrackedStatuses(this.agents, into);
   }
 
   /** Whether a team agent session is currently running. */

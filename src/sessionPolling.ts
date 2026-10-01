@@ -22,7 +22,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SessionManager } from './sessionManager.js';
 import { sameStamp, type ReplayCacheStore } from './replayCache.js';
-import type { CachedSessionState, FileStamp } from './types.js';
+import type { CachedSessionState, FileStamp, SessionStatus } from './types.js';
 
 /** The slice of SessionManager the poll loop touches — structural so tests
  *  can drive the loop without filesystem fixtures. The replay-cache-era
@@ -160,6 +160,16 @@ export async function pollTrackedSessions(
     } catch { /* skip */ }
   }
   return changed;
+}
+
+/** Add each tracked session's status to `into`, keyed by session id — the
+ *  registry shadow's input (see registryShadow.ts). */
+export function collectTrackedStatuses(
+  sessions: Map<string, SessionManager>, into: Map<string, SessionStatus>,
+): void {
+  for (const session of sessions.values()) {
+    into.set(session.getSessionId(), session.getStatus());
+  }
 }
 
 /** Any tracked session currently running/waiting — feeds the adaptive

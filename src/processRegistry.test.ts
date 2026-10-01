@@ -234,3 +234,34 @@ describe('procStartMs', () => {
     }
   });
 });
+
+describe('registry status fields (CLI 2.1.269+)', () => {
+  it('parses status, waitingFor and statusUpdatedAt', async () => {
+    writeEntry(`${LIVE_PID}.json`, entry({ status: 'waiting', waitingFor: 'permission prompt', statusUpdatedAt: 1790898398479 }));
+    const reg = new ProcessRegistry(dir, log);
+    await reg.scan();
+    const p = reg.getLiveProcesses()[0]!;
+    expect(p.status).toBe('waiting');
+    expect(p.waitingFor).toBe('permission prompt');
+    expect(p.statusUpdatedAt).toBe(1790898398479);
+  });
+
+  it('reads an entry without status (older writer, or a fresh entry) as null', async () => {
+    writeEntry(`${LIVE_PID}.json`, entry());
+    const reg = new ProcessRegistry(dir, log);
+    await reg.scan();
+    const p = reg.getLiveProcesses()[0]!;
+    expect(p.status).toBeNull();
+    expect(p.waitingFor).toBeNull();
+    expect(p.statusUpdatedAt).toBeNull();
+  });
+
+  it('reads an unknown status value as null and keeps the entry', async () => {
+    writeEntry(`${LIVE_PID}.json`, entry({ status: 'thinking', waitingFor: '' }));
+    const reg = new ProcessRegistry(dir, log);
+    await reg.scan();
+    expect(reg.getLiveProcesses()).toHaveLength(1);
+    expect(reg.getLiveProcesses()[0]!.status).toBeNull();
+    expect(reg.getLiveProcesses()[0]!.waitingFor).toBeNull();
+  });
+});
