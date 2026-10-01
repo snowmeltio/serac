@@ -2690,7 +2690,7 @@ describe('SessionDiscovery', () => {
         enqueuedAt: 0, contextTokens: 10,
         modelId: '', modelConfirmed: false,
         customTitle: '', aiTitle: 'Cached title',
-        userTurnCount: 1,
+        userTurnCount: 1, hasAssistantTurn: true,
         subagents: [],
         ...overrides,
       };

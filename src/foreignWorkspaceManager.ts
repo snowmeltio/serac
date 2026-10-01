@@ -479,6 +479,12 @@ export class ForeignWorkspaceManager {
         groups.set(snapshot.workspaceKey, {});
       }
       if (meta?.dismissed) { continue; }
+      // A finished session with no model output (only local commands, e.g. a
+      // bare `/exit`) did no work, so it is not done-but-unseen. Counting it
+      // left a row stuck on "done" with no card behind it once the session
+      // aged past the home window's archive range. Running/waiting still
+      // count: a just-submitted first prompt has no assistant record yet.
+      if (snapshot.hasAssistantTurn === false && (snapshot.status === 'done' || snapshot.status === 'stale')) { continue; }
 
       // Stale rollover — acknowledgement, or a workspace no acknowledgement can
       // ever reach. See shouldPromoteDoneToStale and unreachableKeys.

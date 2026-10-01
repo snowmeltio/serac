@@ -315,7 +315,7 @@ describe('SiblingWorktreeManager', () => {
         topic: 'Cached sibling topic', activity: 'Idle', status: 'done',
         lastActivity: Date.now() - 20 * 60_000, firstActivity: Date.now() - 20 * 60_000,
         enqueuedAt: 0, contextTokens: 10, modelId: '', modelConfirmed: false,
-        customTitle: '', aiTitle: 'Cached sibling title', userTurnCount: 1, subagents: [],
+        customTitle: '', aiTitle: 'Cached sibling title', userTurnCount: 1, hasAssistantTurn: true, subagents: [],
       };
       const entries = new Map<string, ReplayCacheEntry>([
         [filePath, { size: stat.size, mtimeMs: stat.mtimeMs, cachedAt: Date.now(), state }],

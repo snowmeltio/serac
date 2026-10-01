@@ -38,7 +38,7 @@ import { isAtOrUnder } from './gitWorktreeUtil.js';
  *  it captures change (per CLAUDE.md's "State machine changes" convention) —
  *  a version mismatch makes parseReplayCache() treat the whole file as
  *  absent rather than risk hydrating from a stale shape. */
-export const REPLAY_CACHE_VERSION = 1;
+export const REPLAY_CACHE_VERSION = 2;
 
 /** A session must have been quiet (no lastActivity) for at least this long
  *  before it is eligible to be cached (exportCachedState). Reuses
@@ -197,6 +197,7 @@ function tryNormaliseState(value: unknown): CachedSessionState | null {
   if (typeof s.modelId !== 'string' || typeof s.modelConfirmed !== 'boolean') { return null; }
   if (typeof s.customTitle !== 'string' || typeof s.aiTitle !== 'string') { return null; }
   if (!Number.isFinite(s.userTurnCount)) { return null; }
+  if (typeof s.hasAssistantTurn !== 'boolean') { return null; }
   if (!isStringOrUndefined(s.permissionMode) || !isStringOrUndefined(s.jsonlPermissionMode)) { return null; }
   if (!isStringOrUndefined(s.entrypoint) || !isStringOrUndefined(s.bridgeSessionId)) { return null; }
   if (!isStringOrUndefined(s.endReason) || !isStringOrUndefined(s.gitBranch)) { return null; }
@@ -221,6 +222,7 @@ function tryNormaliseState(value: unknown): CachedSessionState | null {
     enqueuedAt, contextTokens: s.contextTokens as number,
     modelId: s.modelId, modelConfirmed: s.modelConfirmed,
     customTitle: s.customTitle, aiTitle: s.aiTitle, userTurnCount: s.userTurnCount as number,
+    hasAssistantTurn: s.hasAssistantTurn,
     permissionMode: s.permissionMode, jsonlPermissionMode: s.jsonlPermissionMode,
     entrypoint: s.entrypoint, bridgeSessionId: s.bridgeSessionId, bridgeState: s.bridgeState,
     endReason: s.endReason, gitBranch: s.gitBranch, toolErrorCount: s.toolErrorCount,

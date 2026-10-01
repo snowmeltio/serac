@@ -311,6 +311,100 @@ describe('ForeignWorkspaceManager: dismissed sessions stay out of the strips', (
   });
 });
 
+describe('ForeignWorkspaceManager: sessions with no model output', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-noturn-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+  });
+  afterEach(() => {
+    _resetConfig();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const EXIT_SID = '33333333-3333-4333-8333-333333333333';
+  const WORK_SID = '44444444-4444-4444-8444-444444444444';
+
+  function writeJsonl(key: string, sessionId: string, records: object[]): void {
+    const dir = path.join(projectsDir, key);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), records.map(r => JSON.stringify(r)).join('\n') + '\n');
+  }
+
+  /** The shape of a session opened and closed with `/exit` (seen live
+   *  2026-10-01 in Wargaming Workshops): local-command user records only. */
+  function exitOnlyRecords(cwd: string, ts: string): object[] {
+    const base = { type: 'user', isSidechain: false, cwd, timestamp: ts, userType: 'external', entrypoint: 'cli' };
+    return [
+      { type: 'permission-mode', permissionMode: 'auto' },
+      { ...base, isMeta: true, message: { role: 'user', content: '<local-command-caveat>Caveat: local commands.</local-command-caveat>' } },
+      { ...base, message: { role: 'user', content: '<command-name>/exit</command-name>\n<command-message>exit</command-message>\n<command-args></command-args>' } },
+      { ...base, message: { role: 'user', content: '<local-command-stdout>Catch you later!</local-command-stdout>' } },
+    ];
+  }
+
+  function workedRecords(cwd: string, ts: string, model = 'claude-opus-5-5'): object[] {
+    return [
+      { type: 'user', isSidechain: false, cwd, timestamp: ts, message: { role: 'user', content: 'Do the thing' } },
+      {
+        type: 'assistant', isSidechain: false, cwd, timestamp: ts,
+        message: { model, role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] },
+      },
+    ];
+  }
+
+  it('leaves an /exit-only session out of the row counts, but keeps the row', async () => {
+    const cwd = path.join(tmpDir, 'other-ws');
+    const key = sanitiseKey(cwd);
+    const old = new Date(Date.now() - 60 * 60_000).toISOString();
+    writeJsonl(key, EXIT_SID, exitOnlyRecords(cwd, old));
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+    await manager.poll();
+
+    const rows = manager.getWorkspaces();
+    expect(rows.map(r => r.workspaceKey)).toEqual([key]);
+    expect(rows[0].counts).toEqual({});
+  });
+
+  it('still counts a finished session that got a model reply', async () => {
+    const cwd = path.join(tmpDir, 'other-ws');
+    const key = sanitiseKey(cwd);
+    const old = new Date(Date.now() - 60 * 60_000).toISOString();
+    writeJsonl(key, EXIT_SID, exitOnlyRecords(cwd, old));
+    writeJsonl(key, WORK_SID, workedRecords(cwd, old));
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+    await manager.poll();
+
+    expect(manager.getWorkspaces()[0].counts).toEqual({ done: 1 });
+  });
+
+  it('still counts a just-submitted first prompt that has no reply yet', async () => {
+    const cwd = path.join(tmpDir, 'other-ws');
+    const key = sanitiseKey(cwd);
+    createForeignSession(key, WORK_SID, cwd);
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    const counts = manager.getWorkspaces()[0].counts;
+    expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(1);
+    expect(counts.done ?? 0).toBe(0);
+  });
+
+  it('a <synthetic> assistant record is not model output', async () => {
+    const cwd = path.join(tmpDir, 'other-ws');
+    const key = sanitiseKey(cwd);
+    const old = new Date(Date.now() - 60 * 60_000).toISOString();
+    writeJsonl(key, WORK_SID, workedRecords(cwd, old, '<synthetic>'));
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+    await manager.poll();
+
+    expect(manager.getWorkspaces()[0].counts).toEqual({});
+  });
+});
+
 describe('ForeignWorkspaceManager: live-only visibility window', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-live-'));
@@ -426,17 +520,21 @@ describe('shouldPromoteDoneToStale: done means done-but-unseen', () => {
 });
 
 describe('ForeignWorkspaceManager: removed Claude worktrees', () => {
-  /** A user record dated `agoMs` back, so the session demotes running → done. */
+  /** A prompt and reply dated `agoMs` back, so the session demotes running →
+   *  done. The reply matters: a session with no model output is not counted
+   *  (see "sessions with no model output"). */
   function createAgedSession(workspaceKey: string, sessionId: string, cwd: string, agoMs = 60_000): void {
     const dir = path.join(projectsDir, workspaceKey);
     fs.mkdirSync(dir, { recursive: true });
-    const record = JSON.stringify({
-      type: 'user',
-      cwd,
-      timestamp: new Date(Date.now() - agoMs).toISOString(),
-      message: { content: [{ type: 'text', text: 'from the phone' }] },
-    });
-    fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), record + '\n');
+    const timestamp = new Date(Date.now() - agoMs).toISOString();
+    const records = [
+      { type: 'user', cwd, timestamp, message: { content: [{ type: 'text', text: 'from the phone' }] } },
+      {
+        type: 'assistant', cwd, timestamp,
+        message: { model: 'claude-opus-5-5', role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] },
+      },
+    ];
+    fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), records.map(r => JSON.stringify(r)).join('\n') + '\n');
   }
 
   let repo: string;
@@ -602,7 +700,7 @@ describe('ForeignWorkspaceManager: replay-cache hydration', () => {
       topic: 'Cached foreign topic', activity: 'Idle', status: 'done',
       lastActivity: Date.now() - 20 * 60_000, firstActivity: Date.now() - 20 * 60_000,
       enqueuedAt: 0, contextTokens: 10, modelId: '', modelConfirmed: false,
-      customTitle: '', aiTitle: 'Cached foreign title', userTurnCount: 1, subagents: [],
+      customTitle: '', aiTitle: 'Cached foreign title', userTurnCount: 1, hasAssistantTurn: true, subagents: [],
     };
     const entries = new Map<string, ReplayCacheEntry>([
       [filePath, { size: stat.size, mtimeMs: stat.mtimeMs, cachedAt: Date.now(), state }],

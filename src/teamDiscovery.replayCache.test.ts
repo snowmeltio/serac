@@ -122,7 +122,7 @@ describe('TeamDiscovery: replay-cache hydration', () => {
       topic: 'Cached lead topic', activity: 'Idle', status: 'done',
       lastActivity: Date.now() - 20 * 60_000, firstActivity: Date.now() - 20 * 60_000,
       enqueuedAt: 0, contextTokens: 10, modelId: '', modelConfirmed: false,
-      customTitle: '', aiTitle: 'Cached lead title', userTurnCount: 1, subagents: [],
+      customTitle: '', aiTitle: 'Cached lead title', userTurnCount: 1, hasAssistantTurn: true, subagents: [],
     };
     const entries = new Map<string, ReplayCacheEntry>([
       [filePath, { size: stat.size, mtimeMs: stat.mtimeMs, cachedAt: Date.now(), state }],
@@ -155,7 +155,7 @@ describe('TeamDiscovery: replay-cache hydration', () => {
       topic: 'Stale cached topic', activity: 'Idle', status: 'done',
       lastActivity: Date.now() - 20 * 60_000, firstActivity: Date.now() - 20 * 60_000,
       enqueuedAt: 0, contextTokens: 10, modelId: '', modelConfirmed: false,
-      customTitle: '', aiTitle: 'Stale cached title', userTurnCount: 1, subagents: [],
+      customTitle: '', aiTitle: 'Stale cached title', userTurnCount: 1, hasAssistantTurn: true, subagents: [],
     };
     // Deliberately mismatched size — the file on disk has moved on since
     // this entry was written, so isHydratable()'s exact-stamp check must fail.

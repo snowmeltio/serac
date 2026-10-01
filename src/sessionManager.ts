@@ -502,6 +502,7 @@ export class SessionManager {
       customTitle: '',
       aiTitle: '',
       userTurnCount: 0,
+      hasAssistantTurn: false,
     };
   }
 
@@ -890,6 +891,7 @@ export class SessionManager {
       title: null,  // Populated by SessionDiscovery from session-meta.json
       customTitle: this.state.customTitle,
       aiTitle: this.state.aiTitle,
+      hasAssistantTurn: this.state.hasAssistantTurn,
       filePath: this.state.filePath,
       bridgeSessionId: this.state.bridgeSessionId,
       bridgeState: this.state.bridgeState,
@@ -1825,7 +1827,11 @@ export class SessionManager {
 
     // Extract model name and context token usage from the message
     const modelId = getModelId(record);
-    if (modelId) { this.state.modelId = modelId; this.state.modelConfirmed = true; }
+    if (modelId) {
+      this.state.modelId = modelId;
+      this.state.modelConfirmed = true;
+      this.state.hasAssistantTurn = true;
+    }
     const inputTokens = getInputTokens(record);
     if (inputTokens !== null) { this.state.contextTokens = inputTokens; }
 
