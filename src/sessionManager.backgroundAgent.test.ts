@@ -200,6 +200,158 @@ describe('background-agent completion via <task-notification>', () => {
   });
 });
 
+/** Mid-turn delivery shape (CLI 2.1.286): the same notification body under a
+ *  queued_command attachment, with no user record written for it. */
+function queuedCommandRecord(body: string | JsonlRecord['attachment'], extra: Partial<JsonlRecord> = {}): JsonlRecord {
+  return {
+    type: 'attachment',
+    timestamp: new Date().toISOString(),
+    attachment: typeof body === 'string' ? { type: 'queued_command', prompt: body } : body,
+    ...extra,
+  };
+}
+
+function notificationBody(taskId: string): string {
+  return (taskNotificationRecord({ taskId }).message!.content as string);
+}
+
+describe('background-agent completion via mid-turn queued_command attachment', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('completes the agent matched by task-id', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await feedRecords(mgr, [queuedCommandRecord(notificationBody(AGENT_ID))]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(false);
+    expect(mgr.hasLiveBackgroundAgents()).toBe(false);
+  });
+
+  it('leaves session status untouched (the lead is mid-turn)', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    const before = mgr.getStatus();
+    await feedRecords(mgr, [queuedCommandRecord(notificationBody(AGENT_ID))]);
+    expect(mgr.getStatus()).toBe(before);
+  });
+
+  it('accepts a content-block array prompt', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await feedRecords(mgr, [queuedCommandRecord({
+      type: 'queued_command', prompt: [{ type: 'text', text: notificationBody(AGENT_ID) }],
+    })]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(false);
+  });
+
+  it('ignores other attachment types carrying the same text', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await feedRecords(mgr, [queuedCommandRecord({ type: 'skill_listing', prompt: notificationBody(AGENT_ID) })]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(true);
+  });
+
+  it('ignores a queued_command with no notification (a queued user prompt)', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await feedRecords(mgr, [queuedCommandRecord('also check the appendix')]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(true);
+  });
+});
+
+/** The parent's queue-operation enqueue (CLI 2.1.286 shape): the same
+ *  notification body as a plain `content` string, written as the agent ends. */
+function enqueueRecord(content: string): JsonlRecord {
+  return { type: 'queue-operation', operation: 'enqueue', timestamp: new Date().toISOString(), content };
+}
+
+const AGENT_ID_2 = 'b25086f23b216f15a';
+const TOOL_ID_2 = 'toolu_bg_2';
+
+/** Spawn a second background agent alongside the first. */
+async function spawnSecondBackgroundAgent(mgr: InstanceType<typeof SessionManager>): Promise<void> {
+  await feedRecords(mgr, [agentSpawnRecord(TOOL_ID_2, 'Second agent')]);
+  await feedRecords(mgr, [toolResultRecord(TOOL_ID_2, LAUNCH_BANNER.replaceAll(AGENT_ID, AGENT_ID_2))]);
+}
+
+function runningById(mgr: InstanceType<typeof SessionManager>): Record<string, boolean> {
+  return Object.fromEntries(mgr.getSnapshot().subagents.map(s => [s.agentId, s.running]));
+}
+
+describe('background-agent completion via the queue-operation enqueue (D2)', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('completes the agent named in the enqueue content, before any delivered form', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await feedRecords(mgr, [enqueueRecord(notificationBody(AGENT_ID))]);
+    const sub = mgr.getSnapshot().subagents[0];
+    expect(sub.running).toBe(false);
+    expect(mgr.hasLiveBackgroundAgents()).toBe(false);
+  });
+
+  it('carries the <result> into resultPreview', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    const body = (taskNotificationRecord({ taskId: AGENT_ID, result: 'Matrix built: 12 rows' }).message!.content as string);
+    await feedRecords(mgr, [enqueueRecord(body)]);
+    expect(mgr.getSnapshot().subagents[0].resultPreview).toBe('Matrix built: 12 rows');
+  });
+
+  it('ignores an enqueue that carries a queued user prompt', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await feedRecords(mgr, [enqueueRecord('also check the appendix')]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(true);
+  });
+
+  it('a later delivered copy of the same notification is a no-op', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await feedRecords(mgr, [enqueueRecord(notificationBody(AGENT_ID))]);
+    await feedRecords(mgr, [queuedCommandRecord(notificationBody(AGENT_ID))]);
+    await feedRecords(mgr, [taskNotificationRecord({ taskId: AGENT_ID })]);
+    expect(mgr.getSnapshot().subagents).toHaveLength(1);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(false);
+  });
+});
+
+describe('task-notification parsing (all carriers)', () => {
+  beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('a status-less "resumed" notice does not complete the agent', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    const body = `<task-notification>\n<task-id>${AGENT_ID}</task-id>\n`
+      + '<summary>Agent "Build VP matrix" was resumed by the user</summary>\n</task-notification>';
+    await feedRecords(mgr, [{ type: 'user', timestamp: new Date().toISOString(), message: { content: body } }]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(true);
+  });
+
+  it('completes every agent when one text holds several notification blocks', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await spawnSecondBackgroundAgent(mgr);
+    await feedRecords(mgr, [queuedCommandRecord(notificationBody(AGENT_ID) + '\n' + notificationBody(AGENT_ID_2))]);
+    expect(runningById(mgr)).toEqual({ [AGENT_ID]: false, [AGENT_ID_2]: false });
+  });
+
+  it('completes every task-id in a resume orphan aggregate', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await spawnSecondBackgroundAgent(mgr);
+    const body = '<task-notification>\n'
+      + `<task-id>${AGENT_ID}</task-id>\n<task-id>${AGENT_ID_2}</task-id>\n`
+      + '<status>stopped</status>\n'
+      + "<summary>2 agents didn't finish before the previous session ended</summary>\n</task-notification>";
+    await feedRecords(mgr, [enqueueRecord(body)]);
+    expect(runningById(mgr)).toEqual({ [AGENT_ID]: false, [AGENT_ID_2]: false });
+    expect(mgr.getSnapshot().subagents[0].resultPreview).toBe('[stopped]');
+  });
+});
+
 describe('background-agent sweep backstops (sweepBackgroundWork)', () => {
   beforeEach(() => { vi.useFakeTimers(); mockRecords = []; });
   afterEach(() => { vi.useRealTimers(); });

@@ -2908,3 +2908,60 @@ describe('SessionDiscovery', () => {
     });
   });
 });
+
+describe('registry status shadow mode', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sd-shadow-'));
+    workspacePath = path.join(tmpDir, 'workspace');
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(workspacePath, { recursive: true });
+    fs.mkdirSync(projectsDir, { recursive: true });
+    workspaceKey = workspacePath.replace(/[^a-zA-Z0-9]/g, '-');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    _resetConfig();
+  });
+
+  const SID = 'c0ffee00-1111-2222-3333-444455556666';
+  const SERAC_TO_REGISTRY = { running: 'busy', waiting: 'waiting', done: 'idle' } as const;
+
+  function writeStatus(status: string): void {
+    const sessionsDir = path.join(tmpDir, 'sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionsDir, `${process.pid}.json`), JSON.stringify({
+      pid: process.pid, sessionId: SID, cwd: workspacePath, startedAt: Date.now(),
+      kind: 'interactive', entrypoint: 'claude-vscode', version: 'test', status,
+    }));
+  }
+
+  it('logs registry transitions and disagreement episodes for local sessions without changing status', async () => {
+    createJsonlFile(SID);
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), trace: vi.fn() };
+    const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', log });
+    await discovery.start(() => {});
+    const refresh = () => (discovery as unknown as { refreshRegistryShadow: () => Promise<void> }).refreshRegistryShadow();
+    const statusOf = () => discovery.getSnapshots().find(s => s.sessionId === SID)?.status;
+    const serac = statusOf();
+    expect(serac).toBeDefined();
+    const agree = SERAC_TO_REGISTRY[serac as keyof typeof SERAC_TO_REGISTRY];
+    const disagree = agree === 'busy' ? 'idle' : 'busy';
+    const lines = () => log.info.mock.calls.map(c => String(c[0])).filter(l => l.startsWith(`[status] ${SID.slice(0, 8)} registry `) || l.startsWith(`[status] ${SID.slice(0, 8)} shadow `));
+
+    writeStatus(agree);
+    await refresh();
+    expect(lines()).toEqual([]);
+
+    writeStatus(disagree);
+    await refresh();
+    expect(lines().some(l => l.includes(' registry ') && l.includes(`(${disagree})`))).toBe(true);
+    expect(statusOf()).toBe(serac);
+
+    writeStatus(agree);
+    await refresh();
+    expect(lines().some(l => l.includes(` shadow serac=${serac} registry=`) && /for \d+\.\ds$/.test(l))).toBe(true);
+    expect(statusOf()).toBe(serac);
+    discovery.stop();
+  });
+});

@@ -48,8 +48,10 @@
  * running       → done          Stop hook (turn ended; ignored while     TurnLifecycleTracker → onTurnEnded()
  *                                stop_hook_active continuation)
  *               (background agents: markSessionDone exempts live background agents;
- *                their completion arrives via the harness's <task-notification>
- *                user record — processTaskNotification() — or the dormant sweep)
+ *                their completion arrives via the harness's <task-notification>:
+ *                first in the queue-operation enqueue, then as a user record —
+ *                processTaskNotification() — or its mid-turn queued_command
+ *                attachment form; else the dormant sweep)
  * running       → done          computeDemotion (no active tools)        demoteIfStale()
  * running       → done          hard ceiling (3 min)                     computeDemotion()
  * waiting       → done          hard ceiling (10 min)                    computeDemotion()
@@ -152,7 +154,17 @@ const COMPACT_GRACE_TIMEOUT_MS = 60_000;
  *  NOTIFICATION — the harness-injected user record delivered when a detached
  *  agent finishes; the real completion signal for background agents. */
 const BACKGROUND_AGENT_LAUNCH_PATTERN = /^Async agent launched(?:.*?\bagentId:\s*([\w-]+))?/s;
-const TASK_NOTIFICATION_PATTERN = /<task-notification>([\s\S]*?)(?:<\/task-notification>|$)/;
+const TASK_NOTIFICATION_PATTERN_ALL = /<task-notification>([\s\S]*?)(?:<\/task-notification>|$)/g;
+
+/** The text a <task-notification> carrier holds: a plain string (enqueue
+ *  `content`, queued_command `prompt`) or an array of content blocks. */
+function notificationTexts(value: unknown): string[] {
+  if (typeof value === 'string') { return [value]; }
+  if (!Array.isArray(value)) { return []; }
+  return value
+    .filter((b): b is { text: string } => typeof b?.text === 'string' && b.text.length > 0)
+    .map(b => b.text);
+}
 /** How long a background agent's own JSONL may sit unmodified before the
  *  dormant sweep force-completes it (missed/never-written task-notification,
  *  e.g. killed CC). A working agent writes far more often than this. */
@@ -1631,6 +1643,8 @@ export class SessionManager {
         return this.processSystemRecord(record, timestamp);
       case 'queue-operation':
         return this.processQueueOperation(record, timestamp);
+      case 'attachment':
+        return this.processQueuedCommandAttachment(record);
       case 'custom-title':
         if (record.customTitle && typeof record.customTitle === 'string') {
           this.state.customTitle = record.customTitle;
@@ -2022,6 +2036,12 @@ export class SessionManager {
 
   private processQueueOperation(record: JsonlRecord, timestamp: Date): boolean {
     if (record.operation === 'enqueue') {
+      // A background agent's <task-notification> is enqueued the moment it
+      // finishes, whether the lead is idle or mid-turn (226/226 background
+      // agents over 14 days, 2026-10-02 census), and before either delivered
+      // form: the user record can trail it by hours, the queued_command
+      // attachment by ~0.1 s. Those two paths stay as redundant backstops.
+      this.completeFromTaskNotificationTexts(notificationTexts(record.content));
       this.state.firstActivity = timestamp;
       this.setStatus('done', 'enqueue');
       // Track for stale guard (C3). Anchored to the RECORD's timestamp, not
@@ -2041,8 +2061,9 @@ export class SessionManager {
       this.appendActivity('Processing');
       return true;
     }
-    // 'remove' = queued message removed without dispatch (user cancelled).
-    // No state change: session remains in whatever state the prior enqueue left it.
+    // 'remove' = the queued item was taken off the queue without a dequeue:
+    // a mid-turn delivery (the notification is folded into the running turn
+    // as a queued_command attachment) or a user cancel. No state change.
     return false;
   }
 
@@ -2186,24 +2207,50 @@ export class SessionManager {
    *  agentId), <tool-use-id> (the spawning tool_use), a terminal <status>, and
    *  a <result> body. Returns true when a tracked subagent was completed. */
   private processTaskNotification(record: JsonlRecord): boolean {
+    return this.completeFromTaskNotificationTexts(notificationTexts(getContentBlocks(record)));
+  }
+
+  /** The same notification delivered MID-TURN: the harness folds it into the
+   *  running turn as {"type":"attachment","attachment":{"type":
+   *  "queued_command","prompt":"<task-notification>..."}} and writes no user
+   *  record for it (CLI 2.1.286, verified 2026-10-01: four of six background
+   *  agents in one session completed only this way). Completes the agent and
+   *  nothing else — the lead is mid-turn, so session status is untouched. */
+  private processQueuedCommandAttachment(record: JsonlRecord): boolean {
+    if (record.isSidechain) { return false; }
+    const attachment = record.attachment as { type?: unknown; prompt?: unknown } | undefined;
+    if (!attachment || attachment.type !== 'queued_command') { return false; }
+    return this.completeFromTaskNotificationTexts(notificationTexts(attachment.prompt));
+  }
+
+  /** Complete every running subagent named by a terminal <task-notification>
+   *  in `texts`. Shared by all three carriers (enqueue, queued_command
+   *  attachment, user record). Every block in every text is read, and every
+   *  <task-id> in a block: the CLI's resume-time orphan scan aggregates up
+   *  to 20 task-ids under one `stopped`/`failed` status. A block without
+   *  <status> is not a completion — the "was resumed by the user" and
+   *  "now reports to another agent" notices carry none and the agent is
+   *  still working (CLI 2.1.286 bundle). */
+  private completeFromTaskNotificationTexts(texts: string[]): boolean {
     let completed = false;
-    for (const block of getContentBlocks(record)) {
-      if (block.type !== 'text' || !block.text) { continue; }
-      const match = block.text.match(TASK_NOTIFICATION_PATTERN);
-      if (!match) { continue; }
-      const body = match[1];
-      const taskId = body.match(/<task-id>([^<]+)<\/task-id>/)?.[1]?.trim();
-      const toolUseId = body.match(/<tool-use-id>([^<]+)<\/tool-use-id>/)?.[1]?.trim();
-      const status = body.match(/<status>([^<]+)<\/status>/)?.[1]?.trim();
-      const result = body.match(/<result>([\s\S]*?)<\/result>/)?.[1]?.trim();
-      const subagent = this.state.subagents.find(s =>
-        (taskId && s.agentId === taskId)
-        || (toolUseId && s.parentToolUseId === toolUseId));
-      if (!subagent || !subagent.running) { continue; }
-      const preview = (status && status !== 'completed' ? `[${status}] ` : '')
-        + (result ?? '').replace(/\s+/g, ' ');
-      this.completeSubagent(subagent, preview.trim().slice(0, 200) || null);
-      completed = true;
+    for (const text of texts) {
+      for (const match of text.matchAll(TASK_NOTIFICATION_PATTERN_ALL)) {
+        const body = match[1];
+        const status = body.match(/<status>([^<]+)<\/status>/)?.[1]?.trim();
+        if (!status) { continue; }
+        const taskIds = new Set(Array.from(body.matchAll(/<task-id>([^<]+)<\/task-id>/g), m => m[1].trim()));
+        const toolUseIds = new Set(Array.from(body.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g), m => m[1].trim()));
+        const result = body.match(/<result>([\s\S]*?)<\/result>/)?.[1]?.trim();
+        const preview = ((status !== 'completed' ? `[${status}] ` : '')
+          + (result ?? '').replace(/\s+/g, ' ')).trim().slice(0, 200) || null;
+        for (const subagent of this.state.subagents) {
+          if (!subagent.running) { continue; }
+          if (!(subagent.agentId && taskIds.has(subagent.agentId))
+            && !toolUseIds.has(subagent.parentToolUseId)) { continue; }
+          this.completeSubagent(subagent, preview);
+          completed = true;
+        }
+      }
     }
     return completed;
   }

@@ -52,7 +52,8 @@ export type JsonlRecordType =
   // the file itself. Claude Code ignores record types it does not know.
   | 'serac-transfer'
   // Harness context deltas (deferred_tools_delta, skill_listing, ...) under an
-  // `attachment` object. Not session-state relevant; skipped.
+  // `attachment` object. Skipped, except `queued_command`, which can carry a
+  // mid-turn <task-notification> (see processQueuedCommandAttachment).
   | 'attachment'
   | (string & {}); // allows any string but provides autocomplete for known types
 
