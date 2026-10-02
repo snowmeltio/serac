@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.27.0 (2026-10-02) - Agent rows finish when the agent does
+
+### Fixed
+- **Background agents no longer stay "running" after they finish mid-turn.** When an agent finished while the lead was still working, Claude Code folded its completion into the running turn and wrote no separate notification record. Serac missed it and kept the row running until the 15-minute sweep (seen live 2026-10-01: 5 of 7 agents stuck under one card). Rows now close from the completion as soon as Claude Code queues it, whichever way it is later delivered.
+- **A "resumed" notice no longer marks a still-working agent done**, and a "didn't finish before the previous session ended" notice now closes every agent it names, not just the first.
+- **Agent rows count tools from the start, against the right transcript.** Serac now reads an agent's own transcript from the first poll after it starts, not after 8 seconds of quiet. It pairs the transcript to its row by the tool call that spawned it, so parallel agents no longer swap transcripts, and nested or skill-forked agents are never taken for a row.
+- **A quiet background agent is no longer closed after 15 minutes while its session is still alive.** The quiet-file cut-off now applies only when Serac can't tell whether the session's process is running. A background agent whose own transcript has ended closes on that, even before the lead hears about it.
+- **When a session's process exits, all its running agent rows close at once**, foreground ones included.
+- **A finished agent shows the result of its latest run**, including after a revival Serac didn't see as it happened.
+
+### Added
+- **Registry status, shadow mode.** Claude Code 2.1.269 and later records each session's own busy, waiting, or idle state. Serac now reads it and logs every disagreement with its own status to the Serac output channel as `[status] ... shadow` lines. This is logging only: no card changes. It measures whether Claude Code's own status can drive Serac's cards.
+
+### Changed
+- **Every status change in the Serac output channel now logs at info level** (running and done changes used to need trace), so the `[status]` lines are readable without enabling trace.
+
 ## v1.26.4 (2026-10-01) - Exit-only sessions stop holding Other workspaces on Done
 
 ### Fixed
