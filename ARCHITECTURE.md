@@ -67,7 +67,7 @@ The local/sibling/foreign scans above each check the dormant-session replay cach
 | `trackers/` | Non-status enrichment slices (background shells, tool outcomes, permission timing, hook enrichment) — they never move `running`/`waiting`/`done`. |
 | `teamDiscovery.ts` / `teamManifest.ts` | Agent Teams discovery (`~/.claude/teams/`), config parsing, workspace scoping, inbox target resolution. |
 | `foreignWorkspaceManager.ts` / `siblingWorktreeManager.ts` / `worktreeRows.ts` | Out-of-window sections: foreign-workspace rows/strips and sibling-worktree cards. |
-| `subagentTailerManager.ts` | Subagent transcript tailing + silent-subagent file scanning. |
+| `subagentTailerManager.ts` | Subagent transcript tailing. Each poll opens a tailer for any running subagent lacking one (no silence delay), pairing a file to its row by the `toolUseId` in `agent-<id>.meta.json` (a meta without one, e.g. a skill fork, is never claimed); a wholly meta-less directory (older CLIs) falls back to birthtime order. A running row whose tailer was released (SubagentStop hook) or whose revival couldn't open yet (cap, missing file) resumes at its recorded offset (`resumeAt`), never byte 0; an in-flight revival reopen holds an owner token in `opening` so `poll()` can't race it. |
 | `validation.ts` | Webview→host message validation (the webview is untrusted). |
 | `panelUtils.ts` / `footerSlots.ts` / `paths.ts` / `jsonlValidator.ts` / `gitWorktreeUtil.ts` / `claudeSettings.ts` / `toolProfiles.ts` / `workspaceOpener.ts` | Support modules: pure pill/format helpers, footer slot layout, path mapping, record validation, worktree enumeration, CC settings reads, the canonical tool-profile table, focus-safe workspace opening. |
 
@@ -215,8 +215,10 @@ read `DONE` while detached agents kept working for many minutes (found live
     a **running** target is left alone, id included: if CC answered a
     double-resume with an error result, a retargeted id would route that
     `is_error` into `completeSubagent` and kill a live agent.
-  - the growth backstop (`sweepRevivedSubagents()`, the dormant sweep's
-    async sibling) for revivals Serac never saw inline: a completed agent's
+  - the growth backstop (`sweepRevivedSubagents()`, run for active and
+    dormant sessions alike — a peer message or the agent's own
+    background-task notification wakes a done agent with no parent record,
+    often mid-turn) for revivals Serac never saw inline: a completed agent's
     file growing past its completion watermark (`completedFileSize`, stamped
     by `completeSubagent()` on the genuine running→done transition only)
     with an `assistant` record in the delta. Attachment-only growth advances
@@ -246,13 +248,41 @@ read `DONE` while detached agents kept working for many minutes (found live
   agent id) is recoverable only by the backstop; after Reload Window the
   watermark restores from the replay cache but the tailer reads from the
   file's current size, so a revived phase's `toolsCompleted` reads 0.
+- **Own-transcript end (D3)** — a background agent whose own JSONL's latest
+  assistant/user record is an assistant message with `stop_reason:
+  "end_turn"` and no `tool_use` block completes at the end of that tailer
+  batch (`isCleanEndTurn()`, `completeOnOwnEnd()`), once the read has caught
+  up with the file (no capped 16 MB slice left, no partial line pending:
+  `JsonlTailer.hasPartialLine()`). The growth sweep applies the same check
+  to the delta it revives on, since its adopted tailer is already at EOF
+  and no later batch would judge it. It guards
+  against parent-format drift rather than adding speed: the parent enqueue
+  lands ~0.1 s later and sets `resultPreview` on the already-done row (a
+  terminal notification always replaces a done row's preview: it is the
+  newest word on the result, including after a revival Serac missed). D3
+  judges each row's last own assistant/user record across batches
+  (`lastOwnRecord`, cleared on revival).
+  SubagentHandback is not terminal (142 of 200 were followed by a closing
+  text turn). Foreground rows are excluded: done before their Agent
+  tool_result, the parent's open Agent tool_use alone satisfies
+  `shouldMarkDone()`, which could let the idle timer end the turn early. A
+  `completed` notification whose body says the agent "is waiting on its own
+  background work" is interim and does not complete the row.
 - **Backstops** — `sweepBackgroundWork()` (the per-poll dormant sweep, shared
-  with background shells): registry-confirmed death completes all background
-  agents at once; otherwise an agent whose own JSONL has sat unmodified past
-  `BACKGROUND_AGENT_CEILING_MS` (15 min) is force-completed (missed/never-written
-  notification). File mtime is the preferred liveness source — it needs no
-  parsed record at all and works without tailer pumping. When unavailable (no
-  `agentId` adopted from the launch banner), the fallback is
+  with background shells) runs `sweepRunningSubagents()`. Registry-confirmed
+  death (D4) completes every running row at once, foreground included (a
+  foreground agent's interrupted tool_result is only written when the session
+  resumes). The quiet-file ceiling then applies only while registry liveness
+  is unknown (latch never armed, or a degraded scan): an agent whose own
+  JSONL has sat unmodified past `BACKGROUND_AGENT_CEILING_MS` (15 min) is
+  force-completed (missed/never-written notification). While the registry
+  says live, a quiet agent is trusted: the census had three live background
+  agents quiet past the ceiling. The one exception heals a missed D3: a
+  live-registry background row quiet past the ceiling whose transcript's last
+  64 KB ends on a clean end_turn completes (`quietTranscriptEndedCleanly()`,
+  read once per file mtime). File mtime is the preferred liveness source
+  — it needs no parsed record at all and works without tailer pumping. When
+  unavailable (no `agentId` adopted from the launch banner), the fallback is
   `subagent.lastActivity`, itself replay-accurate since it now stamps from the
   record's own timestamp rather than wall-clock (see Timer hierarchy, item 5) —
   a stale agentless agent force-completes on the first sweep after reopen

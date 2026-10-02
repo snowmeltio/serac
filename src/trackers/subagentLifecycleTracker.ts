@@ -1,16 +1,16 @@
 /**
  * SubagentLifecycleTracker — owns subagent lifecycle signals (spawn / progress
- * / completion) and the targeted-tailer fallback used when progress relay is
- * silent.
+ * / completion) and the targeted tailers on subagents' own transcripts.
  *
  * The JSONL variant wraps (does not rewrite) the existing
  * SubagentTailerManager. The lifecycle methods delegate as follows:
- *   - onSpawn               → SubagentTailerManager.startSilenceTimer
- *   - onProgress            → SubagentTailerManager.cancelProgressSilence
- *   - onComplete            → SubagentTailerManager.disposeTailerAndTimer (keeps agentId)
+ *   - onSpawn               → no-op (pollDirect opens the tailer)
+ *   - onProgress            → SubagentTailerManager.suppressForProgressRelay
+ *   - onComplete            → SubagentTailerManager.disposeTailer (keeps agentId)
  *   - onRevive              → SubagentTailerManager.reopenTailerAt (completion watermark)
- *   - disposeTailerAndTimer → SubagentTailerManager.disposeTailerAndTimer
+ *   - releaseTailer         → SubagentTailerManager.disposeTailer
  *   - pollDirect            → SubagentTailerManager.poll
+ *   - needsPoll             → SubagentTailerManager.needsPoll
  *   - getActiveTailerCount  → SubagentTailerManager.getActiveTailerCount
  *   - disposeAll            → SubagentTailerManager.disposeAll
  *
@@ -39,29 +39,30 @@ export type { SubagentRecordBatch } from '../subagentTailerManager.js';
 export type SubagentLifecycleTrackerHost = TailerContext;
 
 export interface SubagentLifecycleTracker {
-  /** Subagent spawn detected — start the silence timer that will open a
-   *  targeted tailer if no agent_progress arrives in time. */
+  /** Subagent spawn detected. Nothing to arm: the next pollDirect() pairs
+   *  the subagent with its transcript and opens a tailer. */
   onSpawn(subagent: SubagentInfo): void;
-  /** agent_progress arrived — cancel silence timer and dispose any open
-   *  tailer (progress relay is working). */
+  /** agent_progress arrived — the legacy relay feeds this subagent, so stop
+   *  tailing its file (pollDirect won't reopen it). */
   onProgress(subagent: SubagentInfo): void;
-  /** Subagent finished — release tailer and silence timer. agentId is PRESERVED
+  /** Subagent finished — release its tailer. agentId is PRESERVED
    *  so a completed subagent keeps its rich tracked view (result preview, tool
    *  count) and stays resolvable in the detail-panel drill-in. agentId is only
    *  cleared on full teardown (disposeAll). */
   onComplete(subagent: SubagentInfo): void;
   /** Subagent revived after completing (SendMessage / Agent({resume}) /
-   *  growth backstop) — cancel any timer and reopen its tailer at the
-   *  completion watermark (`completedFileSize`), skipping the 8s silence
-   *  delay: the path is exact. `preopened` adopts the backstop's own tailer. */
+   *  growth backstop) — reopen its tailer at the completion watermark
+   *  (`completedFileSize`). `preopened` adopts the backstop's own tailer. */
   onRevive(subagent: SubagentInfo, preopened?: JsonlTailer): void;
-  /** Release a single subagent's tailer + silence timer without clearing its
-   *  agentId. Used at session-done to free I/O resources for mid-flight
-   *  subagents while keeping them visible. */
-  disposeTailerAndTimer(subagent: SubagentInfo): void;
-  /** Poll all active subagent tailers and return their records grouped by
-   *  subagent. Disposes tailers for subagents that are no longer running. */
+  /** Release a single subagent's tailer without clearing its agentId. */
+  releaseTailer(subagent: SubagentInfo): void;
+  /** Open tailers for running subagents that lack one, then poll every open
+   *  tailer and return the records grouped by subagent. Disposes tailers for
+   *  subagents that are no longer running. */
   pollDirect(subagents: SubagentInfo[]): Promise<SubagentRecordBatch[]>;
+  /** Whether pollDirect() has work (an open tailer, or a running subagent
+   *  still to be paired and opened). */
+  needsPoll(subagents: SubagentInfo[]): boolean;
   /** Number of subagents currently being tailed directly. */
   getActiveTailerCount(): number;
   /** Dispose all subagent tailer resources. Called on session reset or
@@ -80,32 +81,34 @@ export class JsonlDerivedSubagentLifecycleTracker implements SubagentLifecycleTr
     this.mgr = new SubagentTailerManager(host);
   }
 
-  onSpawn(subagent: SubagentInfo): void {
-    this.mgr.startSilenceTimer(subagent);
-  }
+  onSpawn(_subagent: SubagentInfo): void { /* pollDirect opens the tailer */ }
 
   onProgress(subagent: SubagentInfo): void {
-    this.mgr.cancelProgressSilence(subagent);
+    this.mgr.suppressForProgressRelay(subagent);
   }
 
   onComplete(subagent: SubagentInfo): void {
-    // Preserve agentId — only release the tailer + silence timer. A completed
+    // Preserve agentId — only release the tailer. A completed
     // subagent must keep its agentId so its rich snapshot (resultPreview,
     // toolsCompleted) survives and the detail panel can still open its
     // transcript. agentId is nulled only on disposeAll (session teardown).
-    this.mgr.disposeTailerAndTimer(subagent);
+    this.mgr.disposeTailer(subagent);
   }
 
   onRevive(subagent: SubagentInfo, preopened?: JsonlTailer): void {
     void this.mgr.reopenTailerAt(subagent, subagent.completedFileSize, preopened);
   }
 
-  disposeTailerAndTimer(subagent: SubagentInfo): void {
-    this.mgr.disposeTailerAndTimer(subagent);
+  releaseTailer(subagent: SubagentInfo): void {
+    this.mgr.disposeTailer(subagent);
   }
 
   pollDirect(subagents: SubagentInfo[]): Promise<SubagentRecordBatch[]> {
     return this.mgr.poll(subagents);
+  }
+
+  needsPoll(subagents: SubagentInfo[]): boolean {
+    return this.mgr.needsPoll(subagents);
   }
 
   getActiveTailerCount(): number {
@@ -131,8 +134,8 @@ export class JsonlDerivedSubagentLifecycleTracker implements SubagentLifecycleTr
  *   matching on agentId.
  *
  * Why only SubagentStop is hook-accelerated:
- *   - `SubagentStart` doesn't gain much from hooks. The JSONL silence
- *     timer fires 8 s after spawn if no agent_progress arrives; spawn is
+ *   - `SubagentStart` doesn't gain much from hooks. The tailer opens on
+ *     the first poll after the spawn is seen; spawn is
  *     normally detected within 1-2 s via `tool_use(Task)` in the JSONL.
  *   - `SubagentStop` is the high-value signal — it lets us tear down a
  *     potentially-open targeted tailer immediately rather than waiting
@@ -169,8 +172,9 @@ class HookSubagentLifecycleTracker implements SubagentLifecycleTracker {
   onProgress(subagent: SubagentInfo): void { this.fallback.onProgress(subagent); }
   onComplete(subagent: SubagentInfo): void { this.fallback.onComplete(subagent); }
   onRevive(subagent: SubagentInfo, preopened?: JsonlTailer): void { this.fallback.onRevive(subagent, preopened); }
-  disposeTailerAndTimer(subagent: SubagentInfo): void { this.fallback.disposeTailerAndTimer(subagent); }
+  releaseTailer(subagent: SubagentInfo): void { this.fallback.releaseTailer(subagent); }
   pollDirect(subagents: SubagentInfo[]): Promise<SubagentRecordBatch[]> { return this.fallback.pollDirect(subagents); }
+  needsPoll(subagents: SubagentInfo[]): boolean { return this.fallback.needsPoll(subagents); }
   getActiveTailerCount(): number { return this.fallback.getActiveTailerCount(); }
   disposeAll(subagents: SubagentInfo[]): void { this.fallback.disposeAll(subagents); }
 

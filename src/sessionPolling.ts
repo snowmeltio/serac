@@ -157,6 +157,8 @@ export async function pollTrackedSessions(
       if (!hadData && session.demoteIfStale(DEMOTE_STALE_MS)) {
         changed = true;
       }
+      // Revival backstop for active sessions too (see SessionDiscovery.pollInner).
+      if (await session.sweepRevivedSubagents(now)) { changed = true; }
     } catch { /* skip */ }
   }
   return changed;

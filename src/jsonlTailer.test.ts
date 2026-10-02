@@ -190,3 +190,20 @@ describe('JsonlTailer', () => {
     expect(records[1].type).toBe('last');
   });
 });
+
+describe('JsonlTailer.hasPartialLine', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tailer-partial-')); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('is true while a read ends mid-line, false once the line completes', async () => {
+    const file = path.join(dir, 'a.jsonl');
+    fs.writeFileSync(file, '{"type":"user"}\n{"type":"assi');
+    const tailer = new JsonlTailer(file);
+    expect(await tailer.readNewRecords()).toHaveLength(1);
+    expect(tailer.hasPartialLine()).toBe(true);
+    fs.appendFileSync(file, 'stant"}\n');
+    expect(await tailer.readNewRecords()).toHaveLength(1);
+    expect(tailer.hasPartialLine()).toBe(false);
+  });
+});

@@ -81,6 +81,18 @@ describe('jsonlSessionId', () => {
 });
 
 describe('pollTrackedSessions', () => {
+  it('runs the revived-subagent sweep for an ACTIVE session too', async () => {
+    // A peer message or the agent's own background-task notification wakes a
+    // done agent with no parent record, usually while the lead is mid-turn.
+    const sweep = vi.fn(async () => true);
+    const sessions = new Map([['ws/live', fakeSession({ getStatus: () => 'running', sweepRevivedSubagents: sweep })]]);
+
+    const changed = await pollTrackedSessions(sessions, 1000, () => true);
+
+    expect(sweep).toHaveBeenCalledWith(1000);
+    expect(changed).toBe(true);
+  });
+
   it('evicts a dormant session outside the window and reports change', async () => {
     const session = fakeSession();
     const sessions = new Map([['ws/sess-1', session]]);

@@ -46,7 +46,7 @@ function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     parentToolUseId: 'tu', description: 'test', running: true, waitingOnPermission: false,
     lastActivity: new Date(), activeTools: new Map(),
     permissionTracker: { reschedule: () => {}, cancel: () => {}, dispose: () => {} },
-    acknowledged: false, tailer: null, silenceTimerId: undefined, agentId: null,
+    acknowledged: false, tailer: null, progressRelayed: false, agentId: null,
     startedAt: new Date(), resultPreview: null, toolsCompleted: 0, background: false,
     revivalCount: 0, completedFileSize: null,
     ...overrides,
@@ -125,13 +125,16 @@ describe('Phase 4 spike replay — subagent-hook-2026-05-25.jsonl', () => {
     };
     const tracker = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
     tracker.onSpawn(sub);
-    expect(sub.silenceTimerId).toBeDefined();
+    // An open tailer (adopted through the synchronous revive path) for the
+    // captured SubagentStop to release.
+    tracker.onRevive(sub, { getOffset: () => 0, readNewRecords: async () => [], getFilePath: () => '/tmp/a.jsonl' } as never);
+    expect(sub.tailer).not.toBeNull();
     for (const p of PAYLOADS) {
       router.onHookEvent(SID, String(p.hook_event_name), p);
     }
-    // SubagentStop should have cleared the silence timer. agentId is preserved
+    // SubagentStop should have released the tailer. agentId is preserved
     // (only disposeAll clears it) so the completed subagent stays resolvable.
-    expect(sub.silenceTimerId).toBeUndefined();
+    expect(sub.tailer).toBeNull();
     expect(sub.agentId).toBe(AGENT_ID);
   });
 });

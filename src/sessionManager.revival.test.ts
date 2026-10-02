@@ -67,6 +67,7 @@ vi.mock('./jsonlTailer.js', async (importOriginal) => {
       return r;
     }
     getOffset() { return this.real ? this.real.getOffset() : this.offset; }
+    hasPartialLine() { return this.real ? this.real.hasPartialLine() : false; }
     getFilePath() { return this.filePath; }
     reset() { this.offset = 0; }
   }

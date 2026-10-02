@@ -18,7 +18,7 @@ function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     permissionTracker: { reschedule: () => {}, cancel: () => {}, dispose: () => {} },
     acknowledged: false,
     tailer: null,
-    silenceTimerId: undefined,
+    progressRelayed: false,
     agentId: null,
     startedAt: new Date(),
     resultPreview: null,
@@ -49,63 +49,31 @@ describe('SubagentTailerManager', () => {
     expect(mgr.getActiveTailerCount()).toBe(0);
   });
 
-  describe('silence timers', () => {
-    it('starts and cancels silence timer', () => {
+  describe('progress relay suppression', () => {
+    it('suppressForProgressRelay disposes the tailer and flags the subagent', () => {
       const mgr = new SubagentTailerManager(makeContext());
       const sub = makeSubagent();
-
-      mgr.startSilenceTimer(sub);
-      expect(sub.silenceTimerId).toBeDefined();
-
-      mgr.cancelSilenceTimer(sub);
-      expect(sub.silenceTimerId).toBeUndefined();
-    });
-
-    it('silence timer clears itself if disposed', () => {
-      let disposed = false;
-      const mgr = new SubagentTailerManager(makeContext({
-        isDisposed: () => disposed,
-      }));
-      const sub = makeSubagent();
-
-      mgr.startSilenceTimer(sub);
-      disposed = true;
-      vi.advanceTimersByTime(9000);
-      // Tailer should NOT have been opened (disposed check)
-      expect(sub.tailer).toBeNull();
-    });
-
-    it('silence timer is no-op if subagent stopped running', () => {
-      const mgr = new SubagentTailerManager(makeContext());
-      const sub = makeSubagent({ running: true });
-
-      mgr.startSilenceTimer(sub);
-      sub.running = false;
-      vi.advanceTimersByTime(9000);
-      expect(sub.tailer).toBeNull();
-    });
-
-    it('cancelProgressSilence cancels timer and disposes tailer', () => {
-      const mgr = new SubagentTailerManager(makeContext());
-      const sub = makeSubagent();
-
-      mgr.startSilenceTimer(sub);
-      // Simulate a tailer that was opened
-      const mockTailer = { readNewRecords: vi.fn(), getFilePath: () => '/tmp/agent-x.jsonl' } as any;
-      sub.tailer = mockTailer;
+      sub.tailer = { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/agent-x.jsonl' } as any;
       (mgr as any).activeTailerCount = 1;
 
-      mgr.cancelProgressSilence(sub);
-      expect(sub.silenceTimerId).toBeUndefined();
+      mgr.suppressForProgressRelay(sub);
+      expect(sub.progressRelayed).toBe(true);
       expect(sub.tailer).toBeNull();
       expect(mgr.getActiveTailerCount()).toBe(0);
+    });
+
+    it('needsPoll: false for a relayed or finished subagent, true for a running untailed one', () => {
+      const mgr = new SubagentTailerManager(makeContext());
+      expect(mgr.needsPoll([makeSubagent({ progressRelayed: true })])).toBe(false);
+      expect(mgr.needsPoll([makeSubagent({ running: false })])).toBe(false);
+      expect(mgr.needsPoll([makeSubagent()])).toBe(true);
     });
   });
 
   describe('poll', () => {
     it('returns empty batches when no tailers active', async () => {
       const mgr = new SubagentTailerManager(makeContext());
-      const sub = makeSubagent();
+      const sub = makeSubagent({ running: false });
       const batches = await mgr.poll([sub]);
       expect(batches).toEqual([]);
     });
@@ -115,7 +83,7 @@ describe('SubagentTailerManager', () => {
       const records: JsonlRecord[] = [
         { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Read' }] } },
       ];
-      const mockTailer = { readNewRecords: vi.fn().mockResolvedValue(records), getFilePath: () => '/tmp/a.jsonl' } as any;
+      const mockTailer = { getOffset: () => 0, readNewRecords: vi.fn().mockResolvedValue(records), getFilePath: () => '/tmp/a.jsonl' } as any;
       const sub = makeSubagent({ tailer: mockTailer });
 
       const batches = await mgr.poll([sub]);
@@ -126,7 +94,7 @@ describe('SubagentTailerManager', () => {
 
     it('disposes tailer for non-running subagents during poll', async () => {
       const mgr = new SubagentTailerManager(makeContext());
-      const mockTailer = { readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any;
+      const mockTailer = { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any;
       const sub = makeSubagent({ running: false, tailer: mockTailer });
       (mgr as any).activeTailerCount = 1;
 
@@ -138,7 +106,7 @@ describe('SubagentTailerManager', () => {
 
     it('skips subagents with empty records', async () => {
       const mgr = new SubagentTailerManager(makeContext());
-      const mockTailer = { readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
+      const mockTailer = { getOffset: () => 0, readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
       const sub = makeSubagent({ tailer: mockTailer });
 
       const batches = await mgr.poll([sub]);
@@ -147,19 +115,17 @@ describe('SubagentTailerManager', () => {
   });
 
   describe('disposeSubagent', () => {
-    it('cleans up tailer, silence timer, and agentId', () => {
+    it('cleans up tailer and agentId', () => {
       const mgr = new SubagentTailerManager(makeContext());
-      const mockTailer = { readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any;
+      const mockTailer = { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any;
       const sub = makeSubagent({
         tailer: mockTailer,
         agentId: 'agent-123',
       });
-      mgr.startSilenceTimer(sub);
       (mgr as any).activeTailerCount = 1;
 
       mgr.disposeSubagent(sub);
       expect(sub.tailer).toBeNull();
-      expect(sub.silenceTimerId).toBeUndefined();
       expect(sub.agentId).toBeNull();
       expect(mgr.getActiveTailerCount()).toBe(0);
     });
@@ -178,16 +144,14 @@ describe('SubagentTailerManager', () => {
     it('disposes all subagents and resets tailer count', () => {
       const mgr = new SubagentTailerManager(makeContext());
       const subs = [
-        makeSubagent({ tailer: { readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any }),
-        makeSubagent({ tailer: { readNewRecords: vi.fn(), getFilePath: () => '/tmp/b.jsonl' } as any }),
+        makeSubagent({ tailer: { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any }),
+        makeSubagent({ tailer: { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/b.jsonl' } as any }),
       ];
       (mgr as any).activeTailerCount = 2;
-      mgr.startSilenceTimer(subs[0]);
 
       mgr.disposeAll(subs);
       expect(subs[0].tailer).toBeNull();
       expect(subs[1].tailer).toBeNull();
-      expect(subs[0].silenceTimerId).toBeUndefined();
       expect(mgr.getActiveTailerCount()).toBe(0);
     });
   });
@@ -213,6 +177,86 @@ describe('SubagentTailerManager', () => {
     function writeAgentFile(name: string): void {
       fs.writeFileSync(path.join(subagentsDir, name), '');
     }
+
+    function writeMeta(agentId: string, toolUseId: string): void {
+      fs.writeFileSync(path.join(subagentsDir, `agent-${agentId}.meta.json`),
+        JSON.stringify({ agentType: 'general-purpose', toolUseId, spawnDepth: 1 }));
+    }
+
+    function managerFor(subs: SubagentInfo[]): SubagentTailerManager {
+      return new SubagentTailerManager({
+        isDisposed: () => false,
+        getSessionFilePath: () => sessionFile,
+        getAllSubagents: () => subs,
+      });
+    }
+
+    it('pairs by the meta toolUseId, not by birthtime order', async () => {
+      // Files land in the OPPOSITE order to the spawns: birthtime would pair
+      // them crosswise.
+      writeAgentFile('agent-second.jsonl');
+      writeMeta('second', 'toolu_B');
+      await new Promise(r => setTimeout(r, 10));
+      writeAgentFile('agent-first.jsonl');
+      writeMeta('first', 'toolu_A');
+      const a = makeSubagent({ parentToolUseId: 'toolu_A' });
+      const b = makeSubagent({ parentToolUseId: 'toolu_B' });
+      const mgr = managerFor([a, b]);
+
+      await mgr.poll([a, b]);
+      expect(a.agentId).toBe('first');
+      expect(b.agentId).toBe('second');
+    });
+
+    it('never claims a file whose meta names another tool_use (a nested agent)', async () => {
+      writeAgentFile('agent-nested.jsonl');
+      writeMeta('nested', 'toolu_inside_a_subagent');
+      const sub = makeSubagent({ parentToolUseId: 'toolu_A' });
+      const mgr = managerFor([sub]);
+
+      await mgr.poll([sub]);
+      expect(sub.tailer).toBeNull();
+      expect(sub.agentId).toBeNull();
+      // Its own file appears on a later poll and is paired then.
+      writeAgentFile('agent-mine.jsonl');
+      writeMeta('mine', 'toolu_A');
+      await mgr.poll([sub]);
+      expect(sub.agentId).toBe('mine');
+    });
+
+    it('waits for its own meta rather than guessing among meta-less files when metas exist', async () => {
+      writeAgentFile('agent-other.jsonl');
+      writeMeta('other', 'toolu_other');
+      writeAgentFile('agent-mine.jsonl'); // meta not written yet
+      const sub = makeSubagent({ parentToolUseId: 'toolu_A' });
+      const mgr = managerFor([sub]);
+
+      await mgr.poll([sub]);
+      expect(sub.tailer).toBeNull();
+      writeMeta('mine', 'toolu_A');
+      await mgr.poll([sub]);
+      expect(sub.agentId).toBe('mine');
+    });
+
+    it('poll opens a tailer on the first call after spawn, with no delay', async () => {
+      writeAgentFile('agent-fresh.jsonl');
+      writeMeta('fresh', 'toolu_test');
+      const sub = makeSubagent();
+      const mgr = managerFor([sub]);
+
+      await mgr.poll([sub]);
+      expect(sub.tailer).not.toBeNull();
+      expect(mgr.getActiveTailerCount()).toBe(1);
+    });
+
+    it('poll skips a subagent fed by the progress relay', async () => {
+      writeAgentFile('agent-relayed.jsonl');
+      const sub = makeSubagent({ progressRelayed: true });
+      const mgr = managerFor([sub]);
+
+      await mgr.poll([sub]);
+      expect(sub.tailer).toBeNull();
+    });
 
     it('attaches distinct files to parallel silent subagents (FIFO by birthtime)', async () => {
       // Three subagent JSONL files, written in order so birthtime is monotonic.
@@ -260,7 +304,7 @@ describe('SubagentTailerManager', () => {
     it('does nothing when no unmatched files remain', async () => {
       writeAgentFile('agent-claimed.jsonl');
       const claimed = makeSubagent({
-        tailer: { readNewRecords: vi.fn(), getFilePath: () => path.join(subagentsDir, 'agent-claimed.jsonl') } as any,
+        tailer: { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => path.join(subagentsDir, 'agent-claimed.jsonl') } as any,
         agentId: 'claimed',
       });
       const silent = makeSubagent();
@@ -372,14 +416,14 @@ describe('reopenTailerAt (revival)', () => {
   it('adopts a preopened tailer as-is', async () => {
     const sub = makeSubagent({ agentId: AGENT });
     const mgr = manager([sub]);
-    const preopened = { readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => agentFile } as any;
+    const preopened = { getOffset: () => 0, readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => agentFile } as any;
     await mgr.reopenTailerAt(sub, 10, preopened);
     expect(sub.tailer).toBe(preopened);
     expect(mgr.getActiveTailerCount()).toBe(1);
   });
 
   it('disposes an existing tailer first so the count does not double', async () => {
-    const stale = { readNewRecords: vi.fn(), getFilePath: () => agentFile } as any;
+    const stale = { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => agentFile } as any;
     const sub = makeSubagent({ agentId: AGENT, tailer: stale });
     const mgr = manager([sub]);
     (mgr as any).activeTailerCount = 1;
@@ -406,13 +450,13 @@ describe('reopenTailerAt (revival)', () => {
     expect(mgr.getActiveTailerCount()).toBe(0);
   });
 
-  it('no agentId: falls back to the silence timer', async () => {
-    const sub = makeSubagent({ agentId: null });
+  it('no agentId: opens nothing (the next poll pairs it) and clears relay suppression', async () => {
+    const sub = makeSubagent({ agentId: null, progressRelayed: true });
     const mgr = manager([sub]);
     await mgr.reopenTailerAt(sub, 5);
     expect(sub.tailer).toBeNull();
-    expect(sub.silenceTimerId).toBeDefined();
-    mgr.cancelSilenceTimer(sub);
+    expect(sub.progressRelayed).toBe(false);
+    expect(mgr.needsPoll([sub])).toBe(true);
   });
 
   it('subagent no longer running when the stat resolves: nothing is opened', async () => {

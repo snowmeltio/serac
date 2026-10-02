@@ -837,33 +837,33 @@ describe('SessionManager sidechain tests', () => {
       ]);
 
       expect(mgr.getSnapshot().subagents).toHaveLength(1);
-      // The agentId mapping is internal — verified indirectly via the silence timer mechanism
+      // The agentId mapping is internal — the tailer opens at its exact path
     });
   });
 
-  // ── Phase 2: Silence timer and subagent tailer lifecycle ────────
+  // ── Phase 2: subagent tailer lifecycle ──────────────────────────
 
-  describe('subagent silence timer', () => {
-    it('starts silence timer when subagent is spawned', async () => {
+  describe('subagent tailer lifecycle', () => {
+    it('a spawned subagent with no transcript on disk leaves the session running', async () => {
       const mgr = makeManager();
       await feedRecords(mgr, [userRecord('start')]);
       await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-tool-1', { description: 'test' })]);
 
-      // After SUBAGENT_SILENCE_MS (8s), the silence timer fires.
-      // Without a real subagents/ directory, no tailer opens, but the timer does fire.
-      // Advance past silence threshold
+      // Without a real subagents/ directory the poll-driven open finds no
+      // file, so no tailer opens.
       vi.advanceTimersByTime(8_100);
+      await feedRecords(mgr, []);
 
       // Session should still be running (no tailer to detect permission)
       expect(mgr.getStatus()).toBe('running');
     });
 
-    it('cancels silence timer when agent_progress arrives', async () => {
+    it('agent_progress (legacy relay) keeps the session running', async () => {
       const mgr = makeManager();
       await feedRecords(mgr, [userRecord('start')]);
       await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-tool-1', { description: 'test' })]);
 
-      // agent_progress arrives at 5s — should cancel silence timer
+      // agent_progress arrives at 5s — suppresses the direct tailer
       vi.advanceTimersByTime(5_000);
       await feedRecords(mgr, [
         {
@@ -879,21 +879,21 @@ describe('SessionManager sidechain tests', () => {
         } as JsonlRecord,
       ]);
 
-      // Advance past original silence threshold — no tailer should open
+      // No tailer should open for a relayed subagent
       vi.advanceTimersByTime(5_000);
       expect(mgr.getStatus()).toBe('running');
     });
 
-    it('cleans up silence timers and tailers on dispose', async () => {
+    it('cleans up tailers on dispose', async () => {
       const mgr = makeManager();
       await feedRecords(mgr, [userRecord('start')]);
       await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-tool-1', { description: 'test' })]);
 
-      // Dispose should not throw even with active silence timers
+      // Dispose should not throw with a subagent awaiting its tailer
       mgr.dispose();
     });
 
-    it('cleans up silence timers on subagent completion', async () => {
+    it('cleans up tailers on subagent completion', async () => {
       const mgr = makeManager();
       await feedRecords(mgr, [userRecord('start')]);
       await feedRecords(mgr, [assistantToolUseRecord('Agent', 'agent-tool-1', { description: 'test' })]);
@@ -901,7 +901,7 @@ describe('SessionManager sidechain tests', () => {
       // Complete the subagent
       await feedRecords(mgr, [toolResultRecord('agent-tool-1')]);
 
-      // Advance past silence threshold — nothing should happen
+      // Advance time — nothing should happen
       vi.advanceTimersByTime(10_000);
       const sub = mgr.getSnapshot().subagents.find(s => s.parentToolUseId === 'agent-tool-1');
       expect(sub?.running).toBe(false);
