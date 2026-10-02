@@ -53,7 +53,7 @@ describe('SubagentTailerManager', () => {
     it('suppressForProgressRelay disposes the tailer and flags the subagent', () => {
       const mgr = new SubagentTailerManager(makeContext());
       const sub = makeSubagent();
-      sub.tailer = { readNewRecords: vi.fn(), getFilePath: () => '/tmp/agent-x.jsonl' } as any;
+      sub.tailer = { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/agent-x.jsonl' } as any;
       (mgr as any).activeTailerCount = 1;
 
       mgr.suppressForProgressRelay(sub);
@@ -83,7 +83,7 @@ describe('SubagentTailerManager', () => {
       const records: JsonlRecord[] = [
         { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Read' }] } },
       ];
-      const mockTailer = { readNewRecords: vi.fn().mockResolvedValue(records), getFilePath: () => '/tmp/a.jsonl' } as any;
+      const mockTailer = { getOffset: () => 0, readNewRecords: vi.fn().mockResolvedValue(records), getFilePath: () => '/tmp/a.jsonl' } as any;
       const sub = makeSubagent({ tailer: mockTailer });
 
       const batches = await mgr.poll([sub]);
@@ -94,7 +94,7 @@ describe('SubagentTailerManager', () => {
 
     it('disposes tailer for non-running subagents during poll', async () => {
       const mgr = new SubagentTailerManager(makeContext());
-      const mockTailer = { readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any;
+      const mockTailer = { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any;
       const sub = makeSubagent({ running: false, tailer: mockTailer });
       (mgr as any).activeTailerCount = 1;
 
@@ -106,7 +106,7 @@ describe('SubagentTailerManager', () => {
 
     it('skips subagents with empty records', async () => {
       const mgr = new SubagentTailerManager(makeContext());
-      const mockTailer = { readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
+      const mockTailer = { getOffset: () => 0, readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
       const sub = makeSubagent({ tailer: mockTailer });
 
       const batches = await mgr.poll([sub]);
@@ -117,7 +117,7 @@ describe('SubagentTailerManager', () => {
   describe('disposeSubagent', () => {
     it('cleans up tailer and agentId', () => {
       const mgr = new SubagentTailerManager(makeContext());
-      const mockTailer = { readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any;
+      const mockTailer = { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any;
       const sub = makeSubagent({
         tailer: mockTailer,
         agentId: 'agent-123',
@@ -144,8 +144,8 @@ describe('SubagentTailerManager', () => {
     it('disposes all subagents and resets tailer count', () => {
       const mgr = new SubagentTailerManager(makeContext());
       const subs = [
-        makeSubagent({ tailer: { readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any }),
-        makeSubagent({ tailer: { readNewRecords: vi.fn(), getFilePath: () => '/tmp/b.jsonl' } as any }),
+        makeSubagent({ tailer: { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/a.jsonl' } as any }),
+        makeSubagent({ tailer: { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => '/tmp/b.jsonl' } as any }),
       ];
       (mgr as any).activeTailerCount = 2;
 
@@ -304,7 +304,7 @@ describe('SubagentTailerManager', () => {
     it('does nothing when no unmatched files remain', async () => {
       writeAgentFile('agent-claimed.jsonl');
       const claimed = makeSubagent({
-        tailer: { readNewRecords: vi.fn(), getFilePath: () => path.join(subagentsDir, 'agent-claimed.jsonl') } as any,
+        tailer: { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => path.join(subagentsDir, 'agent-claimed.jsonl') } as any,
         agentId: 'claimed',
       });
       const silent = makeSubagent();
@@ -416,14 +416,14 @@ describe('reopenTailerAt (revival)', () => {
   it('adopts a preopened tailer as-is', async () => {
     const sub = makeSubagent({ agentId: AGENT });
     const mgr = manager([sub]);
-    const preopened = { readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => agentFile } as any;
+    const preopened = { getOffset: () => 0, readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => agentFile } as any;
     await mgr.reopenTailerAt(sub, 10, preopened);
     expect(sub.tailer).toBe(preopened);
     expect(mgr.getActiveTailerCount()).toBe(1);
   });
 
   it('disposes an existing tailer first so the count does not double', async () => {
-    const stale = { readNewRecords: vi.fn(), getFilePath: () => agentFile } as any;
+    const stale = { getOffset: () => 0, readNewRecords: vi.fn(), getFilePath: () => agentFile } as any;
     const sub = makeSubagent({ agentId: AGENT, tailer: stale });
     const mgr = manager([sub]);
     (mgr as any).activeTailerCount = 1;

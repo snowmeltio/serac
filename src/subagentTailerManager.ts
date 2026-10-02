@@ -41,11 +41,20 @@ export interface TailerContext {
 export class SubagentTailerManager {
   private activeTailerCount = 0;
   private readonly ctx: TailerContext;
-  /** Subagents with an open in flight, so an overlapping poll can't open a
-   *  second tailer for the same one. */
-  private readonly opening = new Set<SubagentInfo>();
-  /** Positive meta.json reads only (file name → spawning toolUseId). A miss
-   *  isn't cached: the CLI may write the meta a moment after the transcript. */
+  /** Subagents with an open or a revival reopen in flight, so poll() can't
+   *  open a second tailer (at the wrong offset) for the same one. Each entry
+   *  holds its owner's token, and only that owner removes it. */
+  private readonly opening = new Map<SubagentInfo, symbol>();
+  /** Where a RUNNING subagent's next tailer must start: the offset its
+   *  released tailer had reached (SubagentStop hook), or a revival's
+   *  watermark that couldn't be opened yet (cap hit, file missing, no
+   *  agentId); 'end' = the file's size at open. Without it, poll() reopens
+   *  at byte 0 and replays the agent's history (double tool counts, and D3
+   *  on a long-past end_turn). */
+  private readonly resumeAt = new Map<SubagentInfo, number | 'end'>();
+  /** meta.json reads that found a file (name → spawning toolUseId, or '' for
+   *  a meta without one, e.g. a skill fork). A missing meta isn't cached:
+   *  the CLI may write it a moment after the transcript. */
   private readonly metaToolUseIds = new Map<string, string>();
 
   constructor(ctx: TailerContext) {
@@ -80,13 +89,17 @@ export class SubagentTailerManager {
    *  Disposes tailers for subagents that are no longer running. */
   async poll(subagents: SubagentInfo[]): Promise<SubagentRecordBatch[]> {
     for (const subagent of subagents) {
+      if (!subagent.running) { this.resumeAt.delete(subagent); }
+    }
+    for (const subagent of subagents) {
       if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { break; }
       if (!this.wantsTailer(subagent) || this.opening.has(subagent)) { continue; }
-      this.opening.add(subagent);
+      const token = Symbol('open');
+      this.opening.set(subagent, token);
       try {
         await this.openTailer(subagent);
       } finally {
-        this.opening.delete(subagent);
+        if (this.opening.get(subagent) === token) { this.opening.delete(subagent); }
       }
       if (this.ctx.isDisposed()) { return []; }
     }
@@ -125,44 +138,67 @@ export class SubagentTailerManager {
    *  record batch each get here, and the stale one must not assign a second
    *  tailer (it would leak `activeTailerCount` and starve the cap).
    *
-   *  Cap hit: the row stays `running` with no tool counts; the next
-   *  task-notification still completes it. */
+   *  Not opened now (no agentId, cap hit, file missing): the watermark is
+   *  kept in `resumeAt`, so the next poll() opens there, never at 0. While
+   *  this is in flight the subagent sits in `opening`, so a poll() in the
+   *  same update can't race it with an open of its own. */
   async reopenTailerAt(subagent: SubagentInfo, offset: number | null, preopened?: JsonlTailer): Promise<void> {
     this.disposeTailer(subagent);
     subagent.progressRelayed = false;
-    // No agentId: nothing exact to reopen; poll() pairs and opens it.
-    if (!subagent.agentId) { return; }
-    if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
-    if (preopened) {
+    if (preopened && subagent.agentId && this.activeTailerCount < MAX_SUBAGENT_TAILERS) {
+      this.resumeAt.delete(subagent);
       subagent.tailer = preopened;
       this.activeTailerCount++;
       return;
     }
+    this.resumeAt.set(subagent, preopened ? preopened.getOffset() : (offset ?? 'end'));
+    // No agentId: nothing exact to reopen; poll() pairs and opens it.
+    if (!subagent.agentId) { return; }
+    if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
     const gen = subagent.revivalCount;
     const file = subagentJsonlPath(sessionDirFromJsonl(this.ctx.getSessionFilePath()), subagent.agentId);
-    let stat: fs.Stats;
+    const token = Symbol('reopen');
+    this.opening.set(subagent, token);
     try {
-      stat = await fs.promises.stat(file);
-    } catch {
-      return; // file gone — nothing to tail; the notification path still completes it
+      let stat: fs.Stats;
+      try {
+        stat = await fs.promises.stat(file);
+      } catch {
+        return; // file not there (yet): poll() opens it at resumeAt later
+      }
+      if (this.ctx.isDisposed() || !subagent.running) { return; }
+      if (subagent.revivalCount !== gen) { return; } // a newer revival owns the tailer now
+      if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
+      this.disposeTailer(subagent);
+      const tailer = new JsonlTailer(file, offset ?? stat.size);
+      tailer.lastSize = stat.size;
+      tailer.lastMtimeMs = stat.mtimeMs;
+      subagent.tailer = tailer;
+      this.activeTailerCount++;
+      this.resumeAt.delete(subagent);
+    } finally {
+      // A newer revival's reopen may have taken the entry over.
+      if (this.opening.get(subagent) === token) { this.opening.delete(subagent); }
     }
-    if (this.ctx.isDisposed() || !subagent.running) { return; }
-    if (subagent.revivalCount !== gen) { return; } // a newer revival owns the tailer now
-    if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
-    this.disposeTailer(subagent);
-    const tailer = new JsonlTailer(file, offset ?? stat.size);
-    tailer.lastSize = stat.size;
-    tailer.lastMtimeMs = stat.mtimeMs;
-    subagent.tailer = tailer;
-    this.activeTailerCount++;
   }
 
-  /** Dispose a single subagent's tailer. */
+  /** Dispose a single subagent's tailer. A still-running subagent (the
+   *  SubagentStop hook released it early) keeps its offset in `resumeAt`, so
+   *  a later reopen continues where this one stopped. */
   disposeTailer(subagent: SubagentInfo): void {
     if (subagent.tailer) {
+      if (subagent.running) { this.resumeAt.set(subagent, subagent.tailer.getOffset()); }
       subagent.tailer = null;
       this.activeTailerCount--;
     }
+  }
+
+  /** Construct a tailer at the subagent's resume point, if it has one. */
+  private async newTailerFor(subagent: SubagentInfo, file: string): Promise<JsonlTailer> {
+    const at = this.resumeAt.get(subagent);
+    if (at === undefined) { return new JsonlTailer(file); }
+    const offset = at === 'end' ? (await fs.promises.stat(file)).size : at;
+    return new JsonlTailer(file, offset);
   }
 
   /** Dispose all tailer resources for a subagent (tailer + agentId).
@@ -173,11 +209,13 @@ export class SubagentTailerManager {
     subagent.agentId = null;
   }
 
-  /** Dispose all subagent tailers. */
+  /** Dispose all subagent tailers (and their resume points). */
   disposeAll(subagents: SubagentInfo[]): void {
     for (const subagent of subagents) {
       this.disposeSubagent(subagent);
     }
+    this.resumeAt.clear();
+    this.opening.clear();
     this.activeTailerCount = 0;
   }
 
@@ -197,11 +235,13 @@ export class SubagentTailerManager {
       const subagentFile = subagentJsonlPath(sessionDir, subagent.agentId);
       try {
         await fs.promises.access(subagentFile);
-        // Re-check after the await: the cap (an overlapping revival reopen
+        const tailer = await this.newTailerFor(subagent, subagentFile);
+        // Re-check after the awaits: the cap (an overlapping revival reopen
         // can take a slot), and that nothing else gave this subagent a tailer.
         if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS || subagent.tailer) { return; }
-        subagent.tailer = new JsonlTailer(subagentFile);
+        subagent.tailer = tailer;
         this.activeTailerCount++;
+        this.resumeAt.delete(subagent);
       } catch {
         // Known agentId but its file isn't on disk yet. Do NOT scan —
         // scanForFile would claim an arbitrary unmatched file and overwrite the
@@ -219,7 +259,8 @@ export class SubagentTailerManager {
    *  subagent's `parentToolUseId` is an exact match (244/244 in the
    *  2026-10-02 census). A file whose meta names a different tool_use belongs
    *  to another agent — a sibling, or a nested agent spawned from inside one
-   *  — and is never claimed. When no meta matches, a directory where any
+   *  — and is never claimed; nor is one whose meta has no toolUseId (a skill
+   *  fork, not an Agent spawn). When no meta matches, a directory where any
    *  unclaimed file has a meta is from a meta-writing CLI, so this agent's
    *  file just isn't there yet: wait for a later poll. Only a wholly meta-less
    *  directory (CLIs that predate the meta) falls back to the old heuristic:
@@ -259,7 +300,7 @@ export class SubagentTailerManager {
       const metas = await Promise.all(unmatched.map(async f => ({ name: f, toolUseId: await this.readMetaToolUseId(subagentsDir, f) })));
       let chosen = metas.find(m => m.toolUseId === subagent.parentToolUseId)?.name;
       if (!chosen) {
-        if (metas.some(m => m.toolUseId !== null)) { return; } // own file not written yet
+        if (metas.some(m => m.toolUseId !== null)) { return; } // meta-writing CLI: own file not written yet
         const metaless = metas.map(m => m.name);
         // Oldest meta-less file by birthtime (creation), falling back to mtime.
         const stats = await Promise.all(
@@ -277,11 +318,13 @@ export class SubagentTailerManager {
         chosen = stats[0].name;
       }
 
+      const filePath = path.join(subagentsDir, chosen);
+      const tailer = await this.newTailerFor(subagent, filePath);
       // Re-check after the awaits above (readdir/stat/meta reads).
       if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS || subagent.tailer) { return; }
-      const filePath = path.join(subagentsDir, chosen);
-      subagent.tailer = new JsonlTailer(filePath);
+      subagent.tailer = tailer;
       this.activeTailerCount++;
+      this.resumeAt.delete(subagent);
       const match = chosen.match(/^agent-(.+)\.jsonl$/);
       // Only adopt the scanned file's id when we don't already have one — a
       // known agentId must never be overwritten by a directory guess.
@@ -291,19 +334,19 @@ export class SubagentTailerManager {
     }
   }
 
-  /** The spawning toolUseId from `agent-<id>.meta.json`, or null when the
-   *  meta is absent, unreadable, or carries none. */
+  /** The spawning toolUseId from `agent-<id>.meta.json`: '' when the meta
+   *  exists without one (a skill fork), null when there is no readable meta. */
   private async readMetaToolUseId(subagentsDir: string, jsonlName: string): Promise<string | null> {
     const cached = this.metaToolUseIds.get(jsonlName);
-    if (cached) { return cached; }
+    if (cached !== undefined) { return cached; }
     const agentId = jsonlName.match(/^agent-(.+)\.jsonl$/)?.[1];
     if (!agentId) { return null; }
     try {
       const raw = await fs.promises.readFile(subagentMetaPath(path.dirname(subagentsDir), agentId), 'utf-8');
       const toolUseId = (JSON.parse(raw) as { toolUseId?: unknown }).toolUseId;
-      if (typeof toolUseId !== 'string' || toolUseId.length === 0) { return null; }
-      this.metaToolUseIds.set(jsonlName, toolUseId);
-      return toolUseId;
+      const value = typeof toolUseId === 'string' ? toolUseId : '';
+      this.metaToolUseIds.set(jsonlName, value);
+      return value;
     } catch {
       return null;
     }

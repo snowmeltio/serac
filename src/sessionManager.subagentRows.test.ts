@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { JsonlRecord } from './types.js';
+import { HookEventRouter } from './hookEventRouter.js';
 
 // `fs` is a sealed ES module namespace — vi.spyOn(fs, 'statSync') can't
 // redefine it (see writerActivity.test.ts), so the observable wrappers are
@@ -61,6 +62,7 @@ vi.mock('./jsonlTailer.js', async (importOriginal) => {
       return r;
     }
     getOffset() { return this.real ? this.real.getOffset() : this.offset; }
+    hasPartialLine() { return this.real ? this.real.hasPartialLine() : false; }
     getFilePath() { return this.filePath; }
     reset() { this.offset = 0; }
   }
@@ -291,5 +293,104 @@ describe('D4 and the quiet-file ceiling (sweepBackgroundWork)', () => {
     fs.utimesSync(file, old, old);
     expect(mgr.sweepBackgroundWork(Date.now())).toBe(true);
     expect(row(mgr, BG_TOOL).running).toBe(false);
+  });
+});
+
+describe('adversarial review regressions (2026-10-02)', () => {
+  it('a row D3 closed early, then revived by the growth sweep on a finished delta, closes again', async () => {
+    const mgr = makeManager({ livenessProbe: () => true });
+    await spawnBackground(mgr);
+    const file = writeAgent(AGENT_ID, [agentToolUse('t1'), agentToolResult('t1'), agentText('Started a background build; waiting on it.', 'end_turn')]);
+    await feed(mgr, []);
+    expect(row(mgr, BG_TOOL).running).toBe(false); // D3 on the interim end_turn
+    // The agent wakes and finishes inside one sweep window.
+    fs.appendFileSync(file, JSON.stringify({ isSidechain: true, type: 'user', timestamp: new Date().toISOString(),
+      message: { role: 'user', content: [{ type: 'text', text: 'background build done' }] } }) + '\n');
+    fs.appendFileSync(file, agentText('Build passed. Final report.', 'end_turn') + '\n');
+    await feed(mgr, [enqueue(notification({ result: 'Final report' }))]);
+    for (let i = 0; i < 6; i++) { await mgr.sweepRevivedSubagents(Date.now()); }
+    const r = row(mgr, BG_TOOL);
+    expect(r.running).toBe(false);
+    expect(r.resultPreview).toBe('Final report');
+    expect(mgr.hasLiveBackgroundAgents()).toBe(false);
+  });
+
+  it('with a live registry, a quiet background row whose transcript ended cleanly is healed', async () => {
+    const mgr = makeManager({ livenessProbe: () => true });
+    await spawnBackground(mgr);
+    // No poll has read the file, standing in for any missed D3.
+    const file = writeAgent(AGENT_ID, [agentToolUse('t1'), agentToolResult('t1'), agentText('Done.', 'end_turn')]);
+    const old = new Date(Date.now() - 20 * 60 * 1000);
+    fs.utimesSync(file, old, old);
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(true);
+    expect(row(mgr, BG_TOOL).running).toBe(false);
+  });
+
+  it('a tailer released by SubagentStop resumes at its offset, not byte 0', async () => {
+    const router = new HookEventRouter();
+    const mgr = makeManager({ hookRouter: router });
+    await feed(mgr, [userRecord('go')]);
+    writeAgent('fg1', [agentToolUse('t1'), agentToolResult('t1'), agentToolUse('t2'), agentToolResult('t2'), agentText('Report.', 'end_turn')], FG_TOOL);
+    await spawnForeground(mgr);
+    await feed(mgr, []);
+    expect(row(mgr, FG_TOOL).toolsCompleted).toBe(2);
+    router.onHookEvent(SID, 'SubagentStop', { agent_id: 'fg1', agent_type: 'general-purpose' });
+    await feed(mgr, []);
+    expect(row(mgr, FG_TOOL).toolsCompleted).toBe(2);
+  });
+
+  it('a revival that hit the tailer cap is opened later at its watermark, not byte 0', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [userRecord('go')]);
+    writeAgent('xx', [agentToolUse('t1'), agentToolResult('t1'), agentText('Done.', 'end_turn')], 'toolu_X');
+    await spawnForeground(mgr, 'toolu_X');
+    await feed(mgr, []);
+    await feed(mgr, [toolResultRecord('toolu_X', 'Done.')]);
+    expect(row(mgr, 'toolu_X').toolsCompleted).toBe(1);
+    for (let i = 0; i < 10; i++) { writeAgent('f' + i, [agentToolUse('q' + i)], 'toolu_f' + i); await spawnForeground(mgr, 'toolu_f' + i); }
+    await feed(mgr, []);
+    expect(mgr.getActiveSubagentTailerCount()).toBe(10);
+    await feed(mgr, [toolUseRecord('SendMessage', 'toolu_sm', { to: 'xx' }),
+      toolResultRecord('toolu_sm', JSON.stringify({ success: true, message: 'Resuming agent xx', resumedAgentId: 'xx', pin: { id: 'xx' } }))]);
+    await new Promise(r => setTimeout(r, 20));
+    expect(row(mgr, 'toolu_X').running).toBe(true);
+    await feed(mgr, [toolResultRecord('toolu_f0', 'ok')]); // frees a slot
+    await feed(mgr, []);
+    const offsets = tailerConstructions.filter(c => c.filePath.endsWith('agent-xx.jsonl')).map(c => c.initialOffset);
+    expect(offsets.slice(1).every(o => o > 0)).toBe(true);
+    expect(row(mgr, 'toolu_X').toolsCompleted).toBe(1);
+    expect(row(mgr, 'toolu_X').running).toBe(true); // the old end_turn is not re-read
+  });
+
+  it('D3 waits while the read is behind the file (a partial line or a capped slice)', async () => {
+    const mgr = makeManager();
+    await spawnBackground(mgr);
+    const file = writeAgent(AGENT_ID, [agentText('Done for now.', 'end_turn')]);
+    // A record still being written: no trailing newline yet.
+    const next = agentToolResult('peer');
+    fs.appendFileSync(file, next.slice(0, 40));
+    await feed(mgr, []);
+    expect(row(mgr, BG_TOOL).running).toBe(true);
+    fs.appendFileSync(file, next.slice(40) + '\n');
+    await feed(mgr, []);
+    expect(row(mgr, BG_TOOL).running).toBe(true); // the run went on past that end_turn
+  });
+
+  it('a skill-fork transcript (meta without toolUseId) is never claimed', async () => {
+    const mgr = makeManager();
+    await feed(mgr, [userRecord('go')]);
+    writeAgent('old1', [agentText('Done.', 'end_turn')], 'toolu_OLD');
+    await spawnForeground(mgr, 'toolu_OLD');
+    await feed(mgr, []);
+    await feed(mgr, [toolResultRecord('toolu_OLD', 'Done.')]);
+    writeAgent('fork1', [agentText('Review findings.', 'end_turn')]);
+    fs.writeFileSync(path.join(subagentsDir, 'agent-fork1.meta.json'),
+      JSON.stringify({ agentType: 'general-purpose', spawnDepth: 1, requestShape: 'foreground', requestNonInteractive: true }));
+    await spawnForeground(mgr, 'toolu_NEW'); // its own file not written yet
+    await feed(mgr, []);
+    expect(row(mgr, 'toolu_NEW').agentId).toBeNull();
+    writeAgent('new1', [agentToolUse('z')], 'toolu_NEW');
+    await feed(mgr, []);
+    expect(row(mgr, 'toolu_NEW').agentId).toBe('new1');
   });
 });

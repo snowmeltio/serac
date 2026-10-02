@@ -47,7 +47,7 @@ function makeHost(opts: {
 /** Give a subagent an open tailer through the public revive path (preopened
  *  adoption is synchronous). Requires an agentId. Returns the mock tailer. */
 function attachTailer(t: { onRevive(s: SubagentInfo, p?: any): void }, sub: SubagentInfo): unknown {
-  const tailer = { readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
+  const tailer = { getOffset: () => 0, readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
   t.onRevive(sub, tailer);
   return tailer;
 }
@@ -247,7 +247,7 @@ describe('revival (onRevive + late SubagentStop)', () => {
     const sub = makeSubagent({ agentId: 'agent-x' });
     const router = new HookEventRouter();
     const t = makeSubagentLifecycleTracker(makeHost({ allSubagents: [sub] }), { hookRouter: router, sessionId: SID });
-    const preopened = { readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
+    const preopened = { getOffset: () => 0, readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
     t.onRevive(sub, preopened);
     expect(sub.tailer).toBe(preopened);
     expect(t.getActiveTailerCount()).toBe(1);

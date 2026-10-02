@@ -127,7 +127,7 @@ describe('Phase 4 spike replay — subagent-hook-2026-05-25.jsonl', () => {
     tracker.onSpawn(sub);
     // An open tailer (adopted through the synchronous revive path) for the
     // captured SubagentStop to release.
-    tracker.onRevive(sub, { readNewRecords: async () => [], getFilePath: () => '/tmp/a.jsonl' } as never);
+    tracker.onRevive(sub, { getOffset: () => 0, readNewRecords: async () => [], getFilePath: () => '/tmp/a.jsonl' } as never);
     expect(sub.tailer).not.toBeNull();
     for (const p of PAYLOADS) {
       router.onHookEvent(SID, String(p.hook_event_name), p);

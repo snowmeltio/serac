@@ -167,6 +167,45 @@ function isCleanEndTurn(record: JsonlRecord): boolean {
   return !getContentBlocks(record).some(b => b.type === 'tool_use');
 }
 
+/** The last assistant/user record in the final 64 KB of a JSONL file, or
+ *  null (unreadable, or none in that window). Sync: called from the sweep
+ *  only for a live agent quiet past the ceiling, once per mtime. */
+function readLastConversationRecord(file: string, size: number): JsonlRecord | null {
+  const TAIL_BYTES = 64 * 1024;
+  const start = Math.max(0, size - TAIL_BYTES);
+  let text: string;
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString('utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  const lines = text.split('\n');
+  // A window that starts mid-file starts mid-line: drop the fragment.
+  for (let i = lines.length - 1; i >= (start > 0 ? 1 : 0); i--) {
+    const line = lines[i].trim();
+    if (!line) { continue; }
+    let rec: JsonlRecord;
+    try { rec = JSON.parse(line) as JsonlRecord; } catch { continue; }
+    if (rec.type === 'assistant' || rec.type === 'user') { return rec; }
+  }
+  return null;
+}
+
+/** Whether a tailer has returned everything the file held at its last read
+ *  (no capped slice left, no partial line pending). Optional call: test
+ *  doubles of JsonlTailer predate hasPartialLine(). */
+function isCaughtUp(tailer: JsonlTailer | null): boolean {
+  if (!tailer) { return true; }
+  return tailer.getOffset() >= tailer.lastSize && !tailer.hasPartialLine?.();
+}
+
 /** Interim notice: the agent reported but is still waiting on its own
  *  background work (CLI 2.1.286), so its <status>completed</status> does not
  *  mean done. One agent in the census worked ~400 s past one of these. */
@@ -411,6 +450,9 @@ export class SessionManager {
    *  (isHydrated()) — undefined for every ordinarily-constructed manager, and
    *  for a hydrated one once beginFullReplay() has rebuilt it from byte 0. */
   private hydratedFrom?: FileStamp;
+  /** mtime at which quietTranscriptEndedCleanly() last read each subagent's
+   *  file tail. */
+  private readonly tailCheckedMtime = new WeakMap<SubagentInfo, number>();
 
   constructor(
     sessionId: string,
@@ -1396,6 +1438,7 @@ export class SessionManager {
           subagent.completedFileSize = tailer.getOffset();
           continue;
         }
+        const priorPreview = subagent.resultPreview;
         this.reviveSubagent(subagent, 'growth_backstop', {
           background: true, timestamp: new Date(stat.mtimeMs), preopened: tailer,
         });
@@ -1403,6 +1446,11 @@ export class SessionManager {
           if (record.type === 'assistant') { this.applySubagentAssistantRecord(subagent, record); }
           else if (record.type === 'user') { this.applySubagentUserRecord(subagent, record); }
         }
+        // The adopted tailer is already at the end of this delta, so no later
+        // batch would ever judge it: a delta that itself ends the run (an
+        // agent that finished inside one sweep window) closes the row here,
+        // keeping the result its notification already delivered.
+        this.completeOnOwnEnd(subagent, records, isCaughtUp(tailer), priorPreview);
         changed = true;
       } catch {
         continue;
@@ -1439,7 +1487,17 @@ export class SessionManager {
         changed = true;
         continue;
       }
-      if (!subagent.background || liveness === true) { continue; }
+      if (!subagent.background) { continue; }
+      if (liveness === true) {
+        // Live registry: the quiet ceiling is off, so heal only a row whose
+        // own transcript already ended cleanly — one that missed its D3
+        // (tailer cap, an adopted tailer already at EOF, a dropped batch).
+        if (this.quietTranscriptEndedCleanly(subagent, now)) {
+          this.completeSubagent(subagent, subagent.resultPreview);
+          changed = true;
+        }
+        continue;
+      }
       const lastWriteMs = this.backgroundAgentFileMtime(subagent)
         ?? subagent.lastActivity.getTime();
       if (now - lastWriteMs > BACKGROUND_AGENT_CEILING_MS) {
@@ -1448,6 +1506,20 @@ export class SessionManager {
       }
     }
     return changed;
+  }
+
+  /** Whether a background agent's own JSONL has been quiet past the ceiling
+   *  AND ends on a clean end_turn. Reads only the file's last 64 KB, and only
+   *  once per mtime (`tailCheckedMtime`), so a long genuine wait isn't
+   *  re-read every poll. */
+  private quietTranscriptEndedCleanly(subagent: SubagentInfo, now: number): boolean {
+    const stat = this.statSubagentFile(subagent);
+    if (!stat || now - stat.mtimeMs <= BACKGROUND_AGENT_CEILING_MS) { return false; }
+    if (this.tailCheckedMtime.get(subagent) === stat.mtimeMs) { return false; }
+    this.tailCheckedMtime.set(subagent, stat.mtimeMs);
+    const file = subagentJsonlPath(sessionDirFromJsonl(this.state.filePath), subagent.agentId!);
+    const last = readLastConversationRecord(file, stat.size);
+    return last !== null && isCleanEndTurn(last);
   }
 
   /** mtime of a background agent's own JSONL, or null when unknown/absent.
@@ -2690,30 +2762,38 @@ export class SessionManager {
     let changed = false;
 
     for (const { subagent, records } of batches) {
-      let last: JsonlRecord | null = null;
       for (const record of records) {
         if (record.type === 'assistant') {
           this.applySubagentAssistantRecord(subagent, record);
-          last = record;
           changed = true;
         } else if (record.type === 'user') {
           this.applySubagentUserRecord(subagent, record);
-          last = record;
           changed = true;
         }
       }
-      // D3: a background agent whose own transcript ends on a clean end_turn
-      // has finished, whatever the parent has (not) delivered yet — a guard
-      // against parent-format drift (171/234 transcripts end this way; the
-      // parent enqueue follows ~0.1 s later and fills the preview). Foreground
-      // rows wait for their Agent tool_result instead (15/15 had one): done
-      // here, the parent's open Agent tool_use alone would satisfy
-      // shouldMarkDone and let the idle timer end the turn early.
-      if (subagent.background && last && isCleanEndTurn(last)) {
-        this.completeSubagent(subagent, null);
-      }
+      this.completeOnOwnEnd(subagent, records, isCaughtUp(subagent.tailer), null);
     }
 
     return changed;
+  }
+
+  /** D3: a background agent whose own transcript ends on a clean end_turn
+   *  has finished, whatever the parent has (not) delivered yet — a guard
+   *  against parent-format drift (171/234 transcripts end this way; the
+   *  parent enqueue follows ~0.1 s later and fills the preview). Judged on
+   *  the batch's last assistant/user record, and only once the read has
+   *  caught up with the file: a 16 MB-capped slice can stop on a mid-file
+   *  end_turn, and a pending partial line means the run went on past it. Foreground rows wait for their Agent tool_result instead
+   *  (15/15 had one): done here, the parent's open Agent tool_use alone would
+   *  satisfy shouldMarkDone and let the idle timer end the turn early. A
+   *  mid-run end_turn (a queued peer message, a hook block) reads done until
+   *  the growth sweep revives the row. */
+  private completeOnOwnEnd(subagent: SubagentInfo, records: JsonlRecord[], caughtUp: boolean, preview: string | null): void {
+    if (!subagent.background || !subagent.running || !caughtUp) { return; }
+    let last: JsonlRecord | null = null;
+    for (const record of records) {
+      if (record.type === 'assistant' || record.type === 'user') { last = record; }
+    }
+    if (last && isCleanEndTurn(last)) { this.completeSubagent(subagent, preview); }
   }
 }

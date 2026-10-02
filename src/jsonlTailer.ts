@@ -130,6 +130,12 @@ export class JsonlTailer {
     this.lineBuffer = Buffer.alloc(0);
   }
 
+  /** Whether the last read ended mid-line: the file already holds part of a
+   *  further record that hasn't been returned yet. */
+  hasPartialLine(): boolean {
+    return this.lineBuffer.length > 0;
+  }
+
   /** Get current byte offset */
   getOffset(): number {
     return this.offset;
