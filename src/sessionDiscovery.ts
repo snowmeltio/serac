@@ -1890,6 +1890,11 @@ export class SessionDiscovery {
         if (!hadNewData && session.demoteIfStale(30_000)) {
           changed = true;
         }
+        // Revived-subagent growth backstop for ACTIVE sessions too: a peer
+        // message or the agent's own background-task notification wakes a
+        // done agent with no parent record, and its lead is often mid-turn.
+        // The dormant loop below covers the rest, woken sessions included.
+        if (activeSessions.includes(session) && await session.sweepRevivedSubagents(Date.now())) { changed = true; }
       }
 
       // Background-shell maintenance on dormant cards (done/stale/idle). The

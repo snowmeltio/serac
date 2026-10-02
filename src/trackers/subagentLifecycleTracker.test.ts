@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   JsonlDerivedSubagentLifecycleTracker,
   makeSubagentLifecycleTracker,
@@ -21,7 +21,7 @@ function makeSubagent(overrides: Partial<SubagentInfo> = {}): SubagentInfo {
     permissionTracker: { reschedule: () => {}, cancel: () => {}, dispose: () => {} },
     acknowledged: false,
     tailer: null,
-    silenceTimerId: undefined,
+    progressRelayed: false,
     agentId: null,
     startedAt: new Date(),
     resultPreview: null,
@@ -44,72 +44,73 @@ function makeHost(opts: {
   };
 }
 
+/** Give a subagent an open tailer through the public revive path (preopened
+ *  adoption is synchronous). Requires an agentId. Returns the mock tailer. */
+function attachTailer(t: { onRevive(s: SubagentInfo, p?: any): void }, sub: SubagentInfo): unknown {
+  const tailer = { readNewRecords: vi.fn().mockResolvedValue([]), getFilePath: () => '/tmp/a.jsonl' } as any;
+  t.onRevive(sub, tailer);
+  return tailer;
+}
+
 describe('JsonlDerivedSubagentLifecycleTracker', () => {
-  beforeEach(() => { vi.useFakeTimers(); });
-  afterEach(() => { vi.useRealTimers(); });
-
-  it('onSpawn starts a silence timer on the subagent', () => {
+  it('onSpawn arms nothing: no tailer until the next pollDirect', () => {
     const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
     const sub = makeSubagent();
     t.onSpawn(sub);
-    expect(sub.silenceTimerId).toBeDefined();
+    expect(sub.tailer).toBeNull();
+    expect(t.getActiveTailerCount()).toBe(0);
+    expect(t.needsPoll([sub])).toBe(true);
   });
 
-  it('onProgress cancels silence timer (no tailer to dispose)', () => {
-    const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
-    const sub = makeSubagent();
-    t.onSpawn(sub);
-    expect(sub.silenceTimerId).toBeDefined();
-    t.onProgress(sub);
-    expect(sub.silenceTimerId).toBeUndefined();
-  });
-
-  it('onComplete releases the silence timer but PRESERVES agentId', () => {
+  it('onProgress releases the tailer and suppresses reopening', () => {
     const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
     const sub = makeSubagent({ agentId: 'abc' });
-    t.onSpawn(sub);
+    attachTailer(t, sub);
+    expect(t.getActiveTailerCount()).toBe(1);
+    t.onProgress(sub);
+    expect(sub.tailer).toBeNull();
+    expect(sub.progressRelayed).toBe(true);
+    expect(t.getActiveTailerCount()).toBe(0);
+    expect(t.needsPoll([sub])).toBe(false);
+  });
+
+  it('onComplete releases the tailer but PRESERVES agentId', () => {
+    const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
+    const sub = makeSubagent({ agentId: 'abc' });
+    attachTailer(t, sub);
     t.onComplete(sub);
-    expect(sub.silenceTimerId).toBeUndefined();
+    expect(sub.tailer).toBeNull();
+    expect(t.getActiveTailerCount()).toBe(0);
     // agentId is kept so a completed subagent stays resolvable in the drill-in;
     // it is only cleared on disposeAll (session teardown).
     expect(sub.agentId).toBe('abc');
   });
 
-  it('disposeTailerAndTimer releases the silence timer but PRESERVES agentId', () => {
+  it('releaseTailer releases the tailer but PRESERVES agentId', () => {
     const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
     const sub = makeSubagent({ agentId: 'abc' });
-    t.onSpawn(sub);
-    t.disposeTailerAndTimer(sub);
-    expect(sub.silenceTimerId).toBeUndefined();
+    attachTailer(t, sub);
+    t.releaseTailer(sub);
+    expect(sub.tailer).toBeNull();
     expect(sub.agentId).toBe('abc');
   });
 
-  it('getActiveTailerCount starts at 0 and stays 0 with no progress-silent subagents', async () => {
-    const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
-    expect(t.getActiveTailerCount()).toBe(0);
-    const sub = makeSubagent();
-    t.onSpawn(sub);
-    // Silence timer scheduled but not yet fired
-    expect(t.getActiveTailerCount()).toBe(0);
-  });
-
-  it('pollDirect returns empty when no subagents have tailers', async () => {
+  it('pollDirect returns empty when no subagent file exists to tail', async () => {
     const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
     const batches = await t.pollDirect([makeSubagent()]);
     expect(batches).toEqual([]);
   });
 
-  it('disposeAll clears silence timers and agentIds on each subagent', () => {
+  it('disposeAll clears tailers and agentIds on each subagent', () => {
     const t = new JsonlDerivedSubagentLifecycleTracker(makeHost());
     const a = makeSubagent({ parentToolUseId: 'tu-a', agentId: 'aid-a' });
     const b = makeSubagent({ parentToolUseId: 'tu-b', agentId: 'aid-b' });
-    t.onSpawn(a);
-    t.onSpawn(b);
-    expect(a.silenceTimerId).toBeDefined();
-    expect(b.silenceTimerId).toBeDefined();
+    attachTailer(t, a);
+    attachTailer(t, b);
+    expect(t.getActiveTailerCount()).toBe(2);
     t.disposeAll([a, b]);
-    expect(a.silenceTimerId).toBeUndefined();
-    expect(b.silenceTimerId).toBeUndefined();
+    expect(a.tailer).toBeNull();
+    expect(b.tailer).toBeNull();
     expect(a.agentId).toBeNull();
     expect(b.agentId).toBeNull();
     expect(t.getActiveTailerCount()).toBe(0);
@@ -117,102 +118,77 @@ describe('JsonlDerivedSubagentLifecycleTracker', () => {
 
   it('factory returns a working JSONL-derived tracker', () => {
     const t = makeSubagentLifecycleTracker(makeHost());
-    const sub = makeSubagent();
-    t.onSpawn(sub);
-    expect(sub.silenceTimerId).toBeDefined();
+    const sub = makeSubagent({ agentId: 'abc' });
+    attachTailer(t, sub);
     t.onComplete(sub);
-    expect(sub.silenceTimerId).toBeUndefined();
+    expect(sub.tailer).toBeNull();
   });
 });
 
 describe('SubagentLifecycleTracker (hook overlay)', () => {
-  beforeEach(() => { vi.useFakeTimers(); });
-  afterEach(() => { vi.useRealTimers(); });
-
   const SID = 'parent-session-uuid';
 
-  it('SubagentStop with matching agent_id calls onComplete via fallback', () => {
-    const sub = makeSubagent({ agentId: 'agent-xyz' });
-    const host = makeHost({ allSubagents: [sub] });
+  function setup(agentId: string, opts: { sessionId?: string } = { sessionId: SID }) {
+    const sub = makeSubagent({ agentId });
     const router = new HookEventRouter();
-    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
-    t.onSpawn(sub);
-    expect(sub.silenceTimerId).toBeDefined();
+    const t = makeSubagentLifecycleTracker(makeHost({ allSubagents: [sub] }), { hookRouter: router, sessionId: opts.sessionId });
+    attachTailer(t, sub);
+    return { sub, router, t };
+  }
+
+  it('SubagentStop with matching agent_id calls onComplete via fallback', () => {
+    const { sub, router } = setup('agent-xyz');
     router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-xyz', agent_type: 'general-purpose' });
-    // Silence timer cleared proves onComplete fired; agentId is now preserved
-    // (only disposeAll clears it), so a completed subagent stays resolvable.
-    expect(sub.silenceTimerId).toBeUndefined();
+    // Tailer released proves onComplete fired; agentId is preserved (only
+    // disposeAll clears it), so a completed subagent stays resolvable.
+    expect(sub.tailer).toBeNull();
     expect(sub.agentId).toBe('agent-xyz');
   });
 
   it('SubagentStop with no agent_id is ignored', () => {
-    const sub = makeSubagent({ agentId: 'agent-abc' });
-    const host = makeHost({ allSubagents: [sub] });
-    const router = new HookEventRouter();
-    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
-    t.onSpawn(sub);
+    const { sub, router } = setup('agent-abc');
     router.onHookEvent(SID, 'SubagentStop', { agent_type: 'general-purpose' });
-    expect(sub.silenceTimerId).toBeDefined();   // unchanged
+    expect(sub.tailer).not.toBeNull();   // unchanged
   });
 
   it('SubagentStop for unknown agent_id (not in subagents list) is a no-op', () => {
-    const sub = makeSubagent({ agentId: 'agent-known' });
-    const host = makeHost({ allSubagents: [sub] });
-    const router = new HookEventRouter();
-    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
-    t.onSpawn(sub);
+    const { sub, router } = setup('agent-known');
     router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-unknown' });
-    expect(sub.silenceTimerId).toBeDefined();   // unchanged
+    expect(sub.tailer).not.toBeNull();   // unchanged
   });
 
   it('phantom SubagentStop (agent_type === "") is filtered at the router and never fires', () => {
-    const sub = makeSubagent({ agentId: 'agent-real' });
-    const host = makeHost({ allSubagents: [sub] });
-    const router = new HookEventRouter();
-    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
-    t.onSpawn(sub);
+    const { sub, router } = setup('agent-real');
     router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-real', agent_type: '' });
-    expect(sub.silenceTimerId).toBeDefined();   // unchanged — filtered phantom
+    expect(sub.tailer).not.toBeNull();   // unchanged — filtered phantom
   });
 
   it('SubagentStop for other sessions is ignored', () => {
-    const sub = makeSubagent({ agentId: 'agent-x' });
-    const host = makeHost({ allSubagents: [sub] });
-    const router = new HookEventRouter();
-    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
-    t.onSpawn(sub);
+    const { sub, router } = setup('agent-x');
     router.onHookEvent('different-session', 'SubagentStop', { agent_id: 'agent-x', agent_type: 'general-purpose' });
-    expect(sub.silenceTimerId).toBeDefined();   // unchanged
+    expect(sub.tailer).not.toBeNull();   // unchanged
   });
 
-  it('delegates onSpawn/onProgress/onComplete unchanged to the JSONL fallback', () => {
-    const sub = makeSubagent();
-    const host = makeHost({ allSubagents: [sub] });
-    const router = new HookEventRouter();
-    const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
-    t.onSpawn(sub);
-    expect(sub.silenceTimerId).toBeDefined();
+  it('delegates onProgress unchanged to the JSONL fallback', () => {
+    const { sub, t } = setup('agent-p');
     t.onProgress(sub);
-    expect(sub.silenceTimerId).toBeUndefined();
+    expect(sub.tailer).toBeNull();
+    expect(sub.progressRelayed).toBe(true);
   });
 
   it('factory without sessionId returns the JSONL-only variant (no hook subscription)', () => {
-    const sub = makeSubagent({ agentId: 'agent-x' });
-    const host = makeHost({ allSubagents: [sub] });
-    const router = new HookEventRouter();
-    const t = makeSubagentLifecycleTracker(host, { hookRouter: router });   // no sessionId
-    t.onSpawn(sub);
+    const { sub, router } = setup('agent-x', {});
     router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-x', agent_type: 'general-purpose' });
-    // Hook would have cleared silenceTimerId, but the JSONL-only variant
-    // didn't subscribe — timer is still in place.
-    expect(sub.silenceTimerId).toBeDefined();
+    // The hook would have released the tailer, but the JSONL-only variant
+    // didn't subscribe — the tailer is still in place.
+    expect(sub.tailer).not.toBeNull();
   });
 });
 
 describe('revival (onRevive + late SubagentStop)', () => {
   const SID = 'parent-session-uuid';
 
-  it('onRevive cancels the silence timer and reopens the tailer at completedFileSize', async () => {
+  it('onRevive reopens the tailer at completedFileSize', async () => {
     vi.useRealTimers();
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'serac-lifecycle-'));
     try {
@@ -222,10 +198,7 @@ describe('revival (onRevive + late SubagentStop)', () => {
       fs.writeFileSync(agentFile, 'x'.repeat(49) + '\n');
       const sub = makeSubagent({ agentId: 'rev', completedFileSize: 30 });
       const t = new JsonlDerivedSubagentLifecycleTracker(makeHost({ sessionFilePath: sessionFile, allSubagents: [sub] }));
-      t.onSpawn(sub);
-      expect(sub.silenceTimerId).toBeDefined();
       t.onRevive(sub);
-      expect(sub.silenceTimerId).toBeUndefined();
       // The reopen awaits a real fs.stat; a fixed tick count raced it under
       // full-suite load, so wait for the tailer instead.
       await vi.waitFor(() => expect(t.getActiveTailerCount()).toBe(1));
@@ -239,31 +212,31 @@ describe('revival (onRevive + late SubagentStop)', () => {
   it('hook overlay: a late SubagentStop for a subagent that is NOT running is a no-op', () => {
     vi.useFakeTimers();
     try {
-      const sub = makeSubagent({ agentId: 'agent-late', running: false });
-      sub.silenceTimerId = setTimeout(() => {}, 100_000); // a live timer that a real stop would clear
+      const sub = makeSubagent({ agentId: 'agent-late' });
       const host = makeHost({ allSubagents: [sub] });
       const router = new HookEventRouter();
       const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
+      attachTailer(t, sub);
+      sub.running = false; // a tailer a real stop would release
       router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-late', agent_type: 'general-purpose' });
-      expect(sub.silenceTimerId).toBeDefined();
-      clearTimeout(sub.silenceTimerId);
+      expect(sub.tailer).not.toBeNull();
+      t.disposeAll([sub]);
       t.dispose();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('hook overlay: SubagentStop on a running subagent still tears its timer down', () => {
+  it('hook overlay: SubagentStop on a running subagent still releases its tailer', () => {
     vi.useFakeTimers();
     try {
       const sub = makeSubagent({ agentId: 'agent-live', running: true });
       const host = makeHost({ allSubagents: [sub] });
       const router = new HookEventRouter();
       const t = makeSubagentLifecycleTracker(host, { hookRouter: router, sessionId: SID });
-      t.onSpawn(sub);
-      expect(sub.silenceTimerId).toBeDefined();
+      attachTailer(t, sub);
       router.onHookEvent(SID, 'SubagentStop', { agent_id: 'agent-live', agent_type: 'general-purpose' });
-      expect(sub.silenceTimerId).toBeUndefined();
+      expect(sub.tailer).toBeNull();
       t.dispose();
     } finally {
       vi.useRealTimers();

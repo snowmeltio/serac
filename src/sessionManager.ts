@@ -67,10 +67,10 @@
  *   Phase 1: processProgressRecord extracts tool_use/tool_result from nested
  *            agent_progress content (data.message.message.content) to populate
  *            subagent activeTools for permission timer firing.
- *   Phase 2: If no agent_progress arrives within SUBAGENT_SILENCE_MS (8s),
- *            a targeted JsonlTailer opens the subagent's own JSONL file
- *            (<session>/subagents/agent-<agentId>.jsonl) for direct reads.
- *            Covers resumed subagents where Claude Code doesn't relay progress.
+ *   Phase 2: the first poll after spawn opens a targeted JsonlTailer on the
+ *            subagent's own JSONL file (<session>/subagents/agent-<agentId>.jsonl),
+ *            paired by the spawning toolUseId in its meta.json. The legacy
+ *            agent_progress relay, when present, suppresses it.
  *   Activity propagation: subagent activity updates session.lastActivity
  *            via updateSubagentActivity(), eliminating effectiveLastActivity loops.
  *   Acknowledgement: per-subagent (SubagentInfo.acknowledged), not session-level.
@@ -155,6 +155,22 @@ const COMPACT_GRACE_TIMEOUT_MS = 60_000;
  *  agent finishes; the real completion signal for background agents. */
 const BACKGROUND_AGENT_LAUNCH_PATTERN = /^Async agent launched(?:.*?\bagentId:\s*([\w-]+))?/s;
 const TASK_NOTIFICATION_PATTERN_ALL = /<task-notification>([\s\S]*?)(?:<\/task-notification>|$)/g;
+
+/** A subagent's terminal record: an assistant message that stopped on
+ *  end_turn with no tool_use (two end_turn records in the 2026-10-02 census
+ *  carried a Bash tool_use and kept going). SubagentHandback is deliberately not
+ *  terminal: 142 of 200 were followed by a closing text turn. */
+function isCleanEndTurn(record: JsonlRecord): boolean {
+  if (record.type !== 'assistant') { return false; }
+  const message = record.message as { stop_reason?: unknown } | undefined;
+  if (message?.stop_reason !== 'end_turn') { return false; }
+  return !getContentBlocks(record).some(b => b.type === 'tool_use');
+}
+
+/** Interim notice: the agent reported but is still waiting on its own
+ *  background work (CLI 2.1.286), so its <status>completed</status> does not
+ *  mean done. One agent in the census worked ~400 s past one of these. */
+const INTERIM_NOTIFICATION_PATTERN = /waiting on its own background work/;
 
 /** The text a <task-notification> carrier holds: a plain string (enqueue
  *  `content`, queued_command `prompt`) or an array of content blocks. */
@@ -648,7 +664,7 @@ export class SessionManager {
       permissionTracker: tracker,
       acknowledged: false,
       tailer: null,
-      silenceTimerId: undefined,
+      progressRelayed: false,
       agentId: cs.agentId,
       startedAt: new Date(cs.startedAt),
       resultPreview: cs.resultPreview,
@@ -743,7 +759,7 @@ export class SessionManager {
         // growth backstop revived one of its cached subagents), so pump that:
         // it never touches the main tailer, so the "hydrate never reads the
         // main file" invariant holds.
-        if (this.subagentLifecycle.getActiveTailerCount() > 0) {
+        if (this.subagentLifecycle.needsPoll(this.state.subagents)) {
           return await this.processSubagentTailerRecords();
         }
         return false;
@@ -827,7 +843,7 @@ export class SessionManager {
       this.initialReplayDone = true;
     }
 
-    if (!anyRecords && this.subagentLifecycle.getActiveTailerCount() === 0) {
+    if (!anyRecords && !this.subagentLifecycle.needsPoll(this.state.subagents)) {
       return sawTruncation;
     }
 
@@ -841,8 +857,8 @@ export class SessionManager {
       this.captureWriterPid();
     }
 
-    // Poll subagent tailers for direct JSONL reads (Phase 2: silent subagent detection)
-    if (this.subagentLifecycle.getActiveTailerCount() > 0) {
+    // Open and poll subagent tailers for direct JSONL reads (Phase 2)
+    if (this.subagentLifecycle.needsPoll(this.state.subagents)) {
       if (await this.processSubagentTailerRecords()) {
         changed = true;
       }
@@ -1297,9 +1313,10 @@ export class SessionManager {
    *    (b) when the backing process is confirmed dead via the registry, clear
    *        every outstanding shell at once — a dead parent has no detached
    *        children worth flagging — rather than waiting out the ceiling.
-   *  Background agents get the same treatment via sweepBackgroundAgents():
-   *  registry-confirmed death completes them at once; a quiet agent file past
-   *  its ceiling force-completes as the missed-notification backstop.
+   *  Subagents get the same treatment via sweepRunningSubagents():
+   *  registry-confirmed death completes every running row at once; while
+   *  liveness is unknown, a background agent file quiet past its ceiling
+   *  force-completes as the missed-notification backstop.
    *
    *  Returns true iff something actually dropped, so the caller can push the
    *  change to the UI. The demote path can't: on a `done` card `computeDemotion`
@@ -1321,7 +1338,7 @@ export class SessionManager {
       }
       changed = this.backgroundShellTracker.count() < before;
     }
-    if (this.hasLiveBackgroundAgents() && this.sweepBackgroundAgents(now)) {
+    if (this.state.subagents.some(s => s.running) && this.sweepRunningSubagents(now)) {
       changed = true;
     }
     return changed;
@@ -1394,10 +1411,17 @@ export class SessionManager {
     return changed;
   }
 
-  /** Backstop for background agents whose <task-notification> never arrives
-   *  (CC killed, harness crash). Registry-confirmed death completes them all at
-   *  once — a dead parent has no detached children. Otherwise an agent whose
-   *  own JSONL has sat unmodified past the ceiling is force-completed. The
+  /** D4 and the missed-notification backstop. Registry-confirmed death
+   *  completes every running row at once, foreground or background — a dead
+   *  parent has no children, and a foreground agent's interrupted
+   *  tool_result is only written when the session resumes (one took 1,259 s).
+   *
+   *  The quiet-file ceiling then applies ONLY while liveness is unknown (the
+   *  registry latch never armed, or a degraded scan). While the registry says
+   *  the session is live, a quiet agent is trusted to be working: the parent
+   *  enqueue closes 219/219 background agents, and three live background
+   *  agents in the census sat quiet past the ceiling (one 3,699 s wait), so
+   *  the ceiling would have completed them wrongly. The
    *  agent FILE's mtime is the preferred liveness source: it stays accurate
    *  even when a dormant parent's tailers aren't being pumped. When the mtime
    *  is unavailable (no agentId yet), the fallback is subagent.lastActivity —
@@ -1405,16 +1429,17 @@ export class SessionManager {
    *  wall-clock; same replay reasoning as the background-shell launch anchor
    *  above), so a stale agent past its ceiling force-completes on the first
    *  sweep after reopen rather than getting a fresh 15-min grace. */
-  private sweepBackgroundAgents(now: number): boolean {
-    const dead = this.isConfirmedDeadByRegistry();
+  private sweepRunningSubagents(now: number): boolean {
+    const liveness = this.registryLiveness();
     let changed = false;
     for (const subagent of this.state.subagents) {
-      if (!subagent.background || !subagent.running) { continue; }
-      if (dead) {
+      if (!subagent.running) { continue; }
+      if (liveness === false) {
         this.completeSubagent(subagent, subagent.resultPreview);
         changed = true;
         continue;
       }
+      if (!subagent.background || liveness === true) { continue; }
       const lastWriteMs = this.backgroundAgentFileMtime(subagent)
         ?? subagent.lastActivity.getTime();
       if (now - lastWriteMs > BACKGROUND_AGENT_CEILING_MS) {
@@ -2111,7 +2136,7 @@ export class SessionManager {
       permissionTracker: tracker,
       acknowledged: false,
       tailer: null,
-      silenceTimerId: undefined,
+      progressRelayed: false,
       agentId,
       startedAt: new Date(),
       resultPreview: null,
@@ -2237,16 +2262,20 @@ export class SessionManager {
       for (const match of text.matchAll(TASK_NOTIFICATION_PATTERN_ALL)) {
         const body = match[1];
         const status = body.match(/<status>([^<]+)<\/status>/)?.[1]?.trim();
-        if (!status) { continue; }
+        if (!status || INTERIM_NOTIFICATION_PATTERN.test(body)) { continue; }
         const taskIds = new Set(Array.from(body.matchAll(/<task-id>([^<]+)<\/task-id>/g), m => m[1].trim()));
         const toolUseIds = new Set(Array.from(body.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g), m => m[1].trim()));
         const result = body.match(/<result>([\s\S]*?)<\/result>/)?.[1]?.trim();
         const preview = ((status !== 'completed' ? `[${status}] ` : '')
           + (result ?? '').replace(/\s+/g, ' ')).trim().slice(0, 200) || null;
         for (const subagent of this.state.subagents) {
-          if (!subagent.running) { continue; }
           if (!(subagent.agentId && taskIds.has(subagent.agentId))
             && !toolUseIds.has(subagent.parentToolUseId)) { continue; }
+          if (!subagent.running) {
+            // Already closed by its own transcript (D3): keep the result.
+            if (subagent.resultPreview === null && preview) { subagent.resultPreview = preview; }
+            continue;
+          }
           this.completeSubagent(subagent, preview);
           completed = true;
         }
@@ -2661,14 +2690,27 @@ export class SessionManager {
     let changed = false;
 
     for (const { subagent, records } of batches) {
+      let last: JsonlRecord | null = null;
       for (const record of records) {
         if (record.type === 'assistant') {
           this.applySubagentAssistantRecord(subagent, record);
+          last = record;
           changed = true;
         } else if (record.type === 'user') {
           this.applySubagentUserRecord(subagent, record);
+          last = record;
           changed = true;
         }
+      }
+      // D3: a background agent whose own transcript ends on a clean end_turn
+      // has finished, whatever the parent has (not) delivered yet — a guard
+      // against parent-format drift (171/234 transcripts end this way; the
+      // parent enqueue follows ~0.1 s later and fills the preview). Foreground
+      // rows wait for their Agent tool_result instead (15/15 had one): done
+      // here, the parent's open Agent tool_use alone would satisfy
+      // shouldMarkDone and let the idle timer end the turn early.
+      if (subagent.background && last && isCleanEndTurn(last)) {
+        this.completeSubagent(subagent, null);
       }
     }
 

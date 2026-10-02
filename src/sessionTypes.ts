@@ -68,12 +68,12 @@ export interface SubagentInfo {
   permissionTracker: import('./trackers/permissionTracker.js').PermissionTracker;
   /** Whether the user has acknowledged this subagent (triggers pruning when done) */
   acknowledged: boolean;
-  /** [Phase 2] Targeted JSONL tailer for silent subagent detection.
-   *  Activated when no agent_progress arrives within SUBAGENT_SILENCE_MS. */
+  /** Targeted tailer on the subagent's own JSONL, opened by the first poll
+   *  after spawn (see SubagentTailerManager.poll). */
   tailer: import('./jsonlTailer.js').JsonlTailer | null;
-  /** [Phase 2] Silence timer: if no agent_progress arrives within threshold,
-   *  open a targeted tailer for the subagent's own JSONL file. */
-  silenceTimerId: ReturnType<typeof setTimeout> | undefined;
+  /** The legacy agent_progress relay has fed this subagent, so its file is
+   *  not tailed (both would count the same tools). Cleared on revival. */
+  progressRelayed: boolean;
   /** [Phase 2] Agent ID mapping used to locate subagent JSONL files
    *  (<session>/subagents/agent-<agentId>.jsonl). */
   agentId: string | null;
