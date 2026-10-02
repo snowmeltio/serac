@@ -168,6 +168,9 @@ export class SubagentTailerManager {
       }
       if (this.ctx.isDisposed() || !subagent.running) { return; }
       if (subagent.revivalCount !== gen) { return; } // a newer revival owns the tailer now
+      // A replay/reset during the stat replaced the subagent list (and
+      // zeroed the count): tailing the orphaned row would leak a cap slot.
+      if (!this.ctx.getAllSubagents().includes(subagent)) { return; }
       if (this.activeTailerCount >= MAX_SUBAGENT_TAILERS) { return; }
       this.disposeTailer(subagent);
       const tailer = new JsonlTailer(file, offset ?? stat.size);

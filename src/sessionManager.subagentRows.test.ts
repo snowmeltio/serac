@@ -393,4 +393,56 @@ describe('adversarial review regressions (2026-10-02)', () => {
     await feed(mgr, []);
     expect(row(mgr, 'toolu_NEW').agentId).toBe('new1');
   });
+
+  it('a later run\'s notification replaces the earlier run\'s preview on a done row', async () => {
+    const mgr = makeManager({ livenessProbe: () => true });
+    await spawnBackground(mgr);
+    const file = writeAgent(AGENT_ID, [agentToolUse('t1')]);
+    await feed(mgr, []);
+    await feed(mgr, [enqueue(notification({ result: 'RUN ONE result' }))]);
+    // Run 2: revived without an inline record, finished inside one sweep window.
+    fs.appendFileSync(file, agentToolResult('t1') + '\n'
+      + JSON.stringify({ isSidechain: true, type: 'user', timestamp: new Date().toISOString(),
+        message: { role: 'user', content: [{ type: 'text', text: 'peer message' }] } }) + '\n'
+      + agentText('RUN TWO answer', 'end_turn') + '\n');
+    await feed(mgr, [enqueue(notification({ result: 'RUN TWO result' }))]);
+    for (let i = 0; i < 6; i++) { await mgr.sweepRevivedSubagents(Date.now()); }
+    const r = row(mgr, BG_TOOL);
+    expect(r.running).toBe(false);
+    expect(r.resultPreview).toBe('RUN TWO result');
+  });
+
+  it('D3 blocked by a partial line still fires when the next batch holds only that line', async () => {
+    const mgr = makeManager({ livenessProbe: () => true });
+    await spawnBackground(mgr);
+    const file = writeAgent(AGENT_ID, [agentToolUse('t1'), agentToolResult('t1'), agentText('All done.', 'end_turn')]);
+    const att = JSON.stringify({ isSidechain: true, type: 'attachment', timestamp: new Date().toISOString(),
+      attachment: { type: 'hook_success', hookName: 'SubagentStop' } });
+    fs.appendFileSync(file, att.slice(0, 20));
+    await feed(mgr, []);
+    expect(row(mgr, BG_TOOL).running).toBe(true);
+    fs.appendFileSync(file, att.slice(20) + '\n');
+    await feed(mgr, []);
+    expect(row(mgr, BG_TOOL).running).toBe(false);
+  });
+
+  it('a revival reopen in flight across forceReplay() does not tail the orphaned row', async () => {
+    const mgr = makeManager();
+    await spawnBackground(mgr);
+    writeAgent(AGENT_ID, [agentText('done', 'end_turn')]);
+    await feed(mgr, []);
+    expect(row(mgr, BG_TOOL).running).toBe(false);
+    const statMock = fs.promises.stat as unknown as ReturnType<typeof vi.fn>;
+    const orig = statMock.getMockImplementation()!;
+    statMock.mockImplementationOnce(async (...a: unknown[]) => {
+      await new Promise(r => setTimeout(r, 50));
+      return (orig as (...x: unknown[]) => unknown)(...a);
+    });
+    await feed(mgr, [toolUseRecord('SendMessage', 'toolu_sm', { to: AGENT_ID }),
+      toolResultRecord('toolu_sm', JSON.stringify({ success: true, message: `Resuming agent ${AGENT_ID}`, resumedAgentId: AGENT_ID }))]);
+    await mgr.forceReplay();
+    await new Promise(r => setTimeout(r, 80));
+    expect(mgr.getSnapshot().subagents).toHaveLength(0);
+    expect(mgr.getActiveSubagentTailerCount()).toBe(0);
+  });
 });

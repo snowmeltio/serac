@@ -67,7 +67,7 @@ The local/sibling/foreign scans above each check the dormant-session replay cach
 | `trackers/` | Non-status enrichment slices (background shells, tool outcomes, permission timing, hook enrichment) — they never move `running`/`waiting`/`done`. |
 | `teamDiscovery.ts` / `teamManifest.ts` | Agent Teams discovery (`~/.claude/teams/`), config parsing, workspace scoping, inbox target resolution. |
 | `foreignWorkspaceManager.ts` / `siblingWorktreeManager.ts` / `worktreeRows.ts` | Out-of-window sections: foreign-workspace rows/strips and sibling-worktree cards. |
-| `subagentTailerManager.ts` | Subagent transcript tailing. Each poll opens a tailer for any running subagent lacking one (no silence delay), pairing a file to its row by the `toolUseId` in `agent-<id>.meta.json`; a wholly meta-less directory (older CLIs) falls back to birthtime order. |
+| `subagentTailerManager.ts` | Subagent transcript tailing. Each poll opens a tailer for any running subagent lacking one (no silence delay), pairing a file to its row by the `toolUseId` in `agent-<id>.meta.json` (a meta without one, e.g. a skill fork, is never claimed); a wholly meta-less directory (older CLIs) falls back to birthtime order. A running row whose tailer was released (SubagentStop hook) or whose revival couldn't open yet (cap, missing file) resumes at its recorded offset (`resumeAt`), never byte 0; an in-flight revival reopen holds an owner token in `opening` so `poll()` can't race it. |
 | `validation.ts` | Webview→host message validation (the webview is untrusted). |
 | `panelUtils.ts` / `footerSlots.ts` / `paths.ts` / `jsonlValidator.ts` / `gitWorktreeUtil.ts` / `claudeSettings.ts` / `toolProfiles.ts` / `workspaceOpener.ts` | Support modules: pure pill/format helpers, footer slot layout, path mapping, record validation, worktree enumeration, CC settings reads, the canonical tool-profile table, focus-safe workspace opening. |
 
@@ -251,9 +251,17 @@ read `DONE` while detached agents kept working for many minutes (found live
 - **Own-transcript end (D3)** — a background agent whose own JSONL's latest
   assistant/user record is an assistant message with `stop_reason:
   "end_turn"` and no `tool_use` block completes at the end of that tailer
-  batch (`isCleanEndTurn()`, `processSubagentTailerRecords()`). It guards
+  batch (`isCleanEndTurn()`, `completeOnOwnEnd()`), once the read has caught
+  up with the file (no capped 16 MB slice left, no partial line pending:
+  `JsonlTailer.hasPartialLine()`). The growth sweep applies the same check
+  to the delta it revives on, since its adopted tailer is already at EOF
+  and no later batch would judge it. It guards
   against parent-format drift rather than adding speed: the parent enqueue
-  lands ~0.1 s later and fills `resultPreview` on the already-done row.
+  lands ~0.1 s later and sets `resultPreview` on the already-done row (a
+  terminal notification always replaces a done row's preview: it is the
+  newest word on the result, including after a revival Serac missed). D3
+  judges each row's last own assistant/user record across batches
+  (`lastOwnRecord`, cleared on revival).
   SubagentHandback is not terminal (142 of 200 were followed by a closing
   text turn). Foreground rows are excluded: done before their Agent
   tool_result, the parent's open Agent tool_use alone satisfies
@@ -269,7 +277,10 @@ read `DONE` while detached agents kept working for many minutes (found live
   JSONL has sat unmodified past `BACKGROUND_AGENT_CEILING_MS` (15 min) is
   force-completed (missed/never-written notification). While the registry
   says live, a quiet agent is trusted: the census had three live background
-  agents quiet past the ceiling. File mtime is the preferred liveness source
+  agents quiet past the ceiling. The one exception heals a missed D3: a
+  live-registry background row quiet past the ceiling whose transcript's last
+  64 KB ends on a clean end_turn completes (`quietTranscriptEndedCleanly()`,
+  read once per file mtime). File mtime is the preferred liveness source
   — it needs no parsed record at all and works without tailer pumping. When
   unavailable (no `agentId` adopted from the launch banner), the fallback is
   `subagent.lastActivity`, itself replay-accurate since it now stamps from the

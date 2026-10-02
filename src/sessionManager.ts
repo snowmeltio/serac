@@ -453,6 +453,10 @@ export class SessionManager {
   /** mtime at which quietTranscriptEndedCleanly() last read each subagent's
    *  file tail. */
   private readonly tailCheckedMtime = new WeakMap<SubagentInfo, number>();
+  /** Each subagent's latest own assistant/user record seen by a tailer, for
+   *  D3 (completeOnOwnEnd). Cleared on revival so a reopened row is never
+   *  judged on its previous run's end_turn. */
+  private readonly lastOwnRecord = new WeakMap<SubagentInfo, JsonlRecord>();
 
   constructor(
     sessionId: string,
@@ -2273,6 +2277,7 @@ export class SessionManager {
     subagent.resultPreview = null;
     subagent.background = opts.background;
     subagent.revivalCount++;
+    this.lastOwnRecord.delete(subagent);
     this.updateSubagentActivity(subagent, opts.timestamp);
     this.subagentLifecycle.onRevive(subagent, opts.preopened);
     subagent.completedFileSize = null;
@@ -2344,8 +2349,10 @@ export class SessionManager {
           if (!(subagent.agentId && taskIds.has(subagent.agentId))
             && !toolUseIds.has(subagent.parentToolUseId)) { continue; }
           if (!subagent.running) {
-            // Already closed by its own transcript (D3): keep the result.
-            if (subagent.resultPreview === null && preview) { subagent.resultPreview = preview; }
+            // Already closed: by its own transcript (D3), or before a revival
+            // Serac didn't see inline. A terminal notification is the newest
+            // word on the agent's result, so it replaces the preview.
+            if (preview) { subagent.resultPreview = preview; }
             continue;
           }
           this.completeSubagent(subagent, preview);
@@ -2789,11 +2796,14 @@ export class SessionManager {
    *  mid-run end_turn (a queued peer message, a hook block) reads done until
    *  the growth sweep revives the row. */
   private completeOnOwnEnd(subagent: SubagentInfo, records: JsonlRecord[], caughtUp: boolean, preview: string | null): void {
-    if (!subagent.background || !subagent.running || !caughtUp) { return; }
-    let last: JsonlRecord | null = null;
+    // Track the last conversation record across batches: a batch blocked by
+    // a pending partial line can be followed by one holding only that
+    // (attachment) line, which must still be judged on the earlier end_turn.
     for (const record of records) {
-      if (record.type === 'assistant' || record.type === 'user') { last = record; }
+      if (record.type === 'assistant' || record.type === 'user') { this.lastOwnRecord.set(subagent, record); }
     }
+    if (!subagent.background || !subagent.running || !caughtUp) { return; }
+    const last = this.lastOwnRecord.get(subagent);
     if (last && isCleanEndTurn(last)) { this.completeSubagent(subagent, preview); }
   }
 }
