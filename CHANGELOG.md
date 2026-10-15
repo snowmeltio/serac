@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.27.1 (2026-10-16) - Agent rows close on hand-back, no done flash mid-turn
+
+### Fixed
+- **Agent rows no longer stay "running" after the agent hands back.** Claude Code agents now end on a hand-back record. When an agent left work running in the background, the only notice its session got said it was "waiting on its own background work", and Serac kept the row running for as long as the session stayed open (seen live 2026-10-15: one row stuck under a card whose session had been idle for minutes). The hand-back record now closes the row. If the agent picks its background work up again, the row reopens.
+- **The card no longer flashes "Done" when an agent finishes mid-turn.** Each agent's hand-back queues a message while the lead is still working, and Serac read any queued message as the end of the turn. That made the card read Done for 2 to 20 seconds after every agent finish, and when you typed a follow-up mid-turn. A question waiting for your answer now stays Waiting when an agent finishes underneath it.
+- **Interrupting a turn now ends it.** Pressing Esc or rejecting a permission prompt used to read as a new turn, so the card stayed Running, in one case for four minutes after the session had exited.
+
+### Changed
+- **Agent completions and revivals now appear in the Serac output channel** as `[subagent] … done (<signal>)` and `[subagent] … revived (<reason>)` lines, naming what closed or reopened the row. Live events log at info, startup replay at trace.
+
 ## v1.27.0 (2026-10-02) - Agent rows finish when the agent does
 
 ### Fixed
