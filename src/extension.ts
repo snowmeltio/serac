@@ -37,6 +37,7 @@ import {
 } from './workspaceOpener.js';
 import { isExtensionHostPid } from './writerOwnership.js';
 import { isValidSessionId } from './validation.js';
+import { sessionTitleCandidates, strongTitleCandidates, findTabByLabel, findRevealedTab } from './claudeTabMatch.js';
 import { wireHookIngress } from './hookWiring.js';
 import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
@@ -355,34 +356,84 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         || (!!v && typeof v === 'object' && 'toString' in v && String(v).includes(sessionId)));
     });
   }
-  async function closeOwnSessionTab(sessionId: string): Promise<boolean> {
+  /** Re-runs `probe` on every tab change until it finds a tab or `timeoutMs`
+   *  passes (one last probe at the deadline). Any tab event — a dirty marker,
+   *  a pin, a label — fires onDidChangeTabs, so the first event is no signal
+   *  that the reveal has landed. Subscribe BEFORE triggering the change;
+   *  `check` probes on demand, `cancel` abandons the wait. */
+  function watchForTab<T>(probe: () => T | undefined, timeoutMs: number) {
+    let settle: (tab: T | undefined) => void = () => { /* replaced below */ };
+    const result = new Promise<T | undefined>(resolve => {
+      const timer = setTimeout(() => settle(probe()), timeoutMs);
+      const sub = vscode.window.tabGroups.onDidChangeTabs(() => {
+        const tab = probe();
+        if (tab) { settle(tab); }
+      });
+      settle = (tab) => { clearTimeout(timer); sub.dispose(); resolve(tab); };
+    });
+    return {
+      result,
+      check: () => { const tab = probe(); if (tab) { settle(tab); } },
+      cancel: () => settle(undefined),
+    };
+  }
+  // The reveal for a remembered tab is fire-and-forget inside Claude Code,
+  // so the tab change can land after editor.open resolves.
+  const REVEAL_SETTLE_MS = 1000;
+
+  // Release closes run one at a time: two concurrent reveal passes would each
+  // see the other's activated tab as their own.
+  let tabCloseChain: Promise<unknown> = Promise.resolve();
+  function closeOwnSessionTab(sessionId: string): Promise<boolean> {
+    const run = tabCloseChain.then(() => closeOwnSessionTabNow(sessionId));
+    tabCloseChain = run.catch(() => { /* surfaced to the caller */ });
+    return run;
+  }
+
+  async function closeOwnSessionTabNow(sessionId: string): Promise<boolean> {
     const byId = findSessionTab(allClaudeTabs(), sessionId);
     if (byId) {
       log.info(`Dual-writer release: closing session tab for ${sessionId} (matched by tab input)`);
       return vscode.window.tabGroups.close(byId);
     }
-    // Focus-then-close fallback. The open command reveals the existing tab
-    // for this session — or CREATES one when none exists, so the before-set
-    // is captured to guarantee anything the open added gets closed even when
-    // the active-tab check misses (focus can land elsewhere; leaving a
-    // freshly created tab open would ADD a writer on a release request).
-    const before = new Set(allClaudeTabs());
+    // Label pass: Claude tab inputs carry no session id in practice, but the
+    // label is the session's (truncated) title. A unique match on the custom
+    // or AI title closes without revealing anything, so the other window's
+    // focus is left alone. First-prompt titles collide across sessions
+    // started from the same prompt, so they only count in the reveal pass.
+    const snapshots = discovery.getSnapshots();
+    const own = snapshots.find(s => s.sessionId === sessionId);
+    const targetTitles = own ? sessionTitleCandidates(own) : [];
+    const otherTitles = snapshots.filter(s => s.sessionId !== sessionId).map(sessionTitleCandidates);
+    const byLabel = findTabByLabel(allClaudeTabs(), own ? strongTitleCandidates(own) : [], otherTitles);
+    if (byLabel) {
+      log.info(`Dual-writer release: closing session tab for ${sessionId} (matched by tab label)`);
+      return vscode.window.tabGroups.close(byLabel);
+    }
+    // Reveal pass. The open command reveals the session's existing tab, or
+    // CREATES one when none exists (closing a created tab guarantees the open
+    // never leaves an extra writer behind). Only a tab the reveal visibly
+    // created or activated is accepted — never "whichever Claude tab is
+    // active": when the Claude sidebar holds the session no tab changes, and
+    // the active tab then belongs to a different, possibly running, session.
+    const before = new Map(allClaudeTabs().map(t => [t, t.isActive] as const));
+    const watch = watchForTab(() => {
+      const after = allClaudeTabs();
+      return findSessionTab(after, sessionId) ?? findRevealedTab(before, after, targetTitles, otherTitles);
+    }, REVEAL_SETTLE_MS);
     try {
       await vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One);
     } catch {
+      watch.cancel();
       return false;
     }
-    const after = allClaudeTabs();
-    // Best evidence first: an id match (the reveal may have made the input
-    // identifiable), then any tab the open created, then the active tab.
-    const active = vscode.window.tabGroups.activeTabGroup.activeTab;
-    const target = findSessionTab(after, sessionId)
-      ?? after.find(t => !before.has(t))
-      ?? (active && isClaudeTab(active) ? active : undefined);
+    watch.check();
+    const target = await watch.result;
     if (target) {
-      log.info(`Dual-writer release: closing session tab for ${sessionId} (focus-then-close)`);
+      log.info(`Dual-writer release: closing session tab for ${sessionId} (revealed by editor.open)`);
       return vscode.window.tabGroups.close(target);
     }
+    log.warn(`Dual-writer release: no tab for ${sessionId} could be identified (no label match; the reveal created or activated nothing — sidebar-held, or already active) — refusing to guess`);
     return false;
   }
 

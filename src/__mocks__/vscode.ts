@@ -149,8 +149,9 @@ export const window = {
   showErrorMessage: vi.fn(),
   showTextDocument: vi.fn(),
   tabGroups: {
-    all: [] as Array<{ tabs: Array<{ input: unknown; isActive: boolean }> }>,
+    all: [] as Array<{ tabs: Array<{ input: unknown; isActive: boolean; label?: string }> }>,
     close: vi.fn(),
+    onDidChangeTabs: vi.fn(() => ({ dispose: vi.fn() })),
   },
 };
 
