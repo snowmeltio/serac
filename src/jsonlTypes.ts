@@ -101,6 +101,9 @@ export interface JsonlRecord {
    *  absent on `queue-operation`, `last-prompt`, `atis-latch`. The Claude Code
    *  panel refuses to restore transcripts whose value is `sdk-cli`. */
   entrypoint?: string;
+  /** On a subagent's `user` tool_result record: the tool ended the agent's
+   *  run (StructuredOutput from CLI 2.1.187, SubagentHandback from 2.1.285). */
+  toolEndsTurn?: boolean;
   [key: string]: unknown;
 }
 

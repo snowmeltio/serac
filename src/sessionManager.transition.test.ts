@@ -32,6 +32,7 @@ vi.mock('./jsonlTailer.js', () => ({
 }));
 
 const { SessionManager } = await import('./sessionManager.js');
+const { HookEventRouter } = await import('./hookEventRouter.js');
 
 function makeManager(): InstanceType<typeof SessionManager> {
   return new SessionManager('test-session-id', '/tmp/test.jsonl', 'test-workspace');
@@ -162,6 +163,76 @@ describe('Transition coverage: every known record type/subtype triggers a state 
     }]);
     expect(changed).toBe(true);
     expect(mgr.getStatus()).toBe('done');
+  });
+
+  // S1 (2026-10-15 shadow log): every agent hand-back writes a mid-turn
+  // enqueue, and forcing done there flashed the card done for 2-20 s.
+  it('queue-operation: enqueue mid-turn leaves the session running', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [{ type: 'queue-operation', operation: 'dequeue', timestamp: ts() }]);
+    expect(mgr.getStatus()).toBe('running');
+    await feedRecords(mgr, [{
+      type: 'queue-operation', operation: 'enqueue', timestamp: ts(),
+      content: '<task-notification>\n<task-id>a0000000000000001</task-id>\n<status>completed</status>\n<summary>Agent "x" finished</summary>\n</task-notification>',
+    }]);
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('queue-operation: enqueue over a pending AskUserQuestion leaves it waiting', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [{
+      type: 'assistant', timestamp: ts(),
+      message: { content: [{ type: 'tool_use', name: 'AskUserQuestion', id: 'ask1', input: {} }] },
+    }]);
+    expect(mgr.getStatus()).toBe('waiting');
+    await feedRecords(mgr, [{ type: 'queue-operation', operation: 'enqueue', timestamp: ts() }]);
+    expect(mgr.getStatus()).toBe('waiting');
+  });
+
+  // S4 (2026-10-15 shadow log): an interrupt read as a new turn and held the
+  // card on running for minutes after the turn ended.
+  it.each([
+    '[Request interrupted by user]',
+    '[Request interrupted by user for tool use]',
+  ])('user interrupt marker %s ends the turn', async (marker) => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [{
+      type: 'assistant', timestamp: ts(),
+      message: { content: [{ type: 'tool_use', name: 'mcp__plane__project', id: 'tu-int', input: {} }] },
+    }]);
+    expect(mgr.getStatus()).toBe('running');
+    await feedRecords(mgr, [{ type: 'user', timestamp: ts(), message: { content: [{ type: 'text', text: marker }] } }]);
+    expect(mgr.getStatus()).toBe('done');
+  });
+
+  it('an interrupt during compaction closes the compaction window too', async () => {
+    const router = new HookEventRouter();
+    const mgr = new SessionManager('test-session-id', '/tmp/test.jsonl', 'test-workspace', { hookRouter: router });
+    await feedRecords(mgr, [{ type: 'user', timestamp: ts(), message: { content: [{ type: 'text', text: 'go' }] } }]);
+    router.onHookEvent('test-session-id', 'PreCompact', { trigger: 'manual' });
+    expect(mgr.getSnapshot().compacting).toBe(true);
+    await feedRecords(mgr, [{ type: 'user', timestamp: ts(), message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] } }]);
+    expect(mgr.getStatus()).toBe('done');
+    expect(mgr.getSnapshot().compacting).toBeFalsy();
+  });
+
+  it('enqueue: an idle enqueue restarts firstActivity, a mid-turn one leaves it', async () => {
+    const mgr = makeManager();
+    const t0 = '2026-10-15T01:00:00.000Z';
+    const t1 = '2026-10-15T01:05:00.000Z';
+    const t2 = '2026-10-15T01:06:00.000Z';
+    await feedRecords(mgr, [{ type: 'queue-operation', operation: 'enqueue', timestamp: t0 }]);
+    expect(mgr.getSnapshot().firstActivity).toBe(Date.parse(t0));
+    await feedRecords(mgr, [{ type: 'queue-operation', operation: 'dequeue', timestamp: t1 }]);
+    await feedRecords(mgr, [{ type: 'queue-operation', operation: 'enqueue', timestamp: t2 }]);
+    expect(mgr.getStatus()).toBe('running');
+    expect(mgr.getSnapshot().firstActivity).toBe(Date.parse(t0));
+  });
+
+  it('a user message that only mentions an interrupt still opens a turn', async () => {
+    const mgr = makeManager();
+    await feedRecords(mgr, [{ type: 'user', timestamp: ts(), message: { content: [{ type: 'text', text: 'Why did you show [Request interrupted by user] earlier?' }] } }]);
+    expect(mgr.getStatus()).toBe('running');
   });
 
   it('queue-operation: dequeue → running', async () => {

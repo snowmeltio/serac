@@ -1614,8 +1614,15 @@ export class SessionDiscovery {
       },
       // Completed-subagent revival trace (SendMessage / Agent({resume}) /
       // growth backstop) — see ARCHITECTURE.md → "Detached agents" → Revival.
-      onSubagentRevival: (reason, agentId) => {
-        this.log.trace(`[revive] ${sessionId.slice(0, 8)} ${reason} agent=${agentId ?? '?'}`);
+      // Live events log at `info` so a stuck or flapping agent row can be
+      // traced from the Output channel; startup replay stays at `trace`.
+      onSubagentRevival: (reason, agentId, replay) => {
+        const line = `[subagent] ${sessionId.slice(0, 8)} revived (${reason}) agent=${agentId?.slice(0, 8) ?? '?'}`;
+        if (replay) { this.log.trace(line); } else { this.log.info(line); }
+      },
+      onSubagentComplete: (signal, agentId, description, replay) => {
+        const line = `[subagent] ${sessionId.slice(0, 8)} done (${signal}) agent=${agentId?.slice(0, 8) ?? '?'} "${description.slice(0, 60)}"`;
+        if (replay) { this.log.trace(line); } else { this.log.info(line); }
       },
       // Remote Control bridge trace (instrumentation for the dropped-
       // bridge chip; see ARCHITECTURE.md → "Bridge enrolment state").

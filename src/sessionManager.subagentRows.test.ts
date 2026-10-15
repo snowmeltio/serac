@@ -4,7 +4,8 @@
  * A row is done when any of these holds, and running otherwise:
  *   D1 its foreground Agent tool_result (unchanged; see backgroundAgent tests)
  *   D2 a <task-notification> in any carrier (PR 1; see backgroundAgent tests)
- *   D3 a BACKGROUND agent's own transcript ends on a clean end_turn
+ *   D3 a BACKGROUND agent's own transcript ends on a clean end_turn, or on
+ *      a tool_result flagged toolEndsTurn (the SubagentHandback result)
  *   D4 the session's registry process is gone (every running row)
  * Supporting changes pinned here: the tailer opens on the first poll (no 8 s
  * silence timer), files pair by the meta.json toolUseId, the 15-min quiet
@@ -256,6 +257,63 @@ describe('interim notifications', () => {
   });
 });
 
+describe('D3: SubagentHandback ending on toolEndsTurn (CLI 2.1.285+)', () => {
+  /** The shape agent a172c3b2 (session 09517f1e, CLI 2.1.299) ended on: the
+   *  SubagentHandback call, then its tool_result flagged toolEndsTurn. */
+  function handback(id: string): string[] {
+    return [
+      JSON.stringify({ isSidechain: true, type: 'assistant', timestamp: new Date().toISOString(),
+        message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'SubagentHandback', input: { message: 'RECEIPT: done' } }], stop_reason: null } }),
+      JSON.stringify({ isSidechain: true, type: 'user', toolEndsTurn: true, timestamp: new Date().toISOString(),
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: '{"success":true,"message":"Report delivered to your caller."}' }] } }),
+    ];
+  }
+
+  it('completes a background agent whose only notice was interim', async () => {
+    const mgr = makeManager();
+    await spawnBackground(mgr);
+    await feed(mgr, [enqueue(notification({
+      summary: 'Agent "worker" is waiting on its own background work',
+    }))]);
+    writeAgent(AGENT_ID, [agentToolUse('t1'), agentToolResult('t1'), ...handback('h1')]);
+    await feed(mgr, []);
+    expect(row(mgr, BG_TOOL).running).toBe(false);
+    expect(mgr.hasLiveBackgroundAgents()).toBe(false);
+  });
+
+  it('reports the closing signal to onSubagentComplete', async () => {
+    const done: string[] = [];
+    const mgr = makeManager({ onSubagentComplete: (signal, agentId) => { done.push(`${signal}:${agentId}`); } });
+    await spawnBackground(mgr);
+    writeAgent(AGENT_ID, [...handback('h1')]);
+    await feed(mgr, []);
+    await feed(mgr, [enqueue(notification())]); // already closed: no second report
+    expect(done).toEqual([`D3:${AGENT_ID}`]);
+  });
+
+  it('an unflagged SubagentHandback result (2.1.283 and earlier) is not terminal', async () => {
+    const mgr = makeManager();
+    await spawnBackground(mgr);
+    const [use, result] = handback('h1');
+    const unflagged = JSON.parse(result) as Record<string, unknown>;
+    delete unflagged.toolEndsTurn;
+    writeAgent(AGENT_ID, [use, JSON.stringify(unflagged)]);
+    await feed(mgr, []);
+    expect(row(mgr, BG_TOOL).running).toBe(true);
+  });
+
+  it('with a live registry, the sweep heals a quiet row that ended on toolEndsTurn', async () => {
+    const mgr = makeManager({ livenessProbe: () => true });
+    await spawnBackground(mgr);
+    // No poll has read the file, standing in for any missed D3.
+    const file = writeAgent(AGENT_ID, [agentToolUse('t1'), agentToolResult('t1'), ...handback('h1')]);
+    const old = new Date(Date.now() - 20 * 60 * 1000);
+    fs.utimesSync(file, old, old);
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(true);
+    expect(row(mgr, BG_TOOL).running).toBe(false);
+  });
+});
+
 describe('D4 and the quiet-file ceiling (sweepBackgroundWork)', () => {
   function probe(initial: boolean | null) {
     let live: boolean | null = initial;
@@ -273,6 +331,22 @@ describe('D4 and the quiet-file ceiling (sweepBackgroundWork)', () => {
     p.set(false);
     expect(mgr.sweepBackgroundWork(Date.now())).toBe(true);
     expect(row(mgr, FG_TOOL).running).toBe(false);
+  });
+
+  it('a sweep completion on a session never re-read logs as live, not replay', async () => {
+    const p = probe(true);
+    const seen: Array<[string, boolean]> = [];
+    const mgr = makeManager({ livenessProbe: p.fn, onSubagentComplete: (signal, _id, _d, replay) => { seen.push([signal, replay]); } });
+    // One read only, so it is the startup replay and the session stays dormant.
+    await feed(mgr, [
+      userRecord('go'),
+      toolUseRecord('Agent', BG_TOOL, { description: 'worker', prompt: 'work', run_in_background: true }),
+      toolResultRecord(BG_TOOL, LAUNCH_BANNER),
+    ]);
+    mgr.sweepBackgroundWork(Date.now());
+    p.set(false);
+    mgr.sweepBackgroundWork(Date.now());
+    expect(seen).toEqual([['D4', false]]);
   });
 
   it('while the registry says live, a quiet background agent is NOT force-completed', async () => {

@@ -92,12 +92,15 @@ done ──→ running          (user record arrives, dequeue, or compact_bounda
 running ──→ waiting       (AskUserQuestion, permission timer 3s/15s, all subagents blocked — suppressed
                             in an auto-accept permission mode (item 9) or while a blocking subagent is
                             still running (item 10))
-running ──→ done          (idle timer 5s, all-subagents-done, hard ceiling 3min*, or Stop hook)
+running ──→ done          (idle timer 5s, all-subagents-done, hard ceiling 3min*, Stop hook, or an
+                            interrupt marker: `[Request interrupted by user]` / `… for tool use]`)
 waiting ──→ running       (sidechain tool_result unblocks subagents, user record)
 waiting ──→ running/done  (stale-waiting reconciliation: no live wait backs the status)
 waiting ──→ done          (waiting hard ceiling 10min, or registry-confirmed process death)
 running ──→ done          (registry-confirmed process death)
-any ──→ done              (queue-operation: enqueue, JSONL truncation)
+done ──→ done             (queue-operation: enqueue; never while running or waiting: a mid-turn
+                            enqueue carries an agent hand-back, a typed follow-up, or a notice)
+any ──→ done              (JSONL truncation)
 done ──→ stale            (display-only: acknowledged + 10s elapsed)
 (none) ──→ done           (hydrated from replay cache; stat mismatch → full replay from byte 0 — see "Replay cache" below)
 ```
@@ -249,9 +252,13 @@ read `DONE` while detached agents kept working for many minutes (found live
   watermark restores from the replay cache but the tailer reads from the
   file's current size, so a revived phase's `toolsCompleted` reads 0.
 - **Own-transcript end (D3)** — a background agent whose own JSONL's latest
-  assistant/user record is an assistant message with `stop_reason:
-  "end_turn"` and no `tool_use` block completes at the end of that tailer
-  batch (`isCleanEndTurn()`, `completeOnOwnEnd()`), once the read has caught
+  assistant/user record is terminal completes at the end of that tailer
+  batch (`isAgentTerminalRecord()`, `completeOnOwnEnd()`). Terminal means an
+  assistant message with `stop_reason: "end_turn"` and no `tool_use` block,
+  or a `user` tool_result flagged `toolEndsTurn: true` (StructuredOutput from
+  CLI 2.1.187, SubagentHandback from 2.1.285; 161 of 169 agents under 2.1.296+
+  end on the SubagentHandback result). D3 waits until
+  the read has caught
   up with the file (no capped 16 MB slice left, no partial line pending:
   `JsonlTailer.hasPartialLine()`). The growth sweep applies the same check
   to the delta it revives on, since its adopted tailer is already at EOF
@@ -262,12 +269,18 @@ read `DONE` while detached agents kept working for many minutes (found live
   newest word on the result, including after a revival Serac missed). D3
   judges each row's last own assistant/user record across batches
   (`lastOwnRecord`, cleared on revival).
-  SubagentHandback is not terminal (142 of 200 were followed by a closing
-  text turn). Foreground rows are excluded: done before their Agent
+  An unflagged SubagentHandback (2.1.283 and earlier) is not terminal (142 of
+  200 were followed by a closing text turn). Foreground rows are excluded: done before their Agent
   tool_result, the parent's open Agent tool_use alone satisfies
   `shouldMarkDone()`, which could let the idle timer end the turn early. A
   `completed` notification whose body says the agent "is waiting on its own
-  background work" is interim and does not complete the row.
+  background work" is interim and does not complete the row. It is often the
+  agent's only notice (none follows when it leaves a backgrounded shell
+  behind), so D3 on the `toolEndsTurn` record is what closes such a row.
+- **Trace** — every live completion and revival logs at `info` as
+  `[subagent] <id8> done (<signal>)` (signals D1, D2, D3, D4, `heal`,
+  `ceiling`, `turn_end`) or `[subagent] <id8> revived (<reason>)`. Startup
+  replay logs at `trace`.
 - **Backstops** — `sweepBackgroundWork()` (the per-poll dormant sweep, shared
   with background shells) runs `sweepRunningSubagents()`. Registry-confirmed
   death (D4) completes every running row at once, foreground included (a
@@ -279,7 +292,7 @@ read `DONE` while detached agents kept working for many minutes (found live
   says live, a quiet agent is trusted: the census had three live background
   agents quiet past the ceiling. The one exception heals a missed D3: a
   live-registry background row quiet past the ceiling whose transcript's last
-  64 KB ends on a clean end_turn completes (`quietTranscriptEndedCleanly()`,
+  64 KB ends on a terminal record completes (`quietTranscriptEndedCleanly()`,
   read once per file mtime). File mtime is the preferred liveness source
   — it needs no parsed record at all and works without tailer pumping. When
   unavailable (no `agentId` adopted from the launch banner), the fallback is
