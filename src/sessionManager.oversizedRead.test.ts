@@ -48,15 +48,17 @@ const { SessionManager } = await import('./sessionManager.js');
 const { JsonlTailer } = await import('./jsonlTailer.js');
 
 const SESSION_ID = 'oversized-sid';
-/** 22 alternating queue-operation records, ~800KB padding each: comfortably
+/** 22 alternating dequeue / AskUserQuestion records, ~800KB padding each: comfortably
  *  over the 16MB single-read cap (~17.6MB total), cheap to generate (one
  *  join + one writeFileSync) and cheap to parse (22 lines, not tens of
  *  thousands). */
 const RECORD_COUNT = 22;
 const PAD_SIZE = 800 * 1024;
 
-/** Every record alternates the status (done → running → done → …), starting
- *  from the constructor's initial `done`. Each record therefore causes
+/** Every record alternates the status (done → running → waiting → running
+ *  → …), starting from the constructor's initial `done`: a dequeue reopens
+ *  running, an AskUserQuestion tool_use parks it on waiting. (An enqueue
+ *  can't be the flip-back: it no longer ends an open turn.) Each record therefore causes
  *  EXACTLY one transition: transitions.length === RECORD_COUNT is proof
  *  every single record was processed — if even one were lost (the H6
  *  boundary bug) or a whole tail were dropped (the missing-drain-loop bug),
@@ -65,9 +67,16 @@ function buildFixture(filePath: string): void {
   const pad = 'x'.repeat(PAD_SIZE);
   const lines: string[] = [];
   for (let i = 0; i < RECORD_COUNT; i++) {
-    lines.push(JSON.stringify({
+    lines.push(JSON.stringify(i % 2 === 0 ? {
       type: 'queue-operation',
-      operation: i % 2 === 0 ? 'dequeue' : 'enqueue',
+      operation: 'dequeue',
+      idx: i,
+      pad,
+      sessionId: SESSION_ID,
+      timestamp: '2026-01-01T00:00:00.000Z',
+    } : {
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: `ask-${i}`, name: 'AskUserQuestion', input: {} }] },
       idx: i,
       pad,
       sessionId: SESSION_ID,
@@ -111,9 +120,9 @@ describe('SessionManager oversized-transcript drain', () => {
       const changed = await mgr.update();
       expect(changed).toBe(true);
       expect(transitions).toHaveLength(RECORD_COUNT);
-      // RECORD_COUNT is even, so the last record (idx 21, odd → 'enqueue')
-      // leaves the session done.
-      expect(mgr.getStatus()).toBe('done');
+      // RECORD_COUNT is even, so the last record (idx 21, odd →
+      // AskUserQuestion) leaves the session waiting.
+      expect(mgr.getStatus()).toBe('waiting');
       // Confirms the drain never spawned the writer-pid probe: every record
       // in this call was replay (the whole file consumed in one update()),
       // never live.

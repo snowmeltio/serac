@@ -10,7 +10,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * (init)        → done          constructor                              constructor()
  * any           → done          JSONL truncation                         resetState()
- * any           → done          queue-operation: enqueue                 processQueueOperation()
+ * !running/!waiting → done      queue-operation: enqueue (never mid-turn) processQueueOperation()
  *
  * done          → running       user record (main thread)                processUserRecord() → setRunning()
  * done          → running       queue-operation: dequeue                 processQueueOperation() → setRunning()
@@ -45,6 +45,7 @@
  * running       → done          idle timer (no output, process dead)     resetIdleTimer() + isProcessAlive()
  * running       → done          idle timer (all-subagents-done)          resetIdleTimer() timeout
  * running       → done          all-subagents-done on user record        processUserRecord()
+ * running       → done          interrupt marker (Esc / rejected prompt) processUserRecord() → markSessionDone()
  * running       → done          Stop hook (turn ended; ignored while     TurnLifecycleTracker → onTurnEnded()
  *                                stop_hook_active continuation)
  *               (background agents: markSessionDone exempts live background agents;
@@ -156,11 +157,19 @@ const COMPACT_GRACE_TIMEOUT_MS = 60_000;
 const BACKGROUND_AGENT_LAUNCH_PATTERN = /^Async agent launched(?:.*?\bagentId:\s*([\w-]+))?/s;
 const TASK_NOTIFICATION_PATTERN_ALL = /<task-notification>([\s\S]*?)(?:<\/task-notification>|$)/g;
 
-/** A subagent's terminal record: an assistant message that stopped on
- *  end_turn with no tool_use (two end_turn records in the 2026-10-02 census
- *  carried a Bash tool_use and kept going). SubagentHandback is deliberately not
- *  terminal: 142 of 200 were followed by a closing text turn. */
-function isCleanEndTurn(record: JsonlRecord): boolean {
+/** A subagent's terminal record, either of:
+ *  - an assistant message that stopped on end_turn with no tool_use (two
+ *    end_turn records in the 2026-10-02 census carried a Bash tool_use and
+ *    kept going);
+ *  - a user tool_result marked `toolEndsTurn: true`: a tool that ends the
+ *    agent's run (StructuredOutput from CLI 2.1.187, SubagentHandback from
+ *    2.1.285). 161 of 169 agents under 2.1.296+ end on the SubagentHandback
+ *    result; 13 of 5,350 flagged records were not the file's last, each
+ *    followed by a new prompt that the revival paths handle. An unflagged
+ *    SubagentHandback (2.1.283 and earlier) is not terminal: a closing text
+ *    turn followed it 142 times in 200. */
+function isAgentTerminalRecord(record: JsonlRecord): boolean {
+  if (record.type === 'user') { return record.toolEndsTurn === true; }
   if (record.type !== 'assistant') { return false; }
   const message = record.message as { stop_reason?: unknown } | undefined;
   if (message?.stop_reason !== 'end_turn') { return false; }
@@ -198,6 +207,15 @@ function readLastConversationRecord(file: string, size: number): JsonlRecord | n
   return null;
 }
 
+/** The harness's interrupt marker: a user record whose only content is
+ *  `[Request interrupted by user]` (Esc mid-turn) or `[Request interrupted by
+ *  user for tool use]` (a rejected permission prompt). Either ends the turn. */
+const INTERRUPT_MARKER_PATTERN = /^\[Request interrupted by user(?: for tool use)?\]$/;
+function isInterruptRecord(content: JsonlContentBlock[]): boolean {
+  return content.length === 1 && content[0].type === 'text'
+    && INTERRUPT_MARKER_PATTERN.test((content[0].text ?? '').trim());
+}
+
 /** Whether a tailer has returned everything the file held at its last read
  *  (no capped slice left, no partial line pending). Optional call: test
  *  doubles of JsonlTailer predate hasPartialLine(). */
@@ -207,8 +225,11 @@ function isCaughtUp(tailer: JsonlTailer | null): boolean {
 }
 
 /** Interim notice: the agent reported but is still waiting on its own
- *  background work (CLI 2.1.286), so its <status>completed</status> does not
- *  mean done. One agent in the census worked ~400 s past one of these. */
+ *  background work (CLI 2.1.286+), so its <status>completed</status> does not
+ *  mean done. One agent in the census worked ~400 s past one of these. It is
+ *  often the ONLY notice an agent gets (no "finished" follows when the agent
+ *  leaves a backgrounded shell behind), so D3 must close the row from the
+ *  agent's own `toolEndsTurn` record; a later resume reopens it on growth. */
 const INTERIM_NOTIFICATION_PATTERN = /waiting on its own background work/;
 
 /** The text a <task-notification> carrier holds: a plain string (enqueue
@@ -275,13 +296,25 @@ export function setConfidenceThresholds(highMs: number, mediumMs: number): void 
 
 /** Constructor options, extracted so {@link SessionManager.fromCache} can
  *  share the exact same shape without repeating the inline literal. */
+/** What closed a subagent row: D1 its foreground Agent tool_result, D2 a
+ *  <task-notification>, D3 its own transcript's terminal record, D4 the
+ *  registry process gone, `heal` the live-registry sweep re-reading a quiet
+ *  transcript, `ceiling` the 15-min quiet ceiling (liveness unknown),
+ *  `turn_end` the lead's turn ending over a foreground row. */
+export type SubagentDoneSignal = 'D1' | 'D2' | 'D3' | 'D4' | 'heal' | 'ceiling' | 'turn_end';
+/** Signals raised by sweepBackgroundWork(), never during a replay read. */
+const SWEEP_DONE_SIGNALS: ReadonlySet<SubagentDoneSignal> = new Set(['D4', 'heal', 'ceiling']);
+
 export interface SessionManagerOptions {
   onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
   /** Remote Control bridge enrol/drop/re-enrol trace — see the field. */
   onBridgeTransition?: (ev: BridgeTransition) => void;
   /** Completed-subagent revival trace: which path revived it (send_message /
    *  agent_resume / growth_backstop) and the agentId. */
-  onSubagentRevival?: (reason: string, agentId: string | null) => void;
+  onSubagentRevival?: (reason: string, agentId: string | null, replay: boolean) => void;
+  /** Subagent completion trace: which signal closed the row (see
+   *  SubagentDoneSignal), the agentId and the row's description. */
+  onSubagentComplete?: (signal: SubagentDoneSignal, agentId: string | null, description: string, replay: boolean) => void;
   hookRouter?: HookEventRouter;
   livenessProbe?: () => boolean | null;
   /** Reports which window(s) confirmed-own this session's live writer
@@ -394,7 +427,8 @@ export class SessionManager {
    *  Non-invasive: default no-op. Used by the replay harness to verify a
    *  captured transition stream is reproducible from JSONL. */
   private readonly onTransition?: (from: SessionStatus, to: SessionStatus, reason: string, activeToolCount: number) => void;
-  private readonly onSubagentRevival?: (reason: string, agentId: string | null) => void;
+  private readonly onSubagentRevival?: (reason: string, agentId: string | null, replay: boolean) => void;
+  private readonly onSubagentComplete?: (signal: SubagentDoneSignal, agentId: string | null, description: string, replay: boolean) => void;
   /** Poll tick for the growth backstop's 1-in-6 cadence (see
    *  sweepRevivedSubagents). Seeded from the sessionId so dormant sessions
    *  spread their stats across the six beats instead of all landing on the
@@ -467,6 +501,7 @@ export class SessionManager {
     const now = new Date();
     this.onTransition = opts.onTransition;
     this.onSubagentRevival = opts.onSubagentRevival;
+    this.onSubagentComplete = opts.onSubagentComplete;
     this.onBridgeTransition = opts.onBridgeTransition;
     this.hookRouter = opts.hookRouter;
     this.livenessProbe = opts.livenessProbe;
@@ -1487,7 +1522,7 @@ export class SessionManager {
     for (const subagent of this.state.subagents) {
       if (!subagent.running) { continue; }
       if (liveness === false) {
-        this.completeSubagent(subagent, subagent.resultPreview);
+        this.completeSubagent(subagent, subagent.resultPreview, 'D4');
         changed = true;
         continue;
       }
@@ -1497,7 +1532,7 @@ export class SessionManager {
         // own transcript already ended cleanly — one that missed its D3
         // (tailer cap, an adopted tailer already at EOF, a dropped batch).
         if (this.quietTranscriptEndedCleanly(subagent, now)) {
-          this.completeSubagent(subagent, subagent.resultPreview);
+          this.completeSubagent(subagent, subagent.resultPreview, 'heal');
           changed = true;
         }
         continue;
@@ -1505,7 +1540,7 @@ export class SessionManager {
       const lastWriteMs = this.backgroundAgentFileMtime(subagent)
         ?? subagent.lastActivity.getTime();
       if (now - lastWriteMs > BACKGROUND_AGENT_CEILING_MS) {
-        this.completeSubagent(subagent, subagent.resultPreview);
+        this.completeSubagent(subagent, subagent.resultPreview, 'ceiling');
         changed = true;
       }
     }
@@ -1523,7 +1558,7 @@ export class SessionManager {
     this.tailCheckedMtime.set(subagent, stat.mtimeMs);
     const file = subagentJsonlPath(sessionDirFromJsonl(this.state.filePath), subagent.agentId!);
     const last = readLastConversationRecord(file, stat.size);
-    return last !== null && isCleanEndTurn(last);
+    return last !== null && isAgentTerminalRecord(last);
   }
 
   /** mtime of a background agent's own JSONL, or null when unknown/absent.
@@ -1545,8 +1580,8 @@ export class SessionManager {
   }
 
   /** Mark session as done and clean up all running state */
-  private markSessionDone(): void {
-    this.setStatus('done', 'session_done');
+  private markSessionDone(reason = 'session_done'): void {
+    this.setStatus('done', reason);
     // Clear status-indicator text that would be misleading on a done card.
     // Preserve genuine activity (tool names, responses) for context.
     if (WAITING_ACTIVITY_MESSAGES.has(this.state.activity)) {
@@ -1562,7 +1597,7 @@ export class SessionManager {
       if (subagent.background && subagent.running) { continue; }
       // Turn-end completion preserves whatever resultPreview the subagent
       // already accumulated (or null). agentId survives so drill-in still works.
-      this.completeSubagent(subagent, subagent.resultPreview);
+      this.completeSubagent(subagent, subagent.resultPreview, 'turn_end');
     }
     this.clearSessionTimers();
   }
@@ -1888,7 +1923,7 @@ export class SessionManager {
               }
               this.updateSubagentActivity(subagent, timestamp);
             } else {
-              this.completeSubagent(subagent, SessionManager.extractResultPreview(block));
+              this.completeSubagent(subagent, SessionManager.extractResultPreview(block), 'D1');
             }
           }
         }
@@ -1909,6 +1944,16 @@ export class SessionManager {
       // harness re-enqueued the prompt) or the user interrupted — either way
       // the session is no longer sleeping.
       this.loopTracker.noteUserTurn(timestamp.getTime());
+    }
+    // An interrupt marker closes the turn, not opens one (S4: the card read
+    // running for minutes after an Esc or a rejected prompt). Done now, as
+    // Stop would: tools and timers cleared, live background agents kept.
+    if (!hadToolResult && isInterruptRecord(content)) {
+      // An interrupt also abandons a compaction in flight; left open, the
+      // window would hold the card off done for good.
+      this.closeCompactWindow();
+      this.markSessionDone('interrupt');
+      return true;
     }
     // A user record is a genuine new-turn reopener — release the Stop guard.
     this.turnEndedByStop = false;
@@ -2143,8 +2188,15 @@ export class SessionManager {
       // form: the user record can trail it by hours, the queued_command
       // attachment by ~0.1 s. Those two paths stay as redundant backstops.
       this.completeFromTaskNotificationTexts(notificationTexts(record.content));
-      this.state.firstActivity = timestamp;
-      this.setStatus('done', 'enqueue');
+      // An enqueue lands mid-turn as often as not: every background agent's
+      // hand-back and notification, a message typed while the lead works, an
+      // Artifact notice. Forcing done there flashed the card done for 2-20 s
+      // after every agent finish and dropped a pending AskUserQuestion
+      // (2026-10-15 shadow log, S1). Only an idle session reads it as done.
+      if (this.state.status !== 'running' && this.state.status !== 'waiting') {
+        this.state.firstActivity = timestamp;
+        this.setStatus('done', 'enqueue');
+      }
       // Track for stale guard (C3). Anchored to the RECORD's timestamp, not
       // wall-clock at processing — a reload replays the JSONL, and Date.now()
       // would re-arm the done→stale display guard for every historic enqueue
@@ -2281,7 +2333,7 @@ export class SessionManager {
     this.updateSubagentActivity(subagent, opts.timestamp);
     this.subagentLifecycle.onRevive(subagent, opts.preopened);
     subagent.completedFileSize = null;
-    this.onSubagentRevival?.(reason, subagent.agentId);
+    this.onSubagentRevival?.(reason, subagent.agentId, reason === 'growth_backstop' ? false : this.currentReadIsReplay);
   }
 
   /** Mark a subagent finished and release its trackers + tailer. Shared by the
@@ -2290,8 +2342,12 @@ export class SessionManager {
    *  already-done subagent returns at once — markSessionDone() re-calls this
    *  for every subagent on every turn end, and the watermark stat below must
    *  run once per genuine transition, not thousands of times over a replay. */
-  private completeSubagent(subagent: SubagentInfo, resultPreview: string | null): void {
+  private completeSubagent(subagent: SubagentInfo, resultPreview: string | null, signal: SubagentDoneSignal): void {
     if (!subagent.running) { return; }
+    // Sweep signals run outside update(), where currentReadIsReplay keeps its
+    // last value (true for a dormant or hydrated session never re-read).
+    const replay = SWEEP_DONE_SIGNALS.has(signal) ? false : this.currentReadIsReplay;
+    this.onSubagentComplete?.(signal, subagent.agentId, subagent.description, replay);
     subagent.running = false;
     subagent.waitingOnPermission = false;
     this.clearTools(subagent.activeTools);
@@ -2355,7 +2411,7 @@ export class SessionManager {
             if (preview) { subagent.resultPreview = preview; }
             continue;
           }
-          this.completeSubagent(subagent, preview);
+          this.completeSubagent(subagent, preview, 'D2');
           completed = true;
         }
       }
@@ -2804,6 +2860,6 @@ export class SessionManager {
     }
     if (!subagent.background || !subagent.running || !caughtUp) { return; }
     const last = this.lastOwnRecord.get(subagent);
-    if (last && isCleanEndTurn(last)) { this.completeSubagent(subagent, preview); }
+    if (last && isAgentTerminalRecord(last)) { this.completeSubagent(subagent, preview, 'D3'); }
   }
 }

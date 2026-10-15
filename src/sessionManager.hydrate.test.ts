@@ -421,8 +421,15 @@ describe('runThenReplay/forceReplay clears hydration', () => {
 });
 
 describe('exportCachedState()', () => {
+  let router: HookEventRouter;
   function freshManager(opts: ConstructorParameters<typeof SessionManager>[3] = {}): InstanceType<typeof SessionManager> {
-    return new SessionManager('live-session', FILE_PATH, 'ws-key', opts);
+    router = new HookEventRouter();
+    return new SessionManager('live-session', FILE_PATH, 'ws-key', { hookRouter: router, ...opts });
+  }
+  /** Ends the open turn. An enqueue no longer does (it lands mid-turn as
+   *  often as not), so the Stop hook stands in for the turn end. */
+  function endTurn(): void {
+    router.onHookEvent('live-session', 'Stop', {});
   }
 
   it('null on a freshly constructed (not-yet-quiet) session, even though status starts done', async () => {
@@ -451,7 +458,7 @@ describe('exportCachedState()', () => {
   it('null with an outstanding background shell', async () => {
     const mgr = freshManager();
     await feed(mgr, [toolResult('tu-shell', 'Command running in background with ID: bfzrk3tz9. Output is being written to: /tmp/x.output.')]);
-    await feed(mgr, [enqueue()]);
+    endTurn();
     expect(mgr.getStatus()).toBe('done');
     const future = Date.now() + REPLAY_CACHE_QUIET_MS + 60_000;
     expect(mgr.exportCachedState(future)).toBeNull();
@@ -463,7 +470,7 @@ describe('exportCachedState()', () => {
     // the wakeup is still pending (not yet fired) at the moment of the check.
     await feed(mgr, [toolUse('ScheduleWakeup', 'tu-wake', { delaySeconds: 3600, reason: 'later' })]);
     await feed(mgr, [toolResult('tu-wake', 'scheduled')]); // clears activeTools, not the wakeup
-    await feed(mgr, [enqueue()]);
+    endTurn();
     expect(mgr.getStatus()).toBe('done');
     const future = Date.now() + REPLAY_CACHE_QUIET_MS + 60_000;
     expect(mgr.exportCachedState(future)).toBeNull();
@@ -486,7 +493,7 @@ describe('exportCachedState()', () => {
   it('returns a well-formed CachedSessionState for an eligible session', async () => {
     const mgr = freshManager();
     await feed(mgr, [userRecord('Fix the flaky test')]);
-    await feed(mgr, [enqueue()]);
+    endTurn();
     expect(mgr.getStatus()).toBe('done');
     const future = Date.now() + REPLAY_CACHE_QUIET_MS + 60_000;
     const cached = mgr.exportCachedState(future);
@@ -502,7 +509,7 @@ describe('exportCachedState()', () => {
     await feed(mgr, [userRecord('go')]);
     await feed(mgr, [toolUse('Agent', 'tu-1', { description: 'worker' })]);
     await feed(mgr, [toolResult('tu-1', 'finished')]);
-    await feed(mgr, [enqueue()]);
+    endTurn();
     const future = Date.now() + REPLAY_CACHE_QUIET_MS + 60_000;
     const cached = mgr.exportCachedState(future);
     expect(cached!.subagents).toHaveLength(1);
@@ -525,7 +532,7 @@ describe('exportCachedState()', () => {
       type: 'assistant', timestamp: new Date().toISOString(),
       message: { model: 'claude-opus-4-6', usage: { input_tokens: 10 }, content: [{ type: 'text', text: 'hi' }] } as Record<string, unknown>,
     }]);
-    await feed(mgr, [enqueue()]);
+    endTurn();
     const future = Date.now() + REPLAY_CACHE_QUIET_MS + 60_000;
     const cached = mgr.exportCachedState(future);
     expect(cached!.modelConfirmed).toBe(true);
