@@ -531,6 +531,12 @@ describe('extension', () => {
       };
       const snap = (sessionId: string, aiTitle: string) =>
         ({ sessionId, customTitle: '', aiTitle, title: null, topic: '' });
+      afterEach(() => {
+        // clearAllMocks keeps implementations; don't leak these into later tests.
+        vi.mocked(vscode.commands.executeCommand).mockReset().mockResolvedValue(undefined);
+        mockDiscovery.getSnapshots.mockReset().mockReturnValue([]);
+        mockDiscovery.isDualWriterFresh.mockReset();
+      });
 
       it('closes the unique label match without revealing anything', async () => {
         activate(context as any);
@@ -600,6 +606,51 @@ describe('extension', () => {
         expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
       });
 
+      it('a tab the user activates during the watch is not taken for the revealed one', async () => {
+        activate(context as any);
+        armRelease();
+        mockDiscovery.getSnapshots.mockReturnValue([snap('dual-sess', 'Held in the sidebar')]);
+        const clicked = realTab('Untracked old session', false);
+        const other = realTab('Something open', true);
+        (vscode.window.tabGroups as any).all = [{ tabs: [other, clicked] }];
+        const onTabs = vi.mocked((vscode.window.tabGroups as any).onDidChangeTabs);
+        onTabs.mockClear();
+
+        getHandler()('dual-sess');
+
+        await vi.waitFor(() => {
+          expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+            'claude-vscode.editor.open', 'dual-sess', undefined, expect.anything());
+        });
+        clicked.isActive = true; other.isActive = false; // the user clicks a tab
+        (onTabs.mock.calls.at(-1)![0] as () => void)();
+        await vi.advanceTimersByTimeAsync(1100);
+        await vi.waitFor(() => {
+          expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+            expect.stringContaining('Could not identify'));
+        });
+        expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+      });
+
+      it('re-checks freshness inside the queue: a release that went stale closes and opens nothing', async () => {
+        activate(context as any);
+        armRelease();
+        // Fresh at the picker and after it, stale by the time the queued close runs.
+        mockDiscovery.isDualWriterFresh
+          .mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockResolvedValue(false);
+        (vscode.window.tabGroups as any).all = [{ tabs: [realTab('Whatever', true)] }];
+
+        getHandler()('dual-sess');
+
+        await vi.waitFor(() => {
+          expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+            expect.stringContaining('no longer live in two windows'), expect.any(Number));
+        });
+        expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+        expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+          'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      });
+
       it('keeps watching past an unrelated early tab event until the async reveal lands', async () => {
         activate(context as any);
         armRelease();
@@ -633,7 +684,12 @@ describe('extension', () => {
       it('closes the tab the reveal activated when the label pass finds nothing', async () => {
         activate(context as any);
         armRelease();
-        mockDiscovery.getSnapshots.mockReturnValue([snap('other-sess', 'Other')]); // target title unknown
+        // Only a first-prompt title is known: too weak for the no-reveal pass,
+        // enough to confirm the tab the reveal activated.
+        mockDiscovery.getSnapshots.mockReturnValue([
+          { sessionId: 'dual-sess', customTitle: '', aiTitle: '', title: null, topic: 'Renamed elsewhere' },
+          snap('other-sess', 'Other'),
+        ]);
         const target = realTab('Renamed elsewhere', false);
         const other = realTab('Other', true);
         (vscode.window.tabGroups as any).all = [{ tabs: [other, target] }];

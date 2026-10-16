@@ -785,11 +785,14 @@ the session's custom or AI title uniquely, and fits no other known session,
 is closed without a reveal (first-prompt titles collide across sessions
 started from the same prompt, so they only count after a reveal). Otherwise
 `claude-vscode.editor.open` reveals the session and only a tab the reveal
-visibly *created* or *activated* is accepted, re-checked on every tab event
-until a 1s deadline (any tab event fires `onDidChangeTabs`, and the reveal
-can land after the command resolves). A newly active tab still labelled
-"Claude Code", or labelled with another session's title, is refused, and
-release closes run one at a time. There is
+*created* (unless labelled with another session's title), or an *activated*
+tab whose label matches this session, is accepted, re-checked on every tab
+event until a 1s deadline (any tab event fires `onDidChangeTabs`, and the
+reveal can land after the command resolves). Activation alone is not
+evidence: the user can click a tab during the watch. Release closes run one
+at a time, each re-verifying `isDualWriterFresh` inside the queue (a queued
+duplicate would otherwise re-open the session via the reveal), with the
+open and close commands bounded at 5s so a hang cannot stall later releases. There is
 deliberately no "active Claude tab" fallback: when the Claude sidebar holds
 the session the reveal changes no tab, and the active tab then belongs to a
 different, possibly running, session. Closing a Claude tab aborts its turn

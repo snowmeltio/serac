@@ -78,16 +78,18 @@ export function findTabByLabel<T extends { label: string }>(
 }
 
 /** After revealing the session, the tab the reveal produced:
- *  - a tab that did not exist before (the open created it — closing it can
- *    never leave an extra writer behind), preferring a label match if the
- *    open somehow added several; else
- *  - the single Claude tab that went from inactive to active in its group.
+ *  - a tab that did not exist before (the open created it, so closing it
+ *    never leaves an extra writer behind; its label is usually still the
+ *    untitled default), refused only when its label names another session,
+ *    and taken by label match if several appeared; else
+ *  - the single Claude tab that went from inactive to active in its group
+ *    AND whose label matches the target's titles. During the watch the user
+ *    can click a tab, or another open can land, so activation alone is not
+ *    evidence.
  *  `before` maps each pre-reveal tab to its `isActive` AT THAT MOMENT (tab
- *  objects are live, so the boolean must be captured, not re-read). A
- *  newly-active tab is refused when its label identifies a different session
- *  or is still the untitled default.
- *  Undefined when the reveal changed nothing: the sidebar holds the session,
- *  or its tab was already the active one and the label pass missed it. */
+ *  objects are live, so the boolean must be captured, not re-read).
+ *  Undefined when nothing qualifies: the sidebar holds the session, or its
+ *  tab was already active, or the label does not match. */
 export function findRevealedTab<T extends { label: string; isActive: boolean }>(
   before: ReadonlyMap<T, boolean>,
   after: readonly T[],
@@ -95,16 +97,12 @@ export function findRevealedTab<T extends { label: string; isActive: boolean }>(
   otherTitles: readonly (readonly string[])[],
 ): T | undefined {
   const created = after.filter(t => !before.has(t));
-  if (created.length === 1) { return created[0]; }
+  if (created.length === 1) {
+    const tab = created[0];
+    const namesOther = !matchesAny(tab.label, targetTitles) && otherTitles.some(o => matchesAny(tab.label, o));
+    return namesOther ? undefined : tab;
+  }
   if (created.length > 1) { return findTabByLabel(created, targetTitles, otherTitles); }
   const activated = after.filter(t => t.isActive && before.get(t) === false);
-  if (activated.length !== 1) { return undefined; }
-  const tab = activated[0];
-  if (matchesAny(tab.label, targetTitles)) { return tab; }
-  // Unknown label: accepted only when it is a real title that fits no other
-  // known session. A still-untitled tab ("Claude Code") is a new chat, not a
-  // session with a transcript to release.
-  if (normalise(tab.label) === CLAUDE_DEFAULT_TAB_LABEL) { return undefined; }
-  if (otherTitles.some(o => matchesAny(tab.label, o))) { return undefined; }
-  return tab;
+  return findTabByLabel(activated, targetTitles, otherTitles);
 }

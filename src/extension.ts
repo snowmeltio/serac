@@ -362,39 +362,73 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
    *  that the reveal has landed. Subscribe BEFORE triggering the change;
    *  `check` probes on demand, `cancel` abandons the wait. */
   function watchForTab<T>(probe: () => T | undefined, timeoutMs: number) {
+    // A throwing probe counts as "nothing yet" — it must never leave
+    // `result` pending, which would stall the release chain behind it.
+    const safeProbe = (): T | undefined => {
+      try { return probe(); } catch (err) { log.warn('Tab probe failed:', err); return undefined; }
+    };
     let settle: (tab: T | undefined) => void = () => { /* replaced below */ };
     const result = new Promise<T | undefined>(resolve => {
-      const timer = setTimeout(() => settle(probe()), timeoutMs);
+      const timer = setTimeout(() => settle(safeProbe()), timeoutMs);
       const sub = vscode.window.tabGroups.onDidChangeTabs(() => {
-        const tab = probe();
+        const tab = safeProbe();
         if (tab) { settle(tab); }
       });
       settle = (tab) => { clearTimeout(timer); sub.dispose(); resolve(tab); };
     });
     return {
       result,
-      check: () => { const tab = probe(); if (tab) { settle(tab); } },
+      check: () => { const tab = safeProbe(); if (tab) { settle(tab); } },
       cancel: () => settle(undefined),
     };
+  }
+  /** Rejects after `ms` — bounds a VS Code command that may never resolve. */
+  function withTimeout<T>(p: Thenable<T>, ms: number, what: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms);
+      p.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
+    });
   }
   // The reveal for a remembered tab is fire-and-forget inside Claude Code,
   // so the tab change can land after editor.open resolves.
   const REVEAL_SETTLE_MS = 1000;
+  const TAB_COMMAND_TIMEOUT_MS = 5000;
 
+  type CloseResult = 'closed' | 'unidentified' | 'stale';
   // Release closes run one at a time: two concurrent reveal passes would each
-  // see the other's activated tab as their own.
+  // see the other's activated tab as their own. A run that hangs past the
+  // bound stops holding the queue (its own caller still waits on it).
   let tabCloseChain: Promise<unknown> = Promise.resolve();
-  function closeOwnSessionTab(sessionId: string): Promise<boolean> {
+  function closeOwnSessionTab(sessionId: string): Promise<CloseResult> {
     const run = tabCloseChain.then(() => closeOwnSessionTabNow(sessionId));
-    tabCloseChain = run.catch(() => { /* surfaced to the caller */ });
+    const bound = 2 * TAB_COMMAND_TIMEOUT_MS + REVEAL_SETTLE_MS;
+    tabCloseChain = Promise.race([run, new Promise(r => setTimeout(r, bound))])
+      .catch(() => { /* surfaced to the caller */ });
     return run;
   }
 
-  async function closeOwnSessionTabNow(sessionId: string): Promise<boolean> {
+  async function closeTab(tab: vscode.Tab): Promise<CloseResult> {
+    try {
+      return (await withTimeout(vscode.window.tabGroups.close(tab), TAB_COMMAND_TIMEOUT_MS, 'Tab close'))
+        ? 'closed' : 'unidentified';
+    } catch (err) {
+      log.warn('Dual-writer release: tab close failed:', err);
+      return 'unidentified';
+    }
+  }
+
+  async function closeOwnSessionTabNow(sessionId: string): Promise<CloseResult> {
+    // Re-verify inside the queue: a run can wait behind another, and a
+    // second release for the same session finds no tab and would RE-OPEN it
+    // (the reveal creates one) before closing it again.
+    if (!(await discovery.isDualWriterFresh(sessionId))) {
+      log.info(`Dual-writer release: ${sessionId} is no longer dual at close time — nothing to do`);
+      return 'stale';
+    }
     const byId = findSessionTab(allClaudeTabs(), sessionId);
     if (byId) {
       log.info(`Dual-writer release: closing session tab for ${sessionId} (matched by tab input)`);
-      return vscode.window.tabGroups.close(byId);
+      return closeTab(byId);
     }
     // Label pass: Claude tab inputs carry no session id in practice, but the
     // label is the session's (truncated) title. A unique match on the custom
@@ -408,33 +442,37 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     const byLabel = findTabByLabel(allClaudeTabs(), own ? strongTitleCandidates(own) : [], otherTitles);
     if (byLabel) {
       log.info(`Dual-writer release: closing session tab for ${sessionId} (matched by tab label)`);
-      return vscode.window.tabGroups.close(byLabel);
+      return closeTab(byLabel);
     }
     // Reveal pass. The open command reveals the session's existing tab, or
     // CREATES one when none exists (closing a created tab guarantees the open
-    // never leaves an extra writer behind). Only a tab the reveal visibly
-    // created or activated is accepted — never "whichever Claude tab is
-    // active": when the Claude sidebar holds the session no tab changes, and
-    // the active tab then belongs to a different, possibly running, session.
+    // never leaves an extra writer behind). Only a created tab, or an
+    // activated tab whose label matches this session, is accepted — never
+    // "whichever Claude tab is active": when the Claude sidebar holds the
+    // session no tab changes, and the active tab then belongs to a different,
+    // possibly running, session.
     const before = new Map(allClaudeTabs().map(t => [t, t.isActive] as const));
     const watch = watchForTab(() => {
       const after = allClaudeTabs();
       return findSessionTab(after, sessionId) ?? findRevealedTab(before, after, targetTitles, otherTitles);
     }, REVEAL_SETTLE_MS);
     try {
-      await vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One);
-    } catch {
+      await withTimeout(
+        vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One),
+        TAB_COMMAND_TIMEOUT_MS, 'claude-vscode.editor.open');
+    } catch (err) {
+      log.warn(`Dual-writer release: reveal of ${sessionId} failed:`, err);
       watch.cancel();
-      return false;
+      return 'unidentified';
     }
     watch.check();
     const target = await watch.result;
     if (target) {
       log.info(`Dual-writer release: closing session tab for ${sessionId} (revealed by editor.open)`);
-      return vscode.window.tabGroups.close(target);
+      return closeTab(target);
     }
-    log.warn(`Dual-writer release: no tab for ${sessionId} could be identified (no label match; the reveal created or activated nothing — sidebar-held, or already active) — refusing to guess`);
-    return false;
+    log.warn(`Dual-writer release: no tab for ${sessionId} could be identified (no label match; the reveal created no tab and activated no matching one — sidebar-held, or already active) — refusing to guess`);
+    return 'unidentified';
   }
 
   // Sessions this window recently asked the OTHER window to release ("keep
@@ -660,7 +698,10 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
 
       if (picked.action === 'release') {
         const closed = await closeOwnSessionTab(sessionId);
-        if (!closed) {
+        if (closed === 'stale') {
+          vscode.window.setStatusBarMessage('This session is no longer live in two windows.', 4000);
+          sendUpdate();
+        } else if (closed === 'unidentified') {
           void vscode.window.showWarningMessage(
             'Could not identify this session’s tab — close it manually to resolve the conflict.');
         }
@@ -1042,8 +1083,10 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
           continue;
         }
         const closed = await closeOwnSessionTab(hint.sessionId);
-        if (closed) {
+        if (closed === 'closed') {
           vscode.window.setStatusBarMessage('Released a session to another window (its tab here was closed).', 5000);
+        } else if (closed === 'stale') {
+          log.info(`Dual-writer: release for ${hint.sessionId} went stale while queued — nothing closed`);
         } else {
           void vscode.window.showWarningMessage(
             'Another window asked to take over a session, but its tab here could not be identified — close it manually.');

@@ -81,7 +81,7 @@ describe('findRevealedTab', () => {
     expect(findRevealedTab(before, [existing, created], target, [])).toBe(created);
   });
 
-  it('picks the single tab that became active in its group', () => {
+  it('picks the single tab that became active in its group when its label matches', () => {
     const a = tab('Target session', false);
     const b = tab('Other', true);
     const before = new Map([[a, false], [b, true]]);
@@ -96,22 +96,21 @@ describe('findRevealedTab', () => {
     expect(findRevealedTab(before, [unrelated], target, [['Unrelated running session']])).toBeUndefined();
   });
 
-  it('refuses a newly-active tab whose label identifies a different session', () => {
-    const a = tab('Someone else', false);
-    const before = new Map([[a, false]]);
-    a.isActive = true;
-    expect(findRevealedTab(before, [a], target, [['Someone else']])).toBeUndefined();
+  it('refuses a newly-active tab without a target label match (a user click during the watch)', () => {
+    const known = tab('Someone else', false);
+    const unknown = tab('Untracked old session', false);
+    const untitled = tab('Claude Code', false);
+    for (const t of [known, unknown, untitled]) {
+      const before = new Map([[t, false]]);
+      t.isActive = true;
+      expect(findRevealedTab(before, [t], target, [['Someone else']])).toBeUndefined();
+    }
   });
 
-  it('accepts a newly-active tab with an unknown real title, refuses the untitled default', () => {
-    const a = tab('Renamed elsewhere', false);
-    const before = new Map([[a, false]]);
-    a.isActive = true;
-    expect(findRevealedTab(before, [a], target, [['Other']])).toBe(a);
-    const d = tab('Claude Code', false);
-    const beforeD = new Map([[d, false]]);
-    d.isActive = true;
-    expect(findRevealedTab(beforeD, [d], target, [])).toBeUndefined();
+  it('refuses a created tab whose label names another session', () => {
+    expect(findRevealedTab(new Map(), [tab('Someone else', true)], target, [['Someone else']])).toBeUndefined();
+    const own = tab('Target session', true);
+    expect(findRevealedTab(new Map(), [own], target, [['Target session']])).toBe(own);
   });
 
   it('refuses when two tabs became active', () => {
