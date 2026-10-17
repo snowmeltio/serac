@@ -777,12 +777,27 @@ in *both* windows; clicking it re-verifies fresh (`isDualWriterFresh()`)
 then offers a picker — **keep here** (writes an addressed
 `release-hint-<otherPid>.json`, same channel/TTL/atomic-write/delivery-check
 as the focus hint, asking the other window's Serac to close its copy) or
-**release here** (closes this window's tab: matched by session id in the tab
-input when the claude editor encodes it, else focus-then-close via
-`claude-vscode.editor.open` with a claudeVSCode viewType check before
-closing — never a non-Claude tab; the fallback also diffs the Claude-tab set
-around the open so a tab the reveal *created* is always closed, never left
-adding a writer). Guards on the destructive paths: the verdict is re-verified
+**release here** (closes this window's tab, identified in `claudeTabMatch.ts`.
+Claude tab inputs carry only the shared viewType `claudeVSCodePanel`, so the
+session-id match rarely fires; the main signal is the tab label, which Claude
+Code sets to the session title cut to 24 chars + "…". A label that matches
+the session's custom or AI title uniquely, and fits no other known session,
+is closed without a reveal (first-prompt titles collide across sessions
+started from the same prompt, so they only count after a reveal). Otherwise
+`claude-vscode.editor.open` reveals the session and only a tab the reveal
+*created* (unless labelled with another session's title), or an *activated*
+tab whose label matches this session, is accepted, re-checked on every tab
+event until a 1s deadline (any tab event fires `onDidChangeTabs`, and the
+reveal can land after the command resolves). Activation alone is not
+evidence: the user can click a tab during the watch. Release closes run one
+at a time, each re-verifying `isDualWriterFresh` inside the queue (a queued
+duplicate would otherwise re-open the session via the reveal), with the
+open and close commands bounded at 5s so a hang cannot stall later releases. There is
+deliberately no "active Claude tab" fallback: when the Claude sidebar holds
+the session the reveal changes no tab, and the active tab then belongs to a
+different, possibly running, session. Closing a Claude tab aborts its turn
+with no prompt, so an unidentified tab is refused with a "close it manually"
+warning). Guards on the destructive paths: the verdict is re-verified
 fresh both after the QuickPick (it can sit open for minutes; a stale release
 would close the last live copy) and at hint pickup (a stale hint must not
 open the session in a window whose copy is gone), and a receiver that itself
