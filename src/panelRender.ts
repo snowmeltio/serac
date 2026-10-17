@@ -631,8 +631,8 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
   if (s.externalWriter) {
     metaHtml += '<span class="wf-tag wf-view-chip external-writer-chip" data-switch-session="'
       + escapeHtml(s.sessionId) + '" role="button" tabindex="0"'
-      + ' title="Active in another VS Code window — click to switch to it"'
-      + ' aria-label="Active in another window; activate to switch">⛔<span class="wf-arrow">→</span></span>';
+      + ' title="Active in another VS Code window — click to switch to it, or to bring it here when it is idle there"'
+      + ' aria-label="Active in another window; activate to switch, or bring it here">⛔<span class="wf-arrow">→</span></span>';
   }
   metaHtml += actionsHtml;
   metaHtml += '</div>';

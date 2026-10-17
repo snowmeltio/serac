@@ -806,6 +806,51 @@ mutual-keep race would otherwise close both tabs, the inverse of both
 intents. The release receiver deliberately has no startup consume: closing a
 tab is destructive, and a hint that predates a window reload is expired
 intent (the sender's delivery check withdraws it).
+
+**Bring it here** (`bringHere.ts`, host flow in `extension.ts`). The ⛔ chip
+posts `switchOrBring`; the card body still posts `focusSession` (a plain
+switch). The host offers a Switch / Bring it here picker only when
+`classifyBring()` says eligible: the transcript is this window's own
+(`getEntrypointOf` defined, not `sdk-cli`), exactly one window-writer process
+holds it, that process is confirmed external, its owner is an addressable
+extension host, and it is idle by every signal (registry `status` `idle` or
+absent, which also covers background agents and Workflow runs; not running
+here; no live background agents; transcript and subagents tree quiet for
+8s). Otherwise the chip switches as before, with a status-bar note giving
+the reason. The protocol:
+1. The requester re-assesses after the picker (same process, same owner),
+   then writes `projects/<ownerWsKey>/bring-hint-<ownerPid>-<sessionId>.json`
+   (`nonce`, `expiresAt` = 3s, `requesterPid`, `requesterKey`). The basename
+   is per session, so concurrent requests never overwrite each other.
+2. The owner's watcher (`bring-hint-<its pid>-*.json`) claims each file by
+   rename before reading it (`consumeJsonFile`). `receiverVerdict()` ignores
+   an expired hint or a dead requester (no answer at all), and refuses when
+   the session is not held here alone (`isOwnedHereOnlyFresh`: every process
+   confirmed own), busy, or being brought in by this window itself. The
+   expiry is checked again immediately before answering, because the fresh
+   checks take seconds; a close can therefore never start after the
+   requester has given up. It writes
+   `projects/<requesterKey>/bring-ack-<requesterPid>-<sessionId>.json`
+   (`closing`), closes its tab through the same identified-tab queue as the
+   release (re-checking `isOwnedHereOnlyFresh` inside it), then acks
+   `closed`, or `refused` with a reason.
+3. The requester acts only on an ack carrying its own nonce. No ack within
+   8s means nothing was closed; the hint is withdrawn. After `closing`, it
+   waits up to 20s until no window-writer process holds the session AND the
+   old CLI pid is dead (`kill(pid, 0)`: the registry entry disappears ~2s
+   before the process exits), watching for a late `refused`. A timeout never
+   opens; the message says the session may still be closing there.
+4. After a 300ms settle and a final empty-registry check, it opens the
+   session here. Claude Code 2.1.300 shows a session that was live elsewhere
+   read-only ("Open here anyway", no process), and a later open only reveals
+   that held panel. So a held tab identified by label is closed first, and an
+   open that starts no process within 4s but activated an identified tab
+   closes it and opens again once. Success means a process confirmed own
+   registered within 8s; otherwise the user is told the banner is safe to
+   click.
+Everything is gated by `serac.experimental.externalWriterBlock`, since the
+ownership verdicts come from it.
+
 With no external process at all, a confirmed own-window process resolves
 `'own'`; any confirmed-external without an own resolves `'external'`; only
 `undefined`s resolve `undefined`.

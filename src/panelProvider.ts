@@ -36,6 +36,7 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
   private discoveryPhase: DiscoveryPhase = 'pending';
   private onFocusSession: ((sessionId: string) => void) | undefined;
   private onResolveDualWriter: ((sessionId: string) => void) | undefined;
+  private onSwitchOrBring: ((sessionId: string) => void) | undefined;
   private onTransferSession: ((sessionId: string) => void) | undefined;
   private onRcIndicatorClick: (() => void) | undefined;
   private onDismissSession: ((sessionId: string) => void) | undefined;
@@ -59,6 +60,10 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
   setFocusHandler(handler: (sessionId: string) => void): void {
     this.onFocusSession = handler;
+  }
+
+  setSwitchOrBringHandler(handler: (sessionId: string) => void): void {
+    this.onSwitchOrBring = handler;
   }
 
   setResolveDualWriterHandler(handler: (sessionId: string) => void): void {
@@ -169,6 +174,8 @@ export class AgentPanelProvider implements vscode.WebviewViewProvider {
 
       if (message.type === 'focusSession' && this.onFocusSession) {
         this.onFocusSession(message.sessionId);
+      } else if (message.type === 'switchOrBring' && this.onSwitchOrBring) {
+        this.onSwitchOrBring(message.sessionId);
       } else if (message.type === 'resolveDualWriter' && this.onResolveDualWriter) {
         this.onResolveDualWriter(message.sessionId);
       } else if (message.type === 'transferSession' && this.onTransferSession) {

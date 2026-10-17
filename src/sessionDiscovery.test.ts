@@ -1795,6 +1795,47 @@ describe('SessionDiscovery', () => {
     });
   });
 
+  describe('bring-here fresh reads', () => {
+    it('isOwnedHereOnlyFresh: true only when every process is confirmed this window\'s', async () => {
+      const ownOnly = 'bring-own-only';
+      const dual = 'bring-dual';
+      const extOnly = 'bring-ext-only';
+      for (const id of [ownOnly, dual, extOnly]) { createJsonlFile(id); }
+      const ext = await spawnExternalProcess();
+      const { spawn } = await import('child_process');
+      const ownChild = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']);
+      const ownChild2 = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 10_000)']);
+      try {
+        writeRegistryEntryWithCwd(ownChild.pid!, ownOnly, { startedAt: Date.now() });
+        writeRegistryEntryWithCwd(ownChild2.pid!, dual, { startedAt: Date.now() });
+        writeRegistryEntryWithCwd(ext.pid, dual, { startedAt: Date.now() });
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        await expect(discovery.isOwnedHereOnlyFresh(ownOnly)).resolves.toBe(true);
+        await expect(discovery.isOwnedHereOnlyFresh(dual)).resolves.toBe(false);
+        await expect(discovery.isOwnedHereOnlyFresh(extOnly)).resolves.toBe(false); // nobody holds it
+        const procs = await discovery.getWindowWriterProcsFresh(dual);
+        expect(procs.map(p => discovery.getOwnershipOf(p.pid)).sort()).toEqual([false, true]);
+        _resetConfig(); // gate off: no reads at all
+        await expect(discovery.getWindowWriterProcsFresh(dual)).resolves.toEqual([]);
+        await expect(discovery.isOwnedHereOnlyFresh(ownOnly)).resolves.toBe(false);
+        _setConfigValues({ 'serac.experimental.externalWriterBlock': true });
+        discovery.stop();
+      } finally {
+        ext.cleanup();
+        ownChild.kill();
+        ownChild2.kill();
+      }
+    });
+
+    it('hasLiveBackgroundAgents is false for a session this window does not tail', async () => {
+      const discovery = makeDiscovery();
+      await discovery.start(() => {});
+      expect(discovery.hasLiveBackgroundAgents('no-such-session')).toBe(false);
+      discovery.stop();
+    });
+  });
+
   describe('grace period: a freshly-attached process on an old, otherwise-quiet session', () => {
     it('is true end-to-end through isExternalWriterFresh() and getSnapshots().externalWriter', async () => {
       const sessionId = 'grace-period-fresh-attach';

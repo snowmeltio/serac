@@ -236,11 +236,64 @@ export function writeAddressedReleaseHint(
   return writeHintFile(addressedReleaseHintPath(projectsDir, workspaceKey, targetPid), sessionId);
 }
 
+/** Path to a BRING hint: "release this session so I can open it". Addressed
+ *  to the owning window's extension-host pid like the other kinds, but keyed
+ *  by session too, so two requests to the same window never overwrite each
+ *  other (the single-slot focus/release scheme can't tell its senders apart).
+ *  The receiver watches `bring-hint-<its pid>-*.json`. */
+export function bringHintPath(projectsDir: string, workspaceKey: string, targetPid: number, sessionId: string): string {
+  return path.join(projectsDir, workspaceKey, `bring-hint-${targetPid}-${sessionId}.json`);
+}
+
+/** Path to the owning window's answer to a bring hint, filed under the
+ *  REQUESTER's workspace key and addressed to the requester's pid. */
+export function bringAckPath(projectsDir: string, workspaceKey: string, requesterPid: number, sessionId: string): string {
+  return path.join(projectsDir, workspaceKey, `bring-ack-${requesterPid}-${sessionId}.json`);
+}
+
+/** Atomic JSON write (temp file + rename), creating the directory if needed. */
+export async function writeJsonAtomic(filePath: string, payload: unknown): Promise<void> {
+  try {
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  } catch { /* directory may already exist */ }
+  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  await fs.promises.writeFile(tmpPath, JSON.stringify(payload), 'utf-8');
+  await fs.promises.rename(tmpPath, filePath);
+}
+
+/** Read and delete a JSON file in one step. Claims it by renaming to a
+ *  private name first, so a newer file written to the same path between the
+ *  read and the delete is never removed unread. Null when absent or not JSON. */
+export async function consumeJsonFile(filePath: string): Promise<unknown> {
+  const claimed = `${filePath}.claimed-${process.pid}-${Date.now()}`;
+  try {
+    await fs.promises.rename(filePath, claimed);
+  } catch {
+    return null;
+  }
+  try {
+    return JSON.parse(await fs.promises.readFile(claimed, 'utf-8')) as unknown;
+  } catch {
+    return null;
+  } finally {
+    fs.promises.unlink(claimed).catch(() => { /* best effort */ });
+  }
+}
+
+/** Read a JSON file without consuming it. Null when absent or not JSON. */
+export async function readJsonFile(filePath: string): Promise<unknown> {
+  try {
+    return JSON.parse(await fs.promises.readFile(filePath, 'utf-8')) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 /** Best-effort GC for addressed hints whose target window is gone — a hint
  *  written moments before its addressee died is consumed by nobody and would
  *  otherwise sit in the shared projects dir forever. Removes files whose pid
- *  is no longer alive or whose payload is past the TTL. Covers both addressed
- *  kinds (focus + release). Never touches the legacy focus-hint.json, and
+ *  is no longer alive or whose payload is past the TTL. Covers every addressed
+ *  kind (focus, release, bring hint, bring ack). Never touches the legacy focus-hint.json, and
  *  never this window's own fresh hint. */
 export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey: string): Promise<void> {
   const dir = path.join(projectsDir, workspaceKey);
@@ -253,7 +306,7 @@ export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey
   for (const name of entries) {
     // Orphaned temp files from a writer that crashed between writeFile and
     // rename — age out on the same TTL.
-    if (/^(?:focus|release)-hint-.*\.tmp-\d+$/.test(name)) {
+    if (/^(?:(?:focus|release|bring)-hint|bring-ack)-.*\.(?:tmp|claimed)-[\d-]+$/.test(name)) {
       try {
         const stat = await fs.promises.stat(path.join(dir, name));
         if (Date.now() - stat.mtimeMs > FOCUS_HINT_TTL_MS) {
@@ -262,9 +315,10 @@ export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey
       } catch { /* vanished mid-sweep */ }
       continue;
     }
-    const m = /^(?:focus|release)-hint-(\d+)\.json$/.exec(name);
+    // focus/release: one slot per pid. bring hint/ack: per pid AND session.
+    const m = /^(?:(?:focus|release)-hint-(\d+)|(?:bring-hint|bring-ack)-(\d+)-[^/]+)\.json$/.exec(name);
     if (!m) { continue; }
-    const pid = parseInt(m[1], 10);
+    const pid = parseInt(m[1] ?? m[2], 10);
     let dead = false;
     try {
       process.kill(pid, 0);
