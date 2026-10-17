@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
 
 // --- Mocks (vi.mock is hoisted, so no external variable references in factories) ---
 
@@ -97,6 +98,9 @@ const mockDiscovery = {
   isMarkedExternalWriter: vi.fn().mockReturnValue(false),
   isMarkedDualWriter: vi.fn().mockReturnValue(false),
   isDualWriterFresh: vi.fn().mockResolvedValue(false),
+  getWindowWriterProcsFresh: vi.fn().mockResolvedValue([]),
+  isOwnedHereOnlyFresh: vi.fn().mockResolvedValue(false),
+  hasLiveBackgroundAgents: vi.fn().mockReturnValue(false),
   getProcessesForSession: vi.fn().mockReturnValue([]),
   getProcessesForSessionFresh: vi.fn().mockResolvedValue([]),
   getEntrypointOf: vi.fn().mockReturnValue(undefined),
@@ -139,6 +143,7 @@ const mockPanelProvider = {
   focusSession: vi.fn(),
   setFocusHandler: vi.fn(),
   setResolveDualWriterHandler: vi.fn(),
+  setSwitchOrBringHandler: vi.fn(),
   setTransferSessionHandler: vi.fn(),
   setRcIndicatorClickHandler: vi.fn(),
   setDismissHandler: vi.fn(),
@@ -214,7 +219,22 @@ vi.mock('./workspaceOpener.js', () => ({
   writeAddressedReleaseHint: vi.fn().mockResolvedValue(undefined),
   sweepStaleAddressedHints: vi.fn().mockResolvedValue(undefined),
   deriveUserDataDir: vi.fn().mockReturnValue('/test/user-data'),
+  // Bring hints/acks: an in-memory store keyed by basename, so a test can
+  // play the other window by writing or reading the files directly.
+  bringHintPath: vi.fn((_d: string, _k: string, pid: number, sid: string, rp: number) => `/test/hints/bring-hint-${pid}-${sid}-${rp}.json`),
+  bringAckPath: vi.fn((_d: string, _k: string, pid: number, nonce: string) => `/test/hints/bring-ack-${pid}-${nonce}.json`),
+  bringAbortPath: vi.fn((_d: string, _k: string, pid: number, nonce: string) => `/test/hints/bring-abort-${pid}-${nonce}.json`),
+  writeJsonAtomic: vi.fn(async (p: string, v: unknown) => { jsonStore.set(p.split('/').pop()!, v); }),
+  readJsonFile: vi.fn(async (p: string) => jsonStore.get(p.split('/').pop()!) ?? null),
+  markerState: vi.fn(async (p: string) => (jsonStore.has(p.split('/').pop()!) ? 'present' : 'absent')),
+  consumeJsonFile: vi.fn(async (p: string) => {
+    const k = p.split('/').pop()!;
+    const v = jsonStore.get(k) ?? null;
+    jsonStore.delete(k);
+    return v;
+  }),
 }));
+const jsonStore = vi.hoisted(() => new Map<string, unknown>());
 
 vi.mock('./claudeEnvSignals.js', () => ({
   readIdeOpenFolders: vi.fn(() => new Set<string>()),
@@ -865,6 +885,437 @@ describe('extension', () => {
       // Never falls through to the focus-then-close fallback either.
       expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
         'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+    });
+  });
+
+  describe('⛔ switch-or-bring handler', () => {
+    const getHandler = () =>
+      vi.mocked(mockPanelProvider.setSwitchOrBringHandler).mock.calls[0][0] as (id: string) => void;
+    const OWNER_EXTHOST = 999;
+    const proc = (pid: number, over: Record<string, unknown> = {}) =>
+      ({ pid, sessionId: 'bring-sess', cwd: '/test/ws', startedAt: 1000, kind: 'interactive', entrypoint: 'claude-vscode', version: '2.1.300', status: 'idle', ...over });
+    let procsNow: any[];
+    let deadPid: number;
+    const hintKey = `bring-hint-${OWNER_EXTHOST}-bring-sess-${process.pid}.json`;
+    const nonceOf = () => (jsonStore.get(hintKey) as { nonce: string }).nonce;
+    const ackKeyFor = (nonce: string) => `bring-ack-${process.pid}-${nonce}.json`;
+
+    beforeEach(async () => {
+      jsonStore.clear();
+      const { spawnSync } = await import('node:child_process');
+      deadPid = spawnSync(process.execPath, ['-e', '']).pid!; // a pid known not to be alive
+      procsNow = [proc(deadPid)];
+      mockDiscovery.getEntrypointOf.mockReturnValue('claude-vscode');
+      mockDiscovery.getWindowWriterProcsFresh.mockImplementation(async () => procsNow);
+      mockDiscovery.getOwnershipOf.mockImplementation((pid: number) => (pid === deadPid ? true : pid === 5555 ? false : undefined));
+      mockDiscovery.resolveOpenGate.mockResolvedValue(
+        { kind: 'external', ownerPid: OWNER_EXTHOST, ownerCwd: '/test/ws', addressable: true, quietUnlocked: false });
+    });
+    afterEach(() => {
+      mockDiscovery.getEntrypointOf.mockReset().mockReturnValue(undefined);
+      mockDiscovery.getWindowWriterProcsFresh.mockReset().mockResolvedValue([]);
+      mockDiscovery.getOwnershipOf.mockReset().mockReturnValue(undefined);
+      mockDiscovery.resolveOpenGate.mockReset().mockResolvedValue({ kind: 'clear' });
+      mockDiscovery.isSessionRunning.mockReset().mockReturnValue(false);
+      vi.mocked(vscode.commands.executeCommand).mockReset().mockResolvedValue(undefined);
+      vi.mocked(vscode.window.showQuickPick).mockReset();
+    });
+    const pickBring = () => vi.mocked(vscode.window.showQuickPick).mockImplementation(
+      async (items: any) => (items as any[]).find(i => i.action === 'bring'));
+    /** Play the owning window: once the hint lands, ack `result` with its nonce. */
+    const otherWindowAnswers = async (result: 'closing' | 'refused', reason?: string) => {
+      await vi.waitFor(() => { expect(jsonStore.has(hintKey)).toBe(true); });
+      const nonce = nonceOf();
+      jsonStore.set(ackKeyFor(nonce), { sessionId: 'bring-sess', nonce, result, ...(reason ? { reason } : {}), at: Date.now() });
+    };
+
+    it('ineligible (no other window holds it): no picker, the ordinary open', async () => {
+      procsNow = [];
+      mockDiscovery.resolveOpenGate.mockResolvedValue({ kind: 'clear' });
+      activate(context as any);
+      getHandler()('bring-sess');
+      await vi.waitFor(() => {
+        expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+          'claude-vscode.editor.open', 'bring-sess', undefined, expect.anything());
+      });
+      expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    });
+
+    it('busy there: switches, says why Bring was not offered', async () => {
+      procsNow = [proc(deadPid, { status: 'busy' })];
+      activate(context as any);
+      getHandler()('bring-sess');
+      await vi.waitFor(() => {
+        expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+          expect.stringContaining('busy there'), expect.any(Number));
+      });
+      expect(vscode.window.showQuickPick).not.toHaveBeenCalled();
+    });
+
+    it('bring: hint → closing ack → old CLI gone → opens here and confirms a process started', async () => {
+      activate(context as any);
+      pickBring();
+      vi.mocked(vscode.commands.executeCommand).mockImplementation(async (cmd: string) => {
+        if (cmd === 'claude-vscode.editor.open') { procsNow = [proc(5555)]; } // launches here
+        return undefined;
+      });
+      getHandler()('bring-sess');
+
+      await otherWindowAnswers('closing');
+      // Must not open while the other window's process is still registered.
+      await vi.advanceTimersByTimeAsync(600);
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      procsNow = []; // the other window's CLI exits (deadPid is not alive)
+
+      await vi.waitFor(() => {
+        expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith('Brought the session here.', expect.any(Number));
+      });
+      expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+        'claude-vscode.editor.open', 'bring-sess', undefined, expect.anything());
+      const hint = vi.mocked((await import('./workspaceOpener.js')).writeJsonAtomic).mock.calls
+        .find(c => (c[0] as string).includes('bring-hint'))![1] as Record<string, unknown>;
+      expect(hint).toMatchObject({ sessionId: 'bring-sess', requesterPid: process.pid });
+      expect((hint.expiresAt as number) - (hint.requestedAt as number)).toBe(5000);
+    });
+
+    it('an ack carrying another request\'s nonce is not an answer', async () => {
+      activate(context as any);
+      pickBring();
+      getHandler()('bring-sess');
+      await vi.waitFor(() => { expect(jsonStore.has(hintKey)).toBe(true); });
+      const nonce = nonceOf();
+      jsonStore.set(ackKeyFor(nonce), { sessionId: 'bring-sess', nonce: 'someone-else-0000', result: 'closing', at: Date.now() });
+      procsNow = [];
+      await vi.advanceTimersByTimeAsync(11_000);
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('did not answer'));
+      });
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      // No answer → the abort marker is left for the owner to find.
+      expect(jsonStore.has(`bring-abort-${process.pid}-${nonce}.json`)).toBe(true);
+    });
+
+    it('an answer that lands as the requester gives up is still honoured (abort, then one more look)', async () => {
+      activate(context as any);
+      pickBring();
+      vi.mocked(vscode.commands.executeCommand).mockImplementation(async (cmd: string) => {
+        if (cmd === 'claude-vscode.editor.open') { procsNow = [proc(5555)]; }
+        return undefined;
+      });
+      const opener = await import('./workspaceOpener.js');
+      const realWrite = vi.mocked(opener.writeJsonAtomic).getMockImplementation()!;
+      // The owner's `closing` lands at the very moment the abort is written.
+      vi.mocked(opener.writeJsonAtomic).mockImplementation(async (p: string, v: unknown) => {
+        await realWrite(p, v);
+        if (p.includes('bring-abort')) {
+          const nonce = nonceOf();
+          jsonStore.set(ackKeyFor(nonce), { sessionId: 'bring-sess', nonce, result: 'closing', at: Date.now() });
+          procsNow = [];
+        }
+      });
+      try {
+        getHandler()('bring-sess');
+        await vi.advanceTimersByTimeAsync(11_000);
+        await vi.waitFor(() => {
+          expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith('Brought the session here.', expect.any(Number));
+        });
+      } finally {
+        vi.mocked(opener.writeJsonAtomic).mockImplementation(realWrite);
+      }
+    });
+
+    it('open starts nothing: a lookalike tab of ANOTHER session (inactive, weak title) is never closed', async () => {
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'bring-sess', customTitle: '', aiTitle: '', title: null, topic: 'Same first prompt' },
+      ]);
+      const lookalike = { input: { viewType: 'mainThreadWebview-claudeVSCodePanel' }, label: 'Same first prompt', isActive: false };
+      const active = { input: { viewType: 'mainThreadWebview-claudeVSCodePanel' }, label: 'Unrelated', isActive: true };
+      (vscode.window.tabGroups as any).all = [{ tabs: [active, lookalike] }];
+      try {
+        activate(context as any);
+        pickBring();
+        getHandler()('bring-sess'); // the open (default mock) starts nothing: sidebar-held here
+        await otherWindowAnswers('closing');
+        procsNow = [];
+        await vi.advanceTimersByTimeAsync(20_000);
+        await vi.waitFor(() => {
+          expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('did not start here'));
+        });
+        expect(vscode.window.tabGroups.close).not.toHaveBeenCalledWith(lookalike);
+      } finally {
+        mockDiscovery.getSnapshots.mockReset().mockReturnValue([]);
+      }
+    });
+
+    it('registry clear but ps cannot tell whether the old pid is still Claude: keeps waiting, never opens', async () => {
+      procsNow = [proc(process.pid)]; // a pid that is certainly alive
+      mockDiscovery.getOwnershipOf.mockImplementation((pid: number) => (pid === process.pid ? true : undefined));
+      const pi = await import('./processIdentity.js');
+      vi.mocked(pi.verifyClaudeProcess).mockResolvedValue({ kind: 'unknown' });
+      try {
+        activate(context as any);
+        pickBring();
+        getHandler()('bring-sess');
+        await otherWindowAnswers('closing');
+        procsNow = []; // the registry entry goes; the process lingers
+        await vi.advanceTimersByTimeAsync(41_000);
+        await vi.waitFor(() => {
+          expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('old process has not exited'));
+        });
+        expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+          'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      } finally {
+        vi.mocked(pi.verifyClaudeProcess).mockResolvedValue({ kind: 'verified' });
+      }
+    });
+
+    it('a refusal is reported and nothing is opened', async () => {
+      activate(context as any);
+      pickBring();
+      getHandler()('bring-sess');
+      await otherWindowAnswers('refused', 'busy');
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('started working'));
+      });
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+    });
+
+    it('closing but never exits: does not open, says what to do', async () => {
+      activate(context as any);
+      pickBring();
+      getHandler()('bring-sess');
+      await otherWindowAnswers('closing');
+      await vi.advanceTimersByTimeAsync(41_000); // procsNow still holds the other window's process
+      await vi.waitFor(() => {
+        expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('has not finished'));
+      });
+      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+    });
+
+    it('the session changed while the picker was open: nothing is sent', async () => {
+      activate(context as any);
+      vi.mocked(vscode.window.showQuickPick).mockImplementation(async (items: any) => {
+        procsNow = [proc(deadPid, { status: 'busy' })]; // a turn starts meanwhile
+        return (items as any[]).find(i => i.action === 'bring');
+      });
+      getHandler()('bring-sess');
+      await vi.waitFor(() => {
+        expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith(
+          expect.stringContaining('changed while the picker was open'), expect.any(Number));
+      });
+      expect(jsonStore.has(hintKey)).toBe(false);
+    });
+  });
+
+  describe('bring-hint receiver', () => {
+    const realTab = (label: string, isActive = false) =>
+      ({ input: { viewType: 'mainThreadWebview-claudeVSCodePanel' }, label, isActive });
+    const hintName = `bring-hint-${process.pid}-recv-sess-${process.pid}.json`;
+    const NONCE = 'nonce-recv-0001';
+    const ackKey = `bring-ack-${process.pid}-${NONCE}.json`;
+    const idleProc = { pid: 3333, sessionId: 'recv-sess', cwd: '/test/ws', startedAt: 1, kind: 'interactive', entrypoint: 'claude-vscode', version: 'x', status: 'idle' };
+    let readdirSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      jsonStore.clear();
+      readdirSpy = vi.spyOn(fs.promises, 'readdir').mockResolvedValue([hintName] as any);
+      vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+        get: <T>(key: string, defaultValue?: T): T | undefined =>
+          key === 'experimental.externalWriterBlock' ? (true as unknown as T) : defaultValue,
+      } as any);
+      mockDiscovery.isOwnedHereOnlyFresh.mockResolvedValue(true);
+      mockDiscovery.getWindowWriterProcsFresh.mockResolvedValue([idleProc]);
+      mockDiscovery.getOwnershipOf.mockImplementation((pid: number) => (pid === 3333 ? false : undefined));
+      mockDiscovery.getProcessesForSession.mockReturnValue([idleProc]);
+      mockDiscovery.getSnapshots.mockReturnValue([
+        { sessionId: 'recv-sess', customTitle: '', aiTitle: 'Receiver test session title', title: null, topic: '' },
+      ]);
+      (vscode.window.tabGroups as any).all = [{ tabs: [realTab('Receiver test session t…', true)] }];
+    });
+    afterEach(() => {
+      readdirSpy.mockRestore();
+      vi.mocked(vscode.workspace.getConfiguration).mockImplementation((() => ({
+        get: <T>(_key: string, defaultValue?: T): T | undefined => defaultValue,
+      })) as any);
+      mockDiscovery.isOwnedHereOnlyFresh.mockReset().mockResolvedValue(false);
+      mockDiscovery.getWindowWriterProcsFresh.mockReset().mockResolvedValue([]);
+      mockDiscovery.getOwnershipOf.mockReset().mockReturnValue(undefined);
+      mockDiscovery.getProcessesForSession.mockReset().mockReturnValue([]);
+      mockDiscovery.getSnapshots.mockReset().mockReturnValue([]);
+    });
+    const deliver = (over: Record<string, unknown> = {}) => {
+      jsonStore.set(hintName, {
+        sessionId: 'recv-sess', requestedAt: Date.now(), expiresAt: Date.now() + 5000, nonce: NONCE,
+        requesterPid: process.pid, requesterKey: '-test-ws', ...over,
+      });
+      const watcherCalls = vi.mocked(vscode.workspace.createFileSystemWatcher).mock;
+      const idx = watcherCalls.calls.findIndex(c =>
+        (c[0] as { pattern?: string })?.pattern === `bring-hint-${process.pid}-*.json`);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      const watcher = watcherCalls.results[idx].value as { onDidCreate: ReturnType<typeof vi.fn> };
+      (watcher.onDidCreate.mock.calls[0][0] as () => void)();
+    };
+
+    it('acks closing with the nonce, closes the identified tab, then acks closed', async () => {
+      activate(context as any);
+      const tab = (vscode.window.tabGroups as any).all[0].tabs[0];
+      deliver();
+      await vi.waitFor(() => {
+        expect(vscode.window.tabGroups.close).toHaveBeenCalledWith(tab);
+      });
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'closed' });
+      });
+      const writes = vi.mocked((await import('./workspaceOpener.js')).writeJsonAtomic).mock.calls
+        .filter(c => (c[0] as string).includes('bring-ack')).map(c => (c[1] as { result: string }).result);
+      expect(writes).toEqual(['closing', 'closed']);
+    });
+
+    it('an expired hint gets no answer and closes nothing', async () => {
+      activate(context as any);
+      deliver({ requestedAt: Date.now() - 10_000, expiresAt: Date.now() - 7_000 });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(jsonStore.has(ackKey)).toBe(false);
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('busy here: refuses and closes nothing', async () => {
+      mockDiscovery.getProcessesForSession.mockReturnValue([{ ...idleProc, status: 'busy' }]);
+      activate(context as any);
+      deliver();
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'busy' });
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('a withdrawn request (abort marker present after the closing answer) closes nothing', async () => {
+      jsonStore.set(`bring-abort-${process.pid}-${NONCE}.json`, { nonce: NONCE, at: Date.now() });
+      activate(context as any);
+      deliver();
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'aborted' });
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('an abort that lands after the closing answer stops the queued close', async () => {
+      const opener = await import('./workspaceOpener.js');
+      const realWrite = vi.mocked(opener.writeJsonAtomic).getMockImplementation()!;
+      vi.mocked(opener.writeJsonAtomic).mockImplementation(async (p: string, v: unknown) => {
+        await realWrite(p, v);
+        if (p.includes('bring-ack') && (v as { result?: string }).result === 'closing') {
+          jsonStore.set(`bring-abort-${process.pid}-${NONCE}.json`, { nonce: NONCE, at: Date.now() });
+        }
+      });
+      try {
+        activate(context as any);
+        deliver();
+        await vi.waitFor(() => {
+          expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'aborted' });
+        });
+        expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(opener.writeJsonAtomic).mockImplementation(realWrite);
+      }
+    });
+
+    it('past the close deadline (stuck in the queue): refuses with deadline, closes nothing', async () => {
+      activate(context as any);
+      // Answered in time (expiry ahead), but requested 16 s ago: past the 15 s close deadline.
+      deliver({ requestedAt: Date.now() - 16_000, expiresAt: Date.now() + 5_000 });
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'deadline' });
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('if the closing answer cannot be written, nothing is closed', async () => {
+      const opener = await import('./workspaceOpener.js');
+      const realWrite = vi.mocked(opener.writeJsonAtomic).getMockImplementation()!;
+      vi.mocked(opener.writeJsonAtomic).mockImplementation(async (p: string, v: unknown) => {
+        if (p.includes('bring-ack')) { throw new Error('EACCES'); }
+        await realWrite(p, v);
+      });
+      try {
+        activate(context as any);
+        deliver();
+        await vi.advanceTimersByTimeAsync(500);
+        expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+        expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
+          'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      } finally {
+        vi.mocked(opener.writeJsonAtomic).mockImplementation(realWrite);
+      }
+    });
+
+    it('another window joins while the close is queued: refuses as shared, not "no longer holds"', async () => {
+      mockDiscovery.getWindowWriterProcsFresh
+        .mockResolvedValueOnce([idleProc])                                  // the decision
+        .mockResolvedValue([idleProc, { ...idleProc, pid: 4444 }]);        // inside the queue
+      mockDiscovery.getOwnershipOf.mockImplementation((pid: number) => (pid === 3333 ? false : pid === 4444 ? true : undefined));
+      activate(context as any);
+      deliver();
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'shared' });
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('a close that throws still answers (close-failed), so the requester is not left waiting', async () => {
+      vi.mocked(vscode.window.tabGroups.close).mockRejectedValueOnce(new Error('boom'));
+      activate(context as any);
+      deliver();
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'close-failed' });
+      });
+    });
+
+    it('a turn that starts while the close is queued is not killed', async () => {
+      // Idle at the decision, busy by the time the queued close runs.
+      mockDiscovery.getProcessesForSession
+        .mockReturnValueOnce([idleProc])
+        .mockReturnValue([{ ...idleProc, status: 'busy' }]);
+      activate(context as any);
+      deliver();
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'busy' });
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('unverified ownership here refuses with that reason', async () => {
+      mockDiscovery.getOwnershipOf.mockReturnValue(undefined);
+      activate(context as any);
+      deliver();
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'unverified' });
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('the gate off here: refuses as disabled', async () => {
+      vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+        get: <T>(_key: string, defaultValue?: T): T | undefined => defaultValue,
+      } as any);
+      activate(context as any);
+      deliver();
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'disabled' });
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('a hint whose filename and payload name different sessions is dropped', async () => {
+      activate(context as any);
+      deliver({ sessionId: 'other-sess' });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+      expect([...jsonStore.keys()].some(k => k.startsWith('bring-ack'))).toBe(false);
     });
   });
 

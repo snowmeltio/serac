@@ -279,3 +279,14 @@ describe('parseWebviewCommand: transferSession', () => {
     expect(parseWebviewCommand({ type: 'transferSession' })).toBeNull();
   });
 });
+
+describe('parseWebviewCommand: switchOrBring', () => {
+  it('accepts a valid session id', () => {
+    expect(parseWebviewCommand({ type: 'switchOrBring', sessionId: 'b6ad54a8-804d-55a1-a232-066390a18787' }))
+      .toEqual({ type: 'switchOrBring', sessionId: 'b6ad54a8-804d-55a1-a232-066390a18787' });
+  });
+  it('rejects traversal and a missing id', () => {
+    expect(parseWebviewCommand({ type: 'switchOrBring', sessionId: '../etc' })).toBeNull();
+    expect(parseWebviewCommand({ type: 'switchOrBring' })).toBeNull();
+  });
+});

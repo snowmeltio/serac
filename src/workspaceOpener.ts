@@ -236,11 +236,87 @@ export function writeAddressedReleaseHint(
   return writeHintFile(addressedReleaseHintPath(projectsDir, workspaceKey, targetPid), sessionId);
 }
 
+/** Path to a BRING hint: "release this session so I can open it". Addressed
+ *  to the owning window's extension-host pid like the other kinds, and keyed
+ *  by session AND requester, so requests never overwrite each other (the
+ *  single-slot focus/release scheme can't tell its senders apart). The
+ *  receiver watches `bring-hint-<its pid>-*.json`. */
+export function bringHintPath(
+  projectsDir: string, workspaceKey: string, targetPid: number, sessionId: string, requesterPid: number,
+): string {
+  return path.join(projectsDir, workspaceKey, `bring-hint-${targetPid}-${sessionId}-${requesterPid}.json`);
+}
+
+/** Path to the owning window's answer to one bring request, filed under the
+ *  REQUESTER's workspace key, addressed to the requester's pid, and named by
+ *  the request's nonce, so a late answer to an earlier attempt can never be
+ *  read as the answer to a newer one. */
+export function bringAckPath(projectsDir: string, workspaceKey: string, requesterPid: number, nonce: string): string {
+  return path.join(projectsDir, workspaceKey, `bring-ack-${requesterPid}-${nonce}.json`);
+}
+
+/** Path to the requester's "I have given up" marker for one bring request.
+ *  The owner checks it after its `closing` answer lands and again right
+ *  before closing, so whichever side moves last sees the other. */
+export function bringAbortPath(projectsDir: string, workspaceKey: string, requesterPid: number, nonce: string): string {
+  return path.join(projectsDir, workspaceKey, `bring-abort-${requesterPid}-${nonce}.json`);
+}
+
+/** Atomic JSON write (temp file + rename), creating the directory if needed. */
+export async function writeJsonAtomic(filePath: string, payload: unknown): Promise<void> {
+  try {
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+  } catch { /* directory may already exist */ }
+  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  await fs.promises.writeFile(tmpPath, JSON.stringify(payload), 'utf-8');
+  await fs.promises.rename(tmpPath, filePath);
+}
+
+/** Read and delete a JSON file in one step. Claims it by renaming to a
+ *  private name first, so a newer file written to the same path between the
+ *  read and the delete is never removed unread. Null when absent or not JSON. */
+export async function consumeJsonFile(filePath: string): Promise<unknown> {
+  const claimed = `${filePath}.claimed-${process.pid}-${Date.now()}`;
+  try {
+    await fs.promises.rename(filePath, claimed);
+  } catch {
+    return null;
+  }
+  try {
+    return JSON.parse(await fs.promises.readFile(claimed, 'utf-8')) as unknown;
+  } catch {
+    return null;
+  } finally {
+    fs.promises.unlink(claimed).catch(() => { /* best effort */ });
+  }
+}
+
+/** Whether a marker file exists. Only a definite ENOENT reads 'absent'; any
+ *  other error (EACCES, EMFILE) reads 'error', so a destructive step guarded
+ *  by "no marker" can refuse rather than run on a guess. */
+export async function markerState(filePath: string): Promise<'absent' | 'present' | 'error'> {
+  try {
+    await fs.promises.access(filePath);
+    return 'present';
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'error';
+  }
+}
+
+/** Read a JSON file without consuming it. Null when absent or not JSON. */
+export async function readJsonFile(filePath: string): Promise<unknown> {
+  try {
+    return JSON.parse(await fs.promises.readFile(filePath, 'utf-8')) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 /** Best-effort GC for addressed hints whose target window is gone — a hint
  *  written moments before its addressee died is consumed by nobody and would
  *  otherwise sit in the shared projects dir forever. Removes files whose pid
- *  is no longer alive or whose payload is past the TTL. Covers both addressed
- *  kinds (focus + release). Never touches the legacy focus-hint.json, and
+ *  is no longer alive or whose payload is past the TTL. Covers every addressed
+ *  kind (focus, release, bring hint, ack, and abort). Never touches the legacy focus-hint.json, and
  *  never this window's own fresh hint. */
 export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey: string): Promise<void> {
   const dir = path.join(projectsDir, workspaceKey);
@@ -253,7 +329,7 @@ export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey
   for (const name of entries) {
     // Orphaned temp files from a writer that crashed between writeFile and
     // rename — age out on the same TTL.
-    if (/^(?:focus|release)-hint-.*\.tmp-\d+$/.test(name)) {
+    if (/^(?:(?:focus|release|bring)-hint|bring-ack|bring-abort)-.*\.(?:tmp|claimed)-[\d-]+$/.test(name)) {
       try {
         const stat = await fs.promises.stat(path.join(dir, name));
         if (Date.now() - stat.mtimeMs > FOCUS_HINT_TTL_MS) {
@@ -262,9 +338,10 @@ export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey
       } catch { /* vanished mid-sweep */ }
       continue;
     }
-    const m = /^(?:focus|release)-hint-(\d+)\.json$/.exec(name);
+    // focus/release: one slot per pid. bring hint/ack/abort: pid, then more.
+    const m = /^(?:(?:focus|release)-hint-(\d+)|(?:bring-hint|bring-ack|bring-abort)-(\d+)-[^/]+)\.json$/.exec(name);
     if (!m) { continue; }
-    const pid = parseInt(m[1], 10);
+    const pid = parseInt(m[1] ?? m[2], 10);
     let dead = false;
     try {
       process.kill(pid, 0);

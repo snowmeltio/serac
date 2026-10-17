@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 import { SessionDiscovery } from './sessionDiscovery.js';
 import { setConfidenceThresholds } from './sessionManager.js';
@@ -34,7 +35,13 @@ import {
   openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath,
   addressedFocusHintPath, writeAddressedFocusHint, sweepStaleAddressedHints, deriveUserDataDir,
   addressedReleaseHintPath, writeAddressedReleaseHint,
+  bringHintPath, bringAckPath, bringAbortPath, writeJsonAtomic, consumeJsonFile, readJsonFile, markerState,
 } from './workspaceOpener.js';
+import {
+  classifyBring, receiverVerdict, receiverOwnership, parseBringHint, ackFor, ineligibleText, ineligibleWorthSaying, isIdle,
+  BRING_QUIET_MS, BRING_HINT_EXPIRY_MS, BRING_ACK_WAIT_MS, BRING_CLOSE_DEADLINE_MS, BRING_EXIT_WAIT_MS, BRING_LAUNCH_WAIT_MS,
+  type BringVerdict, type BringInput, type BringHint, type BringAckResult, type RefusalReason,
+} from './bringHere.js';
 import { isExtensionHostPid } from './writerOwnership.js';
 import { isValidSessionId } from './validation.js';
 import { sessionTitleCandidates, strongTitleCandidates, findTabByLabel, findRevealedTab } from './claudeTabMatch.js';
@@ -298,7 +305,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     }
   }
 
-  panelProvider.setFocusHandler((sessionId: string) => {
+  function focusSessionHandler(sessionId: string): void {
     // A phone-originated (sdk-cli) card while the transfer gate is on: the
     // Claude Code panel cannot restore it, so a plain open would only produce
     // an empty chat. The 📡→ chip is the way in; the body click is a no-op
@@ -332,14 +339,11 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       }
     }
     openClaudeEditor(sessionId, { failMessage: 'Could not focus Claude Code session. Is the Claude Code extension installed?' });
-  });
+  }
+  panelProvider.setFocusHandler(focusSessionHandler);
 
-  /** Close THIS window's editor tab for `sessionId`. Claude tabs carry no
-   *  per-session identity in their viewType, so: first look for the session id
-   *  in any string of the tab input (some builds encode it in the uri); else
-   *  fall back to focus-then-close — `claude-vscode.editor.open` reveals the
-   *  session's EXISTING tab, and the now-active tab is closed only after
-   *  verifying it is a Claude tab. Never closes a non-Claude tab. */
+  /** Claude Code editor tabs: viewType only, no per-session identity — see
+   *  claudeTabMatch.ts for how a session's tab is identified. */
   function isClaudeTab(tab: vscode.Tab): boolean {
     const input = tab.input;
     return !!input && typeof input === 'object' && 'viewType' in input
@@ -394,35 +398,48 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   const REVEAL_SETTLE_MS = 1000;
   const TAB_COMMAND_TIMEOUT_MS = 5000;
 
-  type CloseResult = 'closed' | 'unidentified' | 'stale';
-  // Release closes run one at a time: two concurrent reveal passes would each
-  // see the other's activated tab as their own. A run that hangs past the
-  // bound stops holding the queue (its own caller still waits on it).
-  let tabCloseChain: Promise<unknown> = Promise.resolve();
-  function closeOwnSessionTab(sessionId: string): Promise<CloseResult> {
-    const run = tabCloseChain.then(() => closeOwnSessionTabNow(sessionId));
-    const bound = 2 * TAB_COMMAND_TIMEOUT_MS + REVEAL_SETTLE_MS;
-    tabCloseChain = Promise.race([run, new Promise(r => setTimeout(r, bound))])
+  type CloseResult = 'closed' | 'unidentified' | 'close-failed' | 'stale';
+  // Tab-changing sequences (release closes, the bring-here open) run one at a
+  // time: two concurrent reveal passes would each see the other's created or
+  // activated tab as their own. A run that hangs past its bound stops holding
+  // the queue (its own caller still waits on it).
+  let tabQueue: Promise<unknown> = Promise.resolve();
+  function inTabQueue<T>(fn: () => Promise<T>, boundMs: number): Promise<T> {
+    const run = tabQueue.then(fn);
+    tabQueue = Promise.race([run, new Promise(r => setTimeout(r, boundMs))])
       .catch(() => { /* surfaced to the caller */ });
     return run;
   }
+  /** Close THIS window's tab for `sessionId`, queued behind any other tab
+   *  sequence. `stillValid` is re-checked inside the queue (default: the
+   *  session is still live in two windows — the dual-writer release). */
+  function closeOwnSessionTab(
+    sessionId: string,
+    stillValid: () => Promise<boolean> = () => discovery.isDualWriterFresh(sessionId),
+  ): Promise<CloseResult> {
+    // stillValid can spend a ps call (~3 s), then 5 s open + 1 s settle +
+    // 5 s close: bound generously so the queue never moves on mid-sequence.
+    return inTabQueue(() => closeOwnSessionTabNow(sessionId, stillValid), 20_000);
+  }
 
+  /** 'close-failed' when VS Code declined or the close timed out — the tab
+   *  may still close late, so callers must not claim it stayed open. */
   async function closeTab(tab: vscode.Tab): Promise<CloseResult> {
     try {
       return (await withTimeout(vscode.window.tabGroups.close(tab), TAB_COMMAND_TIMEOUT_MS, 'Tab close'))
-        ? 'closed' : 'unidentified';
+        ? 'closed' : 'close-failed';
     } catch (err) {
-      log.warn('Dual-writer release: tab close failed:', err);
-      return 'unidentified';
+      log.warn('Tab close failed:', err);
+      return 'close-failed';
     }
   }
 
-  async function closeOwnSessionTabNow(sessionId: string): Promise<CloseResult> {
+  async function closeOwnSessionTabNow(sessionId: string, stillValid: () => Promise<boolean>): Promise<CloseResult> {
     // Re-verify inside the queue: a run can wait behind another, and a
     // second release for the same session finds no tab and would RE-OPEN it
     // (the reveal creates one) before closing it again.
-    if (!(await discovery.isDualWriterFresh(sessionId))) {
-      log.info(`Dual-writer release: ${sessionId} is no longer dual at close time — nothing to do`);
+    if (!(await stillValid())) {
+      log.info(`Tab close: ${sessionId} no longer qualifies at close time — nothing to do`);
       return 'stale';
     }
     const byId = findSessionTab(allClaudeTabs(), sessionId);
@@ -482,6 +499,292 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // both intents. A receiver that recently requested keep refuses instead.
   const keepRequestedAt = new Map<string, number>();
   const KEEP_GUARD_MS = 60_000; // ≥ the hint TTL, so a live hint never bypasses it
+
+  /** ⛔ chip: switch to the window holding the session, or — when the session
+   *  is idle there and this window can restore it — offer to bring it here.
+   *  See bringHere.ts for the protocol. */
+  const bringInFlight = new Set<string>();
+  const pidAlive = (pid: number): boolean => {
+    try { process.kill(pid, 0); return true; } catch (err) {
+      return (err as NodeJS.ErrnoException).code !== 'ESRCH'; // EPERM = exists, not ours
+    }
+  };
+  const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+  /** Polls `probe` every `intervalMs` until it returns a value or `timeoutMs`
+   *  passes. */
+  async function pollUntil<T>(probe: () => Promise<T | undefined>, timeoutMs: number, intervalMs = 250): Promise<T | undefined> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const v = await probe();
+      if (v !== undefined) { return v; }
+      if (Date.now() >= deadline) { return undefined; }
+      await sleep(intervalMs);
+    }
+  }
+  function sessionLastWrite(sessionId: string, nowMs: number): number | null {
+    const jsonlPath = discovery.getSessionFilePath(sessionId);
+    return jsonlPath
+      ? getSessionLastWriteMtime(jsonlPath, subagentsDirFor(sessionDirFromJsonl(jsonlPath)), { recentEnoughMs: BRING_QUIET_MS, nowMs })
+      : null;
+  }
+  function sessionTitleOf(sessionId: string): string | undefined {
+    const s = discovery.getSnapshots().find(x => x.sessionId === sessionId);
+    return s ? sessionTitleCandidates(s)[0] : undefined;
+  }
+
+  async function assessBring(sessionId: string): Promise<BringVerdict> {
+    const procs = await discovery.getWindowWriterProcsFresh(sessionId);
+    let owner: BringInput['owner'] = null;
+    if (procs.length === 1 && discovery.getOwnershipOf(procs[0]!.pid) === true) {
+      const gate = await discovery.resolveOpenGate(sessionId, { classifyOwner: true });
+      if (gate.kind === 'external') {
+        owner = { ownerPid: gate.ownerPid, ownerCwd: gate.ownerCwd, addressable: gate.addressable };
+      }
+    }
+    const nowMs = Date.now();
+    return classifyBring({
+      entrypoint: discovery.getEntrypointOf(sessionId),
+      procs,
+      ownershipOf: pid => discovery.getOwnershipOf(pid),
+      owner,
+      sessionRunning: discovery.isSessionRunning(sessionId),
+      hasLiveBackgroundAgents: discovery.hasLiveBackgroundAgents(sessionId),
+      lastWriteMtimeMs: sessionLastWrite(sessionId, nowMs),
+      nowMs,
+    });
+  }
+
+  panelProvider.setSwitchOrBringHandler((sessionId: string) => {
+    if (bringInFlight.has(sessionId)) {
+      vscode.window.setStatusBarMessage('Already bringing this session here…', 3000);
+      return;
+    }
+    // Held from the first await: a second click while this one assesses or
+    // shows the picker must not start a parallel attempt.
+    bringInFlight.add(sessionId);
+    void (async () => {
+      try {
+        const verdict = await assessBring(sessionId);
+        if (verdict.kind === 'ineligible') {
+          log.info(`Bring: not offered for ${sessionId} (${verdict.reason}) — switching`);
+          if (ineligibleWorthSaying(verdict.reason)) {
+            vscode.window.setStatusBarMessage(`Switching: can't bring it here because ${ineligibleText(verdict.reason)}.`, 5000);
+          }
+          focusSessionHandler(sessionId);
+          return;
+        }
+        const otherLabel = verdict.ownerCwd ? path.basename(verdict.ownerCwd) : 'the other window';
+        const picked = await vscode.window.showQuickPick([
+          { label: '$(arrow-right) Switch to that window', description: `where it is open (${otherLabel})`, action: 'switch' as const },
+          {
+            label: '$(arrow-down) Bring it here',
+            description: `close it in ${otherLabel} and open it here; unsent text in its box there is lost`,
+            action: 'bring' as const,
+          },
+        ], { title: 'Session is open in another window', placeHolder: 'Switch there, or move it to this window' });
+        if (!picked) { return; }
+        if (picked.action === 'switch') { focusSessionHandler(sessionId); return; }
+        await bringSessionHere(sessionId, verdict);
+      } catch (err) {
+        log.warn(`Bring: unexpected failure for session ${sessionId}:`, err);
+        void vscode.window.showWarningMessage('Bringing the session here failed part-way. Check the Serac output channel; its card shows where it is open now.');
+      } finally {
+        bringInFlight.delete(sessionId);
+        sendUpdate();
+      }
+    })();
+  });
+
+  async function bringSessionHere(sessionId: string, first: Extract<BringVerdict, { kind: 'eligible' }>): Promise<void> {
+    // Re-assess after the picker: it can sit open, and a turn may have
+    // started or the owner changed meanwhile.
+    const verdict = await assessBring(sessionId);
+    if (verdict.kind !== 'eligible' || !isSameProcess(verdict.proc, first.proc) || verdict.ownerPid !== first.ownerPid) {
+      vscode.window.setStatusBarMessage('The session changed while the picker was open. Nothing was done.', 5000);
+      return;
+    }
+    const ownerKey = sanitiseWorkspaceKey(verdict.ownerCwd ?? canonicalWsPath);
+    const nonce = randomUUID();
+    const now = Date.now();
+    const hint: BringHint = {
+      sessionId, requestedAt: now, expiresAt: now + BRING_HINT_EXPIRY_MS, nonce,
+      requesterPid: process.pid, requesterKey: localWorkspaceKey,
+    };
+    const ackPath = bringAckPath(projectsDir, localWorkspaceKey, process.pid, nonce);
+    const abortPath = bringAbortPath(projectsDir, localWorkspaceKey, process.pid, nonce);
+    const hintPath = bringHintPath(projectsDir, ownerKey, verdict.ownerPid, sessionId, process.pid);
+    const readAck = async () => {
+      const ack = ackFor(await readJsonFile(ackPath), sessionId, nonce);
+      return ack === 'none' ? undefined : ack;
+    };
+    /** Tell the owner this request is over. It checks for this after its
+     *  `closing` answer lands and again right before it closes, so a close
+     *  can never start after this point unless its answer was already
+     *  readable — which the caller then re-reads. Left for the sweep to
+     *  remove: the owner may still look for it. */
+    const abort = (): Promise<boolean> => writeJsonAtomic(abortPath, { nonce, at: Date.now() })
+      .then(() => true, err => { log.warn('Bring: could not write the abort marker:', err); return false; });
+    try {
+      try {
+        await writeJsonAtomic(hintPath, hint);
+      } catch (err) {
+        log.warn('Bring: could not write the bring hint:', err);
+        void vscode.window.showWarningMessage('Could not reach the other VS Code window. Nothing was changed.');
+        return;
+      }
+      log.info(`Bring: asked pid ${verdict.ownerPid} to release ${sessionId} (nonce ${nonce}) at ${hintPath}`);
+      vscode.window.setStatusBarMessage('Asking the other window to release this session…', 4000);
+
+      let ack = await pollUntil(readAck, BRING_ACK_WAIT_MS);
+      if (!ack) {
+        // Abort, THEN look once more: an answer written before the abort is
+        // honoured; one written after it is followed by the owner seeing the
+        // abort and standing down.
+        const abortWritten = await abort();
+        await fs.promises.unlink(hintPath).catch(() => { /* consumed */ });
+        ack = await readAck();
+        if (!ack) {
+          log.warn(`Bring: no answer from pid ${verdict.ownerPid} for ${sessionId} (abort ${abortWritten ? 'written' : 'NOT written'})`);
+          void vscode.window.showWarningMessage(abortWritten
+            ? 'The other window did not answer in time (it may be busy, or running a Serac version without this). Nothing was changed.'
+            : 'The other window did not answer, and the request could not be withdrawn. It may still release the session: if its card loses the ⛔, click it to open it here.');
+          return;
+        }
+      }
+      if (ack.result === 'refused') {
+        log.info(`Bring: pid ${verdict.ownerPid} refused ${sessionId} (${ack.reason ?? 'no reason'})`);
+        void vscode.window.showWarningMessage(refusalText(ack.reason));
+        return;
+      }
+
+      // Closing there: wait until no window process holds the session AND
+      // the old CLI has actually exited (its registry entry goes ~2 s
+      // first). A refusal that came AFTER `closing` stops the wait, except
+      // 'close-failed': that tab may still close late, so keep watching.
+      let registryCleared = false;
+      const outcome = await pollUntil<'gone' | 'refused'>(async () => {
+        const latest = await readAck();
+        if (latest?.result === 'refused' && latest.reason !== 'close-failed') { return 'refused'; }
+        const procs = await discovery.getWindowWriterProcsFresh(sessionId);
+        registryCleared = procs.length === 0;
+        if (procs.length > 0) { return undefined; }
+        if (!pidAlive(verdict.proc.pid)) { return 'gone'; }
+        // Registry clear but the pid answers: the CLI is still shutting
+        // down, or the pid was reused. Only a definite "that pid is someone
+        // else now" counts as gone; a ps failure or a missing start time is
+        // "can't tell", and keeps waiting on kill(pid, 0).
+        const identity = await verifyClaudeProcess(verdict.proc.pid, registryStartMs(verdict.proc));
+        return identity.kind === 'not-claude' || identity.kind === 'start-mismatch' ? 'gone' : undefined;
+      }, BRING_EXIT_WAIT_MS);
+      if (outcome === 'refused') {
+        const latest = await readAck();
+        log.info(`Bring: pid ${verdict.ownerPid} did not close ${sessionId} (${latest?.reason ?? 'no reason'})`);
+        void vscode.window.showWarningMessage(refusalText(latest?.reason));
+        return;
+      }
+      if (outcome === undefined) {
+        await abort(); // a close still queued there must not start now
+        log.warn(`Bring: ${sessionId} still held ${BRING_EXIT_WAIT_MS}ms after the other window started closing`);
+        void vscode.window.showWarningMessage(registryCleared
+          ? 'The other window released the session, but its old process has not exited yet. Wait a little before opening it here.'
+          : 'The other window has not finished releasing the session. If it does, its card loses the ⛔ and you can click it to open it here.');
+        return;
+      }
+      await sleep(RELEASE_SETTLE_MS); // the closing CLI's last record may still be landing
+      // Inside the tab queue: a concurrent close here (another bring
+      // receiver, a dual-writer release) must not take this open's new tab
+      // for its own.
+      const opened = await inTabQueue(async () => {
+        if ((await discovery.getWindowWriterProcsFresh(sessionId)).length > 0) { return 'taken' as const; }
+        return (await openReleasedSessionHere(sessionId)) ? 'opened' as const : 'not-started' as const;
+      }, 60_000); // two opens, a close, and launch polls whose ps probes overshoot
+      if (opened === 'opened') {
+        log.info(`Bring: ${sessionId} is now open here`);
+        vscode.window.setStatusBarMessage('Brought the session here.', 4000);
+        panelProvider.focusSession(sessionId);
+      } else if (opened === 'taken') {
+        void vscode.window.showWarningMessage('Another process picked the session up just now. Not opening it here.');
+      } else {
+        void vscode.window.showWarningMessage(
+          'The session was released, but it did not start here. Look for "Open here anyway" in its tab or the Claude sidebar: it is safe to click now.');
+      }
+    } finally {
+      await fs.promises.unlink(ackPath).catch(() => { /* already gone */ });
+    }
+  }
+
+  function refusalText(reason: string | undefined): string {
+    switch (reason) {
+      case 'busy': return 'The session started working in the other window, so it was left there.';
+      case 'not-owned-here': return 'The other window no longer holds this session. Click the card to open it.';
+      case 'unverified': return 'The other window could not confirm it holds this session, so nothing was closed. Try again shortly.';
+      case 'disabled': return 'The other window has serac.experimental.externalWriterBlock off, so it cannot hand sessions over. Nothing was changed.';
+      case 'in-flight-here': return 'The other window is moving this session itself right now. Nothing was changed.';
+      case 'unidentified': return 'The other window could not find the session\'s tab (it may be in the Claude sidebar), so nothing was closed. Close it there, then click the card.';
+      case 'close-failed': return 'Closing the session\'s tab in the other window did not complete. Check that window.';
+      case 'aborted': return 'The request was withdrawn before anything was closed. Nothing was changed.';
+      case 'deadline': return 'The other window could not get to the request in time, so nothing was closed. Try again.';
+      case 'shared': return 'The session is now open in two windows, so it was left alone. Use its ⚠ chip to choose where it stays.';
+      default: return 'The other window declined to release the session. Nothing was changed.';
+    }
+  }
+
+  /** Open a just-released session in this window and confirm a process for
+   *  it registers here. Runs inside the tab queue, after a fresh check that
+   *  no process holds the session, so any tab for it here is a held,
+   *  process-less "Open here anyway" view: Claude Code shows a session that
+   *  was live elsewhere that way, and a later open only reveals it. Such a
+   *  tab is closed first; an open that starts nothing is closed and
+   *  re-opened once. */
+  const BRING_FIRST_LAUNCH_WAIT_MS = 4_000;
+  async function openReleasedSessionHere(sessionId: string): Promise<boolean> {
+    const snapshots = discovery.getSnapshots();
+    const own = snapshots.find(s => s.sessionId === sessionId);
+    const targetTitles = own ? sessionTitleCandidates(own) : [];
+    const otherTitles = snapshots.filter(s => s.sessionId !== sessionId).map(sessionTitleCandidates);
+    const held = findTabByLabel(allClaudeTabs(), own ? strongTitleCandidates(own) : [], otherTitles);
+    if (held) {
+      log.info(`Bring: closing the held tab for ${sessionId} before opening`);
+      await closeTab(held);
+    }
+    const startedHere = (timeoutMs: number) => pollUntil(async () => {
+      const procs = await discovery.getWindowWriterProcsFresh(sessionId);
+      return procs.some(p => discovery.getOwnershipOf(p.pid) === false) ? true : undefined;
+    }, timeoutMs);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const before = new Map(allClaudeTabs().map(t => [t, t.isActive] as const));
+      try {
+        await withTimeout(
+          vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One),
+          TAB_COMMAND_TIMEOUT_MS, 'claude-vscode.editor.open');
+      } catch (err) {
+        log.warn(`Bring: open of ${sessionId} failed:`, err);
+        return false;
+      }
+      // A created tab is a real launch: give it the full budget (MCP servers
+      // and hooks can make a cold start slow). A reveal of a held panel never
+      // starts anything, so a short wait is enough to tell.
+      const created = allClaudeTabs().some(t => !before.has(t));
+      if (await startedHere(created ? BRING_LAUNCH_WAIT_MS : BRING_FIRST_LAUNCH_WAIT_MS)) { return true; }
+      if (attempt === 1 || created) { break; }
+      // Nothing started: a held panel the strong-title pass missed. Take the
+      // tab the reveal activated, else the one tab whose label matches any of
+      // the session's titles (an already-active held tab changes nothing on
+      // reveal). Safe here only: no process holds the session, so no tab for
+      // it is running anything.
+      const after = allClaudeTabs();
+      // The already-active case: a tab active before AND after the open (the
+      // reveal changed nothing), whose label matches. Never any other tab: a
+      // weak first-prompt title can match a different, live session.
+      const stayedActive = after.filter(t => before.get(t) === true && t.isActive);
+      const heldTab = findRevealedTab(before, after, targetTitles, otherTitles)
+        ?? findTabByLabel(stayedActive, targetTitles, otherTitles);
+      if (!heldTab) { break; }
+      log.info(`Bring: the open revealed a held tab for ${sessionId}; closing and re-opening`);
+      if ((await closeTab(heldTab)) !== 'closed') { break; }
+    }
+    return false;
+  }
 
   /** 📡→ bring-here: take a phone-originated (Remote Control-hosted,
    *  `entrypoint: sdk-cli`) session into this window. The Claude Code panel
@@ -704,6 +1007,9 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         } else if (closed === 'unidentified') {
           void vscode.window.showWarningMessage(
             'Could not identify this session’s tab — close it manually to resolve the conflict.');
+        } else if (closed === 'close-failed') {
+          void vscode.window.showWarningMessage(
+            'Closing this session’s tab did not complete. If it is still open, close it manually.');
         }
         return;
       }
@@ -1102,6 +1408,148 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   releaseHintWatcher.onDidCreate(() => { void applyAddressedReleaseHint(); });
   releaseHintWatcher.onDidChange(() => { void applyAddressedReleaseHint(); });
   context.subscriptions.push(releaseHintWatcher);
+
+  // BRING hints — another window asks to take a session this window holds
+  // (see bringHere.ts). One file per requested session, so several can be
+  // pending; each is claimed by rename before it is read. Deliberately no
+  // startup consume: hints expire within seconds, and the sweep removes them.
+  const bringHintPrefix = `bring-hint-${process.pid}-`;
+  const localHintDir = path.join(projectsDir, localWorkspaceKey);
+  let bringHintsInFlight = false;
+  let bringHintsRecheck = false;
+  async function applyBringHints() {
+    if (bringHintsInFlight) { bringHintsRecheck = true; return; }
+    bringHintsInFlight = true;
+    try {
+      do {
+        bringHintsRecheck = false;
+        let names: string[];
+        try {
+          names = (await fs.promises.readdir(localHintDir))
+            .filter(n => n.startsWith(bringHintPrefix) && n.endsWith('.json'));
+        } catch {
+          names = [];
+        }
+        for (const name of names) {
+          const hint = parseBringHint(await consumeJsonFile(path.join(localHintDir, name)));
+          if (!hint || name !== `${bringHintPrefix}${hint.sessionId}-${hint.requesterPid}.json`) { continue; }
+          try {
+            await handleBringHint(hint);
+          } catch (err) {
+            log.warn(`Bring: handling the request for ${hint.sessionId} failed:`, err);
+          }
+        }
+      } while (bringHintsRecheck);
+    } finally {
+      bringHintsInFlight = false;
+    }
+  }
+  async function handleBringHint(hint: BringHint): Promise<void> {
+    const { sessionId } = hint;
+    const ackPath = bringAckPath(projectsDir, hint.requesterKey, hint.requesterPid, hint.nonce);
+    const abortPath = bringAbortPath(projectsDir, hint.requesterKey, hint.requesterPid, hint.nonce);
+    // Fails closed: anything but a definite "no such file" stops the close.
+    // A read error is reported as 'unverified', not as a withdrawal.
+    const abortBlock = async (): Promise<RefusalReason | null> => {
+      const state = await markerState(abortPath);
+      return state === 'absent' ? null : state === 'present' ? 'aborted' : 'unverified';
+    };
+    const ack = (result: BringAckResult, reason?: string): Promise<boolean> =>
+      writeJsonAtomic(ackPath, { sessionId, nonce: hint.nonce, result, ...(reason ? { reason } : {}), at: Date.now() })
+        .then(() => true, err => { log.warn(`Bring: could not answer pid ${hint.requesterPid}:`, err); return false; });
+    log.info(`Bring: pid ${hint.requesterPid} asks this window to release ${sessionId}`);
+    if (Date.now() > hint.expiresAt) {
+      log.info(`Bring: request for ${sessionId} arrived expired — ignored`);
+      return;
+    }
+    const idleNow = (): boolean => {
+      const nowMs = Date.now();
+      const facts = {
+        sessionRunning: discovery.isSessionRunning(sessionId),
+        hasLiveBackgroundAgents: discovery.hasLiveBackgroundAgents(sessionId),
+        lastWriteMtimeMs: sessionLastWrite(sessionId, nowMs), nowMs,
+      };
+      // Registry status of every process here (just rescanned by the caller).
+      return discovery.getProcessesForSession(sessionId).every(p => isIdle(p, facts));
+    };
+    const requesterAlive = pidAlive(hint.requesterPid) && (await isExtensionHostPid(hint.requesterPid)) === true;
+    const gateOn = readSettings().experimental.externalWriterBlock;
+    const procs = await discovery.getWindowWriterProcsFresh(sessionId);
+    const ownership = receiverOwnership(gateOn, procs.map(p => discovery.getOwnershipOf(p.pid)));
+    const verdict = receiverVerdict({
+      hint, nowMs: Date.now(), requesterAlive, ownership, idle: idleNow(),
+      inFlightHere: bringInFlight.has(sessionId),
+    });
+    // The checks above take time (a rescan, up to 2 s of ps): look at the
+    // expiry again right before answering.
+    if (verdict.kind === 'ignore' || Date.now() > hint.expiresAt) {
+      log.info(`Bring: request for ${sessionId} ignored (${verdict.kind === 'ignore' ? verdict.reason : 'expired during checks'})`);
+      return;
+    }
+    if (verdict.kind === 'refuse') {
+      log.info(`Bring: refusing to release ${sessionId} (${verdict.reason})`);
+      await ack('refused', verdict.reason);
+      return;
+    }
+    // An unreadable `closing` breaks the handshake (the requester would say
+    // "nothing changed" while this window closes), so no answer, no close.
+    if (!(await ack('closing'))) {
+      log.warn(`Bring: could not write the closing answer for ${sessionId} — not closing`);
+      return;
+    }
+    // The requester writes its abort BEFORE its last look for this answer.
+    // Checking for the abort only after the answer has landed means one side
+    // always sees the other: either it read `closing` and waits on, or this
+    // check finds the abort.
+    const blockedBy = await abortBlock();
+    if (blockedBy) {
+      log.info(`Bring: not closing ${sessionId} (${blockedBy})`);
+      await ack('refused', blockedBy);
+      return;
+    }
+    const closeDeadline = hint.requestedAt + BRING_CLOSE_DEADLINE_MS;
+    let staleReason = 'not-owned-here' as RefusalReason;
+    let closed: CloseResult;
+    try {
+      closed = await closeOwnSessionTab(sessionId, async () => {
+        if (Date.now() > closeDeadline) { staleReason = 'deadline'; return false; }
+        const block = await abortBlock();
+        if (block) { staleReason = block; return false; }
+        // Still ours alone, and still idle: a prompt submitted here while
+        // this close waited in the queue must not have its turn killed.
+        const now = await discovery.getWindowWriterProcsFresh(sessionId);
+        const own = receiverOwnership(readSettings().experimental.externalWriterBlock,
+          now.map(p => discovery.getOwnershipOf(p.pid)));
+        if (own !== 'own-only') {
+          staleReason = own === 'shared' ? 'shared' : own === 'unverified' ? 'unverified'
+            : own === 'disabled' ? 'disabled' : 'not-owned-here';
+          return false;
+        }
+        if (!idleNow()) { staleReason = 'busy'; return false; }
+        return true;
+      });
+    } catch (err) {
+      // Answer anyway: 'close-failed' keeps the requester watching, since the
+      // tab may or may not have closed.
+      log.warn(`Bring: close of ${sessionId} threw:`, err);
+      closed = 'close-failed';
+    }
+    if (closed === 'closed') {
+      await ack('closed');
+      const title = sessionTitleOf(sessionId);
+      void vscode.window.showInformationMessage(
+        title ? `Moved "${title}" to another window, at its request.` : 'Moved a session to another window, at its request.');
+    } else {
+      await ack('refused', closed === 'stale' ? staleReason : closed);
+      log.warn(`Bring: did not release ${sessionId} (${closed})`);
+    }
+  }
+  const bringHintWatcher = vscode.workspace.createFileSystemWatcher(
+    new vscode.RelativePattern(vscode.Uri.file(localHintDir), `${bringHintPrefix}*.json`),
+  );
+  bringHintWatcher.onDidCreate(() => { void applyBringHints(); });
+  bringHintWatcher.onDidChange(() => { void applyBringHints(); });
+  context.subscriptions.push(bringHintWatcher);
 
   // Startup consume, mirroring the legacy path above: the extension-host pid
   // exists (and is addressable) from window launch, well before Serac

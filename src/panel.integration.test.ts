@@ -247,27 +247,37 @@ describe('panel.ts integration', () => {
     expect((focusMsg as any).sessionId).toBe(sess.sessionId);
   });
 
-  it('the ⛔ switch chip on an external card posts focusSession without the local highlight', () => {
+  it('the ⛔ chip on an external card posts switchOrBring (the host picks switch or bring) without the local highlight', () => {
     const sess = makeSession({ externalWriter: true });
     sendUpdate({ sessions: [sess] });
     const chip = document.querySelector('.external-writer-chip') as HTMLElement;
     expect(chip).toBeTruthy();
     expect(chip.dataset.switchSession).toBe(sess.sessionId);
     chip.click();
-    const focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
-    expect(focusMsg).toBeTruthy();
-    expect((focusMsg as any).sessionId).toBe(sess.sessionId);
+    const msg = postedMessages.find((m: any) => m.type === 'switchOrBring');
+    expect(msg).toBeTruthy();
+    expect((msg as any).sessionId).toBe(sess.sessionId);
+    // Not also a card-body activation: one message, one decision on the host.
+    expect(postedMessages.find((m: any) => m.type === 'focusSession')).toBeUndefined();
     expect((document.querySelector('.card') as HTMLElement).classList.contains('focused')).toBe(false);
   });
 
-  it('the ⛔ switch chip activates on Enter', () => {
+  it('the ⛔ chip activates on Enter', () => {
     const sess = makeSession({ externalWriter: true });
     sendUpdate({ sessions: [sess] });
     const chip = document.querySelector('.external-writer-chip') as HTMLElement;
     chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    const focusMsg = postedMessages.find((m: any) => m.type === 'focusSession');
-    expect(focusMsg).toBeTruthy();
-    expect((focusMsg as any).sessionId).toBe(sess.sessionId);
+    const msg = postedMessages.find((m: any) => m.type === 'switchOrBring');
+    expect(msg).toBeTruthy();
+    expect((msg as any).sessionId).toBe(sess.sessionId);
+  });
+
+  it('the card body of an external card still posts focusSession (a plain switch)', () => {
+    const sess = makeSession({ externalWriter: true });
+    sendUpdate({ sessions: [sess] });
+    (document.querySelector('.card') as HTMLElement).click();
+    expect(postedMessages.find((m: any) => m.type === 'focusSession')).toBeTruthy();
+    expect(postedMessages.find((m: any) => m.type === 'switchOrBring')).toBeUndefined();
   });
 
   it('the 📡-slash rc-off chip activates the session like the card body (click and Enter)', () => {

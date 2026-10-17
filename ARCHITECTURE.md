@@ -806,6 +806,86 @@ mutual-keep race would otherwise close both tabs, the inverse of both
 intents. The release receiver deliberately has no startup consume: closing a
 tab is destructive, and a hint that predates a window reload is expired
 intent (the sender's delivery check withdraws it).
+
+**Bring it here** (`bringHere.ts`, host flow in `extension.ts`). The ⛔ chip
+posts `switchOrBring`; the card body still posts `focusSession` (a plain
+switch). The host offers a Switch / Bring it here picker only when
+`classifyBring()` says eligible: the transcript is this window's own
+(`getEntrypointOf` defined, not `sdk-cli`), exactly one window-writer process
+holds it, that process is confirmed external, its owner is an addressable
+extension host, and it is idle by every signal (registry `status` `idle` or
+absent, which also covers background agents and Workflow runs; not running
+here; no live background agents; transcript and subagents tree quiet for
+8s). Otherwise the chip switches as before; a status-bar note gives the
+reason only for `busy` and `several-writers` (the others are routine and
+only logged). The protocol:
+1. The requester re-assesses after the picker (same process, same owner),
+   then writes
+   `projects/<ownerWsKey>/bring-hint-<ownerPid>-<sessionId>-<requesterPid>.json`
+   (`nonce`, `expiresAt` = 5s, `requesterPid`, `requesterKey`). One file per
+   session and requester, so requests never overwrite each other.
+2. The owner's watcher (`bring-hint-<its pid>-*.json`) claims each file by
+   rename before reading it (`consumeJsonFile`) and checks the filename names
+   the payload's session and requester. `receiverVerdict()` ignores an
+   expired hint or a dead requester (no answer at all) and refuses when the
+   gate is off here (`disabled`), this window is bringing the same session
+   itself, nothing here holds it (`not-owned-here`), this window and
+   another both hold it right now (`shared`: the ⚠ dual-writer case), a
+   process here could not be confirmed (`unverified`), or it is busy. The expiry is checked again immediately
+   before answering. Answers go to
+   `projects/<requesterKey>/bring-ack-<requesterPid>-<nonce>.json`, named by
+   nonce so a late answer to an earlier attempt is never read as the answer
+   to a newer one.
+3. After writing `closing` (if that write fails it stops: no answer, no
+   close), the owner checks for the requester's abort marker
+   (`bring-abort-<requesterPid>-<nonce>.json`, read fail-closed by
+   `markerState`: only ENOENT counts as absent, and a read error refuses as
+   `unverified`), then closes its tab
+   through the identified-tab queue. Inside the queue it re-checks that the
+   abort is absent, that it is no later than 15s after the request, and that
+   the session is still held here alone and idle. That last check matters
+   because a prompt submitted while the close waited must not have its turn
+   killed. It then acks `closed` (and shows a non-modal notice naming the
+   session) or `refused` with the reason the in-queue check recorded
+   (`deadline`, `aborted`, `unverified`, `shared`, `not-owned-here`,
+   `busy`) or the close's own (`unidentified`, `close-failed`; a close that
+   throws also answers `close-failed`, so the requester is never left
+   without a final answer).
+4. The requester acts only on an answer carrying its own nonce. With no
+   answer in 10s it writes the abort, THEN reads the answer once more:
+   either the owner's `closing` was already readable (and is honoured), or
+   the owner's post-answer check finds the abort. Either way one side sees
+   the other, so "no answer" really means nothing was closed. If the abort
+   itself cannot be written, the message says the session may still be
+   released rather than claiming nothing changed. After
+   `closing` it waits up to 40s (the close deadline, plus the ~11s close,
+   plus Claude Code's 2 to 7s shutdown) until no window-writer process holds
+   the session and the old CLI is gone: `kill(pid, 0)` fails, or ps says
+   definitely (`not-claude`, `start-mismatch`) that the pid is no longer
+   that Claude process. A ps failure or a missing start time is "can't
+   tell" and keeps waiting; a timeout with the registry already clear says
+   the old process has not exited yet, rather than "not released". This
+   matters because the
+   registry entry disappears ~2s before the process exits. A `close-failed`
+   refusal does not end the wait, since the tab may still close late; a
+   timeout writes the abort and never opens.
+5. After a 300ms settle it opens the session here inside the tab queue, so
+   a concurrent close here cannot take the new tab for its own. Under the
+   queue it checks the registry is still empty. Claude Code 2.1.300 shows a
+   session that was live elsewhere read-only ("Open here anyway", no
+   process), and a later open only reveals that held panel. So a held tab
+   matched by custom or AI title is closed first. If the open starts nothing
+   within 4s, the activated tab, or else a label-matching tab that was
+   active both before and after the open (the already-active held tab), is
+   closed and the session opened once more. No other tab is ever
+   considered: a weak first-prompt title can match a different, live
+   session. A created
+   tab gets the full 8s to launch. Success means a process confirmed own
+   registered; otherwise the user is pointed at the "Open here anyway"
+   banner, which is safe to click by then.
+Everything is gated by `serac.experimental.externalWriterBlock`, since the
+ownership verdicts come from it.
+
 With no external process at all, a confirmed own-window process resolves
 `'own'`; any confirmed-external without an own resolves `'external'`; only
 `undefined`s resolve `undefined`.
@@ -1146,7 +1226,7 @@ override — or where `Stop`/`Notification` prove unreliable enough that JSONL m
 - `focusSession` — sets `focusedSessionId`, re-renders with the highlight, and scrolls the card into view (`scrollIntoView({block:'nearest'})`, a no-op when it is already visible). Only the extension's auto-focus posts this type, so receiving it always means "a newly arrived session was auto-focused"; a user clicking a card sets focus locally without round-tripping.
 - `settings` — the current `serac.*` configuration snapshot. Posted once on `resolveWebviewView` (before the first `update` so the very first render sees the right visibility / heights) and again whenever `onDidChangeConfiguration` fires. Held separate from `update` because settings change rarely and updates are noisy.
 
-**Webview to extension:** Command messages (focusSession, dismissSession, undismissSession, viewTranscript, newChat, cleanup, copyToClipboard, requestUpdate, resolveDualWriter, rcIndicatorClick, transferSession — the 📡→ chip, see "Bringing a phone session here").
+**Webview to extension:** Command messages (focusSession, dismissSession, undismissSession, viewTranscript, newChat, cleanup, copyToClipboard, requestUpdate, resolveDualWriter, switchOrBring — the ⛔ chip, see "Bring it here", rcIndicatorClick, transferSession — the 📡→ chip, see "Bringing a phone session here").
 
 ### New chat detection
 

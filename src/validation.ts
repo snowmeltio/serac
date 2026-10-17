@@ -12,7 +12,7 @@ const VALID_COMMAND_TYPES = new Set([
   'focusSession', 'dismissSession', 'undismissSession', 'viewTranscript',
   'newChat', 'copyToClipboard', 'requestUpdate', 'cleanup', 'archiveRange',
   'undismissTeam', 'openWorkspace', 'footerSlotClick',
-  'openDetail', 'dismissWorkflow', 'undismissWorkflow', 'resolveDualWriter',
+  'openDetail', 'dismissWorkflow', 'undismissWorkflow', 'resolveDualWriter', 'switchOrBring',
   'rcIndicatorClick', 'transferSession',
 ]);
 
@@ -75,7 +75,8 @@ export function parseWebviewCommand(raw: unknown): WebviewCommand | null {
   // Commands with sessionId
   if (msg.type === 'focusSession' || msg.type === 'dismissSession' ||
       msg.type === 'undismissSession' || msg.type === 'viewTranscript' ||
-      msg.type === 'resolveDualWriter' || msg.type === 'transferSession') {
+      msg.type === 'resolveDualWriter' || msg.type === 'transferSession' ||
+      msg.type === 'switchOrBring') {
     if (!isValidSessionId(msg.sessionId)) { return null; }
     return { type: msg.type, sessionId: msg.sessionId } as WebviewCommand;
   }

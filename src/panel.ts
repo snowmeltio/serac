@@ -328,13 +328,14 @@ let FOREIGN_SLIDE_MS = 220;
       return;
     }
 
-    // ⛔ switch chip on an externally-owned card — same handoff as the card
-    // body, kept as an explicit affordance. Checked before the generic card
+    // ⛔ chip on an externally-owned card. The host switches to the owning
+    // window, as the card body does, unless the session is idle there; then
+    // it offers "Bring it here" as well. Checked before the generic card
     // handler that nests it.
     const switchChip = target.closest<HTMLElement>('[data-switch-session]');
     if (switchChip) {
       e.stopPropagation();
-      activateSession(switchChip.dataset.switchSession!);
+      vscode.postMessage({ type: 'switchOrBring', sessionId: switchChip.dataset.switchSession! });
       return;
     }
 

@@ -238,6 +238,9 @@ export type WebviewCommand =
   | { type: 'openDetail'; source: DetailSource; containerId: string; sessionId: string; agentId?: string; groupKey?: string }
   | { type: 'dismissWorkflow'; runId: string }
   | { type: 'undismissWorkflow'; runId: string }
+  /** ⛔ chip on a card another window holds: switch there, or (when the
+   *  session is idle there) offer to bring it here. */
+  | { type: 'switchOrBring'; sessionId: string }
   /** ⚠ dual-writer chip: ask the host to run the keep-here/release-here picker. */
   | { type: 'resolveDualWriter'; sessionId: string }
   /** 📡→ bring-here chip on a phone-originated (sdk-cli) card: ask the host

@@ -1459,6 +1459,32 @@ export class SessionDiscovery {
     return aggregateWriterOwnership(procs.map(p => this.writerOwnership.getInfo(p.pid))) === 'dual';
   }
 
+  /** Window-writer processes for a session after a forced registry rescan,
+   *  with their ownership resolved (read verdicts via getOwnershipOf). The
+   *  bring-here flow's fresh read. Empty when the externalWriter gate is off. */
+  async getWindowWriterProcsFresh(sessionId: string): Promise<LiveProcess[]> {
+    if (!readSettings().experimental.externalWriterBlock) { return []; }
+    await this.processRegistry.scan();
+    const procs = this.windowWriterProcs(sessionId);
+    if (procs.length > 0) { await this.writerOwnership.resolveFor(procs); }
+    return procs;
+  }
+
+  /** Fresh: this window holds the session and no other window does — the
+   *  bring-here receiver's precondition before it closes its copy. */
+  async isOwnedHereOnlyFresh(sessionId: string): Promise<boolean> {
+    const procs = await this.getWindowWriterProcsFresh(sessionId);
+    // Every process confirmed ours: an unresolved one could be another
+    // window's, which the 'own' aggregate would let through.
+    return procs.length > 0 && procs.every(p => this.writerOwnership.getInfo(p.pid) === false);
+  }
+
+  /** Does this window's tailer see background agents still running under the
+   *  session? False for sessions this window does not tail. */
+  hasLiveBackgroundAgents(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.hasLiveBackgroundAgents() ?? false;
+  }
+
   /** Filesystem-touching recency check: is ANY of the given live processes
    *  registered under `sessionId` backed by activity within the quiet
    *  window? "Activity" includes the session's own top-level JSONL AND
