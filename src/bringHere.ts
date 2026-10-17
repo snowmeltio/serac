@@ -153,7 +153,7 @@ export function parseBringAck(raw: unknown): BringAck | null {
 
 export type RefusalReason =
   | 'busy' | 'not-owned-here' | 'unverified' | 'disabled' | 'in-flight-here'
-  | 'unidentified' | 'close-failed' | 'aborted';
+  | 'unidentified' | 'close-failed' | 'aborted' | 'deadline';
 
 export type ReceiverVerdict =
   | { kind: 'close' }

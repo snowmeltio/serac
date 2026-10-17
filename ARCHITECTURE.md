@@ -836,24 +836,31 @@ only logged). The protocol:
    `projects/<requesterKey>/bring-ack-<requesterPid>-<nonce>.json`, named by
    nonce so a late answer to an earlier attempt is never read as the answer
    to a newer one.
-3. After writing `closing`, the owner checks for the requester's abort
-   marker (`bring-abort-<requesterPid>-<nonce>.json`), then closes its tab
+3. After writing `closing` (if that write fails it stops: no answer, no
+   close), the owner checks for the requester's abort marker
+   (`bring-abort-<requesterPid>-<nonce>.json`, read fail-closed by
+   `markerState`: only ENOENT counts as absent), then closes its tab
    through the identified-tab queue. Inside the queue it re-checks that the
    abort is absent, that it is no later than 15s after the request, and that
    the session is still held here alone and idle. That last check matters
    because a prompt submitted while the close waited must not have its turn
    killed. It then acks `closed` (and shows a non-modal notice naming the
-   session) or `refused` with a reason (`unidentified`, `close-failed`,
-   `busy`, `aborted`, `not-owned-here`).
+   session) or `refused` with the reason the in-queue check recorded
+   (`deadline`, `aborted`, `not-owned-here`, `busy`) or the close's own
+   (`unidentified`, `close-failed`).
 4. The requester acts only on an answer carrying its own nonce. With no
    answer in 10s it writes the abort, THEN reads the answer once more:
    either the owner's `closing` was already readable (and is honoured), or
    the owner's post-answer check finds the abort. Either way one side sees
-   the other, so "no answer" really means nothing was closed. After
+   the other, so "no answer" really means nothing was closed. If the abort
+   itself cannot be written, the message says the session may still be
+   released rather than claiming nothing changed. After
    `closing` it waits up to 40s (the close deadline, plus the ~11s close,
    plus Claude Code's 2 to 7s shutdown) until no window-writer process holds
-   the session and the old CLI is gone: `kill(pid, 0)` fails, or the OS says
-   the pid is no longer that Claude process (pid reuse), because the
+   the session and the old CLI is gone: `kill(pid, 0)` fails, or ps says
+   definitely (`not-claude`, `start-mismatch`) that the pid is no longer
+   that Claude process. A ps failure or a missing start time is "can't
+   tell" and keeps waiting. This matters because the
    registry entry disappears ~2s before the process exits. A `close-failed`
    refusal does not end the wait, since the tab may still close late; a
    timeout writes the abort and never opens.
@@ -863,9 +870,11 @@ only logged). The protocol:
    session that was live elsewhere read-only ("Open here anyway", no
    process), and a later open only reveals that held panel. So a held tab
    matched by custom or AI title is closed first. If the open starts nothing
-   within 4s, the activated tab (or the one tab matching any of its titles,
-   when the held tab was already active) is closed and the session opened
-   once more. That is safe because no process holds the session. A created
+   within 4s, the activated tab, or else a label-matching tab that was
+   active both before and after the open (the already-active held tab), is
+   closed and the session opened once more. No other tab is ever
+   considered: a weak first-prompt title can match a different, live
+   session. A created
    tab gets the full 8s to launch. Success means a process confirmed own
    registered; otherwise the user is pointed at the "Open here anyway"
    banner, which is safe to click by then.

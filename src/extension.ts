@@ -35,12 +35,12 @@ import {
   openWorkspaceFolder, writeFocusHint, consumeFocusHint, focusHintPath,
   addressedFocusHintPath, writeAddressedFocusHint, sweepStaleAddressedHints, deriveUserDataDir,
   addressedReleaseHintPath, writeAddressedReleaseHint,
-  bringHintPath, bringAckPath, bringAbortPath, writeJsonAtomic, consumeJsonFile, readJsonFile,
+  bringHintPath, bringAckPath, bringAbortPath, writeJsonAtomic, consumeJsonFile, readJsonFile, markerState,
 } from './workspaceOpener.js';
 import {
   classifyBring, receiverVerdict, receiverOwnership, parseBringHint, ackFor, ineligibleText, ineligibleWorthSaying, isIdle,
   BRING_QUIET_MS, BRING_HINT_EXPIRY_MS, BRING_ACK_WAIT_MS, BRING_CLOSE_DEADLINE_MS, BRING_EXIT_WAIT_MS, BRING_LAUNCH_WAIT_MS,
-  type BringVerdict, type BringInput, type BringHint, type BringAckResult,
+  type BringVerdict, type BringInput, type BringHint, type BringAckResult, type RefusalReason,
 } from './bringHere.js';
 import { isExtensionHostPid } from './writerOwnership.js';
 import { isValidSessionId } from './validation.js';
@@ -417,8 +417,9 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     sessionId: string,
     stillValid: () => Promise<boolean> = () => discovery.isDualWriterFresh(sessionId),
   ): Promise<CloseResult> {
-    return inTabQueue(() => closeOwnSessionTabNow(sessionId, stillValid),
-      2 * TAB_COMMAND_TIMEOUT_MS + REVEAL_SETTLE_MS);
+    // stillValid can spend a ps call (~3 s), then 5 s open + 1 s settle +
+    // 5 s close: bound generously so the queue never moves on mid-sequence.
+    return inTabQueue(() => closeOwnSessionTabNow(sessionId, stillValid), 20_000);
   }
 
   /** 'close-failed' when VS Code declined or the close timed out — the tab
@@ -621,8 +622,8 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
      *  can never start after this point unless its answer was already
      *  readable — which the caller then re-reads. Left for the sweep to
      *  remove: the owner may still look for it. */
-    const abort = () => writeJsonAtomic(abortPath, { nonce, at: Date.now() })
-      .catch(err => log.warn('Bring: could not write the abort marker:', err));
+    const abort = (): Promise<boolean> => writeJsonAtomic(abortPath, { nonce, at: Date.now() })
+      .then(() => true, err => { log.warn('Bring: could not write the abort marker:', err); return false; });
     try {
       try {
         await writeJsonAtomic(hintPath, hint);
@@ -639,13 +640,14 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         // Abort, THEN look once more: an answer written before the abort is
         // honoured; one written after it is followed by the owner seeing the
         // abort and standing down.
-        await abort();
+        const abortWritten = await abort();
         await fs.promises.unlink(hintPath).catch(() => { /* consumed */ });
         ack = await readAck();
         if (!ack) {
-          log.warn(`Bring: no answer from pid ${verdict.ownerPid} for ${sessionId}`);
-          void vscode.window.showWarningMessage(
-            'The other window did not answer in time (it may be busy, or running a Serac version without this). Nothing was changed.');
+          log.warn(`Bring: no answer from pid ${verdict.ownerPid} for ${sessionId} (abort ${abortWritten ? 'written' : 'NOT written'})`);
+          void vscode.window.showWarningMessage(abortWritten
+            ? 'The other window did not answer in time (it may be busy, or running a Serac version without this). Nothing was changed.'
+            : 'The other window did not answer, and the request could not be withdrawn. It may still release the session: if its card loses the ⛔, click it to open it here.');
           return;
         }
       }
@@ -666,9 +668,11 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         if (procs.length > 0) { return undefined; }
         if (!pidAlive(verdict.proc.pid)) { return 'gone'; }
         // Registry clear but the pid answers: the CLI is still shutting
-        // down, or the pid was reused. Only the OS can tell.
+        // down, or the pid was reused. Only a definite "that pid is someone
+        // else now" counts as gone; a ps failure or a missing start time is
+        // "can't tell", and keeps waiting on kill(pid, 0).
         const identity = await verifyClaudeProcess(verdict.proc.pid, registryStartMs(verdict.proc));
-        return identity.kind === 'verified' ? undefined : 'gone';
+        return identity.kind === 'not-claude' || identity.kind === 'start-mismatch' ? 'gone' : undefined;
       }, BRING_EXIT_WAIT_MS);
       if (outcome === 'refused') {
         const latest = await readAck();
@@ -690,7 +694,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       const opened = await inTabQueue(async () => {
         if ((await discovery.getWindowWriterProcsFresh(sessionId)).length > 0) { return 'taken' as const; }
         return (await openReleasedSessionHere(sessionId)) ? 'opened' as const : 'not-started' as const;
-      }, 3 * TAB_COMMAND_TIMEOUT_MS + 2 * BRING_LAUNCH_WAIT_MS);
+      }, 60_000); // two opens, a close, and launch polls whose ps probes overshoot
       if (opened === 'opened') {
         log.info(`Bring: ${sessionId} is now open here`);
         vscode.window.setStatusBarMessage('Brought the session here.', 4000);
@@ -716,6 +720,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       case 'unidentified': return 'The other window could not find the session\'s tab (it may be in the Claude sidebar), so nothing was closed. Close it there, then click the card.';
       case 'close-failed': return 'Closing the session\'s tab in the other window did not complete. Check that window.';
       case 'aborted': return 'The request was withdrawn before anything was closed. Nothing was changed.';
+      case 'deadline': return 'The other window could not get to the request in time, so nothing was closed. Try again.';
       default: return 'The other window declined to release the session. Nothing was changed.';
     }
   }
@@ -764,8 +769,12 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       // reveal). Safe here only: no process holds the session, so no tab for
       // it is running anything.
       const after = allClaudeTabs();
+      // The already-active case: a tab active before AND after the open (the
+      // reveal changed nothing), whose label matches. Never any other tab: a
+      // weak first-prompt title can match a different, live session.
+      const stayedActive = after.filter(t => before.get(t) === true && t.isActive);
       const heldTab = findRevealedTab(before, after, targetTitles, otherTitles)
-        ?? findTabByLabel(after, targetTitles, otherTitles);
+        ?? findTabByLabel(stayedActive, targetTitles, otherTitles);
       if (!heldTab) { break; }
       log.info(`Bring: the open revealed a held tab for ${sessionId}; closing and re-opening`);
       if ((await closeTab(heldTab)) !== 'closed') { break; }
@@ -1431,10 +1440,11 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     const { sessionId } = hint;
     const ackPath = bringAckPath(projectsDir, hint.requesterKey, hint.requesterPid, hint.nonce);
     const abortPath = bringAbortPath(projectsDir, hint.requesterKey, hint.requesterPid, hint.nonce);
-    const aborted = async () => (await readJsonFile(abortPath)) !== null;
-    const ack = (result: BringAckResult, reason?: string) =>
+    // Fails closed: anything but a definite "no such file" counts as aborted.
+    const aborted = async () => (await markerState(abortPath)) === 'present';
+    const ack = (result: BringAckResult, reason?: string): Promise<boolean> =>
       writeJsonAtomic(ackPath, { sessionId, nonce: hint.nonce, result, ...(reason ? { reason } : {}), at: Date.now() })
-        .catch(err => log.warn(`Bring: could not answer pid ${hint.requesterPid}:`, err));
+        .then(() => true, err => { log.warn(`Bring: could not answer pid ${hint.requesterPid}:`, err); return false; });
     log.info(`Bring: pid ${hint.requesterPid} asks this window to release ${sessionId}`);
     if (Date.now() > hint.expiresAt) {
       log.info(`Bring: request for ${sessionId} arrived expired — ignored`);
@@ -1469,7 +1479,12 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       await ack('refused', verdict.reason);
       return;
     }
-    await ack('closing');
+    // An unreadable `closing` breaks the handshake (the requester would say
+    // "nothing changed" while this window closes), so no answer, no close.
+    if (!(await ack('closing'))) {
+      log.warn(`Bring: could not write the closing answer for ${sessionId} — not closing`);
+      return;
+    }
     // The requester writes its abort BEFORE its last look for this answer.
     // Checking for the abort only after the answer has landed means one side
     // always sees the other: either it read `closing` and waits on, or this
@@ -1480,11 +1495,15 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       return;
     }
     const closeDeadline = hint.requestedAt + BRING_CLOSE_DEADLINE_MS;
+    let staleReason: RefusalReason = 'not-owned-here';
     const closed = await closeOwnSessionTab(sessionId, async () => {
-      if (Date.now() > closeDeadline || (await aborted())) { return false; }
+      if (Date.now() > closeDeadline) { staleReason = 'deadline'; return false; }
+      if (await aborted()) { staleReason = 'aborted'; return false; }
       // Still ours alone, and still idle: a prompt submitted here while this
       // close waited in the queue must not have its turn killed.
-      return (await discovery.isOwnedHereOnlyFresh(sessionId)) && idleNow();
+      if (!(await discovery.isOwnedHereOnlyFresh(sessionId))) { staleReason = 'not-owned-here'; return false; }
+      if (!idleNow()) { staleReason = 'busy'; return false; }
+      return true;
     });
     if (closed === 'closed') {
       await ack('closed');
@@ -1492,12 +1511,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       void vscode.window.showInformationMessage(
         title ? `Moved "${title}" to another window, at its request.` : 'Moved a session to another window, at its request.');
     } else {
-      let reason: string = closed;
-      if (closed === 'stale') {
-        reason = Date.now() > closeDeadline || (await aborted()) ? 'aborted'
-          : (await discovery.isOwnedHereOnlyFresh(sessionId)) ? 'busy' : 'not-owned-here';
-      }
-      await ack('refused', reason);
+      await ack('refused', closed === 'stale' ? staleReason : closed);
       log.warn(`Bring: did not release ${sessionId} (${closed})`);
     }
   }

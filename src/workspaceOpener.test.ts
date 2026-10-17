@@ -13,7 +13,7 @@ import {
   openWorkspaceFolder, focusHintPath, writeFocusHint, consumeFocusHint, FOCUS_HINT_TTL_MS,
   addressedFocusHintPath, writeAddressedFocusHint, sweepStaleAddressedHints,
   addressedReleaseHintPath, writeAddressedReleaseHint,
-  bringHintPath, bringAckPath, bringAbortPath, writeJsonAtomic, consumeJsonFile, readJsonFile,
+  bringHintPath, bringAckPath, bringAbortPath, writeJsonAtomic, consumeJsonFile, readJsonFile, markerState,
   deriveUserDataDir, buildCliArgs, locateCli, cliSpawnEnv,
 } from './workspaceOpener.js';
 
@@ -197,6 +197,15 @@ describe('bring hints and acks', () => {
     await writeJsonAtomic(p, { v: 2 }); // a newer request lands mid-consume
     expect(await consumed).toEqual({ v: 1 });
     expect(await readJsonFile(p)).toEqual({ v: 2 });
+  });
+
+  it('markerState: absent only on ENOENT, present otherwise (fails closed)', async () => {
+    const p = bringAbortPath(tmpDir, 'k', 456, 'nonce-1');
+    expect(await markerState(p)).toBe('absent');
+    await writeJsonAtomic(p, {});
+    expect(await markerState(p)).toBe('present');
+    // A path whose parent is a FILE gives ENOTDIR, not ENOENT: not a definite "absent".
+    expect(await markerState(path.join(p, 'child'))).toBe('present');
   });
 
   it('returns null for torn JSON', async () => {

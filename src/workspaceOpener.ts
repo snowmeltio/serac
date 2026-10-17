@@ -291,6 +291,18 @@ export async function consumeJsonFile(filePath: string): Promise<unknown> {
   }
 }
 
+/** Whether a marker file exists, failing CLOSED: only a definite ENOENT
+ *  reads 'absent'. Any other error (EACCES, EMFILE) reads 'present', so a
+ *  destructive step guarded by "no marker" never runs on a guess. */
+export async function markerState(filePath: string): Promise<'absent' | 'present'> {
+  try {
+    await fs.promises.access(filePath);
+    return 'present';
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT' ? 'absent' : 'present';
+  }
+}
+
 /** Read a JSON file without consuming it. Null when absent or not JSON. */
 export async function readJsonFile(filePath: string): Promise<unknown> {
   try {
