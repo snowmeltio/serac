@@ -153,7 +153,7 @@ export function parseBringAck(raw: unknown): BringAck | null {
 
 export type RefusalReason =
   | 'busy' | 'not-owned-here' | 'unverified' | 'disabled' | 'in-flight-here'
-  | 'unidentified' | 'close-failed' | 'aborted' | 'deadline';
+  | 'unidentified' | 'close-failed' | 'aborted' | 'deadline' | 'shared';
 
 export type ReceiverVerdict =
   | { kind: 'close' }
@@ -165,14 +165,18 @@ export type ReceiverVerdict =
 /** The owner's fresh view of who holds the session. */
 export type ReceiverOwnership =
   | 'own-only'    // every registered process confirmed this window's
-  | 'not-owned'   // nothing here, or another window holds it too
+  | 'not-owned'   // nothing here holds it (no process, or only other windows')
+  | 'shared'      // this window AND another hold it right now
   | 'unverified'  // a process whose window could not be confirmed (ps timeout)
   | 'disabled';   // serac.experimental.externalWriterBlock is off here
 
 /** Fold the owner's per-process verdicts into a ReceiverOwnership. */
 export function receiverOwnership(gateOn: boolean, verdicts: readonly (boolean | undefined)[]): ReceiverOwnership {
   if (!gateOn) { return 'disabled'; }
-  if (verdicts.length === 0 || verdicts.some(v => v === true)) { return 'not-owned'; }
+  const own = verdicts.some(v => v === false);
+  const other = verdicts.some(v => v === true);
+  if (own && other) { return 'shared'; }
+  if (other || verdicts.length === 0) { return 'not-owned'; }
   if (verdicts.some(v => v === undefined)) { return 'unverified'; }
   return 'own-only';
 }
@@ -195,6 +199,7 @@ export function receiverVerdict(input: ReceiverInput): ReceiverVerdict {
   if (input.ownership === 'disabled') { return { kind: 'refuse', reason: 'disabled' }; }
   if (input.inFlightHere) { return { kind: 'refuse', reason: 'in-flight-here' }; }
   if (input.ownership === 'not-owned') { return { kind: 'refuse', reason: 'not-owned-here' }; }
+  if (input.ownership === 'shared') { return { kind: 'refuse', reason: 'shared' }; }
   if (input.ownership === 'unverified') { return { kind: 'refuse', reason: 'unverified' }; }
   if (!input.idle) { return { kind: 'refuse', reason: 'busy' }; }
   return { kind: 'close' };

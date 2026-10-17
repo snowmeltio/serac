@@ -1062,7 +1062,7 @@ describe('extension', () => {
         procsNow = []; // the registry entry goes; the process lingers
         await vi.advanceTimersByTimeAsync(41_000);
         await vi.waitFor(() => {
-          expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('has not finished'));
+          expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('old process has not exited'));
         });
         expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
           'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
@@ -1251,6 +1251,28 @@ describe('extension', () => {
       } finally {
         vi.mocked(opener.writeJsonAtomic).mockImplementation(realWrite);
       }
+    });
+
+    it('another window joins while the close is queued: refuses as shared, not "no longer holds"', async () => {
+      mockDiscovery.getWindowWriterProcsFresh
+        .mockResolvedValueOnce([idleProc])                                  // the decision
+        .mockResolvedValue([idleProc, { ...idleProc, pid: 4444 }]);        // inside the queue
+      mockDiscovery.getOwnershipOf.mockImplementation((pid: number) => (pid === 3333 ? false : pid === 4444 ? true : undefined));
+      activate(context as any);
+      deliver();
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'shared' });
+      });
+      expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
+    });
+
+    it('a close that throws still answers (close-failed), so the requester is not left waiting', async () => {
+      vi.mocked(vscode.window.tabGroups.close).mockRejectedValueOnce(new Error('boom'));
+      activate(context as any);
+      deliver();
+      await vi.waitFor(() => {
+        expect(jsonStore.get(ackKey)).toMatchObject({ nonce: NONCE, result: 'refused', reason: 'close-failed' });
+      });
     });
 
     it('a turn that starts while the close is queued is not killed', async () => {

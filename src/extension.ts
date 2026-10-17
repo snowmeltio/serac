@@ -661,10 +661,12 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       // the old CLI has actually exited (its registry entry goes ~2 s
       // first). A refusal that came AFTER `closing` stops the wait, except
       // 'close-failed': that tab may still close late, so keep watching.
+      let registryCleared = false;
       const outcome = await pollUntil<'gone' | 'refused'>(async () => {
         const latest = await readAck();
         if (latest?.result === 'refused' && latest.reason !== 'close-failed') { return 'refused'; }
         const procs = await discovery.getWindowWriterProcsFresh(sessionId);
+        registryCleared = procs.length === 0;
         if (procs.length > 0) { return undefined; }
         if (!pidAlive(verdict.proc.pid)) { return 'gone'; }
         // Registry clear but the pid answers: the CLI is still shutting
@@ -683,8 +685,9 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       if (outcome === undefined) {
         await abort(); // a close still queued there must not start now
         log.warn(`Bring: ${sessionId} still held ${BRING_EXIT_WAIT_MS}ms after the other window started closing`);
-        void vscode.window.showWarningMessage(
-          'The other window has not finished releasing the session. If it does, its card loses the ⛔ and you can click it to open it here.');
+        void vscode.window.showWarningMessage(registryCleared
+          ? 'The other window released the session, but its old process has not exited yet. Wait a little before opening it here.'
+          : 'The other window has not finished releasing the session. If it does, its card loses the ⛔ and you can click it to open it here.');
         return;
       }
       await sleep(RELEASE_SETTLE_MS); // the closing CLI's last record may still be landing
@@ -721,6 +724,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       case 'close-failed': return 'Closing the session\'s tab in the other window did not complete. Check that window.';
       case 'aborted': return 'The request was withdrawn before anything was closed. Nothing was changed.';
       case 'deadline': return 'The other window could not get to the request in time, so nothing was closed. Try again.';
+      case 'shared': return 'The session is now open in two windows, so it was left alone. Use its ⚠ chip to choose where it stays.';
       default: return 'The other window declined to release the session. Nothing was changed.';
     }
   }
@@ -1429,7 +1433,11 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
         for (const name of names) {
           const hint = parseBringHint(await consumeJsonFile(path.join(localHintDir, name)));
           if (!hint || name !== `${bringHintPrefix}${hint.sessionId}-${hint.requesterPid}.json`) { continue; }
-          await handleBringHint(hint);
+          try {
+            await handleBringHint(hint);
+          } catch (err) {
+            log.warn(`Bring: handling the request for ${hint.sessionId} failed:`, err);
+          }
         }
       } while (bringHintsRecheck);
     } finally {
@@ -1440,8 +1448,12 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     const { sessionId } = hint;
     const ackPath = bringAckPath(projectsDir, hint.requesterKey, hint.requesterPid, hint.nonce);
     const abortPath = bringAbortPath(projectsDir, hint.requesterKey, hint.requesterPid, hint.nonce);
-    // Fails closed: anything but a definite "no such file" counts as aborted.
-    const aborted = async () => (await markerState(abortPath)) === 'present';
+    // Fails closed: anything but a definite "no such file" stops the close.
+    // A read error is reported as 'unverified', not as a withdrawal.
+    const abortBlock = async (): Promise<RefusalReason | null> => {
+      const state = await markerState(abortPath);
+      return state === 'absent' ? null : state === 'present' ? 'aborted' : 'unverified';
+    };
     const ack = (result: BringAckResult, reason?: string): Promise<boolean> =>
       writeJsonAtomic(ackPath, { sessionId, nonce: hint.nonce, result, ...(reason ? { reason } : {}), at: Date.now() })
         .then(() => true, err => { log.warn(`Bring: could not answer pid ${hint.requesterPid}:`, err); return false; });
@@ -1489,22 +1501,39 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
     // Checking for the abort only after the answer has landed means one side
     // always sees the other: either it read `closing` and waits on, or this
     // check finds the abort.
-    if (await aborted()) {
-      log.info(`Bring: request for ${sessionId} was withdrawn — not closing`);
-      await ack('refused', 'aborted');
+    const blockedBy = await abortBlock();
+    if (blockedBy) {
+      log.info(`Bring: not closing ${sessionId} (${blockedBy})`);
+      await ack('refused', blockedBy);
       return;
     }
     const closeDeadline = hint.requestedAt + BRING_CLOSE_DEADLINE_MS;
-    let staleReason: RefusalReason = 'not-owned-here';
-    const closed = await closeOwnSessionTab(sessionId, async () => {
-      if (Date.now() > closeDeadline) { staleReason = 'deadline'; return false; }
-      if (await aborted()) { staleReason = 'aborted'; return false; }
-      // Still ours alone, and still idle: a prompt submitted here while this
-      // close waited in the queue must not have its turn killed.
-      if (!(await discovery.isOwnedHereOnlyFresh(sessionId))) { staleReason = 'not-owned-here'; return false; }
-      if (!idleNow()) { staleReason = 'busy'; return false; }
-      return true;
-    });
+    let staleReason = 'not-owned-here' as RefusalReason;
+    let closed: CloseResult;
+    try {
+      closed = await closeOwnSessionTab(sessionId, async () => {
+        if (Date.now() > closeDeadline) { staleReason = 'deadline'; return false; }
+        const block = await abortBlock();
+        if (block) { staleReason = block; return false; }
+        // Still ours alone, and still idle: a prompt submitted here while
+        // this close waited in the queue must not have its turn killed.
+        const now = await discovery.getWindowWriterProcsFresh(sessionId);
+        const own = receiverOwnership(readSettings().experimental.externalWriterBlock,
+          now.map(p => discovery.getOwnershipOf(p.pid)));
+        if (own !== 'own-only') {
+          staleReason = own === 'shared' ? 'shared' : own === 'unverified' ? 'unverified'
+            : own === 'disabled' ? 'disabled' : 'not-owned-here';
+          return false;
+        }
+        if (!idleNow()) { staleReason = 'busy'; return false; }
+        return true;
+      });
+    } catch (err) {
+      // Answer anyway: 'close-failed' keeps the requester watching, since the
+      // tab may or may not have closed.
+      log.warn(`Bring: close of ${sessionId} threw:`, err);
+      closed = 'close-failed';
+    }
     if (closed === 'closed') {
       await ack('closed');
       const title = sessionTitleOf(sessionId);

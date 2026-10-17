@@ -124,6 +124,7 @@ describe('receiverVerdict', () => {
     expect(receiverVerdict({ ...base, idle: false })).toEqual({ kind: 'refuse', reason: 'busy' });
     expect(receiverVerdict({ ...base, ownership: 'not-owned' })).toEqual({ kind: 'refuse', reason: 'not-owned-here' });
     expect(receiverVerdict({ ...base, ownership: 'unverified' })).toEqual({ kind: 'refuse', reason: 'unverified' });
+    expect(receiverVerdict({ ...base, ownership: 'shared' })).toEqual({ kind: 'refuse', reason: 'shared' });
     expect(receiverVerdict({ ...base, ownership: 'disabled' })).toEqual({ kind: 'refuse', reason: 'disabled' });
     expect(receiverVerdict({ ...base, inFlightHere: true })).toEqual({ kind: 'refuse', reason: 'in-flight-here' });
   });
@@ -133,7 +134,8 @@ describe('receiverOwnership', () => {
   it('distinguishes own-only, not-owned, unverified, and disabled', () => {
     expect(receiverOwnership(true, [false, false])).toBe('own-only');
     expect(receiverOwnership(true, [])).toBe('not-owned');
-    expect(receiverOwnership(true, [false, true])).toBe('not-owned');
+    expect(receiverOwnership(true, [false, true])).toBe('shared');
+    expect(receiverOwnership(true, [true])).toBe('not-owned');
     expect(receiverOwnership(true, [false, undefined])).toBe('unverified');
     expect(receiverOwnership(false, [false])).toBe('disabled');
   });

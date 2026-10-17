@@ -199,13 +199,13 @@ describe('bring hints and acks', () => {
     expect(await readJsonFile(p)).toEqual({ v: 2 });
   });
 
-  it('markerState: absent only on ENOENT, present otherwise (fails closed)', async () => {
+  it('markerState: absent only on ENOENT, error on anything else', async () => {
     const p = bringAbortPath(tmpDir, 'k', 456, 'nonce-1');
     expect(await markerState(p)).toBe('absent');
     await writeJsonAtomic(p, {});
     expect(await markerState(p)).toBe('present');
     // A path whose parent is a FILE gives ENOTDIR, not ENOENT: not a definite "absent".
-    expect(await markerState(path.join(p, 'child'))).toBe('present');
+    expect(await markerState(path.join(p, 'child'))).toBe('error');
   });
 
   it('returns null for torn JSON', async () => {
