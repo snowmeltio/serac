@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.28.0 (2026-10-17) - Bring a session over from another window
+
+### Added
+- **"Bring it here" on the ⛔ chip (experimental).** When a session is open in another VS Code window and idle there, clicking its ⛔ chip now offers to move it into this window as well as switch to it. Serac asks the other window to close its tab, waits until that window's Claude process has fully exited, then opens the session here. Any unsent text in the other window's message box is lost. If the session is busy there, or something else holds it, the chip switches as before. Needs `serac.experimental.externalWriterBlock`.
+
+### Fixed
+- **"Release here" no longer closes the wrong conversation.** Resolving a session open in two windows (the ⚠ chip) used to close whichever Claude tab happened to be active when it couldn't find the session's own tab. If that session sat in the Claude sidebar, an unrelated conversation was closed mid-turn. Serac now closes only a tab it can identify by title, or one it just opened, and otherwise asks you to close it yourself.
+
 ## v1.27.1 (2026-10-16) - Agent rows close on hand-back, no done flash mid-turn
 
 ### Fixed
