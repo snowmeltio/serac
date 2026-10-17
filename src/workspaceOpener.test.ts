@@ -13,7 +13,7 @@ import {
   openWorkspaceFolder, focusHintPath, writeFocusHint, consumeFocusHint, FOCUS_HINT_TTL_MS,
   addressedFocusHintPath, writeAddressedFocusHint, sweepStaleAddressedHints,
   addressedReleaseHintPath, writeAddressedReleaseHint,
-  bringHintPath, bringAckPath, writeJsonAtomic, consumeJsonFile, readJsonFile,
+  bringHintPath, bringAckPath, bringAbortPath, writeJsonAtomic, consumeJsonFile, readJsonFile,
   deriveUserDataDir, buildCliArgs, locateCli, cliSpawnEnv,
 } from './workspaceOpener.js';
 
@@ -172,13 +172,14 @@ describe('sweepStaleAddressedHints — GC for unconsumed hints', () => {
 });
 
 describe('bring hints and acks', () => {
-  it('keys hints by owner pid AND session, acks by requester pid AND session', () => {
-    expect(path.basename(bringHintPath(tmpDir, 'k', 123, 'sess-a'))).toBe('bring-hint-123-sess-a.json');
-    expect(path.basename(bringAckPath(tmpDir, 'k', 456, 'sess-a'))).toBe('bring-ack-456-sess-a.json');
+  it('keys hints by owner pid, session, and requester; acks and aborts by requester pid and nonce', () => {
+    expect(path.basename(bringHintPath(tmpDir, 'k', 123, 'sess-a', 456))).toBe('bring-hint-123-sess-a-456.json');
+    expect(path.basename(bringAckPath(tmpDir, 'k', 456, 'nonce-1'))).toBe('bring-ack-456-nonce-1.json');
+    expect(path.basename(bringAbortPath(tmpDir, 'k', 456, 'nonce-1'))).toBe('bring-abort-456-nonce-1.json');
   });
 
   it('writes atomically and consumes once', async () => {
-    const p = bringHintPath(tmpDir, 'k', 123, 's1');
+    const p = bringHintPath(tmpDir, 'k', 123, 's1', 9);
     await writeJsonAtomic(p, { a: 1 });
     expect(await readJsonFile(p)).toEqual({ a: 1 });   // read does not consume
     expect(await consumeJsonFile(p)).toEqual({ a: 1 });
@@ -190,7 +191,7 @@ describe('bring hints and acks', () => {
   });
 
   it('a file rewritten after the claim survives the consume (claim-by-rename)', async () => {
-    const p = bringHintPath(tmpDir, 'k', 123, 's1');
+    const p = bringHintPath(tmpDir, 'k', 123, 's1', 9);
     await writeJsonAtomic(p, { v: 1 });
     const consumed = consumeJsonFile(p);
     await writeJsonAtomic(p, { v: 2 }); // a newer request lands mid-consume
@@ -199,7 +200,7 @@ describe('bring hints and acks', () => {
   });
 
   it('returns null for torn JSON', async () => {
-    const p = bringAckPath(tmpDir, 'k', 456, 's1');
+    const p = bringAckPath(tmpDir, 'k', 456, 'nonce-1');
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, '{"half');
     expect(await readJsonFile(p)).toBeNull();
@@ -209,13 +210,15 @@ describe('bring hints and acks', () => {
   it('the sweep removes bring files addressed to a dead pid and keeps live ones', async () => {
     const { spawnSync } = await import('node:child_process');
     const deadPid = spawnSync(process.execPath, ['-e', '']).pid!;
-    await writeJsonAtomic(bringHintPath(tmpDir, 'k', deadPid, 's1'), {});
-    await writeJsonAtomic(bringAckPath(tmpDir, 'k', deadPid, 's1'), {});
-    await writeJsonAtomic(bringHintPath(tmpDir, 'k', process.pid, 's2'), {});
+    await writeJsonAtomic(bringHintPath(tmpDir, 'k', deadPid, 's1', 9), {});
+    await writeJsonAtomic(bringAckPath(tmpDir, 'k', deadPid, 'nonce-1'), {});
+    await writeJsonAtomic(bringAbortPath(tmpDir, 'k', deadPid, 'nonce-1'), {});
+    await writeJsonAtomic(bringHintPath(tmpDir, 'k', process.pid, 's2', 9), {});
     await sweepStaleAddressedHints(tmpDir, 'k');
-    expect(fs.existsSync(bringHintPath(tmpDir, 'k', deadPid, 's1'))).toBe(false);
-    expect(fs.existsSync(bringAckPath(tmpDir, 'k', deadPid, 's1'))).toBe(false);
-    expect(fs.existsSync(bringHintPath(tmpDir, 'k', process.pid, 's2'))).toBe(true);
+    expect(fs.existsSync(bringHintPath(tmpDir, 'k', deadPid, 's1', 9))).toBe(false);
+    expect(fs.existsSync(bringAckPath(tmpDir, 'k', deadPid, 'nonce-1'))).toBe(false);
+    expect(fs.existsSync(bringAbortPath(tmpDir, 'k', deadPid, 'nonce-1'))).toBe(false);
+    expect(fs.existsSync(bringHintPath(tmpDir, 'k', process.pid, 's2', 9))).toBe(true);
   });
 });
 

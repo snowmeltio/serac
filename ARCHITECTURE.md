@@ -816,38 +816,59 @@ holds it, that process is confirmed external, its owner is an addressable
 extension host, and it is idle by every signal (registry `status` `idle` or
 absent, which also covers background agents and Workflow runs; not running
 here; no live background agents; transcript and subagents tree quiet for
-8s). Otherwise the chip switches as before, with a status-bar note giving
-the reason. The protocol:
+8s). Otherwise the chip switches as before; a status-bar note gives the
+reason only for `busy` and `several-writers` (the others are routine and
+only logged). The protocol:
 1. The requester re-assesses after the picker (same process, same owner),
-   then writes `projects/<ownerWsKey>/bring-hint-<ownerPid>-<sessionId>.json`
-   (`nonce`, `expiresAt` = 3s, `requesterPid`, `requesterKey`). The basename
-   is per session, so concurrent requests never overwrite each other.
+   then writes
+   `projects/<ownerWsKey>/bring-hint-<ownerPid>-<sessionId>-<requesterPid>.json`
+   (`nonce`, `expiresAt` = 5s, `requesterPid`, `requesterKey`). One file per
+   session and requester, so requests never overwrite each other.
 2. The owner's watcher (`bring-hint-<its pid>-*.json`) claims each file by
-   rename before reading it (`consumeJsonFile`). `receiverVerdict()` ignores
-   an expired hint or a dead requester (no answer at all), and refuses when
-   the session is not held here alone (`isOwnedHereOnlyFresh`: every process
-   confirmed own), busy, or being brought in by this window itself. The
-   expiry is checked again immediately before answering, because the fresh
-   checks take seconds; a close can therefore never start after the
-   requester has given up. It writes
-   `projects/<requesterKey>/bring-ack-<requesterPid>-<sessionId>.json`
-   (`closing`), closes its tab through the same identified-tab queue as the
-   release (re-checking `isOwnedHereOnlyFresh` inside it), then acks
-   `closed`, or `refused` with a reason.
-3. The requester acts only on an ack carrying its own nonce. No ack within
-   8s means nothing was closed; the hint is withdrawn. After `closing`, it
-   waits up to 20s until no window-writer process holds the session AND the
-   old CLI pid is dead (`kill(pid, 0)`: the registry entry disappears ~2s
-   before the process exits), watching for a late `refused`. A timeout never
-   opens; the message says the session may still be closing there.
-4. After a 300ms settle and a final empty-registry check, it opens the
-   session here. Claude Code 2.1.300 shows a session that was live elsewhere
-   read-only ("Open here anyway", no process), and a later open only reveals
-   that held panel. So a held tab identified by label is closed first, and an
-   open that starts no process within 4s but activated an identified tab
-   closes it and opens again once. Success means a process confirmed own
-   registered within 8s; otherwise the user is told the banner is safe to
-   click.
+   rename before reading it (`consumeJsonFile`) and checks the filename names
+   the payload's session and requester. `receiverVerdict()` ignores an
+   expired hint or a dead requester (no answer at all) and refuses when the
+   gate is off here (`disabled`), this window is bringing the same session
+   itself, the session is not held here alone (`not-owned-here`: nothing
+   here, or another window too), a process here could not be confirmed
+   (`unverified`), or it is busy. The expiry is checked again immediately
+   before answering. Answers go to
+   `projects/<requesterKey>/bring-ack-<requesterPid>-<nonce>.json`, named by
+   nonce so a late answer to an earlier attempt is never read as the answer
+   to a newer one.
+3. After writing `closing`, the owner checks for the requester's abort
+   marker (`bring-abort-<requesterPid>-<nonce>.json`), then closes its tab
+   through the identified-tab queue. Inside the queue it re-checks that the
+   abort is absent, that it is no later than 15s after the request, and that
+   the session is still held here alone and idle. That last check matters
+   because a prompt submitted while the close waited must not have its turn
+   killed. It then acks `closed` (and shows a non-modal notice naming the
+   session) or `refused` with a reason (`unidentified`, `close-failed`,
+   `busy`, `aborted`, `not-owned-here`).
+4. The requester acts only on an answer carrying its own nonce. With no
+   answer in 10s it writes the abort, THEN reads the answer once more:
+   either the owner's `closing` was already readable (and is honoured), or
+   the owner's post-answer check finds the abort. Either way one side sees
+   the other, so "no answer" really means nothing was closed. After
+   `closing` it waits up to 40s (the close deadline, plus the ~11s close,
+   plus Claude Code's 2 to 7s shutdown) until no window-writer process holds
+   the session and the old CLI is gone: `kill(pid, 0)` fails, or the OS says
+   the pid is no longer that Claude process (pid reuse), because the
+   registry entry disappears ~2s before the process exits. A `close-failed`
+   refusal does not end the wait, since the tab may still close late; a
+   timeout writes the abort and never opens.
+5. After a 300ms settle it opens the session here inside the tab queue, so
+   a concurrent close here cannot take the new tab for its own. Under the
+   queue it checks the registry is still empty. Claude Code 2.1.300 shows a
+   session that was live elsewhere read-only ("Open here anyway", no
+   process), and a later open only reveals that held panel. So a held tab
+   matched by custom or AI title is closed first. If the open starts nothing
+   within 4s, the activated tab (or the one tab matching any of its titles,
+   when the held tab was already active) is closed and the session opened
+   once more. That is safe because no process holds the session. A created
+   tab gets the full 8s to launch. Success means a process confirmed own
+   registered; otherwise the user is pointed at the "Open here anyway"
+   banner, which is safe to click by then.
 Everything is gated by `serac.experimental.externalWriterBlock`, since the
 ownership verdicts come from it.
 
@@ -1191,7 +1212,7 @@ override — or where `Stop`/`Notification` prove unreliable enough that JSONL m
 - `focusSession` — sets `focusedSessionId`, re-renders with the highlight, and scrolls the card into view (`scrollIntoView({block:'nearest'})`, a no-op when it is already visible). Only the extension's auto-focus posts this type, so receiving it always means "a newly arrived session was auto-focused"; a user clicking a card sets focus locally without round-tripping.
 - `settings` — the current `serac.*` configuration snapshot. Posted once on `resolveWebviewView` (before the first `update` so the very first render sees the right visibility / heights) and again whenever `onDidChangeConfiguration` fires. Held separate from `update` because settings change rarely and updates are noisy.
 
-**Webview to extension:** Command messages (focusSession, dismissSession, undismissSession, viewTranscript, newChat, cleanup, copyToClipboard, requestUpdate, resolveDualWriter, rcIndicatorClick, transferSession — the 📡→ chip, see "Bringing a phone session here").
+**Webview to extension:** Command messages (focusSession, dismissSession, undismissSession, viewTranscript, newChat, cleanup, copyToClipboard, requestUpdate, resolveDualWriter, switchOrBring — the ⛔ chip, see "Bring it here", rcIndicatorClick, transferSession — the 📡→ chip, see "Bringing a phone session here").
 
 ### New chat detection
 

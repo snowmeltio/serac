@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  classifyBring, isIdle, parseBringHint, parseBringAck, receiverVerdict, ackFor, ineligibleText,
+  classifyBring, isIdle, parseBringHint, parseBringAck, receiverVerdict, receiverOwnership, ackFor,
+  ineligibleText, ineligibleWorthSaying,
   BRING_QUIET_MS, type BringInput, type BringHint,
 } from './bringHere.js';
 import type { LiveProcess } from './processRegistry.js';
@@ -66,7 +67,7 @@ describe('isIdle', () => {
 });
 
 const hint = (over: Partial<BringHint> = {}): BringHint => ({
-  sessionId: 's1', requestedAt: NOW, expiresAt: NOW + 3_000, nonce: 'n1',
+  sessionId: 's1', requestedAt: NOW, expiresAt: NOW + 5_000, nonce: 'nonce-0001',
   requesterPid: 777, requesterKey: '-Users-me-repo', ...over,
 });
 
@@ -81,6 +82,8 @@ describe('parseBringHint / parseBringAck', () => {
     ['bad pid', { requesterPid: -1 }],
     ['float pid', { requesterPid: 1.5 }],
     ['empty nonce', { nonce: '' }],
+    ['path chars in nonce', { nonce: '../../etc-pass' }],
+    ['short nonce', { nonce: 'abc' }],
     ['no expiry', { expiresAt: 'soon' }],
   ])('rejects %s', (_label, over) => {
     expect(parseBringHint({ ...hint(), ...over })).toBeNull();
@@ -97,29 +100,50 @@ describe('parseBringHint / parseBringAck', () => {
 });
 
 describe('ackFor', () => {
-  const raw = { sessionId: 's1', nonce: 'n1', result: 'closing', at: NOW };
+  const raw = { sessionId: 's1', nonce: 'nonce-0001', result: 'closing', at: NOW };
   it('accepts only this request\'s nonce and session', () => {
-    expect(ackFor(raw, 's1', 'n1')).toMatchObject({ result: 'closing' });
+    expect(ackFor(raw, 's1', 'nonce-0001')).toMatchObject({ result: 'closing' });
     expect(ackFor(raw, 's1', 'other')).toBe('none'); // another requester's answer
-    expect(ackFor(raw, 's2', 'n1')).toBe('none');
-    expect(ackFor(null, 's1', 'n1')).toBe('none');
+    expect(ackFor(raw, 's2', 'nonce-0001')).toBe('none');
+    expect(ackFor(null, 's1', 'nonce-0001')).toBe('none');
   });
 });
 
 describe('receiverVerdict', () => {
-  const base = { hint: hint(), nowMs: NOW + 500, requesterAlive: true, ownedHereOnly: true, inFlightHere: false, idle: true };
+  const base = { hint: hint(), nowMs: NOW + 500, requesterAlive: true, ownership: 'own-only' as const, inFlightHere: false, idle: true };
   it('closes when everything checks out', () => {
     expect(receiverVerdict(base)).toEqual({ kind: 'close' });
   });
   it('ignores (no ack) an expired hint, even if all else is fine', () => {
-    expect(receiverVerdict({ ...base, nowMs: NOW + 3_001 })).toEqual({ kind: 'ignore', reason: 'expired' });
+    expect(receiverVerdict({ ...base, nowMs: NOW + 5_001 })).toEqual({ kind: 'ignore', reason: 'expired' });
   });
   it('ignores a request from a window that has gone', () => {
     expect(receiverVerdict({ ...base, requesterAlive: false })).toEqual({ kind: 'ignore', reason: 'requester-gone' });
   });
   it('refuses when busy, not owned here, or bringing the same session itself', () => {
     expect(receiverVerdict({ ...base, idle: false })).toEqual({ kind: 'refuse', reason: 'busy' });
-    expect(receiverVerdict({ ...base, ownedHereOnly: false })).toEqual({ kind: 'refuse', reason: 'not-owned-here' });
+    expect(receiverVerdict({ ...base, ownership: 'not-owned' })).toEqual({ kind: 'refuse', reason: 'not-owned-here' });
+    expect(receiverVerdict({ ...base, ownership: 'unverified' })).toEqual({ kind: 'refuse', reason: 'unverified' });
+    expect(receiverVerdict({ ...base, ownership: 'disabled' })).toEqual({ kind: 'refuse', reason: 'disabled' });
     expect(receiverVerdict({ ...base, inFlightHere: true })).toEqual({ kind: 'refuse', reason: 'in-flight-here' });
+  });
+});
+
+describe('receiverOwnership', () => {
+  it('distinguishes own-only, not-owned, unverified, and disabled', () => {
+    expect(receiverOwnership(true, [false, false])).toBe('own-only');
+    expect(receiverOwnership(true, [])).toBe('not-owned');
+    expect(receiverOwnership(true, [false, true])).toBe('not-owned');
+    expect(receiverOwnership(true, [false, undefined])).toBe('unverified');
+    expect(receiverOwnership(false, [false])).toBe('disabled');
+  });
+});
+
+describe('ineligibleWorthSaying', () => {
+  it('speaks up only for busy and several-writers', () => {
+    expect(ineligibleWorthSaying('busy')).toBe(true);
+    expect(ineligibleWorthSaying('several-writers')).toBe(true);
+    expect(ineligibleWorthSaying('not-local')).toBe(false);
+    expect(ineligibleWorthSaying('unaddressable')).toBe(false);
   });
 });

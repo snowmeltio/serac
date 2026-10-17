@@ -26,19 +26,24 @@ import { isValidSessionId } from './validation.js';
 /** The transcript must have been quiet this long (same bar as the phone
  *  transfer): a turn mid-flight writes continuously. */
 export const BRING_QUIET_MS = 8_000;
-/** The owner must act on a hint within this window of it being written. A
- *  receiver that picks it up later ignores it, so a requester that has given
- *  up can never be followed by a late close. */
-export const BRING_HINT_EXPIRY_MS = 3_000;
-/** How long the requester waits for the owner's ack. Comfortably past the
- *  expiry plus the owner's fresh checks (a registry scan and up to 2 s of ps). */
-export const BRING_ACK_WAIT_MS = 8_000;
-/** How long the requester waits for the owner's CLI to exit after a `closing`
- *  ack: the owner's close is bounded at ~11 s (5 s open + 1 s settle + 5 s
- *  close) and Claude Code's own shutdown takes ~2 s, up to 7 s with SIGKILL. */
-export const BRING_EXIT_WAIT_MS = 20_000;
+/** The owner answers a hint only within this window of it being written
+ *  (its watcher, a registry scan, and up to 2 s of ps all fit inside). */
+export const BRING_HINT_EXPIRY_MS = 5_000;
+/** How long the requester waits for an answer before it writes an abort. */
+export const BRING_ACK_WAIT_MS = 10_000;
+/** The owner never STARTS closing later than this after the request: a close
+ *  can sit in the tab queue behind another, and an unbounded wait there could
+ *  outlast the requester. */
+export const BRING_CLOSE_DEADLINE_MS = 15_000;
+/** How long the requester waits for the owner's CLI to exit after a
+ *  `closing` answer: the close deadline, plus the close itself (~11 s bound:
+ *  5 s open + 1 s settle + 5 s close), plus Claude Code's own shutdown (~2 s,
+ *  up to 7 s with SIGKILL), with margin. */
+export const BRING_EXIT_WAIT_MS = 40_000;
 /** How long after the final open a process must register here. */
 export const BRING_LAUNCH_WAIT_MS = 8_000;
+/** Nonces name files, so they are restricted to UUID-safe characters. */
+const NONCE_RE = /^[A-Za-z0-9-]{8,64}$/;
 
 export type BringIneligible =
   | 'not-local'      // transcript not under this window's key (sibling, foreign, team)
@@ -127,7 +132,7 @@ export function parseBringHint(raw: unknown): BringHint | null {
   const h = raw as Record<string, unknown>;
   if (!isValidSessionId(h.sessionId)) { return null; }
   if (typeof h.requestedAt !== 'number' || typeof h.expiresAt !== 'number') { return null; }
-  if (typeof h.nonce !== 'string' || h.nonce.length === 0 || h.nonce.length > 100) { return null; }
+  if (typeof h.nonce !== 'string' || !NONCE_RE.test(h.nonce)) { return null; }
   if (!isPid(h.requesterPid) || !isKey(h.requesterKey)) { return null; }
   return {
     sessionId: h.sessionId, requestedAt: h.requestedAt, expiresAt: h.expiresAt,
@@ -146,19 +151,37 @@ export function parseBringAck(raw: unknown): BringAck | null {
   };
 }
 
+export type RefusalReason =
+  | 'busy' | 'not-owned-here' | 'unverified' | 'disabled' | 'in-flight-here'
+  | 'unidentified' | 'close-failed' | 'aborted';
+
 export type ReceiverVerdict =
   | { kind: 'close' }
   /** Answer `refused` so the requester stops waiting. */
-  | { kind: 'refuse'; reason: 'busy' | 'not-owned-here' | 'in-flight-here' }
+  | { kind: 'refuse'; reason: RefusalReason }
   /** Say nothing: the requester has (or will have) given up by itself. */
   | { kind: 'ignore'; reason: 'expired' | 'requester-gone' };
+
+/** The owner's fresh view of who holds the session. */
+export type ReceiverOwnership =
+  | 'own-only'    // every registered process confirmed this window's
+  | 'not-owned'   // nothing here, or another window holds it too
+  | 'unverified'  // a process whose window could not be confirmed (ps timeout)
+  | 'disabled';   // serac.experimental.externalWriterBlock is off here
+
+/** Fold the owner's per-process verdicts into a ReceiverOwnership. */
+export function receiverOwnership(gateOn: boolean, verdicts: readonly (boolean | undefined)[]): ReceiverOwnership {
+  if (!gateOn) { return 'disabled'; }
+  if (verdicts.length === 0 || verdicts.some(v => v === true)) { return 'not-owned'; }
+  if (verdicts.some(v => v === undefined)) { return 'unverified'; }
+  return 'own-only';
+}
 
 export interface ReceiverInput {
   hint: BringHint;
   nowMs: number;
   requesterAlive: boolean;
-  /** Fresh: this window holds the session and no other window does. */
-  ownedHereOnly: boolean;
+  ownership: ReceiverOwnership;
   /** This window is itself bringing the same session in right now. */
   inFlightHere: boolean;
   idle: boolean;
@@ -169,8 +192,10 @@ export interface ReceiverInput {
 export function receiverVerdict(input: ReceiverInput): ReceiverVerdict {
   if (input.nowMs > input.hint.expiresAt) { return { kind: 'ignore', reason: 'expired' }; }
   if (!input.requesterAlive) { return { kind: 'ignore', reason: 'requester-gone' }; }
+  if (input.ownership === 'disabled') { return { kind: 'refuse', reason: 'disabled' }; }
   if (input.inFlightHere) { return { kind: 'refuse', reason: 'in-flight-here' }; }
-  if (!input.ownedHereOnly) { return { kind: 'refuse', reason: 'not-owned-here' }; }
+  if (input.ownership === 'not-owned') { return { kind: 'refuse', reason: 'not-owned-here' }; }
+  if (input.ownership === 'unverified') { return { kind: 'refuse', reason: 'unverified' }; }
   if (!input.idle) { return { kind: 'refuse', reason: 'busy' }; }
   return { kind: 'close' };
 }
@@ -187,10 +212,16 @@ const INELIGIBLE_TEXT: Record<BringIneligible, string> = {
   'not-local': 'its transcript belongs to another folder',
   'phone-session': 'it is a phone session (use its 📡→ chip)',
   'not-external': 'no other window holds it',
-  'unaddressable': 'the other window cannot be reached',
+  'unaddressable': 'whatever holds it is not a VS Code window Serac can reach',
   'several-writers': 'more than one process holds it',
   'busy': 'it is busy there',
 };
+/** Reasons worth a status-bar note when the chip falls back to Switch: the
+ *  rest are routine (a sibling card, a terminal session) and only logged. */
+export function ineligibleWorthSaying(reason: BringIneligible): boolean {
+  return reason === 'busy' || reason === 'several-writers';
+}
+
 /** Short reason for the status bar when the chip falls back to Switch. */
 export function ineligibleText(reason: BringIneligible): string {
   return INELIGIBLE_TEXT[reason];

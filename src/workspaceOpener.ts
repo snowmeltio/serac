@@ -237,18 +237,29 @@ export function writeAddressedReleaseHint(
 }
 
 /** Path to a BRING hint: "release this session so I can open it". Addressed
- *  to the owning window's extension-host pid like the other kinds, but keyed
- *  by session too, so two requests to the same window never overwrite each
- *  other (the single-slot focus/release scheme can't tell its senders apart).
- *  The receiver watches `bring-hint-<its pid>-*.json`. */
-export function bringHintPath(projectsDir: string, workspaceKey: string, targetPid: number, sessionId: string): string {
-  return path.join(projectsDir, workspaceKey, `bring-hint-${targetPid}-${sessionId}.json`);
+ *  to the owning window's extension-host pid like the other kinds, and keyed
+ *  by session AND requester, so requests never overwrite each other (the
+ *  single-slot focus/release scheme can't tell its senders apart). The
+ *  receiver watches `bring-hint-<its pid>-*.json`. */
+export function bringHintPath(
+  projectsDir: string, workspaceKey: string, targetPid: number, sessionId: string, requesterPid: number,
+): string {
+  return path.join(projectsDir, workspaceKey, `bring-hint-${targetPid}-${sessionId}-${requesterPid}.json`);
 }
 
-/** Path to the owning window's answer to a bring hint, filed under the
- *  REQUESTER's workspace key and addressed to the requester's pid. */
-export function bringAckPath(projectsDir: string, workspaceKey: string, requesterPid: number, sessionId: string): string {
-  return path.join(projectsDir, workspaceKey, `bring-ack-${requesterPid}-${sessionId}.json`);
+/** Path to the owning window's answer to one bring request, filed under the
+ *  REQUESTER's workspace key, addressed to the requester's pid, and named by
+ *  the request's nonce, so a late answer to an earlier attempt can never be
+ *  read as the answer to a newer one. */
+export function bringAckPath(projectsDir: string, workspaceKey: string, requesterPid: number, nonce: string): string {
+  return path.join(projectsDir, workspaceKey, `bring-ack-${requesterPid}-${nonce}.json`);
+}
+
+/** Path to the requester's "I have given up" marker for one bring request.
+ *  The owner checks it after its `closing` answer lands and again right
+ *  before closing, so whichever side moves last sees the other. */
+export function bringAbortPath(projectsDir: string, workspaceKey: string, requesterPid: number, nonce: string): string {
+  return path.join(projectsDir, workspaceKey, `bring-abort-${requesterPid}-${nonce}.json`);
 }
 
 /** Atomic JSON write (temp file + rename), creating the directory if needed. */
@@ -293,7 +304,7 @@ export async function readJsonFile(filePath: string): Promise<unknown> {
  *  written moments before its addressee died is consumed by nobody and would
  *  otherwise sit in the shared projects dir forever. Removes files whose pid
  *  is no longer alive or whose payload is past the TTL. Covers every addressed
- *  kind (focus, release, bring hint, bring ack). Never touches the legacy focus-hint.json, and
+ *  kind (focus, release, bring hint, ack, and abort). Never touches the legacy focus-hint.json, and
  *  never this window's own fresh hint. */
 export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey: string): Promise<void> {
   const dir = path.join(projectsDir, workspaceKey);
@@ -306,7 +317,7 @@ export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey
   for (const name of entries) {
     // Orphaned temp files from a writer that crashed between writeFile and
     // rename — age out on the same TTL.
-    if (/^(?:(?:focus|release|bring)-hint|bring-ack)-.*\.(?:tmp|claimed)-[\d-]+$/.test(name)) {
+    if (/^(?:(?:focus|release|bring)-hint|bring-ack|bring-abort)-.*\.(?:tmp|claimed)-[\d-]+$/.test(name)) {
       try {
         const stat = await fs.promises.stat(path.join(dir, name));
         if (Date.now() - stat.mtimeMs > FOCUS_HINT_TTL_MS) {
@@ -315,8 +326,8 @@ export async function sweepStaleAddressedHints(projectsDir: string, workspaceKey
       } catch { /* vanished mid-sweep */ }
       continue;
     }
-    // focus/release: one slot per pid. bring hint/ack: per pid AND session.
-    const m = /^(?:(?:focus|release)-hint-(\d+)|(?:bring-hint|bring-ack)-(\d+)-[^/]+)\.json$/.exec(name);
+    // focus/release: one slot per pid. bring hint/ack/abort: pid, then more.
+    const m = /^(?:(?:focus|release)-hint-(\d+)|(?:bring-hint|bring-ack|bring-abort)-(\d+)-[^/]+)\.json$/.exec(name);
     if (!m) { continue; }
     const pid = parseInt(m[1] ?? m[2], 10);
     let dead = false;
