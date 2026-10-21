@@ -29,6 +29,39 @@ function resolveLiveLabel(call: WorkflowAgentCall, prompt: string): string | nul
   return recoverInterpolatedLabel(call, prompt);          // interpolated → recover or null
 }
 
+/** Every workflow harness frame opens with this (CLI 2.1.273+). */
+const WORKFLOW_FRAME_PREFIX = '[Workflow harness';
+const COMPUTED_TASK_FRAME = '[Workflow harness — computed task]';
+const COMPUTED_TASK_LEAD = 'The computed task text follows:\n';
+
+/** The script's own prompt out of a `computed task` frame: the text after
+ *  the frame's lead-in, with the two-space indent the harness puts on every
+ *  line removed. Null for any other text. */
+export function unframeComputedTask(text: string): string | null {
+  if (!text.startsWith(COMPUTED_TASK_FRAME)) { return null; }
+  const at = text.indexOf(COMPUTED_TASK_LEAD);
+  if (at < 0) { return null; }
+  return text.slice(at + COMPUTED_TASK_LEAD.length)
+    .split('\n')
+    .map(l => (l.startsWith('  ') ? l.slice(2) : l))
+    .join('\n')
+    .replace(/^\n+/, '');
+}
+
+/** Plain text of a message `content`: the string itself, or its text blocks
+ *  joined. Null when there is none. */
+function recordText(content: unknown): string | null {
+  if (typeof content === 'string') { return content || null; }
+  if (!Array.isArray(content)) { return null; }
+  return content
+    .filter((b): b is { type: string; text: string } =>
+      !!b && typeof b === 'object'
+      && (b as { type?: unknown }).type === 'text'
+      && typeof (b as { text?: unknown }).text === 'string')
+    .map(b => b.text)
+    .join('\n') || null;
+}
+
 /** Display fields derived from an agent's (immutable) record-0 prompt and the
  *  script version it was correlated against. Cached per agent — see liveRuns. */
 interface AgentCorrelation {
@@ -50,6 +83,11 @@ interface LiveRunState {
   started: Map<string, string>;
   /** agentIds that have a result record. */
   resolved: Set<string>;
+  /** agentIds that have a failed record (and no result). */
+  failed: Set<string>;
+  /** agentId -> the `started` record's own label and phase (CLI 2.1.283+).
+   *  Ground truth when present: the script's own `{label, phase}` options. */
+  journalMeta: Map<string, { label: string | null; phase: string | null }>;
   /** agentId -> cached prompt correlation (immutable per script version). */
   corr: Map<string, AgentCorrelation>;
   /** Signature of the last snapshot emitted for this run. */
@@ -606,6 +644,8 @@ export class WorkflowDiscovery {
         tailer: new JsonlTailer(path.join(runDir, 'journal.jsonl')),
         started: new Map(),
         resolved: new Set(),
+        failed: new Set(),
+        journalMeta: new Map(),
         corr: new Map(),
         sig: '',
         lastChangedAt: now,
@@ -672,6 +712,8 @@ export class WorkflowDiscovery {
       if (state.tailer.truncated) {
         state.started.clear();
         state.resolved.clear();
+        state.failed.clear();
+        state.journalMeta.clear();
       }
       for (const rec of records) {
         const r = rec as unknown as Record<string, unknown>;
@@ -679,8 +721,14 @@ export class WorkflowDiscovery {
         if (!agentId) { continue; }
         if (r.type === 'started' && !state.started.has(agentId)) {
           state.started.set(agentId, typeof r.key === 'string' ? r.key : '');
+          state.journalMeta.set(agentId, {
+            label: typeof r.label === 'string' && r.label.trim() ? r.label : null,
+            phase: typeof r.phase === 'string' && r.phase.trim() ? r.phase : null,
+          });
         } else if (r.type === 'result') {
           state.resolved.add(agentId);
+        } else if (r.type === 'failed') {
+          state.failed.add(agentId);
         }
       }
     }
@@ -694,8 +742,19 @@ export class WorkflowDiscovery {
     // 0 tools" while every per-agent row showed real usage.
     let totalTokens = 0;
     let totalToolCalls = 0;
+    // A journal phase the script meta doesn't declare (no script copy: run by
+    // scriptPath, or not found) still groups: phases are synthesised in
+    // first-seen order after the declared ones. Copied first, because
+    // `phases` may be the scriptMeta cache's own array.
+    for (const jm of state.journalMeta.values()) {
+      if (jm.phase && !phaseIndexByTitle.has(jm.phase)) {
+        phases = [...phases, { index: phases.length + 1, title: jm.phase, detail: '' }];
+        phaseIndexByTitle.set(jm.phase, phases.length);
+      }
+    }
+
     for (const [agentId, key] of state.started) {
-      const status = state.resolved.has(agentId) ? 'done' : 'running';
+      const status = state.resolved.has(agentId) ? 'done' : state.failed.has(agentId) ? 'failed' : 'running';
       counts[status] = (counts[status] ?? 0) + 1;
 
       // Correlate this agent back to its agent() call via its record-0 prompt,
@@ -724,6 +783,14 @@ export class WorkflowDiscovery {
           ({ label, phaseIndex, phaseTitle, promptPreview } = corr);
         }
       }
+      // The journal's own label and phase beat the prompt correlation, which
+      // is only the fallback for pre-2.1.283 journals.
+      const jm = state.journalMeta.get(agentId);
+      if (jm?.phase) {
+        phaseIndex = phaseIndexByTitle.get(jm.phase) ?? null;
+        phaseTitle = jm.phase;
+      }
+      if (jm?.label) { label = jm.label; }
       const stats = await this.liveAgentStats(runDir, agentId, status);
       totalTokens += stats.tokens;
       totalToolCalls += stats.toolCalls;
@@ -877,33 +944,37 @@ export class WorkflowDiscovery {
     }
   }
 
-  /** Read the prompt text from record-0 of an agent transcript, bounded so a
-   *  large in-progress transcript isn't slurped whole. The prompt is the very
-   *  first record, so a single head read suffices. Returns null on any error,
-   *  on a record-0 larger than the window (truncated → unparseable), or when
-   *  the record carries no usable text. */
+  /** Read the script's prompt from the head of an agent transcript, bounded
+   *  so a large in-progress transcript isn't slurped whole. Up to CLI 2.1.263
+   *  it is record 0, raw. From 2.1.273 the harness frames it: record 0 may
+   *  relay the user's request (`[Workflow harness — user request]`), and the
+   *  script's text arrives in a `[Workflow harness — computed task]` record
+   *  with every line indented two spaces (see unframeComputedTask). Scans the
+   *  first few complete lines of the window. Returns null on any error, or
+   *  when no usable prompt is found. */
   private async readFirstRecordPrompt(filePath: string): Promise<string | null> {
     const MAX_BYTES = 256 * 1024;
+    const MAX_RECORDS = 6;
     let fh: fs.promises.FileHandle | undefined;
     try {
       fh = await fs.promises.open(filePath, 'r');
       const buf = Buffer.alloc(MAX_BYTES);
       const { bytesRead } = await fh.read(buf, 0, MAX_BYTES, 0);
       const chunk = buf.toString('utf-8', 0, bytesRead);
-      const nl = chunk.indexOf('\n');
-      if (nl < 0 && bytesRead === MAX_BYTES) { return null; } // record-0 too big
-      const line = nl >= 0 ? chunk.slice(0, nl) : chunk;
-      const rec = JSON.parse(line) as { message?: { content?: unknown } };
-      const content = rec.message?.content;
-      if (typeof content === 'string') { return content; }
-      if (Array.isArray(content)) {
-        return content
-          .filter((b): b is { type: string; text: string } =>
-            !!b && typeof b === 'object'
-            && (b as { type?: unknown }).type === 'text'
-            && typeof (b as { text?: unknown }).text === 'string')
-          .map(b => b.text)
-          .join('\n') || null;
+      const lines = chunk.split('\n');
+      // The last piece is partial unless the read ended before the window did.
+      if (bytesRead === MAX_BYTES) { lines.pop(); }
+      for (const line of lines.slice(0, MAX_RECORDS)) {
+        if (!line.trim()) { continue; }
+        let rec: { type?: unknown; message?: { content?: unknown } };
+        try { rec = JSON.parse(line) as typeof rec; } catch { continue; }
+        if (rec.type !== undefined && rec.type !== 'user') { continue; }
+        const text = recordText(rec.message?.content);
+        if (!text) { continue; }
+        if (!text.startsWith(WORKFLOW_FRAME_PREFIX)) { return text; } // unframed (≤2.1.263)
+        const task = unframeComputedTask(text);
+        if (task !== null) { return task; }
+        // Another frame (user request, assistant context, trigger): keep looking.
       }
       return null;
     } catch {
