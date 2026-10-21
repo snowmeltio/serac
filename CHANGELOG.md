@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.28.1 (2026-10-21) - Workflow agents in their phases, no cards for agent publishes
+
+### Fixed
+- **Workflow agents show under their phase while the run is live.** Since Claude Code 2.1.273, a running workflow listed every agent under "Other" as "Agent · <id>", leaving the declared phases empty. Serac now reads each agent's phase and label from the workflow's own log, so agents appear under the right phase with the script's label (seen live 2026-10-21: four runs with every agent ungrouped). An agent that fails now shows as failed, not running. Completed runs were never affected.
+- **Agent-launched `claude -p` runs no longer appear as cards.** A session that runs `claude -p` itself, to publish an artifact under another account for example, creates a full session in your workspace, and each one showed up as its own card (30 in six days). Serac now recognises these and hides them from the cards, the waiting count, and "Other workspaces", under the existing `serac.discovery.hideAgentScratchpads` setting. Your own sessions are unaffected.
+
+### Changed
+- **One slower window open after updating.** The dormant-session cache now records which sessions are `claude -p` runs, so it is rebuilt once: the first window to open replays transcripts in full.
+
 ## v1.28.0 (2026-10-17) - Bring a session over from another window
 
 ### Added
