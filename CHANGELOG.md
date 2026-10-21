@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.29.0 (2026-10-22) - Claude Code's own status, experimental
+
+### Added
+- **Status from Claude Code itself (experimental, off by default).** Turn on `serac.experimental.registryStatus` and each card follows the running, waiting, or done state Claude Code records for the session (Claude Code 2.1.269 and later), instead of Serac inferring it from transcript activity. In a comparison over two days of logs, Claude Code's status was right every time it and Serac disagreed. It catches what inference misses: permission prompts in auto mode show as waiting (seen 2026-10-21: 15 prompts Serac showed as running, several dropping to done after 3 minutes), a long silent command keeps a solid border, and pressing Esc ends the turn. A session stays running while its background agents or workflows work. Sessions without that record (older Claude Code) keep today's behaviour. Off changes nothing.
+
+### Fixed
+- **A card waiting on plan approval no longer flickers.** While a plan waited for approval, the card flipped between running and waiting twice a second (seen 2026-10-21: 395 flips over 3.5 minutes), then went done at the 3-minute mark. It now reads waiting until you answer.
+- **A chat opened and closed without a reply no longer reads running for 15 minutes.** After every reload, such a session showed running until a 15-minute backstop expired. It now settles at once.
+- **One corrupt leftover file no longer weakens status checks.** An empty or damaged registry file from a Claude Code process that had already exited made Serac distrust every process scan, which switched off its check for sessions whose process has gone. Such files are now ignored.
+
 ## v1.28.2 (2026-10-21) - Detail pane lines up
 
 ### Fixed
