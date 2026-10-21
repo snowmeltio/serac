@@ -174,6 +174,16 @@ export function collectTrackedStatuses(
   }
 }
 
+/** Apply each tracked session's registry verdict (serac.experimental.
+ *  registryStatus). True when any card changed. */
+export function syncTrackedRegistryStatus(sessions: Map<string, SessionManager>): boolean {
+  let changed = false;
+  for (const session of sessions.values()) {
+    if (session.syncRegistryStatus()) { changed = true; }
+  }
+  return changed;
+}
+
 /** Any tracked session currently running/waiting — feeds the adaptive
  *  fast-poll so an active card refreshes at the 500ms cadence. */
 export function hasActiveTrackedSessions(sessions: Map<string, PollableSession>): boolean {

@@ -12,13 +12,14 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import type { RegistryStatusProbe } from './registryStatus.js';
 import { SessionManager } from './sessionManager.js';
 import type { WriterAggregate } from './writerOwnership.js';
 import { resolveRepoRoot, repoRootFromClaudeWorktreePath, discoverWorktrees, worktreeSetChanged, type WorktreeInfo } from './gitWorktreeUtil.js';
 import { PSEUDO_TMP_REPO_ROOT, isTmpScratchPath, isAgentScratchPath } from './panelUtils.js';
 import type { SessionSnapshot, SessionMeta, SessionMetaFile, SessionStatus, StatusConfidence, WorkspaceGroup } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, collectTrackedStatuses, trackJsonlSessions, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, collectTrackedStatuses, syncTrackedRegistryStatus, trackJsonlSessions, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
 import { readSettings, foreignWindowGate } from './settings.js';
 import { readIdeOpenFolders } from './claudeEnvSignals.js';
 import { NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
@@ -114,6 +115,9 @@ export class ForeignWorkspaceManager {
   /** Per-session registry liveness probe factory, injected by SessionDiscovery
    *  (freshness parity: foreign cards get the same death gate as primary). */
   private probeFactory?: (sessionId: string) => () => boolean | null;
+  /** Registry status probe factory (serac.experimental.registryStatus), injected
+   *  by SessionDiscovery alongside the liveness probe. */
+  private statusProbeFactory?: (sessionId: string) => RegistryStatusProbe;
   /** Per-session writer-ownership probe factory, injected by SessionDiscovery —
    *  reports whether a *different* VS Code window is confirmed to be a
    *  session's live writer right now. Account-agnostic; see WriterOwnership. */
@@ -121,6 +125,15 @@ export class ForeignWorkspaceManager {
 
   setLivenessProbeFactory(factory: (sessionId: string) => () => boolean | null): void {
     this.probeFactory = factory;
+  }
+
+  setStatusProbeFactory(factory: (sessionId: string) => RegistryStatusProbe): void {
+    this.statusProbeFactory = factory;
+  }
+
+  /** Apply each tracked session's registry verdict; true when a card changed. */
+  syncRegistryStatus(): boolean {
+    return syncTrackedRegistryStatus(this.sessions);
   }
 
   setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => WriterAggregate): void {
@@ -207,6 +220,7 @@ export class ForeignWorkspaceManager {
             makeManager: (sessionId, filePath) =>
               new SessionManager(sessionId, filePath, dir, {
                 livenessProbe: this.probeFactory?.(sessionId),
+                registryStatus: this.statusProbeFactory?.(sessionId),
                 writerOwnershipProbe: this.writerOwnershipProbeFactory?.(sessionId),
               }),
             warn: (compositeId, err) => this.log.warn(`Foreign session update failed (${compositeId}):`, err),

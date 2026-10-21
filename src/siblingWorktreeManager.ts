@@ -9,12 +9,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import type { RegistryStatusProbe } from './registryStatus.js';
 import { SessionManager } from './sessionManager.js';
 import type { WriterAggregate } from './writerOwnership.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
 import type { SessionSnapshot, SessionStatus } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { pollTrackedSessions, hasActiveTrackedSessions, collectTrackedStatuses, trackJsonlSessions, jsonlSessionId, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
+import { pollTrackedSessions, hasActiveTrackedSessions, collectTrackedStatuses, syncTrackedRegistryStatus, trackJsonlSessions, jsonlSessionId, makeRescanGate, sumBytesRead, offerSessionToReplayCache } from './sessionPolling.js';
 import { readSettings, ageGateMsFor } from './settings.js';
 import { peekCwd } from './jsonlPeek.js';
 import { NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
@@ -63,6 +64,9 @@ export class SiblingWorktreeManager {
   /** Per-session registry liveness probe factory, injected by SessionDiscovery
    *  (freshness parity: sibling cards get the same death gate as primary). */
   private probeFactory?: (sessionId: string) => () => boolean | null;
+  /** Registry status probe factory (serac.experimental.registryStatus), injected
+   *  by SessionDiscovery alongside the liveness probe. */
+  private statusProbeFactory?: (sessionId: string) => RegistryStatusProbe;
   /** Per-session writer-ownership probe factory, injected by SessionDiscovery —
    *  reports whether a *different* VS Code window is confirmed to be a
    *  session's live writer right now. Account-agnostic; see WriterOwnership. */
@@ -70,6 +74,15 @@ export class SiblingWorktreeManager {
 
   setLivenessProbeFactory(factory: (sessionId: string) => () => boolean | null): void {
     this.probeFactory = factory;
+  }
+
+  setStatusProbeFactory(factory: (sessionId: string) => RegistryStatusProbe): void {
+    this.statusProbeFactory = factory;
+  }
+
+  /** Apply each tracked session's registry verdict; true when a card changed. */
+  syncRegistryStatus(): boolean {
+    return syncTrackedRegistryStatus(this.sessions);
   }
 
   setWriterOwnershipProbeFactory(factory: (sessionId: string) => () => WriterAggregate): void {
@@ -200,6 +213,7 @@ export class SiblingWorktreeManager {
         makeManager: (sessionId, filePath) => {
           const manager = new SessionManager(sessionId, filePath, dir, {
             livenessProbe: this.probeFactory?.(sessionId),
+            registryStatus: this.statusProbeFactory?.(sessionId),
             writerOwnershipProbe: this.writerOwnershipProbeFactory?.(sessionId),
           });
           manager.setWorktreeOrigin(wtRoot, wtLabel);

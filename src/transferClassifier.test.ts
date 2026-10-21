@@ -112,4 +112,12 @@ describe('rcProcesses', () => {
     const a = proc(); const b = proc({ pid: 2, entrypoint: 'claude-vscode' });
     expect(rcProcesses([a, b])).toEqual([a]);
   });
+
+  it('with registry status on, a phone process the registry calls busy or waiting is mid-turn', () => {
+    for (const status of ['busy', 'waiting'] as const) {
+      const rcProc = proc({ status });
+      expect(classifyTransfer({ procs: [rcProc], sessionRunning: false, lastWriteMtimeMs: null, nowMs: NOW, useRegistryStatus: true }).kind).toBe('rc-busy');
+      expect(classifyTransfer({ procs: [rcProc], sessionRunning: false, lastWriteMtimeMs: null, nowMs: NOW }).kind).toBe('rc-idle');
+    }
+  });
 });

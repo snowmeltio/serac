@@ -611,7 +611,7 @@ export class SessionManager {
         if (this.state.activeTools.size === 0 && !needsUserInput) { return; }
         this.setStatus('waiting', needsUserInput ? 'needs_user_input' : 'permission_fired');
         // The registry gate may have refused the change; label only a real wait.
-        if (this.state.status === 'waiting') {
+        if (this.getStatus() === 'waiting') {
           this.appendActivity(needsUserInput ? 'Waiting for your response' : 'Waiting for permission');
         }
       },
@@ -2586,7 +2586,7 @@ export class SessionManager {
     subagent.waitingOnPermission = true;
     if (this.state.status === 'running' && this.allRunningSubagentsBlocked()) {
       this.setStatus('waiting', 'subagent_permission_bubble');
-      if (this.state.status === 'waiting') { this.appendActivity('Subagent waiting for permission'); }
+      if (this.getStatus() === 'waiting') { this.appendActivity('Subagent waiting for permission'); }
     }
   }
 
