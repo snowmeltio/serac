@@ -41,7 +41,8 @@ export type ProcessIdentity =
 export function looksLikeClaudeCommand(command: string): boolean {
   const c = command.trim();
   if (!c) { return false; }
-  return /(^|[\s/])claude(\s|$|\/)/.test(c) || c.includes('--sdk-url');
+  return /(^|[\s/])claude(\s|$|\/)/.test(c) || c.includes('--sdk-url')
+    || c.includes('@anthropic-ai/claude-code/');
 }
 
 /** Parse `ps -o etime=` — `[[dd-]hh:]mm:ss` — into milliseconds. */

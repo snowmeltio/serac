@@ -11,6 +11,7 @@ import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
 import { createRegistryShadow, deriveRegistryStatus, watchRegistryDir } from './registryShadow.js';
+import { createRegistryStatusFeed, type RegistryStatusFeed, type VerifyProcess } from './registryStatus.js';
 import { isRcServing, isRcHostedProcess } from './rcDetector.js';
 import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid, type WriterAggregate } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
@@ -123,6 +124,12 @@ export class SessionDiscovery {
   private readonly sessionsDir: string;
   private readonly shadowRegistry: ProcessRegistry;
   private readonly registryShadow = createRegistryShadow();
+  /** serac.experimental.registryStatus, read once per poll (a SessionManager
+   *  consults its probe on every status change). */
+  private registryStatusOn = readSettings().experimental.registryStatus;
+  /** Per-session registry verdicts for the experimental registry status,
+   *  read from the shadow registry (watcher-fresh). */
+  private readonly registryStatusFeed: RegistryStatusFeed;
   private stopRegistryWatch: (() => void) | null = null;
   /** Earliest time to retry arming the watcher (absent dir, dead watcher). */
   private registryWatchRetryAt = 0;
@@ -178,6 +185,8 @@ export class SessionDiscovery {
 
   constructor(workspacePath: string, opts?: {
     projectsDir?: string; log?: Logger; hookRouter?: HookEventRouter; defaultModelGuess?: string;
+    /** Registry-status process identity check; tests stub `ps`. */
+    verifyRegistryProcess?: VerifyProcess;
     /** Override the replay cache's on-disk location — test seam, mirroring
      *  the `projectsDir` override above. */
     replayCachePath?: string;
@@ -202,6 +211,7 @@ export class SessionDiscovery {
     this.processRegistry = new ProcessRegistry(this.sessionsDir, this.log);
     // nullLogger: processRegistry already warns about malformed entries.
     this.shadowRegistry = new ProcessRegistry(this.sessionsDir, nullLogger);
+    this.registryStatusFeed = createRegistryStatusFeed(this.shadowRegistry, () => this.registryStatusOn, Date.now, opts?.verifyRegistryProcess);
     this.writerOwnership = new WriterOwnership();
     this.workflowDiscovery = new WorkflowDiscovery(this.projectsDir, this.workspaceKey, this.log, this.processRegistry);
     // Freshness parity: out-of-window sessions (foreign / sibling / team
@@ -210,6 +220,10 @@ export class SessionDiscovery {
     this.foreignManager.setLivenessProbeFactory(probeFactory);
     this.siblingManager.setLivenessProbeFactory(probeFactory);
     this.teamDiscovery.setLivenessProbeFactory(probeFactory);
+    const statusProbeFactory = (sessionId: string) => this.registryStatusFeed.probeFor(sessionId);
+    this.foreignManager.setStatusProbeFactory(statusProbeFactory);
+    this.siblingManager.setStatusProbeFactory(statusProbeFactory);
+    this.teamDiscovery.setStatusProbeFactory(statusProbeFactory);
     const writerOwnershipProbeFactory = (sessionId: string) => this.writerOwnershipProbeFor(sessionId);
     this.foreignManager.setWriterOwnershipProbeFactory(writerOwnershipProbeFactory);
     this.siblingManager.setWriterOwnershipProbeFactory(writerOwnershipProbeFactory);
@@ -1583,7 +1597,31 @@ export class SessionDiscovery {
       this.log.warn('[status] shadow registry scan failed:', err);
       return;
     }
-    if (!this.disposed) { this.observeRegistryShadow(); }
+    if (this.disposed) { return; }
+    // Registry status (experimental): a verdict that lands between polls is
+    // applied and pushed now, not at the next poll.
+    if (this.syncRegistryStatus() && this.onChangeCallback) { this.onChangeCallback(); }
+    this.observeRegistryShadow();
+  }
+
+  /** Apply the registry's verdict to every tracked session (local, sibling,
+   *  foreign, team) and reconcile acknowledgements. True when anything
+   *  changed. A no-op while serac.experimental.registryStatus is off. */
+  private syncRegistryStatus(): boolean {
+    if (!this.registryStatusOn) { return false; }
+    let changed = false;
+    try {
+      for (const session of this.sessions.values()) {
+        if (session.syncRegistryStatus()) { changed = true; }
+      }
+      if (this.siblingManager.syncRegistryStatus()) { changed = true; }
+      if (this.foreignManager.syncRegistryStatus()) { changed = true; }
+      if (this.teamDiscovery.syncRegistryStatus()) { changed = true; }
+      if (this.reconcileAcknowledged()) { changed = true; }
+    } catch (err) {
+      this.log.warn('[status] registry status sync failed:', err);
+    }
+    return changed;
   }
 
   /** Compare every tracked session (local, sibling, foreign, team) against
@@ -1608,6 +1646,24 @@ export class SessionDiscovery {
     } catch (err) {
       this.log.warn('[status] registry shadow failed:', err);
     }
+  }
+
+  /** Clear the acknowledgement of a session that resumed [H2]. Runs each poll
+   *  and, with registry status on, inside every registry sync, so a registry
+   *  busy is seen the moment it is applied however short the turn. */
+  private reconcileAcknowledged(): boolean {
+    let changed = false;
+    for (const session of this.sessions.values()) {
+      const meta = this.meta.get(session.getSessionId());
+      if (!meta?.acknowledged) { continue; }
+      if (session.getStatus() === 'running') {
+        meta.acknowledged = false;
+        meta.acknowledgedAt = null;
+        this.meta.markDirty();
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   // ── Discovery and polling ─────────────────────────────────────────
@@ -1682,6 +1738,7 @@ export class SessionDiscovery {
       // Shared probe derivations — see the Probe factories section.
       livenessProbe: this.livenessProbeFor(sessionId),
       writerOwnershipProbe: this.writerOwnershipProbeFor(sessionId),
+      registryStatus: this.registryStatusFeed.probeFor(sessionId),
       // The latch survives reloads via session-meta.json — without the
       // seed, every reload disarmed the death gate until re-observed.
       registrySeenLive: this.meta.get(sessionId)?.seenLive === true,
@@ -1850,6 +1907,7 @@ export class SessionDiscovery {
 
   private async pollInner(pollStart: number): Promise<void> {
     try {
+      this.registryStatusOn = readSettings().experimental.registryStatus;
 
       // Reload meta only if externally modified (prevents overwriting in-memory mutations) [H2]
       await this.meta.reloadIfChanged();
@@ -1956,18 +2014,7 @@ export class SessionDiscovery {
       }
 
       // Reconcile meta: clear acknowledged state for sessions that resumed [H2]
-      for (const session of this.sessions.values()) {
-        const status = session.getStatus();
-        if (status === 'running') {
-          const meta = this.meta.get(session.getSessionId());
-          if (meta?.acknowledged) {
-            meta.acknowledged = false;
-            meta.acknowledgedAt = null;
-            this.meta.markDirty();
-            changed = true;
-          }
-        }
-      }
+      if (this.reconcileAcknowledged()) { changed = true; }
 
       // Cache live title fields into meta so they survive the 7-day archive
       // cutoff (the lightweight archive scanner doesn't parse JSONL). Lives
@@ -2084,6 +2131,7 @@ export class SessionDiscovery {
       // Registry status, shadow mode: compare after every cycle so Serac's
       // side of each disagreement is at most one poll old.
       this.ensureRegistryWatch(Date.now());
+      if (this.syncRegistryStatus()) { changed = true; }
       this.observeRegistryShadow();
 
       // Poll performance log [v0.4]

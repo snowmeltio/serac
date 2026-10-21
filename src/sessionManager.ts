@@ -61,6 +61,12 @@
  *               (permission false-positive gate: a dead process can't be waiting on a prompt; also
  *                suppresses the permission timer firing 'waiting' on a confirmed-dead session)
  *
+ * Registry status (serac.experimental.registryStatus): while the registry gives
+ * a verdict, setStatus() refuses inference-driven changes to any other status
+ * and syncRegistryStatus() applies it — waiting (registry_waiting[_input]),
+ * running (registry_busy), done (registry_idle, as Stop). See ARCHITECTURE.md
+ * Status inference §12.
+ *
  * Display-layer (not in SessionManager):
  * done          → stale         acknowledged + 10s elapsed               getSnapshots()
  *
@@ -136,6 +142,7 @@ import { makeBackgroundShellTracker, type BackgroundShellTracker, BACKGROUND_SHE
 import { makeSessionLoopTracker, type SessionLoopTracker } from './trackers/sessionLoopTracker.js';
 import { makeGlanceTracker } from './trackers/glanceTracker.js';
 import type { HookEventRouter } from './hookEventRouter.js';
+import type { RegistryStatusProbe, RegistryStatusVerdict } from './registryStatus.js';
 import { REPLAY_CACHE_QUIET_MS, sameStamp, isHydratable, type ReplayCacheEntry } from './replayCache.js';
 
 /** Idle threshold: if no new data for 5s after a turn, mark as idle/done */
@@ -350,6 +357,11 @@ export interface SessionManagerOptions {
   onSubagentComplete?: (signal: SubagentDoneSignal, agentId: string | null, description: string, replay: boolean) => void;
   hookRouter?: HookEventRouter;
   livenessProbe?: () => boolean | null;
+  /** Claude Code's own status for this session (serac.experimental.
+   *  registryStatus). While it gives a verdict, inference may only move the
+   *  card to the status the registry already says; syncRegistryStatus()
+   *  applies the verdict itself. See registryStatus.ts. */
+  registryStatus?: RegistryStatusProbe;
   /** Reports which window(s) confirmed-own this session's live writer
    *  process(es) right now. See writerOwnershipProbe field. */
   writerOwnershipProbe?: () => WriterAggregate;
@@ -484,6 +496,7 @@ export class SessionManager {
    *  tailer read); false for every live append after it. Mirrors the
    *  `isReplay` local in update() for the per-record hooks that need it. */
   private currentReadIsReplay = true;
+  private readonly registryStatus?: RegistryStatusProbe;
   /** Optional hook-event router, passed to every tracker factory at
    *  construction; hook-capable trackers subscribe via it and fall back to
    *  JSONL inference when it is undefined (foreign workspaces, sibling
@@ -545,6 +558,7 @@ export class SessionManager {
     this.onBridgeTransition = opts.onBridgeTransition;
     this.hookRouter = opts.hookRouter;
     this.livenessProbe = opts.livenessProbe;
+    this.registryStatus = opts.registryStatus;
     this.writerOwnershipProbe = opts.writerOwnershipProbe;
     this.everSeenLiveInRegistry = opts.registrySeenLive === true;
     this.onRegistrySeenLive = opts.onRegistrySeenLive;
@@ -597,7 +611,10 @@ export class SessionManager {
         // JSONL path re-affirms their `waiting` state, so there is no flip risk.
         if (this.state.activeTools.size === 0 && !needsUserInput) { return; }
         this.setStatus('waiting', needsUserInput ? 'needs_user_input' : 'permission_fired');
-        this.appendActivity(needsUserInput ? 'Waiting for your response' : 'Waiting for permission');
+        // The registry gate may have refused the change; label only a real wait.
+        if (this.getStatus() === 'waiting') {
+          this.appendActivity(needsUserInput ? 'Waiting for your response' : 'Waiting for permission');
+        }
       },
     }, { hookRouter: this.hookRouter, sessionId });
     this.compactBoundaryTracker = makeCompactBoundaryTracker({
@@ -619,6 +636,8 @@ export class SessionManager {
         // timer) and raise the guard so the turn's trailing JSONL records,
         // polled 0.5-2s later, can't re-open the session to running.
         this.turnEndedByStop = true;
+        // Not 'definite' under a busy verdict: a hook can land after the
+        // next turn's records were read, and would close that turn's rows.
         this.markSessionDone();
       },
     }, { hookRouter: this.hookRouter, sessionId });
@@ -1093,6 +1112,8 @@ export class SessionManager {
    *  Active statuses degrade with silence: high (<5s) → medium (<30s) → low. */
   private computeConfidence(): StatusConfidence {
     if (this.state.status === 'done') return 'high';
+    // Claude Code's own status backs this one — silence is not doubt.
+    if (this.registryVerdict()) return 'high';
     // Compaction is a known-busy silence gap — don't let confidence decay.
     if (this.state.compacting) return 'high';
     // Running subagents = strong evidence the session is alive [#108]
@@ -1192,6 +1213,38 @@ export class SessionManager {
 
   getEnqueuedAt(): number {
     return this.enqueuedAt;
+  }
+
+  /** The registry's verdict now, or null when inference decides (flag off, no
+   *  live entry, a pre-2.1.269 writer). */
+  private registryVerdict(): RegistryStatusVerdict | null {
+    return this.registryStatus?.verdict() ?? null;
+  }
+
+  /** Apply the registry's verdict (serac.experimental.registryStatus).
+   *  Called by discovery each poll and whenever the registry dir changes.
+   *  Returns whether anything changed. Transitions carry `registry_*`
+   *  reasons, which the inference gate in setStatus() always lets through. */
+  syncRegistryStatus(): boolean {
+    const v = this.registryVerdict();
+    if (!v) { return false; }
+    const before = this.state.status;
+    const beforeActivity = this.state.activity;
+    if (v.status === 'waiting') {
+      const input = v.waitingFor === 'input needed';
+      this.setStatus('waiting', input ? 'registry_waiting_input' : 'registry_waiting');
+      const label = input ? 'Waiting for your response' : 'Waiting for permission';
+      if (this.state.activity !== label) { this.appendActivity(label); }
+    } else if (v.status === 'running') {
+      this.setRunning('registry_busy');
+    } else if (this.state.status !== 'done') {
+      // Turn over, exactly as Stop would end it: tools cleared, foreground
+      // agents closed, live background agents kept, and trailing records of
+      // this turn can't reopen it.
+      this.turnEndedByStop = true;
+      this.markSessionDone('registry_idle');
+    }
+    return this.state.status !== before || this.state.activity !== beforeActivity;
   }
 
   /** Stat-based mtime check. Returns true if the file has been modified since last update,
@@ -1349,6 +1402,9 @@ export class SessionManager {
     // SPIKE: drop background shells past the hard ceiling so the display-only
     // signal can't stick on a card forever (abandoned / missed completion).
     this.backgroundShellTracker.prune(now, BACKGROUND_SHELL_CEILING_MS);
+    // The registry owns status while it gives a verdict: no stale-waiting
+    // reconciliation, no demotion (syncRegistryStatus applies it instead).
+    if (this.registryVerdict()) { return false; }
 
     // Registry-confirmed process death: a process that has exited cannot be
     // running, nor waiting on a permission/input prompt. Resolve to done at
@@ -1629,12 +1685,25 @@ export class SessionManager {
   }
 
   /** Mark session as done and clean up all running state */
-  private markSessionDone(reason = 'session_done'): void {
-    this.setStatus('done', reason);
-    // Clear status-indicator text that would be misleading on a done card.
-    // Preserve genuine activity (tool names, responses) for context.
-    if (WAITING_ACTIVITY_MESSAGES.has(this.state.activity)) {
-      this.state.activity = '';
+  /** @param definite  The transcript itself says this turn ended (an
+   *    interrupt marker, ordered among the records) — not a guess. */
+  private markSessionDone(reason = 'session_done', definite = false): void {
+    // Registry says a turn is still on (or a prompt is up). The registry owns
+    // the status then. A GUESSED turn end (idle timer, demotion) changes
+    // nothing: the turn may well be live. A DEFINITE one (interrupt)
+    // still closes that turn's tools and foreground agents — busy can mean a
+    // later turn, or background work, and a replay must not keep a dead
+    // turn's leftovers — but leaves the status to the registry.
+    const v = this.registryVerdict();
+    const vetoed = !!v && v.status !== 'done' && !reason.startsWith('registry_');
+    if (vetoed && !definite) { return; }
+    if (!vetoed) {
+      this.setStatus('done', reason);
+      // Clear status-indicator text that would be misleading on a done card.
+      // Preserve genuine activity (tool names, responses) for context.
+      if (WAITING_ACTIVITY_MESSAGES.has(this.state.activity)) {
+        this.state.activity = '';
+      }
     }
     this.clearTools(this.state.activeTools);
     // Mark all subagents as completed and clean up their trackers
@@ -1717,6 +1786,9 @@ export class SessionManager {
   /** Check if the Claude Code process is still alive.
    *  Returns true if PID was never captured (conservative: assume alive). */
   private isProcessAlive(): boolean {
+    // B6: with registry status on, the registry is the liveness source
+    // (fuser rarely finds the writer, so the pid path reads alive forever).
+    if (this.registryVerdict()) { return this.registryLiveness() !== false; }
     if (this.writerPid === null) return true;
     try {
       process.kill(this.writerPid, 0);
@@ -2009,7 +2081,7 @@ export class SessionManager {
       // An interrupt also abandons a compaction in flight; left open, the
       // window would hold the card off done for good.
       this.closeCompactWindow();
-      this.markSessionDone('interrupt');
+      this.markSessionDone('interrupt', true);
       return true;
     }
     // A user record is a genuine new-turn reopener — release the Stop guard.
@@ -2146,7 +2218,7 @@ export class SessionManager {
       );
       if (needsUserInput) {
         this.setStatus('waiting', 'needs_user_input');
-        this.appendActivity('Waiting for your response');
+        if (this.state.status === 'waiting') { this.appendActivity('Waiting for your response'); }
       } else {
         this.setRunning();
         this.permissionTracker.reschedule();
@@ -2276,7 +2348,8 @@ export class SessionManager {
       // held it 'running' for 15 min after every reload (07acff1f, 2026-10-21).
       this.state.lastActivity = clampToNow(timestamp);
       this.setRunning();
-      this.appendActivity('Processing');
+      // A reopen the registry refused keeps its waiting/done subtitle.
+      if (this.getStatus() === 'running') { this.appendActivity('Processing'); }
       return true;
     }
     // 'remove' = the queued item was taken off the queue without a dequeue:
@@ -2520,7 +2593,7 @@ export class SessionManager {
     subagent.waitingOnPermission = true;
     if (this.state.status === 'running' && this.allRunningSubagentsBlocked()) {
       this.setStatus('waiting', 'subagent_permission_bubble');
-      this.appendActivity('Subagent waiting for permission');
+      if (this.getStatus() === 'waiting') { this.appendActivity('Subagent waiting for permission'); }
     }
   }
 
@@ -2538,6 +2611,12 @@ export class SessionManager {
    *  turnStartAt only updates on actual status transition (not repeated calls
    *  while already running) to preserve the 30s extended thinking grace. */
   private setRunning(reason: string = 'set_running'): void {
+    // A reopen the registry disagrees with changes nothing — not even the
+    // turn anchor or the subtitle (setStatus would refuse it anyway).
+    if (!reason.startsWith('registry_')) {
+      const v = this.registryVerdict();
+      if (v && v.status !== 'running') { return; }
+    }
     if (this.state.status !== 'running') {
       this.turnStartAt = Date.now();
       // (Writer-pid capture used to fire here, on every first running
@@ -2558,6 +2637,12 @@ export class SessionManager {
   /** Single mutation point for `state.status` so the optional onTransition
    *  callback fires on every real change. Same-status assignments are no-ops. */
   private setStatus(next: SessionStatus, reason: string): void {
+    // Registry-primary: while the registry gives a verdict, inference may only
+    // move the card to the status it already says (truncation resets too).
+    if (!reason.startsWith('registry_') && reason !== 'reset_state') {
+      const v = this.registryVerdict();
+      if (v && v.status !== next) { return; }
+    }
     // Record the waiting reason even on a same-status re-set (demote_waiting
     // re-fires each poll) so the reconciliation always sees the live reason.
     if (next === 'waiting') { this.lastWaitingReason = reason; }

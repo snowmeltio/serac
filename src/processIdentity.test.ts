@@ -6,6 +6,10 @@ const NOW = 1_788_500_000_000;
 const psLine = (etime: string, cmd: string) => `   ${etime} ${cmd}\n`;
 
 describe('looksLikeClaudeCommand', () => {
+  it('accepts an npm install run through node', () => {
+    expect(looksLikeClaudeCommand('node /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js --resume')).toBe(true);
+  });
+
   it('accepts the native binary path, a bare claude, and an --sdk-url child', () => {
     expect(looksLikeClaudeCommand(CMD)).toBe(true);
     expect(looksLikeClaudeCommand('claude rc')).toBe(true);

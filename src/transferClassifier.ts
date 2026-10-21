@@ -49,6 +49,9 @@ export interface ClassifyInput {
   lastWriteMtimeMs: number | null;
   nowMs: number;
   quietMs?: number;
+  /** serac.experimental.registryStatus: trust the phone process's own
+   *  `status` (busy or waiting = mid-turn) before Serac's inferred one. */
+  useRegistryStatus?: boolean;
 }
 
 export function classifyTransfer(input: ClassifyInput): TransferVerdict {
@@ -61,6 +64,9 @@ export function classifyTransfer(input: ClassifyInput): TransferVerdict {
   // one the user is most likely still on is the one to name.
   const proc = [...rc].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0]!;
   if (input.sessionRunning) { return { kind: 'rc-busy', proc, reason: 'active-status' }; }
+  if (input.useRegistryStatus && rc.some(p => p.status === 'busy' || p.status === 'waiting')) {
+    return { kind: 'rc-busy', proc, reason: 'active-status' };
+  }
   if (input.lastWriteMtimeMs !== null && input.nowMs - input.lastWriteMtimeMs < quietMs) {
     return { kind: 'rc-busy', proc, reason: 'recent-write' };
   }

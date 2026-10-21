@@ -3006,3 +3006,120 @@ describe('registry status shadow mode', () => {
     discovery.stop();
   });
 });
+
+describe('registry status (serac.experimental.registryStatus)', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sd-regstatus-'));
+    workspacePath = path.join(tmpDir, 'workspace');
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(workspacePath, { recursive: true });
+    fs.mkdirSync(projectsDir, { recursive: true });
+    workspaceKey = workspacePath.replace(/[^a-zA-Z0-9]/g, '-');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    _resetConfig();
+  });
+
+  const SID = 'aaaa0000-1111-2222-3333-444455556666';
+  const FOREIGN_SID = 'bbbb0000-1111-2222-3333-444455556666';
+
+  /** One registry file (this test process's pid, so it reads live) carrying
+   *  both sessions' processes is not possible — one file per pid — so the
+   *  foreign session gets the parent pid, which is also alive. */
+  /** A fixed start per process: the identity check is keyed on pid+start. */
+  const STARTED_AT = Date.now();
+  function writeStatus(sessionId: string, status: string, waitingFor?: string, pid = process.pid): void {
+    const sessionsDir = path.join(tmpDir, 'sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionsDir, `${pid}.json`), JSON.stringify({
+      pid, sessionId, cwd: workspacePath, startedAt: STARTED_AT,
+      kind: 'interactive', entrypoint: 'claude-vscode', version: 'test', status,
+      ...(waitingFor ? { waitingFor } : {}), statusUpdatedAt: Date.now(),
+    }));
+  }
+
+  async function startDiscovery(onChange = () => {}) {
+    // The registry entries carry this test runner's pid, which `ps` would
+    // (rightly) reject as not a Claude process: stub the identity check.
+    const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', verifyRegistryProcess: async () => 'ok' });
+    await discovery.start(onChange);
+    const once = () => (discovery as unknown as { refreshRegistryShadow: () => Promise<void> }).refreshRegistryShadow();
+    // A process gives no verdict until its identity check answers, so sync
+    // again once the (stubbed) check has settled.
+    const refresh = async () => { await once(); await new Promise(r => setTimeout(r, 0)); await once(); };
+    return { discovery, refresh };
+  }
+
+  it('a local card follows the registry, and the watcher path pushes the change', async () => {
+    _setConfigValues({ 'serac.experimental.registryStatus': true });
+    createJsonlFile(SID);
+    const onChange = vi.fn();
+    const { discovery, refresh } = await startDiscovery(onChange);
+    const statusOf = () => discovery.getSnapshots().find(s => s.sessionId === SID);
+
+    writeStatus(SID, 'waiting', 'permission prompt');
+    onChange.mockClear();
+    await refresh();
+    expect(statusOf()?.status).toBe('waiting');
+    expect(statusOf()?.activity).toBe('Waiting for permission');
+    expect(onChange).toHaveBeenCalled();
+
+    writeStatus(SID, 'busy');
+    await refresh();
+    expect(statusOf()?.status).toBe('running');
+
+    writeStatus(SID, 'idle');
+    await refresh();
+    expect(statusOf()?.status).toBe('done');
+    discovery.stop();
+  });
+
+  it('a foreign session follows the registry too', async () => {
+    _setConfigValues({ 'serac.experimental.registryStatus': true });
+    const otherWs = path.join(tmpDir, 'other-ws');
+    fs.mkdirSync(otherWs, { recursive: true });
+    const otherKey = otherWs.replace(/[^a-zA-Z0-9]/g, '-');
+    fs.mkdirSync(path.join(projectsDir, otherKey), { recursive: true });
+    fs.writeFileSync(path.join(projectsDir, otherKey, `${FOREIGN_SID}.jsonl`), JSON.stringify({
+      type: 'user', cwd: otherWs, timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'text', text: 'Hello' }] },
+    }) + '\n');
+    const { discovery, refresh } = await startDiscovery();
+    await (discovery as unknown as { pollInner: (t: number) => Promise<void> }).pollInner(Date.now());
+    writeStatus(FOREIGN_SID, 'waiting', 'input needed', process.ppid);
+    await refresh();
+    expect(discovery.getForeignWaitingSnapshots().map(s => s.sessionId)).toContain(FOREIGN_SID);
+    discovery.stop();
+  });
+
+  it('a busy applied from the registry clears the done card\'s acknowledgement at once', async () => {
+    _setConfigValues({ 'serac.experimental.registryStatus': true });
+    createJsonlFile(SID);
+    const { discovery, refresh } = await startDiscovery();
+    writeStatus(SID, 'idle');
+    await refresh();
+    discovery.acknowledgeSession(SID);
+    const acked = () => (discovery as unknown as { meta: { get: (id: string) => { acknowledged?: boolean } | undefined } }).meta.get(SID)?.acknowledged;
+    expect(acked()).toBe(true);
+    await new Promise(r => setTimeout(r, 5));
+    writeStatus(SID, 'busy');
+    await refresh();
+    writeStatus(SID, 'idle');
+    await refresh();
+    expect(discovery.getSnapshots().find(s => s.sessionId === SID)?.status).toBe('done');
+    expect(acked()).toBe(false);
+    discovery.stop();
+  });
+
+  it('flag off: the registry never moves a card', async () => {
+    createJsonlFile(SID);
+    const { discovery, refresh } = await startDiscovery();
+    const before = discovery.getSnapshots().find(s => s.sessionId === SID)?.status;
+    writeStatus(SID, before === 'waiting' ? 'busy' : 'waiting', 'permission prompt');
+    await refresh();
+    expect(discovery.getSnapshots().find(s => s.sessionId === SID)?.status).toBe(before);
+    discovery.stop();
+  });
+});
