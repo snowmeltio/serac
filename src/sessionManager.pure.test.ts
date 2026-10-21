@@ -270,9 +270,13 @@ describe('getToolProfile', () => {
   });
 
   it('returns exempt profiles for all read-only tools', () => {
-    for (const name of ['Glob', 'Grep', 'TodoWrite', 'ToolSearch', 'EnterPlanMode', 'ExitPlanMode']) {
+    for (const name of ['Glob', 'Grep', 'TodoWrite', 'ToolSearch', 'EnterPlanMode']) {
       expect(getToolProfile(name).exempt).toBe(true);
     }
+  });
+
+  it('ExitPlanMode is a user-input wait, like AskUserQuestion', () => {
+    expect(getToolProfile('ExitPlanMode')).toMatchObject({ exempt: false, userInput: true });
   });
 
   it('returns slow profiles for all network tools', () => {

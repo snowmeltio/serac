@@ -1387,6 +1387,11 @@ export class SessionManager {
       reconciled = true;
     }
 
+    // Only a non-exempt tool can be blocked on a prompt — the same backing
+    // test the reconciliation above applies. Letting an exempt tool demote to
+    // 'waiting' meant the reconciliation reopened it on the very next poll:
+    // a 2 Hz running↔waiting flap.
+    const blockingToolCount = [...this.state.activeTools.values()].filter(name => !getToolProfile(name).exempt).length;
     const result = computeDemotion(
       this.state.status,
       this.state.lastActivity.getTime(),
@@ -1397,6 +1402,7 @@ export class SessionManager {
       this.turnStartAt,
       this.seenOutputInTurn,
       this.isAutoAcceptMode(),
+      blockingToolCount,
     );
 
     if (result === null) {
@@ -2264,6 +2270,11 @@ export class SessionManager {
       // (which can take 30-60+ seconds without writing JSONL records).
       // A dequeue is a genuine new-turn reopener — release the Stop guard.
       this.turnEndedByStop = false;
+      // ...and the turn's first activity. Unstamped, a transcript that ends on
+      // its dequeue (a chat opened and abandoned before any reply) kept the
+      // window-open time as lastActivity, so the no-output think backstop
+      // held it 'running' for 15 min after every reload (07acff1f, 2026-10-21).
+      this.state.lastActivity = clampToNow(timestamp);
       this.setRunning();
       this.appendActivity('Processing');
       return true;
