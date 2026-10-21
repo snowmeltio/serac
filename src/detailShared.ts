@@ -269,3 +269,43 @@ export function parseEditInput(rawInput: string): EditInput | null {
 export function transcriptKey(source: string, containerId: string, groupKey: string, agentId: string): string {
   return source + ':' + containerId + '|' + groupKey + '|' + agentId;
 }
+
+/** Every workflow harness frame opens with this (CLI 2.1.273+). */
+export const WORKFLOW_FRAME_PREFIX = '[Workflow harness';
+const COMPUTED_TASK_FRAME = '[Workflow harness — computed task]';
+const COMPUTED_TASK_LEAD = 'The computed task text follows:\n';
+
+/** The script's own prompt out of a `computed task` frame: the text after
+ *  the frame's lead-in, with the two-space indent the harness puts on every
+ *  line removed. Null for any other text. */
+export function unframeComputedTask(text: string): string | null {
+  if (!text.startsWith(COMPUTED_TASK_FRAME)) { return null; }
+  const at = text.indexOf(COMPUTED_TASK_LEAD);
+  if (at < 0) { return null; }
+  return text.slice(at + COMPUTED_TASK_LEAD.length)
+    .split('\n')
+    .map(l => (l.startsWith('  ') ? l.slice(2) : l))
+    .join('\n')
+    .replace(/^\n+/, '');
+}
+
+const FRAME_HEAD_RE = /^\[Workflow harness — ([^\]]+)\]/;
+
+/** Any workflow harness frame, split for display: its kind (`computed task`,
+ *  `user request`, `assistant context`, `automated trigger`) and the framed
+ *  text with the harness's two-space indent removed. The header sentence(s)
+ *  up to the first newline are the harness's own boilerplate. Null for
+ *  unframed text. */
+export function unframeWorkflowText(text: string): { kind: string; body: string } | null {
+  const head = FRAME_HEAD_RE.exec(text);
+  if (!head) { return null; }
+  const task = unframeComputedTask(text);
+  if (task !== null) { return { kind: head[1], body: task }; }
+  const nl = text.indexOf('\n');
+  const body = nl < 0 ? '' : text.slice(nl + 1)
+    .split('\n')
+    .map(l => (l.startsWith('  ') ? l.slice(2) : l))
+    .join('\n')
+    .replace(/^\n+/, '');
+  return { kind: head[1], body };
+}

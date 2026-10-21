@@ -8,7 +8,7 @@
 
 import { isNearBottom, chooseReaderScrollTop, STICK_THRESHOLD_PX } from './detailViewScroll.js';
 import { escapeHtml, clickEndsSelection } from './panelUtils.js';
-import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey, parseEditInput } from './detailShared.js';
+import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey, parseEditInput, unframeWorkflowText } from './detailShared.js';
 import type {
   DetailAgentView, DetailGroupView, DetailViewChoice, DetailModel, TranscriptEntry,
   Evidence, Mismatch, FileTouch, CommandRun,
@@ -615,9 +615,27 @@ declare function acquireVsCodeApi(): VsCodeApi;
   function resultBriefText(agent: DetailAgentView): string {
     const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
     const entries = (st && st.state === 'ready') ? st.entries : [];
-    const briefEntry = entries.find(e => e.role === 'user');
-    const raw = briefEntry ? briefEntry.content : (agent.promptPreview || '');
+    const briefEntry = entries[briefIndex(entries)];
+    const raw = briefEntry ? displayContent(briefEntry).content : (agent.promptPreview || '');
     return raw.replace(/\r?\n+/g, ' ').trim();
+  }
+
+  /** A workflow agent's prompt arrives framed (CLI 2.1.273+): the user's
+   *  request relayed in one record, the script's task in a `computed task`
+   *  record, each behind a sentence of harness boilerplate. Shown without the
+   *  boilerplate, tagged by kind; any other entry passes through. */
+  function displayContent(e: TranscriptEntry): { content: string; frameKind: string | null } {
+    if (e.role !== 'user') { return { content: e.content, frameKind: null }; }
+    const framed = unframeWorkflowText(e.content);
+    return framed ? { content: framed.body, frameKind: framed.kind } : { content: e.content, frameKind: null };
+  }
+
+  /** The inception brief: the computed-task record when the prompt is
+   *  framed, else the first genuine prompt turn (tool_result plumbing rides
+   *  in as role 'tool', never 'user'). -1 when there is none. */
+  function briefIndex(all: TranscriptEntry[]): number {
+    const task = all.findIndex(e => e.role === 'user' && unframeWorkflowText(e.content)?.kind === 'computed task');
+    return task >= 0 ? task : all.findIndex(e => e.role === 'user');
   }
 
   function truncate(text: string, max: number): string {
@@ -823,7 +841,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + '<div class="wf-astrip-body">'
       + statusDot(agent.status)
       + '<span class="wf-astrip-name">' + escapeHtml(agent.label) + '</span>'
-      + metaHtml
+      + '<span class="wf-astrip-meta">' + metaHtml + '</span>'
       + '</div></div>';
   }
 
@@ -895,7 +913,10 @@ declare function acquireVsCodeApi(): VsCodeApi;
           + zoneLabel(first ? 'agents' : '')
           + '<span class="wf-agentstrip-phasetitle">' + escapeHtml(g.title) + '</span>'
           + '<span class="wf-agentstrip-count">' + done + '/' + count + failedHtml + '</span>'
-          + (first ? zoneCollapse('agents', false) : '') + '</div>';
+          // Later headers reserve the collapse control's width with an
+          // invisible twin, so every phase count sits in one column.
+          + (first ? zoneCollapse('agents', false) : '<span class="wf-zone-collapse-spacer" aria-hidden="true">⌃ collapse</span>')
+          + '</div>';
         first = false;
       }
       const leadLine = first; // an untitled leading group still anchors the label
@@ -920,7 +941,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     (root.querySelector('.wf-agent-pill.active') as HTMLElement | null)?.focus();
   }
 
-  interface LogRow { entry: TranscriptEntry; idx: number; isBrief: boolean; isResult: boolean }
+  interface LogRow { entry: TranscriptEntry; idx: number; isBrief: boolean; isResult: boolean; frameKind?: string | null }
 
   /** The selected agent's entries + inbox suffix as flat, index-stable rows,
    *  with the inception brief and the terminal result flagged for distinct
@@ -935,10 +956,12 @@ declare function acquireVsCodeApi(): VsCodeApi;
     const entries = (st && st.state === 'ready') ? st.entries : [];
     const suffix = (st && st.state === 'ready') ? st.suffix : [];
     const all = [...entries, ...suffix];
-    // The inception brief: the first genuine
-    // prompt turn (tool_result plumbing rides in as role 'tool', never 'user').
-    const briefIdx = all.findIndex(e => e.role === 'user');
-    const rows: LogRow[] = all.map((e, i) => ({ entry: e, idx: i, isBrief: i === briefIdx, isResult: false }));
+    const briefIdx = briefIndex(all);
+    const rows: LogRow[] = all.map((e, i) => {
+      const shown = displayContent(e);
+      const entry = shown.frameKind ? { ...e, content: shown.content } : e;
+      return { entry, idx: i, isBrief: i === briefIdx, isResult: false, frameKind: shown.frameKind };
+    });
     // Terminal result treatment (mockup §2's ✔ RESULT row): the last entry of
     // a finished agent, or a synthesised row from the sidecar's resultPreview
     // when the transcript hasn't produced one (no JSONL record type maps to
@@ -1185,7 +1208,11 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (r.isResult) { classes.push('result'); }
     if (expanded) { classes.push('expanded'); }
     if (hasExpand) { classes.push('expandable'); }
+    // A non-task harness frame (the relayed user request, say) keeps a tag
+    // naming what it is, since its boilerplate header is no longer shown.
+    const frameTag = !r.isBrief && r.frameKind ? r.frameKind.replace(/^user /, '').toUpperCase() : '';
     const tags = (r.isBrief ? '<span class="wf-log-tag">BRIEF</span> ' : '')
+      + (frameTag ? '<span class="wf-log-tag">' + escapeHtml(frameTag) + '</span> ' : '')
       + (r.isResult ? '<span class="wf-log-tag">RESULT</span> ' : '');
     let body: string;
     if (prose) {
