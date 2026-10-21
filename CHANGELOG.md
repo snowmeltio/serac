@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.28.2 (2026-10-21) - Detail pane lines up
+
+### Fixed
+- **Workflow phase counts line up.** In the detail pane's agent list, the first phase's done/total count sat beside the collapse button while every later count hugged the far edge. All counts now share one column.
+- **Log timestamps sit on their line.** In the detail pane's log, the time and icon on a text entry rode above its first line. They now line up with the text.
+- **Even separator dots.** The header and agent bar read "19k tokens  · Opus 5.5", with a wide gap before each dot. The dots now sit evenly between facts.
+- **A workflow agent's brief shows its task.** Since Claude Code 2.1.273 the agent's prompt arrives wrapped in a harness notice, so the BRIEF row spent its three visible lines on that notice. It now shows the task itself, and a relayed request from you appears as its own row, tagged REQUEST.
+
 ## v1.28.1 (2026-10-21) - Workflow agents in their phases, no cards for agent publishes
 
 ### Fixed
