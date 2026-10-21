@@ -207,6 +207,39 @@ function readLastConversationRecord(file: string, size: number): JsonlRecord | n
   return null;
 }
 
+/** First CLI version seen stamping `origin` on interactive prompts (census
+ *  2026-10-21: every interactive session from 2.1.236 on carries it, every
+ *  `claude -p` child lacks it). Older transcripts are never judged headless. */
+const HEADLESS_ORIGIN_SINCE: readonly [number, number, number] = [2, 1, 236];
+
+/** Whether a dotted CLI version (`2.1.292`) is at least `min`. False when
+ *  absent or unparseable. */
+function cliVersionAtLeast(version: unknown, min: readonly [number, number, number]): boolean {
+  if (typeof version !== 'string') { return false; }
+  const parts = version.split('.').map(n => Number.parseInt(n, 10));
+  if (parts.length < 3 || parts.some(n => !Number.isFinite(n))) { return false; }
+  for (let i = 0; i < 3; i++) {
+    if (parts[i] !== min[i]) { return parts[i] > min[i]; }
+  }
+  return true;
+}
+
+/** A main-thread user record holding a typed prompt: string content or text
+ *  blocks, not a tool_result, a meta record, or a local command's wrapper
+ *  (`<local-command-caveat>`, `<command-name>`, `<local-command-stdout>`). */
+function isGenuinePrompt(record: JsonlRecord): boolean {
+  if (record.isMeta === true) { return false; }
+  const content = record.message?.content;
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content) && content.length > 0 && content.every(b => b.type === 'text')
+      ? content.map(b => b.text ?? '').join('')
+      : null;
+  if (text === null) { return false; }
+  const trimmed = text.trimStart();
+  return trimmed !== '' && !trimmed.startsWith('<local-command') && !trimmed.startsWith('<command-');
+}
+
 /** The harness's interrupt marker: a user record whose only content is
  *  `[Request interrupted by user]` (Esc mid-turn) or `[Request interrupted by
  *  user for tool use]` (a rejected permission prompt). Either ends the turn. */
@@ -440,6 +473,13 @@ export class SessionManager {
    *  transitions only; Claude Code re-emits the enrolled record on every
    *  reconnect and those are swallowed. Default no-op. */
   private readonly onBridgeTransition?: (ev: BridgeTransition) => void;
+  /** Headless detection (see SessionState.headless): whether the session's
+   *  first queue enqueue, landing before any main-thread user record,
+   *  already carried a prompt (null until one is seen), and whether the first
+   *  genuine prompt has been judged. Neither resets on truncation. */
+  private firstEnqueueCarriedPrompt: boolean | null = null;
+  private sawMainUserRecord = false;
+  private headlessDecided = false;
   /** True while processRecord() is consuming the startup replay (the first
    *  tailer read); false for every live append after it. Mirrors the
    *  `isReplay` local in update() for the per-record hooks that need it. */
@@ -612,6 +652,7 @@ export class SessionManager {
       aiTitle: '',
       userTurnCount: 0,
       hasAssistantTurn: false,
+      headless: false,
     };
   }
 
@@ -714,6 +755,7 @@ export class SessionManager {
     this.lastMtimeMs = stamp.mtimeMs;
     this.initialReplayDone = true;
     this.hydratedFrom = stamp;
+    this.headlessDecided = true; // restored from the cache; no first prompt left to judge
     // No timers armed.
   }
 
@@ -1001,6 +1043,7 @@ export class SessionManager {
       customTitle: this.state.customTitle,
       aiTitle: this.state.aiTitle,
       hasAssistantTurn: this.state.hasAssistantTurn,
+      headless: this.state.headless,
       filePath: this.state.filePath,
       bridgeSessionId: this.state.bridgeSessionId,
       bridgeState: this.state.bridgeState,
@@ -1838,6 +1881,14 @@ export class SessionManager {
       return this.processSidechainUser(record);
     }
 
+    this.sawMainUserRecord = true;
+    if (!this.headlessDecided && isGenuinePrompt(record)) {
+      this.headlessDecided = true;
+      this.state.headless = this.firstEnqueueCarriedPrompt === true
+        && record.origin === undefined
+        && cliVersionAtLeast(record.version, HEADLESS_ORIGIN_SINCE);
+    }
+
     // Harness-injected background-agent completion. Processed before the
     // generic turn handling so the agent's running flag is already correct by
     // the time setRunning() and the [F2] all-subagents-done check run below.
@@ -2182,6 +2233,9 @@ export class SessionManager {
 
   private processQueueOperation(record: JsonlRecord, timestamp: Date): boolean {
     if (record.operation === 'enqueue') {
+      if (this.firstEnqueueCarriedPrompt === null && !this.sawMainUserRecord) {
+        this.firstEnqueueCarriedPrompt = typeof record.content === 'string' && record.content.trim() !== '';
+      }
       // A background agent's <task-notification> is enqueued the moment it
       // finishes, whether the lead is idle or mid-turn (226/226 background
       // agents over 14 days, 2026-10-02 census), and before either delivered

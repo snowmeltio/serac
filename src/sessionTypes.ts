@@ -142,6 +142,13 @@ export interface SessionState {
    *  no work was done, so a foreign row must not count it as finished work.
    *  Sticky across compaction resets, like the titles. */
   hasAssistantTurn: boolean;
+  /** A headless one-shot `claude -p` session that another session launched
+   *  (e.g. publishing an artifact under another account): it opened with
+   *  its prompt already queued, and that prompt carries no `origin` (CLI
+   *  2.1.236+ stamps one on every interactive prompt). Sticky, like the
+   *  titles. Hidden from cards and counts by
+   *  `serac.discovery.hideAgentScratchpads`. */
+  headless: boolean;
   /** Hook enrichment (PostToolUse): outcome of the most recently completed tool.
    *  Display-only; never affects status. Undefined until a PostToolUse arrives. */
   lastTool?: ToolOutcome;
@@ -219,6 +226,8 @@ export interface SessionSnapshot {
   /** See SessionState.hasAssistantTurn. Optional so hand-built snapshots
    *  (sibling/team fixtures) read as "unknown", which consumers treat as true. */
   hasAssistantTurn?: boolean;
+  /** See SessionState.headless. Optional: absent reads as not headless. */
+  headless?: boolean;
   /** Absolute path to the session's JSONL transcript. Feeds the copy pill —
    *  a path is self-identifying where a bare UUID gets mistaken for other id
    *  kinds when pasted into another session. Optional: producers that never
@@ -388,7 +397,7 @@ export interface CachedSubagentState extends Pick<SubagentSnapshot,
  *  compile error, forcing an explicit cache-or-exclude decision. */
 export const CACHED_PLAIN_KEYS = [
   'slug', 'activity', 'contextTokens',
-  'customTitle', 'aiTitle', 'userTurnCount', 'hasAssistantTurn', 'permissionMode', 'entrypoint',
+  'customTitle', 'aiTitle', 'userTurnCount', 'hasAssistantTurn', 'headless', 'permissionMode', 'entrypoint',
   'bridgeSessionId', 'bridgeState', 'endReason',
 ] as const satisfies readonly (keyof SessionState)[];
 export type CachedPlainKey = typeof CACHED_PLAIN_KEYS[number];
@@ -493,6 +502,7 @@ export interface CachedSessionState extends GlanceSnapshotFields {
   aiTitle: string;
   userTurnCount: number;
   hasAssistantTurn: boolean;
+  headless: boolean;
   permissionMode?: string;
   jsonlPermissionMode?: string;
   entrypoint?: string;
