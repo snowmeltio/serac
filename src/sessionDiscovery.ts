@@ -733,9 +733,13 @@ export class SessionDiscovery {
     const snapshots: SessionSnapshot[] = [];
     // Suppress sessions claimed by active (non-dismissed) teams
     const teamClaimed = this.teamDiscovery.getClaimedSessionIds(this.meta.asMap());
+    // Headless `claude -p` children another session launched are its tool
+    // calls, not the user's sessions (same setting as the scratchpad filter).
+    const hideHeadless = readSettings().discovery.hideAgentScratchpads;
     for (const session of this.sessions.values()) {
       if (teamClaimed.has(session.getSessionId())) { continue; }
       const snapshot = session.getSnapshot();
+      if (hideHeadless && snapshot.headless) { continue; }
       // Tag local sessions with the local worktree so cards render
       // consistently — the panel hides the pill when origin == local.
       snapshot.worktreeRoot = this.localCwd;
@@ -793,6 +797,7 @@ export class SessionDiscovery {
     // time anchor (rather than acknowledgedAt) so the Worktrees pane decays
     // correctly without cross-workspace meta reads.
     for (const sib of this.siblingManager.getSnapshots()) {
+      if (hideHeadless && sib.headless) { continue; }
       if (this.meta.get(sib.sessionId)?.dismissed) { sib.dismissed = true; }
       if (sib.status === 'done' && now - sib.lastActivity > 10_000) {
         sib.status = 'stale';
@@ -1006,9 +1011,12 @@ export class SessionDiscovery {
    *  sidebar badge (mirrors the dismissed filter in the snapshot builder). */
   getWaitingCount(): number {
     let count = 0;
+    const hideHeadless = readSettings().discovery.hideAgentScratchpads;
     for (const session of this.sessions.values()) {
       if (this.meta.get(session.getSessionId())?.dismissed) { continue; }
-      if (session.getStatus() === 'waiting') { count++; }
+      if (session.getStatus() !== 'waiting') { continue; }
+      if (hideHeadless && session.getSnapshot().headless) { continue; }
+      count++;
     }
     return count;
   }

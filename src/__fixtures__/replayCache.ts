@@ -41,6 +41,7 @@ export function makeCachedSessionState(overrides: Partial<CachedSessionState> = 
     aiTitle: 'Cached AI Title',
     userTurnCount: 3,
     hasAssistantTurn: true,
+    headless: false,
     gitBranch: 'main',
     toolErrorCount: 1,
     lastAssistantText: 'Cached preview',

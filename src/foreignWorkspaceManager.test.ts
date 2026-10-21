@@ -281,6 +281,55 @@ describe('ForeignWorkspaceManager: agent scratchpad sessions', () => {
   });
 });
 
+describe('ForeignWorkspaceManager: headless claude -p children', () => {
+  beforeEach(() => {
+    _resetConfig();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-hl-'));
+    projectsDir = path.join(tmpDir, 'projects');
+    fs.mkdirSync(projectsDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    _resetConfig();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // A session shelling out `claude -p` to publish an artifact under another
+  // account (seen live 2026-10-21: 30 such children in six days). They run
+  // in the workspace itself, so the scratchpad path filter can't see them.
+  const CWD = '/Users/me/repos/site';
+  const SID = '66666666-6666-4666-8666-666666666666';
+  function createHeadlessSession(): void {
+    const dir = path.join(projectsDir, sanitiseKey(CWD));
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString();
+    const lines = [
+      { type: 'queue-operation', operation: 'enqueue', timestamp: ts, sessionId: SID, content: 'Redeploy the existing artifact' },
+      { type: 'queue-operation', operation: 'dequeue', timestamp: ts, sessionId: SID },
+      { type: 'user', cwd: CWD, timestamp: ts, version: '2.1.292', entrypoint: 'claude-vscode', message: { role: 'user', content: 'Redeploy the existing artifact' } },
+    ];
+    fs.writeFileSync(path.join(dir, `${SID}.jsonl`), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+  }
+
+  it('hides them from rows and the running strip by default', async () => {
+    createHeadlessSession();
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    expect(manager.getWorkspaces()).toEqual([]);
+    expect(manager.getRunningSnapshots()).toEqual([]);
+  });
+
+  it('shows them again when serac.discovery.hideAgentScratchpads is off', async () => {
+    _setConfigValues({ 'serac.discovery.hideAgentScratchpads': false });
+    createHeadlessSession();
+    const manager = new ForeignWorkspaceManager(projectsDir, 'local-key', silentLog);
+    await manager.scan();
+
+    expect(manager.getRunningSnapshots().map(s => s.sessionId)).toEqual([SID]);
+  });
+});
+
 describe('ForeignWorkspaceManager: dismissed sessions stay out of the strips', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fwm-dis-'));
@@ -700,7 +749,7 @@ describe('ForeignWorkspaceManager: replay-cache hydration', () => {
       topic: 'Cached foreign topic', activity: 'Idle', status: 'done',
       lastActivity: Date.now() - 20 * 60_000, firstActivity: Date.now() - 20 * 60_000,
       enqueuedAt: 0, contextTokens: 10, modelId: '', modelConfirmed: false,
-      customTitle: '', aiTitle: 'Cached foreign title', userTurnCount: 1, hasAssistantTurn: true, subagents: [],
+      customTitle: '', aiTitle: 'Cached foreign title', userTurnCount: 1, hasAssistantTurn: true, headless: false, subagents: [],
     };
     const entries = new Map<string, ReplayCacheEntry>([
       [filePath, { size: stat.size, mtimeMs: stat.mtimeMs, cachedAt: Date.now(), state }],
