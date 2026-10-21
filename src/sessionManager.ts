@@ -1387,6 +1387,11 @@ export class SessionManager {
       reconciled = true;
     }
 
+    // Only a non-exempt tool can be blocked on a prompt — the same backing
+    // test the reconciliation above applies. Letting an exempt tool demote to
+    // 'waiting' meant the reconciliation reopened it on the very next poll:
+    // a 2 Hz running↔waiting flap.
+    const blockingToolCount = [...this.state.activeTools.values()].filter(name => !getToolProfile(name).exempt).length;
     const result = computeDemotion(
       this.state.status,
       this.state.lastActivity.getTime(),
@@ -1397,6 +1402,7 @@ export class SessionManager {
       this.turnStartAt,
       this.seenOutputInTurn,
       this.isAutoAcceptMode(),
+      blockingToolCount,
     );
 
     if (result === null) {

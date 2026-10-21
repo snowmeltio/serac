@@ -630,3 +630,53 @@ describe('SessionManager: transcript entrypoint capture', () => {
     expect(mgr.getSnapshot().entrypoint).toBe('claude-vscode');
   });
 });
+
+// 2026-10-21 (session a862c0f5): a pending ExitPlanMode flapped the card
+// running↔waiting every poll for 3.5 min — computeDemotion counted the exempt
+// tool and demoted to waiting, the stale-waiting reconciliation (non-exempt
+// tools only) reopened it.
+describe('SessionManager: no running↔waiting flap on an exempt pending tool', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockRecords = [];
+  });
+
+  function toolUse(name: string, id: string): JsonlRecord {
+    return { type: 'assistant', timestamp: ts(), message: { content: [{ type: 'tool_use', name, id, input: {} }] } };
+  }
+
+  it('a pending ExitPlanMode waits on the user and holds steady across polls', async () => {
+    const transitions: string[] = [];
+    const mgr = new SessionManager('test-session', '/tmp/test.jsonl', 'test-ws', {
+      onTransition: (f, t, r) => { transitions.push(`${f}->${t} (${r})`); },
+    });
+    await feed(mgr, [{ type: 'user', timestamp: ts(), message: { content: [{ type: 'text', text: 'plan it' }] } }]);
+    await feed(mgr, [toolUse('ExitPlanMode', 'tu-plan')]);
+    expect(mgr.getStatus()).toBe('waiting');
+    transitions.length = 0;
+    for (let i = 0; i < 6; i++) {
+      vi.advanceTimersByTime(31_000);
+      mgr.demoteIfStale(30_000);
+    }
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(transitions).toEqual([]);
+  });
+
+  it('a pending exempt tool past the threshold never demotes to waiting', async () => {
+    const transitions: string[] = [];
+    const mgr = new SessionManager('test-session', '/tmp/test.jsonl', 'test-ws', {
+      onTransition: (f, t, r) => { transitions.push(`${f}->${t} (${r})`); },
+    });
+    await feed(mgr, [{ type: 'user', timestamp: ts(), message: { content: [{ type: 'text', text: 'go' }] } }]);
+    await feed(mgr, [toolUse('Edit', 'tu-edit')]);
+    transitions.length = 0;
+    for (let i = 0; i < 7; i++) { // 217 s: past the 3-min ceiling
+      vi.advanceTimersByTime(31_000);
+      mgr.demoteIfStale(30_000);
+    }
+    expect(transitions.filter(t => t.includes('waiting'))).toEqual([]);
+    // Held running below the 3-min ceiling (an exempt Edit can still be a
+    // real prompt in default mode), then done at the ceiling as before.
+    expect(transitions).toEqual(['running->done (session_done)']);
+  });
+});

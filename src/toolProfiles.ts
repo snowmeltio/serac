@@ -66,7 +66,6 @@ const TOOL_PROFILES = new Map<string, ToolProfile>([
   ['TodoWrite',       { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['ToolSearch',      { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['EnterPlanMode',   { exempt: true,  slow: false, userInput: false, orchestration: false }],
-  ['ExitPlanMode',    { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['EnterWorktree',   { exempt: true,  slow: false, userInput: false, orchestration: false }],
   ['ExitWorktree',    { exempt: true,  slow: false, userInput: false, orchestration: false }],
   // Exempt (instant fire-and-forget — schedule/cron/notification primitives)
@@ -88,6 +87,12 @@ const TOOL_PROFILES = new Map<string, ToolProfile>([
   ['Monitor',         { exempt: false, slow: true,  userInput: false, orchestration: false }],
   // User input
   ['AskUserQuestion', { exempt: false, slow: false, userInput: true,  orchestration: false }],
+  // ExitPlanMode waits on the user's plan approval every time (the registry
+  // reports it as waiting on a "permission prompt"; median pending 106 s).
+  // Profiled exempt, the card read running, then flapped running↔waiting at
+  // 2 Hz between demote_waiting and the stale-waiting reconciliation (seen
+  // 2026-10-21, 3.5 min), then went done at the 3-min ceiling (audit S2).
+  ['ExitPlanMode',    { exempt: false, slow: false, userInput: true,  orchestration: false }],
 ]);
 
 /** Default profiles for unknown tools */
@@ -156,6 +161,11 @@ export function computeDemotion(
    *  only the permission-typed 'waiting' outcome below — every other branch
    *  (extended-thinking defer, hard ceilings, done-when-idle) is unaffected. */
   autoAcceptMode = false,
+  /** Active tools that can be blocked on a prompt (non-exempt). Only these
+   *  can demote to 'waiting'; an exempt tool still in flight holds 'running'
+   *  until the ceiling. Defaults to activeToolCount for callers that don't
+   *  distinguish. */
+  blockingToolCount = activeToolCount,
 ): SessionStatus | null {
   if (status !== 'running' && status !== 'waiting') return null;
 
@@ -187,8 +197,12 @@ export function computeDemotion(
     // In an auto-accept mode this active tool cannot be blocked on a prompt —
     // it's just slow. Stay 'running' rather than flip to a permission-typed
     // 'waiting' that can never be genuine (FP-backlog option 2).
-    if (activeToolCount > 0) return autoAcceptMode ? null : 'waiting';
-    if (activeToolCount === 0) return 'done';
+    if (blockingToolCount > 0) return autoAcceptMode ? null : 'waiting';
+    // Only exempt tools in flight: not a prompt the stale-waiting
+    // reconciliation would accept (it would reopen the waiting on the next
+    // poll: a 2 Hz flap), and not idle either. Hold until the ceiling.
+    if (activeToolCount > 0) return null;
+    return 'done';
   }
 
   return null;
