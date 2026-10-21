@@ -680,3 +680,19 @@ describe('SessionManager: no running↔waiting flap on an exempt pending tool', 
     expect(transitions).toEqual(['running->done (session_done)']);
   });
 });
+
+describe('SessionManager: an abandoned dequeue-only transcript', () => {
+  beforeEach(() => { mockRecords = []; });
+
+  it('settles done on the first stale check, not 15 min after window open', async () => {
+    // 07acff1f: enqueue + dequeue, then nothing (a chat opened and abandoned).
+    const old = new Date(Date.now() - 24 * 3600_000).toISOString();
+    const mgr = makeManager();
+    await feed(mgr, [
+      { type: 'queue-operation', operation: 'enqueue', timestamp: old },
+      { type: 'queue-operation', operation: 'dequeue', timestamp: old },
+    ]);
+    mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('done');
+  });
+});

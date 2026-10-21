@@ -2270,6 +2270,11 @@ export class SessionManager {
       // (which can take 30-60+ seconds without writing JSONL records).
       // A dequeue is a genuine new-turn reopener — release the Stop guard.
       this.turnEndedByStop = false;
+      // ...and the turn's first activity. Unstamped, a transcript that ends on
+      // its dequeue (a chat opened and abandoned before any reply) kept the
+      // window-open time as lastActivity, so the no-output think backstop
+      // held it 'running' for 15 min after every reload (07acff1f, 2026-10-21).
+      this.state.lastActivity = clampToNow(timestamp);
       this.setRunning();
       this.appendActivity('Processing');
       return true;
