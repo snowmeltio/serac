@@ -1080,3 +1080,93 @@ describe('WorkflowDiscovery', () => {
     });
   });
 });
+
+// CLI 2.1.273+ frames the agent's prompt and 2.1.283+ journals carry the
+// script's own label and phase. Before this, every live agent of the
+// 2026-10-21 runs read "Agent · <id8>" under "Other" (wwa-s17-messaging-
+// groundwork: Phase 1 · Groundwork 0/0, Other 4/4).
+describe('live tier: journal label/phase and framed prompts', () => {
+  const FRAMED_TASK = (body: string) => '[Workflow harness — computed task] The task text below was computed at runtime by a workflow script. '
+    + 'The harness indents every line of the computed text. The computed task text follows:\n  \n'
+    + body.split('\n').map(l => `  ${l}`).join('\n');
+  const USER_RELAY = '[Workflow harness — user request] The harness relays, verbatim and indented below, the user request that triggered this workflow run.\n  do the thing';
+
+  function liveRun(runId: string, journal: Record<string, unknown>[], agents: Record<string, string[]> = {}): string {
+    const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'journal.jsonl'), journal.map(j => JSON.stringify(j)).join('\n') + '\n', 'utf-8');
+    for (const [id, prompts] of Object.entries(agents)) {
+      fs.writeFileSync(path.join(runDir, `agent-${id}.jsonl`), prompts.map(p =>
+        JSON.stringify({ type: 'user', isSidechain: true, message: { role: 'user', content: p } })).join('\n')
+        + '\n' + JSON.stringify({ type: 'attachment' }) + '\n', 'utf-8');
+    }
+    return runDir;
+  }
+  function writeScript(runId: string, src: string[]): void {
+    const scriptsDir = path.join(sessionDir(), 'workflows', 'scripts');
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    fs.writeFileSync(path.join(scriptsDir, `wwa-${runId}.js`), src.join('\n'), 'utf-8');
+  }
+
+  it('groups by the journal phase and labels by the journal label', async () => {
+    const runId = 'wf_jmeta-01';
+    liveRun(runId, [
+      { type: 'launched' },
+      { type: 'started', key: 'v2:a', agentId: 'a114807e8c83b89b1', label: 'interactions', phase: 'Groundwork' },
+      { type: 'started', key: 'v2:b', agentId: 'a62ab1fe00000000a', label: 'completeness', phase: 'Check' },
+    ]);
+    writeScript(runId, ["export const meta = { name: 'wwa-s17', description: 'd', phases: [{ title: 'Groundwork' }, { title: 'Check' }] }"]);
+
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+    const byId = Object.fromEntries(snap.agents.map(a => [a.agentId, a]));
+    expect(byId.a114807e8c83b89b1).toMatchObject({ label: 'interactions', phaseIndex: 1, phaseTitle: 'Groundwork' });
+    expect(byId.a62ab1fe00000000a).toMatchObject({ label: 'completeness', phaseIndex: 2, phaseTitle: 'Check' });
+    d.dispose();
+  });
+
+  it('synthesises phases from the journal when no script copy exists', async () => {
+    const runId = 'wf_jmeta-02';
+    liveRun(runId, [
+      { type: 'started', key: 'v2:a', agentId: 'aaaaaaaaaaaaaaaa1', label: 'r1', phase: 'Review' },
+      { type: 'started', key: 'v2:b', agentId: 'aaaaaaaaaaaaaaaa2', label: 'syn', phase: 'Synthesis' },
+      { type: 'started', key: 'v2:c', agentId: 'aaaaaaaaaaaaaaaa3', label: 'r2', phase: 'Review' },
+    ]);
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+    expect(snap.phases.map(p => [p.index, p.title])).toEqual([[1, 'Review'], [2, 'Synthesis']]);
+    expect(snap.agents.map(a => a.phaseIndex)).toEqual([1, 2, 1]);
+    d.dispose();
+  });
+
+  it('a failed journal record reads as failed, not running', async () => {
+    const runId = 'wf_jmeta-03';
+    liveRun(runId, [
+      { type: 'started', key: 'v2:a', agentId: 'adcf5e8201ce51785', label: 'x', phase: 'P' },
+      { type: 'failed', key: 'v2:a', agentId: 'adcf5e8201ce51785' },
+    ]);
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    expect(d.getWorkflowSnapshots(emptyMeta())[0].agents[0].status).toBe('failed');
+    d.dispose();
+  });
+
+  it('without journal metadata, correlates on the computed-task frame, not the user relay', async () => {
+    const runId = 'wf_frame-01';
+    const body = 'Context: shared head.\nTASK (label: sources): Study the mining sources in depth.';
+    liveRun(runId, [{ type: 'started', key: 'v2:a', agentId: 'aaaaaaaaaaaaaaaa1' }],
+      { aaaaaaaaaaaaaaaa1: [USER_RELAY, FRAMED_TASK(body)] });
+    writeScript(runId, [
+      "export const meta = { name: 'wwa', description: 'd', phases: [{ title: 'Groundwork' }] }",
+      "await agent(`Context: shared head.\\nTASK (label: sources): Study the mining sources in depth.`, { label: 'sources', phase: 'Groundwork' })",
+    ]);
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    const a = d.getWorkflowSnapshots(emptyMeta())[0].agents[0];
+    expect(a).toMatchObject({ label: 'sources', phaseTitle: 'Groundwork' });
+    expect(a.promptPreview.startsWith('Context: shared head.')).toBe(true);
+    d.dispose();
+  });
+});
