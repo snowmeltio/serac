@@ -3028,11 +3028,13 @@ describe('registry status (serac.experimental.registryStatus)', () => {
   /** One registry file (this test process's pid, so it reads live) carrying
    *  both sessions' processes is not possible — one file per pid — so the
    *  foreign session gets the parent pid, which is also alive. */
+  /** A fixed start per process: the identity check is keyed on pid+start. */
+  const STARTED_AT = Date.now();
   function writeStatus(sessionId: string, status: string, waitingFor?: string, pid = process.pid): void {
     const sessionsDir = path.join(tmpDir, 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
     fs.writeFileSync(path.join(sessionsDir, `${pid}.json`), JSON.stringify({
-      pid, sessionId, cwd: workspacePath, startedAt: Date.now(),
+      pid, sessionId, cwd: workspacePath, startedAt: STARTED_AT,
       kind: 'interactive', entrypoint: 'claude-vscode', version: 'test', status,
       ...(waitingFor ? { waitingFor } : {}), statusUpdatedAt: Date.now(),
     }));
@@ -3043,7 +3045,10 @@ describe('registry status (serac.experimental.registryStatus)', () => {
     // (rightly) reject as not a Claude process: stub the identity check.
     const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', verifyRegistryProcess: async () => 'ok' });
     await discovery.start(onChange);
-    const refresh = () => (discovery as unknown as { refreshRegistryShadow: () => Promise<void> }).refreshRegistryShadow();
+    const once = () => (discovery as unknown as { refreshRegistryShadow: () => Promise<void> }).refreshRegistryShadow();
+    // A process gives no verdict until its identity check answers, so sync
+    // again once the (stubbed) check has settled.
+    const refresh = async () => { await once(); await new Promise(r => setTimeout(r, 0)); await once(); };
     return { discovery, refresh };
   }
 
@@ -3089,7 +3094,7 @@ describe('registry status (serac.experimental.registryStatus)', () => {
     discovery.stop();
   });
 
-  it('a short turn between polls clears the done card\'s acknowledgement', async () => {
+  it('a busy applied from the registry clears the done card\'s acknowledgement at once', async () => {
     _setConfigValues({ 'serac.experimental.registryStatus': true });
     createJsonlFile(SID);
     const { discovery, refresh } = await startDiscovery();

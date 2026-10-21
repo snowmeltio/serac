@@ -35,6 +35,8 @@ export interface StatusRegistry {
   isActive(): boolean;
   isScanClean(): boolean;
   getProcessesForSession(sessionId: string): LiveProcess[];
+  /** Every live process from the latest scan (a new array per scan). */
+  getLiveProcesses(): LiveProcess[];
 }
 
 /** How long a session keeps its last verdict through a gap: an unclean scan
@@ -54,8 +56,6 @@ const defaultVerify: VerifyProcess = async (p) => {
   return id.kind === 'not-claude' || id.kind === 'start-mismatch' ? 'bad' : 'ok';
 };
 
-/** Identity results kept (pid+start → verdict); cleared wholesale past this. */
-const IDENTITY_CACHE_MAX = 512;
 
 export interface RegistryStatusFeed {
   verdictFor(sessionId: string): RegistryStatusVerdict | null;
@@ -71,27 +71,49 @@ export function createRegistryStatusFeed(
   verify: VerifyProcess = defaultVerify,
 ): RegistryStatusFeed {
   const held = new Map<string, { verdict: RegistryStatusVerdict; at: number }>();
-  /** pid:start → identity. Absent = not asked yet; 'pending' = trusted until
-   *  ps answers (the next sync then sees the result). */
+  /** pid:start → identity, for processes in the latest scan only. Absent =
+   *  not asked yet; 'pending' = ps is running, and the entry gives no verdict
+   *  until it answers (the next sync, at most a poll later). A process that
+   *  drops out of a scan is forgotten, so a pid that dies and comes back
+   *  (reused by another program, under a leftover file) is checked again. */
   const identity = new Map<string, 'ok' | 'bad' | 'pending'>();
+  let scanSeen: LiveProcess[] | null = null;
+  const keyOf = (p: LiveProcess) => `${p.pid}:${registryStartMs(p) ?? '?'}`;
+
+  function pruneToLatestScan(): void {
+    const live = registry.getLiveProcesses();
+    if (live === scanSeen) { return; }
+    scanSeen = live;
+    const present = new Set(live.map(keyOf));
+    for (const key of identity.keys()) {
+      if (!present.has(key)) { identity.delete(key); }
+    }
+  }
 
   function trusted(p: LiveProcess): boolean {
-    const key = `${p.pid}:${registryStartMs(p) ?? '?'}`;
+    const key = keyOf(p);
     const known = identity.get(key);
-    if (known === 'bad') { return false; }
     if (known === undefined) {
-      if (identity.size >= IDENTITY_CACHE_MAX) { identity.clear(); }
       identity.set(key, 'pending');
       verify(p).then(r => { identity.set(key, r); }, () => { identity.set(key, 'ok'); });
+      return false;
     }
-    return true;
+    return known === 'ok';
   }
 
   function verdictFor(sessionId: string): RegistryStatusVerdict | null {
     if (!enabled() || !registry.isActive()) { held.delete(sessionId); return null; }
+    pruneToLatestScan();
     const clean = registry.isScanClean();
     const procs = registry.getProcessesForSession(sessionId).filter(trusted);
-    if (clean && procs.length === 0) { held.delete(sessionId); return null; }
+    if (clean && procs.length === 0) {
+      // Nothing trusted: absent, or still being identity-checked. Either way
+      // inference decides; a held verdict (from before a recheck) carries on.
+      const last = held.get(sessionId);
+      if (last && now() - last.at < REGISTRY_VERDICT_HOLD_MS && registry.getProcessesForSession(sessionId).length > 0) { return last.verdict; }
+      held.delete(sessionId);
+      return null;
+    }
     const fresh = clean ? deriveRegistryStatus(procs, true) : null;
     if (fresh) {
       let since: number | null = null;

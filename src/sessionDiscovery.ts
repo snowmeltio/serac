@@ -1648,18 +1648,15 @@ export class SessionDiscovery {
     }
   }
 
-  /** Clear the acknowledgement of a session that resumed [H2]: one running
-   *  now, or (registry status on) one whose last live run began after it was
-   *  acknowledged, since a whole short turn can start and end between polls. */
+  /** Clear the acknowledgement of a session that resumed [H2]. Runs each poll
+   *  and, with registry status on, inside every registry sync, so a registry
+   *  busy is seen the moment it is applied however short the turn. */
   private reconcileAcknowledged(): boolean {
     let changed = false;
     for (const session of this.sessions.values()) {
       const meta = this.meta.get(session.getSessionId());
       if (!meta?.acknowledged) { continue; }
-      const resumed = session.getStatus() === 'running'
-        || (this.registryStatusOn && meta.acknowledgedAt != null
-          && session.getLastLiveRunningAt() > meta.acknowledgedAt);
-      if (resumed) {
+      if (session.getStatus() === 'running') {
         meta.acknowledged = false;
         meta.acknowledgedAt = null;
         this.meta.markDirty();

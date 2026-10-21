@@ -236,15 +236,4 @@ describe('hand-back and parity', () => {
     expect(await run(probe(BUSY, false).p)).toEqual(await run(undefined));
   });
 
-  it('records the last live running transition for the acknowledgement reset', async () => {
-    const reg = probe(IDLE);
-    const mgr = make(reg.p);
-    await feed(mgr, [user('go'), say('x')]);
-    mgr.syncRegistryStatus();
-    expect(mgr.getStatus()).toBe('done');
-    vi.advanceTimersByTime(1_000);
-    reg.set(BUSY);
-    mgr.syncRegistryStatus();
-    expect(mgr.getLastLiveRunningAt()).toBe(Date.now());
-  });
 });

@@ -497,11 +497,6 @@ export class SessionManager {
    *  `isReplay` local in update() for the per-record hooks that need it. */
   private currentReadIsReplay = true;
   private readonly registryStatus?: RegistryStatusProbe;
-  /** Epoch ms of the last LIVE transition into 'running' (never one replayed
-   *  from the transcript). Lets the poll clear a done card's acknowledgement
-   *  when a whole short turn fell between two polls (registry status can run
-   *  and finish inside one poll interval). */
-  private lastLiveRunningAt = 0;
   /** Optional hook-event router, passed to every tracker factory at
    *  construction; hook-capable trackers subscribe via it and fall back to
    *  JSONL inference when it is undefined (foreign workspaces, sibling
@@ -641,7 +636,9 @@ export class SessionManager {
         // timer) and raise the guard so the turn's trailing JSONL records,
         // polled 0.5-2s later, can't re-open the session to running.
         this.turnEndedByStop = true;
-        this.markSessionDone('session_done', true);
+        // Not 'definite' under a busy verdict: a hook can land after the
+        // next turn's records were read, and would close that turn's rows.
+        this.markSessionDone();
       },
     }, { hookRouter: this.hookRouter, sessionId });
     this.toolOutcomeTracker = makeToolOutcomeTracker({
@@ -1218,11 +1215,6 @@ export class SessionManager {
     return this.enqueuedAt;
   }
 
-  /** See lastLiveRunningAt. */
-  getLastLiveRunningAt(): number {
-    return this.lastLiveRunningAt;
-  }
-
   /** The registry's verdict now, or null when inference decides (flag off, no
    *  live entry, a pre-2.1.269 writer). */
   private registryVerdict(): RegistryStatusVerdict | null {
@@ -1693,12 +1685,12 @@ export class SessionManager {
   }
 
   /** Mark session as done and clean up all running state */
-  /** @param definite  The transcript or a hook says this turn ended (an
-   *    interrupt marker, Stop) — not a silence-based guess. */
+  /** @param definite  The transcript itself says this turn ended (an
+   *    interrupt marker, ordered among the records) — not a guess. */
   private markSessionDone(reason = 'session_done', definite = false): void {
     // Registry says a turn is still on (or a prompt is up). The registry owns
     // the status then. A GUESSED turn end (idle timer, demotion) changes
-    // nothing: the turn may well be live. A DEFINITE one (interrupt, Stop)
+    // nothing: the turn may well be live. A DEFINITE one (interrupt)
     // still closes that turn's tools and foreground agents — busy can mean a
     // later turn, or background work, and a replay must not keep a dead
     // turn's leftovers — but leaves the status to the registry.
@@ -2657,9 +2649,6 @@ export class SessionManager {
     const prev = this.state.status;
     if (prev === next) { return; }
     this.state.status = next;
-    if (next === 'running' && (reason.startsWith('registry_') || !this.currentReadIsReplay)) {
-      this.lastLiveRunningAt = Date.now();
-    }
     this.onTransition?.(prev, next, reason, this.state.activeTools.size);
   }
 
