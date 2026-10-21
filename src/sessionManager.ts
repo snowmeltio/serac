@@ -61,6 +61,12 @@
  *               (permission false-positive gate: a dead process can't be waiting on a prompt; also
  *                suppresses the permission timer firing 'waiting' on a confirmed-dead session)
  *
+ * Registry status (serac.experimental.registryStatus): while the registry gives
+ * a verdict, setStatus() refuses inference-driven changes to any other status
+ * and syncRegistryStatus() applies it — waiting (registry_waiting[_input]),
+ * running (registry_busy), done (registry_idle, as Stop). See ARCHITECTURE.md
+ * Status inference §12.
+ *
  * Display-layer (not in SessionManager):
  * done          → stale         acknowledged + 10s elapsed               getSnapshots()
  *
