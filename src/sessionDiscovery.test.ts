@@ -3039,7 +3039,9 @@ describe('registry status (serac.experimental.registryStatus)', () => {
   }
 
   async function startDiscovery(onChange = () => {}) {
-    const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '' });
+    // The registry entries carry this test runner's pid, which `ps` would
+    // (rightly) reject as not a Claude process: stub the identity check.
+    const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '', verifyRegistryProcess: async () => 'ok' });
     await discovery.start(onChange);
     const refresh = () => (discovery as unknown as { refreshRegistryShadow: () => Promise<void> }).refreshRegistryShadow();
     return { discovery, refresh };
@@ -3084,6 +3086,25 @@ describe('registry status (serac.experimental.registryStatus)', () => {
     writeStatus(FOREIGN_SID, 'waiting', 'input needed', process.ppid);
     await refresh();
     expect(discovery.getForeignWaitingSnapshots().map(s => s.sessionId)).toContain(FOREIGN_SID);
+    discovery.stop();
+  });
+
+  it('a short turn between polls clears the done card\'s acknowledgement', async () => {
+    _setConfigValues({ 'serac.experimental.registryStatus': true });
+    createJsonlFile(SID);
+    const { discovery, refresh } = await startDiscovery();
+    writeStatus(SID, 'idle');
+    await refresh();
+    discovery.acknowledgeSession(SID);
+    const acked = () => (discovery as unknown as { meta: { get: (id: string) => { acknowledged?: boolean } | undefined } }).meta.get(SID)?.acknowledged;
+    expect(acked()).toBe(true);
+    await new Promise(r => setTimeout(r, 5));
+    writeStatus(SID, 'busy');
+    await refresh();
+    writeStatus(SID, 'idle');
+    await refresh();
+    expect(discovery.getSnapshots().find(s => s.sessionId === SID)?.status).toBe('done');
+    expect(acked()).toBe(false);
     discovery.stop();
   });
 

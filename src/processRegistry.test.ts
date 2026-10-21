@@ -175,7 +175,8 @@ describe('ProcessRegistry', () => {
     writeEntry(`${LIVE_PID}.json`, entry({ sessionId: 'live-1111' }));
     // A directory named like a registry file → readFile throws EISDIR: a present
     // entry we could not read, standing in for a transient EIO/EMFILE/EACCES.
-    fs.mkdirSync(path.join(dir, '99999.json'));
+    // Named for a LIVE pid: a dead pid's unreadable file can't hide a session.
+    fs.mkdirSync(path.join(dir, `${process.ppid}.json`));
     const reg = new ProcessRegistry(dir, log);
     await reg.scan();
     expect(reg.isActive()).toBe(true);     // the live entry still read fine
@@ -184,11 +185,22 @@ describe('ProcessRegistry', () => {
 
   it('an unparseable file (possible partial write of a live session) degrades the scan', async () => {
     writeEntry(`${LIVE_PID}.json`, entry({ sessionId: 'live-1111' }));
-    fs.writeFileSync(path.join(dir, '424242.json'), '{ partial write', 'utf-8');
+    fs.writeFileSync(path.join(dir, `${process.ppid}.json`), '{ partial write', 'utf-8');
     const reg = new ProcessRegistry(dir, log);
     await reg.scan();
     expect(reg.isActive()).toBe(true);
     expect(reg.isScanClean()).toBe(false);
+  });
+
+  it('a corrupt leftover of a DEAD pid does not degrade the scan', async () => {
+    // One empty or torn file of a crashed process used to leave every scan
+    // unclean for good, silently disabling the death gate and registry status.
+    writeEntry(`${LIVE_PID}.json`, entry({ sessionId: 'live-1111' }));
+    fs.writeFileSync(path.join(dir, `${DEAD_PID}.json`), '', 'utf-8');
+    const reg = new ProcessRegistry(dir, log);
+    await reg.scan();
+    expect(reg.isActive()).toBe(true);
+    expect(reg.isScanClean()).toBe(true);
   });
 
   it('a parseable-but-structurally-invalid entry does NOT degrade the scan', async () => {

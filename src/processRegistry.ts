@@ -52,6 +52,13 @@ function isPidAlive(pid: number): boolean {
   }
 }
 
+/** A `<pid>.json` whose pid is no longer alive. False when the name carries
+ *  no pid. */
+function isDeadPidFile(file: string): boolean {
+  const m = /^(\d+)\.json$/.exec(file);
+  return m !== null && !isPidAlive(Number(m[1]));
+}
+
 /**
  * Reads Claude Code's live process registry at `~/.claude/sessions/<pid>.json`
  * — one file per running process, carrying `{pid, sessionId, cwd, ...}`. Serac
@@ -126,7 +133,7 @@ export class ProcessRegistry {
         // genuine "gone", not a degraded read. Any other code (EIO/EACCES/
         // EMFILE/EISDIR…) means we failed to read a file that is still present,
         // so we can't trust this scan's absence of its session.
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') { clean = false; }
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT' && !isDeadPidFile(file)) { clean = false; }
         continue;
       }
       let rec: unknown;
@@ -134,8 +141,11 @@ export class ProcessRegistry {
         rec = JSON.parse(content);
       } catch {
         // Unparseable (possibly a partial write of a live session's file) —
-        // present but unreadable as an entry → degraded, not absent.
-        clean = false;
+        // present but unreadable as an entry → degraded, not absent. Unless
+        // the pid in its name is dead: a corrupt leftover of an exited
+        // process can't hide a live session, and must not degrade every scan
+        // for good (it would disable the death gate and registry status).
+        if (!isDeadPidFile(file)) { clean = false; }
         continue;
       }
       const proc = parseEntry(rec);

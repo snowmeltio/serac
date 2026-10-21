@@ -1,5 +1,6 @@
 import type { LiveProcess } from './processRegistry.js';
 import { deriveRegistryStatus, type RegistryVerdict } from './registryShadow.js';
+import { verifyClaudeProcess, registryStartMs } from './processIdentity.js';
 
 /**
  * Registry status as the source of truth (serac.experimental.registryStatus).
@@ -42,6 +43,20 @@ export interface StatusRegistry {
  *  turn the card should follow. */
 export const REGISTRY_VERDICT_HOLD_MS = 3_000;
 
+/** Is this registry entry's pid still the Claude process that wrote it?
+ *  `kill(pid, 0)` alone can't tell: a `kill -9`'d session leaves its file
+ *  behind, and a reused pid would then pin the card on that entry's last
+ *  status forever, with inference vetoed. 'bad' drops the entry. */
+export type VerifyProcess = (p: LiveProcess) => Promise<'ok' | 'bad'>;
+
+const defaultVerify: VerifyProcess = async (p) => {
+  const id = await verifyClaudeProcess(p.pid, registryStartMs(p));
+  return id.kind === 'not-claude' || id.kind === 'start-mismatch' ? 'bad' : 'ok';
+};
+
+/** Identity results kept (pid+start → verdict); cleared wholesale past this. */
+const IDENTITY_CACHE_MAX = 512;
+
 export interface RegistryStatusFeed {
   verdictFor(sessionId: string): RegistryStatusVerdict | null;
   enabled(): boolean;
@@ -53,13 +68,29 @@ export function createRegistryStatusFeed(
   registry: StatusRegistry,
   enabled: () => boolean,
   now: () => number = Date.now,
+  verify: VerifyProcess = defaultVerify,
 ): RegistryStatusFeed {
   const held = new Map<string, { verdict: RegistryStatusVerdict; at: number }>();
+  /** pid:start → identity. Absent = not asked yet; 'pending' = trusted until
+   *  ps answers (the next sync then sees the result). */
+  const identity = new Map<string, 'ok' | 'bad' | 'pending'>();
+
+  function trusted(p: LiveProcess): boolean {
+    const key = `${p.pid}:${registryStartMs(p) ?? '?'}`;
+    const known = identity.get(key);
+    if (known === 'bad') { return false; }
+    if (known === undefined) {
+      if (identity.size >= IDENTITY_CACHE_MAX) { identity.clear(); }
+      identity.set(key, 'pending');
+      verify(p).then(r => { identity.set(key, r); }, () => { identity.set(key, 'ok'); });
+    }
+    return true;
+  }
 
   function verdictFor(sessionId: string): RegistryStatusVerdict | null {
     if (!enabled() || !registry.isActive()) { held.delete(sessionId); return null; }
     const clean = registry.isScanClean();
-    const procs = registry.getProcessesForSession(sessionId);
+    const procs = registry.getProcessesForSession(sessionId).filter(trusted);
     if (clean && procs.length === 0) { held.delete(sessionId); return null; }
     const fresh = clean ? deriveRegistryStatus(procs, true) : null;
     if (fresh) {

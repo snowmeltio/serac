@@ -641,7 +641,7 @@ export class SessionManager {
         // timer) and raise the guard so the turn's trailing JSONL records,
         // polled 0.5-2s later, can't re-open the session to running.
         this.turnEndedByStop = true;
-        this.markSessionDone();
+        this.markSessionDone('session_done', true);
       },
     }, { hookRouter: this.hookRouter, sessionId });
     this.toolOutcomeTracker = makeToolOutcomeTracker({
@@ -1693,17 +1693,25 @@ export class SessionManager {
   }
 
   /** Mark session as done and clean up all running state */
-  private markSessionDone(reason = 'session_done'): void {
-    // Registry says the turn is still on (or a prompt is up): inference's
-    // "turn over" — idle timer, demotion, interrupt, Stop, all-agents-done —
-    // must not clear tools or close agents. The registry's own idle does.
+  /** @param definite  The transcript or a hook says this turn ended (an
+   *    interrupt marker, Stop) — not a silence-based guess. */
+  private markSessionDone(reason = 'session_done', definite = false): void {
+    // Registry says a turn is still on (or a prompt is up). The registry owns
+    // the status then. A GUESSED turn end (idle timer, demotion) changes
+    // nothing: the turn may well be live. A DEFINITE one (interrupt, Stop)
+    // still closes that turn's tools and foreground agents — busy can mean a
+    // later turn, or background work, and a replay must not keep a dead
+    // turn's leftovers — but leaves the status to the registry.
     const v = this.registryVerdict();
-    if (v && v.status !== 'done' && !reason.startsWith('registry_')) { return; }
-    this.setStatus('done', reason);
-    // Clear status-indicator text that would be misleading on a done card.
-    // Preserve genuine activity (tool names, responses) for context.
-    if (WAITING_ACTIVITY_MESSAGES.has(this.state.activity)) {
-      this.state.activity = '';
+    const vetoed = !!v && v.status !== 'done' && !reason.startsWith('registry_');
+    if (vetoed && !definite) { return; }
+    if (!vetoed) {
+      this.setStatus('done', reason);
+      // Clear status-indicator text that would be misleading on a done card.
+      // Preserve genuine activity (tool names, responses) for context.
+      if (WAITING_ACTIVITY_MESSAGES.has(this.state.activity)) {
+        this.state.activity = '';
+      }
     }
     this.clearTools(this.state.activeTools);
     // Mark all subagents as completed and clean up their trackers
@@ -1788,7 +1796,7 @@ export class SessionManager {
   private isProcessAlive(): boolean {
     // B6: with registry status on, the registry is the liveness source
     // (fuser rarely finds the writer, so the pid path reads alive forever).
-    if (this.registryStatus?.enabled()) { return this.registryLiveness() !== false; }
+    if (this.registryVerdict()) { return this.registryLiveness() !== false; }
     if (this.writerPid === null) return true;
     try {
       process.kill(this.writerPid, 0);
@@ -2081,7 +2089,7 @@ export class SessionManager {
       // An interrupt also abandons a compaction in flight; left open, the
       // window would hold the card off done for good.
       this.closeCompactWindow();
-      this.markSessionDone('interrupt');
+      this.markSessionDone('interrupt', true);
       return true;
     }
     // A user record is a genuine new-turn reopener — release the Stop guard.
@@ -2348,7 +2356,8 @@ export class SessionManager {
       // held it 'running' for 15 min after every reload (07acff1f, 2026-10-21).
       this.state.lastActivity = clampToNow(timestamp);
       this.setRunning();
-      this.appendActivity('Processing');
+      // A reopen the registry refused keeps its waiting/done subtitle.
+      if (this.getStatus() === 'running') { this.appendActivity('Processing'); }
       return true;
     }
     // 'remove' = the queued item was taken off the queue without a dequeue:
@@ -2610,6 +2619,12 @@ export class SessionManager {
    *  turnStartAt only updates on actual status transition (not repeated calls
    *  while already running) to preserve the 30s extended thinking grace. */
   private setRunning(reason: string = 'set_running'): void {
+    // A reopen the registry disagrees with changes nothing — not even the
+    // turn anchor or the subtitle (setStatus would refuse it anyway).
+    if (!reason.startsWith('registry_')) {
+      const v = this.registryVerdict();
+      if (v && v.status !== 'running') { return; }
+    }
     if (this.state.status !== 'running') {
       this.turnStartAt = Date.now();
       // (Writer-pid capture used to fire here, on every first running

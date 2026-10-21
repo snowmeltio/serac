@@ -186,10 +186,38 @@ describe('hand-back and parity', () => {
     const reg = probe(BUSY);
     const mgr = make(reg.p);
     await feed(mgr, [user('go'), say('done for now')]);
-    reg.set(null);
     vi.advanceTimersByTime(60_000);
     mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('running'); // vetoed while busy
+    reg.set(null);
+    vi.advanceTimersByTime(31_000);
+    mgr.demoteIfStale(30_000);
     expect(mgr.getStatus()).toBe('done');
+  });
+
+  it('a replay under a busy verdict does not keep a dead turn\'s leftovers', async () => {
+    // A turn interrupted mid-Agent, then a new turn: the old foreground row and
+    // its tool must close at the interrupt even though the registry says busy.
+    const mgr = make(probe(BUSY).p);
+    await feed(mgr, [
+      user('go'),
+      toolUse('Agent', 'tu-old', { description: 'old', prompt: 'x' }),
+      user('[Request interrupted by user]'),
+      user('next'),
+      say('working on next'),
+    ]);
+    expect(mgr.getSnapshot().subagents.find(r => r.parentToolUseId === 'tu-old')!.running).toBe(false);
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('a vetoed reopen leaves the waiting subtitle alone', async () => {
+    const reg = probe(PERMISSION);
+    const mgr = make(reg.p);
+    await feed(mgr, [user('go'), toolUse('Bash', 'tu-1')]);
+    mgr.syncRegistryStatus();
+    await feed(mgr, [{ type: 'queue-operation', operation: 'dequeue', timestamp: ts() }]);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toBe('Waiting for permission');
   });
 
   it('flag off is identical to no probe at all', async () => {

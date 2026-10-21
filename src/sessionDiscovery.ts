@@ -11,7 +11,7 @@ import { TeamDiscovery } from './teamDiscovery.js';
 import { WorkflowDiscovery } from './workflowDiscovery.js';
 import { ProcessRegistry, type LiveProcess } from './processRegistry.js';
 import { createRegistryShadow, deriveRegistryStatus, watchRegistryDir } from './registryShadow.js';
-import { createRegistryStatusFeed, type RegistryStatusFeed } from './registryStatus.js';
+import { createRegistryStatusFeed, type RegistryStatusFeed, type VerifyProcess } from './registryStatus.js';
 import { isRcServing, isRcHostedProcess } from './rcDetector.js';
 import { WriterOwnership, aggregateWriterOwnership, isExtensionHostPid, type WriterAggregate } from './writerOwnership.js';
 import { getSessionLastWriteMtime, isWithinActivityWindow, EXTERNAL_WRITER_QUIET_MS } from './writerActivity.js';
@@ -185,6 +185,8 @@ export class SessionDiscovery {
 
   constructor(workspacePath: string, opts?: {
     projectsDir?: string; log?: Logger; hookRouter?: HookEventRouter; defaultModelGuess?: string;
+    /** Registry-status process identity check; tests stub `ps`. */
+    verifyRegistryProcess?: VerifyProcess;
     /** Override the replay cache's on-disk location — test seam, mirroring
      *  the `projectsDir` override above. */
     replayCachePath?: string;
@@ -209,7 +211,7 @@ export class SessionDiscovery {
     this.processRegistry = new ProcessRegistry(this.sessionsDir, this.log);
     // nullLogger: processRegistry already warns about malformed entries.
     this.shadowRegistry = new ProcessRegistry(this.sessionsDir, nullLogger);
-    this.registryStatusFeed = createRegistryStatusFeed(this.shadowRegistry, () => this.registryStatusOn);
+    this.registryStatusFeed = createRegistryStatusFeed(this.shadowRegistry, () => this.registryStatusOn, Date.now, opts?.verifyRegistryProcess);
     this.writerOwnership = new WriterOwnership();
     this.workflowDiscovery = new WorkflowDiscovery(this.projectsDir, this.workspaceKey, this.log, this.processRegistry);
     // Freshness parity: out-of-window sessions (foreign / sibling / team
