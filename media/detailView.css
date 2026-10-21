@@ -215,7 +215,8 @@ body {
  * class for views, agents, and result. Font styles are self-contained so it
  * renders identically inside the uppercase result-strip head and the plain
  * chip rows. */
-.wf-zone-collapse {
+.wf-zone-collapse,
+.wf-zone-collapse-spacer {
   margin-left: auto;
   flex-shrink: 0;
   color: var(--vscode-descriptionForeground);
@@ -229,6 +230,7 @@ body {
   text-transform: none;
   white-space: nowrap;
 }
+.wf-zone-collapse-spacer { visibility: hidden; cursor: default; }
 .wf-zone-collapse:hover { color: var(--vscode-foreground); }
 .wf-zone-collapse:focus-visible { outline: 1px solid var(--vscode-focusBorder, var(--sm-blizzard-blue)); outline-offset: 1px; }
 
@@ -310,8 +312,9 @@ body {
 .wf-hstrip-counts { color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; flex-shrink: 0; }
 /* Meta bits are individually atomic (each item carries its own leading
  * separator dot inside the nowrap unit) so they wrap BETWEEN facts, never
- * inside one. */
-.wf-hstrip-meta { color: var(--vscode-descriptionForeground); font-size: 11px; display: flex; flex-wrap: wrap; gap: 10px; min-width: 0; }
+ * inside one. The gap is one space wide: "· " already supplies the space
+ * after the dot, so the dots sit evenly between facts, as in the counts. */
+.wf-hstrip-meta { color: var(--vscode-descriptionForeground); font-size: 11px; display: flex; flex-wrap: wrap; gap: 2px 0.3em; min-width: 0; }
 .wf-hstrip-meta-item { white-space: nowrap; flex-shrink: 0; }
 .wf-hstrip-openconv { margin-left: auto; white-space: nowrap; flex-shrink: 0; }
 /* ── 3. Pinned permission row — filter/scroll-immune (§ design doc mockup) ── */
@@ -481,7 +484,8 @@ body {
 /* In a phase header the count already owns margin-left:auto — a second auto
  * margin would split the free space and strand the count mid-row, so the
  * collapse control falls back to a plain rail gap there. */
-.wf-agentstrip-phasehead > .wf-zone-collapse { margin-left: 9px; }
+.wf-agentstrip-phasehead > .wf-zone-collapse,
+.wf-agentstrip-phasehead > .wf-zone-collapse-spacer { margin-left: 9px; }
 .wf-agentstrip-phaserow { display: flex; flex-direction: column; gap: 4px; }
 /* The phase-header register: title + counts in the small-caps label voice. */
 .wf-agentstrip-phasehead {
@@ -556,6 +560,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.wf-astrip-meta { display: flex; flex-wrap: wrap; gap: 2px 0.3em; min-width: 0; }
 .wf-astrip-meta-item { white-space: nowrap; flex-shrink: 0; }
 
 /* ── 5. Facet bar ──
@@ -737,6 +742,10 @@ body {
   padding-top: 5px;
   padding-bottom: 5px;
 }
+/* The time and glyph are smaller than the 13px prose; giving them the prose
+ * line box centres them on its first line instead of riding above it. */
+.wf-log-row.prose > .wf-log-t,
+.wf-log-row.prose > .wf-log-glyph { line-height: calc(13px * 1.5); }
 .wf-log-prosewrap { flex: 1; min-width: 0; max-width: clamp(60ch, 92%, 130ch); }
 .wf-log-prose {
   font-family: var(--vscode-font-family);

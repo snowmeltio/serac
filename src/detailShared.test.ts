@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey, parseEditInput } from './detailShared.js';
+import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey, parseEditInput, unframeComputedTask, unframeWorkflowText } from './detailShared.js';
 
 describe('formatModelLabel', () => {
   it('derives tier + version from modern ids, stripping [1m] and date stamps', () => {
@@ -76,5 +76,24 @@ describe('parseEditInput', () => {
   it('rejects non-string old_string/new_string', () => {
     const raw = JSON.stringify({ file_path: '/a/b.ts', old_string: 1, new_string: 'b' });
     expect(parseEditInput(raw)).toBeNull();
+  });
+});
+
+// Trimmed from wwa-s17-messaging-groundwork (CLI 2.1.304), 2026-10-21.
+describe('workflow harness frames', () => {
+  const TASK = '[Workflow harness — computed task] The task text below was computed at runtime by a workflow script. '
+    + 'The harness indents every line of the computed text. The computed task text follows:\n  \n  Context: Snowmelt is building WWA.\n  TASK (label: sources): study it.';
+  const RELAY = '[Workflow harness — user request] The harness relays, verbatim and indented below, the user request.\n  (4) I want the formatting clean.\n  Also mine WhatsApp.';
+
+  it('unframeComputedTask returns the script text without frame or indent', () => {
+    expect(unframeComputedTask(TASK)).toBe('Context: Snowmelt is building WWA.\nTASK (label: sources): study it.');
+    expect(unframeComputedTask(RELAY)).toBeNull();
+    expect(unframeComputedTask('plain prompt')).toBeNull();
+  });
+
+  it('unframeWorkflowText names the frame and strips the boilerplate for every kind', () => {
+    expect(unframeWorkflowText(TASK)).toEqual({ kind: 'computed task', body: 'Context: Snowmelt is building WWA.\nTASK (label: sources): study it.' });
+    expect(unframeWorkflowText(RELAY)).toEqual({ kind: 'user request', body: '(4) I want the formatting clean.\nAlso mine WhatsApp.' });
+    expect(unframeWorkflowText('plain prompt')).toBeNull();
   });
 });

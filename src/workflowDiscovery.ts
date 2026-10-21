@@ -8,6 +8,7 @@ import { readSettings, ageGateMsFor } from './settings.js';
 import { makeRescanGate } from './sessionPolling.js';
 import { isValidSessionId } from './validation.js';
 import { JsonlTailer } from './jsonlTailer.js';
+import { WORKFLOW_FRAME_PREFIX, unframeComputedTask } from './detailShared.js';
 
 /** The slice of ProcessRegistry the live tier needs to confirm a parent session
  *  has died (so an abandoned run can be downgraded from 'running' to
@@ -27,25 +28,6 @@ function resolveLiveLabel(call: WorkflowAgentCall, prompt: string): string | nul
   if (!call.label) { return null; }
   if (!call.label.includes('${')) { return call.label; } // plain literal label
   return recoverInterpolatedLabel(call, prompt);          // interpolated → recover or null
-}
-
-/** Every workflow harness frame opens with this (CLI 2.1.273+). */
-const WORKFLOW_FRAME_PREFIX = '[Workflow harness';
-const COMPUTED_TASK_FRAME = '[Workflow harness — computed task]';
-const COMPUTED_TASK_LEAD = 'The computed task text follows:\n';
-
-/** The script's own prompt out of a `computed task` frame: the text after
- *  the frame's lead-in, with the two-space indent the harness puts on every
- *  line removed. Null for any other text. */
-export function unframeComputedTask(text: string): string | null {
-  if (!text.startsWith(COMPUTED_TASK_FRAME)) { return null; }
-  const at = text.indexOf(COMPUTED_TASK_LEAD);
-  if (at < 0) { return null; }
-  return text.slice(at + COMPUTED_TASK_LEAD.length)
-    .split('\n')
-    .map(l => (l.startsWith('  ') ? l.slice(2) : l))
-    .join('\n')
-    .replace(/^\n+/, '');
 }
 
 /** Plain text of a message `content`: the string itself, or its text blocks

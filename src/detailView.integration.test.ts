@@ -625,6 +625,22 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     ]);
   });
 
+  it('a framed workflow prompt shows the task as the brief and the relayed request tagged, without the harness boilerplate', () => {
+    sendRender(logModel());
+    sendTranscript('workflow:wf_run1|wf_run1|agent001', [
+      { timestamp: '2026-10-21T11:33:37Z', role: 'user', content: '[Workflow harness — user request] The harness relays, verbatim and indented below, the user request.\n  Clean up the notes.' },
+      { timestamp: '2026-10-21T11:33:38Z', role: 'user', content: '[Workflow harness — computed task] The task text below was computed at runtime. The computed task text follows:\n  \n  Context: WWA.\n  TASK: fix the notes.' },
+      { timestamp: '2026-10-21T11:33:40Z', role: 'assistant', content: "I'll start." },
+    ]);
+    const brief = q('.wf-log-row.brief')!;
+    expect(brief.textContent).toContain('Context: WWA.');
+    expect(brief.textContent).not.toContain('Workflow harness');
+    const relay = qa('.wf-log-row').find(r => r.textContent!.includes('Clean up the notes.'))!;
+    expect(relay.classList.contains('brief')).toBe(false);
+    expect(relay.querySelector('.wf-log-tag')!.textContent).toBe('REQUEST');
+    expect(relay.textContent).not.toContain('Workflow harness');
+  });
+
   it('agent detail bar is absent when the selected agent has no model/tokens/runtime to show', () => {
     sendRender(logModel()); // fixture default: model '', tokens 0, toolCalls 0, durationMs null
     expect(q('.wf-astrip')).toBeNull();
