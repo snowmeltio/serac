@@ -559,12 +559,14 @@ export class ForeignWorkspaceManager {
     return this.cwdCache.get(workspaceKey) ?? null;
   }
 
-  /** Whether serac.discovery.hideAgentScratchpads hides this session: its
+  /** Whether serac.discovery.hideAgentScratchpads hides this session: a
+   *  headless `claude -p` child another session launched, or one whose
    *  workspace dir (cached cwd, else the session's own) is inside another
    *  session's temp dir. Applied at read time, like the tmp overlay, so the
    *  toggle takes effect on the next poll. */
   private isHiddenAgentScratch(snapshot: SessionSnapshot, hide: boolean): boolean {
     if (!hide) { return false; }
+    if (snapshot.headless) { return true; }
     return isAgentScratchPath(this.cwdCache.get(snapshot.workspaceKey) || snapshot.initialCwd || snapshot.cwd);
   }
 
