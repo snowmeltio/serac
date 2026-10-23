@@ -65,6 +65,11 @@ export interface RegistryStatusFeed {
   verdictFor(sessionId: string): RegistryStatusVerdict | null;
   /** verdictFor without the flag gate. */
   activityFor(sessionId: string): RegistryStatusVerdict | null;
+  /** Start the identity check for every busy or waiting process in the
+   *  latest scan. Call after each scan: a check started only when the hard
+   *  ceiling asks is still pending at that moment, so the first long step of
+   *  every process went done anyway. */
+  prime(): void;
   enabled(): boolean;
   /** A probe bound to one session, for SessionManagerOptions. */
   probeFor(sessionId: string): RegistryStatusProbe;
@@ -142,9 +147,18 @@ export function createRegistryStatusFeed(
     return null;
   }
 
+  function prime(): void {
+    if (!registry.isActive()) { return; }
+    pruneToLatestScan();
+    for (const p of registry.getLiveProcesses()) {
+      if (p.status === 'busy' || p.status === 'waiting') { trusted(p); }
+    }
+  }
+
   return {
     verdictFor,
     activityFor,
+    prime,
     enabled,
     probeFor: (sessionId: string) => ({
       enabled,

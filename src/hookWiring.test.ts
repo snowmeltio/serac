@@ -10,6 +10,7 @@ const mockHandle = {
   socketPath: '/test/.serac/hook.sock',
   dispose: vi.fn().mockResolvedValue(undefined),
   releaseSync: vi.fn(),
+  ownsLock: vi.fn(() => true),
   skipped: undefined as 'socket-path-too-long' | undefined,
 };
 
@@ -104,6 +105,16 @@ describe('wireHookIngress', () => {
     vi.mocked(log.error).mockImplementation(closed);
     expect(() => { for (const d of wiring.disposables) { d.dispose(); } }).not.toThrow();
     expect(vi.mocked(removeForwarderPatch)).toHaveBeenCalled();
+    expect(mockHandle.releaseSync).toHaveBeenCalled();
+  });
+
+  it('leaves the settings patch to a successor that took the lock over', async () => {
+    _setConfigValues({ 'serac.hooks.enabled': true });
+    const wiring = wire();
+    await flush();
+    mockHandle.ownsLock.mockReturnValueOnce(false);
+    for (const d of wiring.disposables) { d.dispose(); }
+    expect(vi.mocked(removeForwarderPatch)).not.toHaveBeenCalled();
     expect(mockHandle.releaseSync).toHaveBeenCalled();
   });
 

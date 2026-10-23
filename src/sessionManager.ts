@@ -268,12 +268,19 @@ function isCaughtUp(tailer: JsonlTailer | null): boolean {
  *  leaves a backgrounded shell behind), so D3 must close the row from the
  *  agent's own `toolEndsTurn` record; a later resume reopens it on growth. */
 const INTERIM_NOTIFICATION_PATTERN = /waiting on its own background work/;
-/** Only the <summary> carries the interim wording (`Agent "<name>" is waiting
- *  on its own background work`). Testing the whole body also matched a
- *  finished agent whose <result> quoted the phrase, and kept it running. */
+/** The interim wording sits in harness-written places only: the <summary>
+ *  (`Agent "<name>" is waiting on its own background work`, CLI 2.1.299+), or
+ *  on 2.1.283 the start of the <result> ("This agent has not reported yet:
+ *  …") with a <note> that the result "may be interim". Testing the whole body
+ *  also matched a finished agent whose own result quoted the phrase, and kept
+ *  it running. */
 function isInterimNotification(body: string): boolean {
   const summary = body.match(/<summary>([\s\S]*?)<\/summary>/)?.[1] ?? '';
-  return INTERIM_NOTIFICATION_PATTERN.test(summary);
+  if (INTERIM_NOTIFICATION_PATTERN.test(summary)) { return true; }
+  const result = body.match(/<result>([\s\S]*?)<\/result>/)?.[1]?.trimStart() ?? '';
+  if (result.startsWith('This agent has not reported yet')) { return true; }
+  const note = body.match(/<note>([\s\S]*?)<\/note>/)?.[1] ?? '';
+  return /may be interim/.test(note);
 }
 
 /** The text a <task-notification> carrier holds: a plain string (enqueue
@@ -1483,8 +1490,11 @@ export class SessionManager {
       this.isAutoAcceptMode(),
       blockingToolCount,
       () => {
-        const a = this.registryStatus?.activity?.();
-        return a?.status === 'running' || a?.status === 'waiting';
+        // The registry must back the card's own status: a waiting card
+        // (often the permission timer on a slow tool) is held only by a
+        // registry wait, so a busy process can't keep a false prompt up.
+        const a = this.registryStatus?.activity?.()?.status;
+        return this.state.status === 'waiting' ? a === 'waiting' : a === 'running' || a === 'waiting';
       },
     );
 

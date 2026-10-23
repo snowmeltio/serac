@@ -100,6 +100,8 @@ describe('startHookIngress', () => {
     fs.unlinkSync(path.join(dir, '.serac', 'hook.lock'));
     const b = await startHookIngress(dir, new HookEventRouter(), { pid: 2, isAlive: () => false });
     expect(b.isLeader).toBe(true);
+    expect(a.ownsLock()).toBe(false);
+    expect(b.ownsLock()).toBe(true);
     a.releaseSync();
     expect(fs.readFileSync(path.join(dir, '.serac', 'hook.lock'), 'utf8')).toBe('2');
     expect(fs.existsSync(path.join(dir, '.serac', 'hook.sock'))).toBe(true);

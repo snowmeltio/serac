@@ -224,6 +224,20 @@ describe('flag off: the hard ceilings defer to registry busy/waiting', () => {
     expect(mgr.getStatus()).toBe('done');
     expect(transitions.at(-1)).toBe('running->done (hard_ceiling)');
   });
+
+  it('a busy process does not hold a waiting card past 10 min (timer false positive on a slow tool)', async () => {
+    const mgr = make(activityProbe(BUSY).p);
+    await feed(mgr, [user('go'), say('Fetching.'), toolUse('mcp__x__slow', 'tu-1')]);
+    for (let t = 0; t < 620; t += 10) { vi.advanceTimersByTime(10_000); mgr.demoteIfStale(30_000); }
+    expect(mgr.getStatus()).toBe('done');
+  });
+
+  it('a registry wait holds a waiting card past 10 min', async () => {
+    const mgr = make(activityProbe(PERMISSION).p);
+    await feed(mgr, [user('go'), say('Fetching.'), toolUse('mcp__x__slow', 'tu-1')]);
+    for (let t = 0; t < 620; t += 10) { vi.advanceTimersByTime(10_000); mgr.demoteIfStale(30_000); }
+    expect(mgr.getStatus()).toBe('waiting');
+  });
 });
 
 describe('hand-back and parity', () => {

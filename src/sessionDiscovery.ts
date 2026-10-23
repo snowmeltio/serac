@@ -1628,6 +1628,7 @@ export class SessionDiscovery {
    *  the registry and log what registryShadow reports. Never throws: shadow
    *  mode must not be able to break a poll. */
   private observeRegistryShadow(): void {
+    this.registryStatusFeed.prime();
     try {
       const statuses = new Map<string, SessionStatus>();
       for (const session of this.sessions.values()) {

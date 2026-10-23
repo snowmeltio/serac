@@ -119,6 +119,19 @@ describe('registry status feed', () => {
     expect(feed.probeFor('s1').activity?.()?.status).toBe('running');
   });
 
+  it('prime() checks busy and waiting processes ahead of the first ask', async () => {
+    const { reg } = fakeRegistry([
+      proc({ pid: 1, sessionId: 's1', status: 'busy' }),
+      proc({ pid: 2, sessionId: 's2', status: 'idle' }),
+    ]);
+    const asked: number[] = [];
+    const feed = createRegistryStatusFeed(reg, () => false, Date.now, async p => { asked.push(p.pid); return 'ok'; });
+    feed.prime();
+    await Promise.resolve();
+    expect(asked).toEqual([1]);
+    expect(feed.activityFor('s1')?.status).toBe('running'); // no pending miss on the first ask
+  });
+
   it('probeFor binds one session', async () => {
     const { reg } = fakeRegistry([proc({ status: 'waiting', waitingFor: 'input needed' })]);
     const probe = (await primed(createRegistryStatusFeed(reg, () => true, Date.now, ok))).probeFor('s1');
