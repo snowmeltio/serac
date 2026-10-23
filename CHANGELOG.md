@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.29.1 (unreleased) - Status fixes from two days of logs
+## v1.29.1 (2026-10-23) - Status fixes from two days of logs
 
 ### Fixed
 - **Long commands and open prompts no longer go done at 3 or 10 minutes.** A 10-minute command, a slow MCP call, or a permission prompt left unanswered writes nothing to the transcript, so the card went done at the 3-minute (running) or 10-minute (waiting) mark while Claude Code was still working or waiting on you (31 times on 22-23 Oct). The card now holds while Claude Code itself reports the session busy or waiting. An idle session still closes on time.
