@@ -16,6 +16,11 @@ import type { JsonlRecord, JsonlContentBlock } from './types.js';
  *  clobber the last real model tracked for a session or subagent. */
 export const SYNTHETIC_MODEL_ID = '<synthetic>';
 
+/** The harness's interrupt marker: a user record whose only content is
+ *  `[Request interrupted by user]` (Esc mid-turn) or `[Request interrupted by
+ *  user for tool use]` (a rejected permission prompt). Either ends the turn. */
+export const INTERRUPT_MARKER_PATTERN = /^\[Request interrupted by user(?: for tool use)?\]$/;
+
 // ── Record validation ──────────────────────────────────────────────
 
 /** Validate and normalise a raw parsed JSON value into a JsonlRecord.

@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.29.1 (unreleased) - Status fixes from two days of logs
+
+### Fixed
+- **Long commands and open prompts no longer go done at 3 or 10 minutes.** A 10-minute command, a slow MCP call, or a permission prompt left unanswered writes nothing to the transcript, so the card went done at the 3-minute (running) or 10-minute (waiting) mark while Claude Code was still working or waiting on you (31 times on 22-23 Oct). The card now holds while Claude Code itself reports the session busy or waiting. An idle session still closes on time.
+- **A finished background task no longer holds the card running for 15 minutes.** Some background-task notices are logged without waking the session. Serac treated them as a new prompt and showed running until a 15-minute backstop. The card now stays done.
+- **A failed workflow agent stays red after the run finishes.** An agent that failed but whose failure the script caught showed red while the run was live, then plain done once it finished. It now stays failed.
+- **A resumed workflow no longer shows ghost agents.** After a run was resumed, agents cut off by the resume kept showing as running beside their replacements, under the same label. They now drop out; an agent cut off with no replacement shows as not finished, and one that stopped on an API error shows failed after two minutes.
+- **A killed workflow no longer reads RUNNING.** Agents that were mid-flight or never launched when a run was killed showed as running ("57 running · 120 done"). They now show as not finished, and the run's own outcome sets the pill.
+- **Hooks keep working after a window reloads.** Closing or reloading the window that owned hook ingress for a workspace left its lock behind, so every other window on that workspace ran without hooks until the next restart. The lock is now released on close. Workspaces in deep folders (such as Google Drive), where the socket path is too long to bind, skip hook ingress quietly instead of logging an error.
+- **New windows start warm again.** With windows on two Serac versions open, each overwrote the other's dormant-session cache about twice a second, so most new windows replayed every transcript from scratch. Each version now keeps its own cache file.
+- **An agent whose report quotes Serac's "still working" wording is no longer stuck running.** The check for an interim notice now reads only the notice's summary.
+- **With Claude Code's own status on:** plan approval reads "Waiting for your response", and a card held running by background work no longer shows the last command as if it were still running.
+
+### Changed
+- **One slower window open after updating.** The dormant-session cache moves to a per-version file, so the first window to open replays transcripts in full.
+
 ## v1.29.0 (2026-10-22) - Claude Code's own status, experimental
 
 ### Added

@@ -3076,6 +3076,18 @@ describe('registry status (serac.experimental.registryStatus)', () => {
     discovery.stop();
   });
 
+  it('flag off: a registry scan starts the identity check for a busy process before any ceiling asks', async () => {
+    createJsonlFile(SID);
+    const verified: number[] = [];
+    const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '',
+      verifyRegistryProcess: async p => { verified.push(p.pid); return 'ok'; } });
+    await discovery.start(() => {});
+    writeStatus(SID, 'busy');
+    await (discovery as unknown as { refreshRegistryShadow: () => Promise<void> }).refreshRegistryShadow();
+    expect(verified).toContain(process.pid);
+    discovery.stop();
+  });
+
   it('a foreign session follows the registry too', async () => {
     _setConfigValues({ 'serac.experimental.registryStatus': true });
     const otherWs = path.join(tmpDir, 'other-ws');

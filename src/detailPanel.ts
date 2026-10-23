@@ -1074,7 +1074,7 @@ export function rollupSummary(statuses: string[], noun: string): string | undefi
   const bits = [statuses.length + ' ' + noun + (statuses.length === 1 ? '' : 's')];
   // A single uniform bucket adds nothing over the chip's own status dot.
   if (counts.size > 1 || (keys[0] !== 'done' && keys[0] !== 'completed')) {
-    for (const k of keys) { bits.push(counts.get(k) + ' ' + k); }
+    for (const k of keys) { bits.push(counts.get(k) + ' ' + (k === 'stale' ? 'not finished' : k)); }
   }
   return bits.join(' \u00b7 ');
 }

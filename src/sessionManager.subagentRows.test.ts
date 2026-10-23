@@ -255,6 +255,25 @@ describe('interim notifications', () => {
     await feed(mgr, [enqueue(notification())]);
     expect(row(mgr, BG_TOOL).running).toBe(false);
   });
+
+  it('the 2.1.283 interim shape (wording in the result, with a note) does not complete it', async () => {
+    // 5bf49cad (2026-09-29): summary says finished; the harness framed the result.
+    const mgr = makeManager();
+    await spawnBackground(mgr);
+    await feed(mgr, [enqueue(notification({
+      result: 'This agent has not reported yet: it is waiting on its own background work.',
+    }).replace('</task-notification>', '<note>the result below may be interim</note>\n</task-notification>'))]);
+    expect(row(mgr, BG_TOOL).running).toBe(true);
+  });
+
+  it('a finished agent whose result quotes the interim wording still completes', async () => {
+    const mgr = makeManager();
+    await spawnBackground(mgr);
+    await feed(mgr, [enqueue(notification({
+      result: 'Fixed the filter that treated "waiting on its own background work" as interim.',
+    }))]);
+    expect(row(mgr, BG_TOOL).running).toBe(false);
+  });
 });
 
 describe('D3: SubagentHandback ending on toolEndsTurn (CLI 2.1.285+)', () => {

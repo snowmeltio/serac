@@ -9,6 +9,9 @@ const mockHandle = {
   isLeader: true,
   socketPath: '/test/.serac/hook.sock',
   dispose: vi.fn().mockResolvedValue(undefined),
+  releaseSync: vi.fn(),
+  heldByOther: vi.fn(() => false),
+  skipped: undefined as 'socket-path-too-long' | undefined,
 };
 
 vi.mock('./hookIngress/index.js', () => ({
@@ -46,6 +49,7 @@ describe('wireHookIngress', () => {
     vi.clearAllMocks();
     _resetConfig();
     mockHandle.isLeader = true;
+    mockHandle.skipped = undefined;
   });
 
   it('returns the router and registers the header-bar toggle commands', () => {
@@ -85,7 +89,42 @@ describe('wireHookIngress', () => {
     await flush();
     for (const d of wiring.disposables) { d.dispose(); }
     expect(vi.mocked(removeForwarderPatch)).toHaveBeenCalledWith('/test/workspace');
-    expect(mockHandle.dispose).toHaveBeenCalled();
+    expect(mockHandle.releaseSync).toHaveBeenCalled();
+  });
+
+  it('releases the lock even when the log channel is already closed', async () => {
+    // 22-23 Oct: the Serac channel was disposed first, its log.info threw
+    // "Channel has been closed" inside the unpatch, and the lock was never
+    // released, so every later window stayed a follower with no hooks.
+    _setConfigValues({ 'serac.hooks.enabled': true });
+    const log = makeLog();
+    const wiring = wireHookIngress({ wsPath: '/test/workspace', forwarderPath: '/ext/bin/fwd.cjs', log });
+    await flush();
+    const closed = () => { throw new Error('Channel has been closed'); };
+    vi.mocked(log.info).mockImplementation(closed);
+    vi.mocked(log.error).mockImplementation(closed);
+    expect(() => { for (const d of wiring.disposables) { d.dispose(); } }).not.toThrow();
+    expect(vi.mocked(removeForwarderPatch)).toHaveBeenCalled();
+    expect(mockHandle.releaseSync).toHaveBeenCalled();
+  });
+
+  it('leaves the settings patch to a successor that took the lock over', async () => {
+    _setConfigValues({ 'serac.hooks.enabled': true });
+    const wiring = wire();
+    await flush();
+    mockHandle.heldByOther.mockReturnValueOnce(true);
+    for (const d of wiring.disposables) { d.dispose(); }
+    expect(vi.mocked(removeForwarderPatch)).not.toHaveBeenCalled();
+    expect(mockHandle.releaseSync).toHaveBeenCalled();
+  });
+
+  it('releases the lock when the unpatch itself throws', async () => {
+    _setConfigValues({ 'serac.hooks.enabled': true });
+    const wiring = wire();
+    await flush();
+    vi.mocked(removeForwarderPatch).mockImplementationOnce(() => { throw new Error('EACCES'); });
+    for (const d of wiring.disposables) { d.dispose(); }
+    expect(mockHandle.releaseSync).toHaveBeenCalled();
   });
 
   it('live-toggles the patch when serac.hooks.enabled changes', async () => {

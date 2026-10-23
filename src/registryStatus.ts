@@ -28,6 +28,10 @@ export interface RegistryStatusProbe {
   /** The registry's verdict for this session now, or null to let inference
    *  decide. */
   verdict(): RegistryStatusVerdict | null;
+  /** The same reading with the flag off too: what Claude Code says the
+   *  process is doing, for inference's own backstops. Identity-checked like
+   *  verdict(), so the first call for a process may be null while ps runs. */
+  activity?(): RegistryStatusVerdict | null;
 }
 
 /** The slice of ProcessRegistry the feed reads. */
@@ -59,6 +63,13 @@ const defaultVerify: VerifyProcess = async (p) => {
 
 export interface RegistryStatusFeed {
   verdictFor(sessionId: string): RegistryStatusVerdict | null;
+  /** verdictFor without the flag gate. */
+  activityFor(sessionId: string): RegistryStatusVerdict | null;
+  /** Start the identity check for every busy or waiting process in the
+   *  latest scan. Call after each scan: a check started only when the hard
+   *  ceiling asks is still pending at that moment, so the first long step of
+   *  every process went done anyway. */
+  prime(): void;
   enabled(): boolean;
   /** A probe bound to one session, for SessionManagerOptions. */
   probeFor(sessionId: string): RegistryStatusProbe;
@@ -102,7 +113,11 @@ export function createRegistryStatusFeed(
   }
 
   function verdictFor(sessionId: string): RegistryStatusVerdict | null {
-    if (!enabled() || !registry.isActive()) { held.delete(sessionId); return null; }
+    return enabled() ? activityFor(sessionId) : null;
+  }
+
+  function activityFor(sessionId: string): RegistryStatusVerdict | null {
+    if (!registry.isActive()) { held.delete(sessionId); return null; }
     pruneToLatestScan();
     const clean = registry.isScanClean();
     const procs = registry.getProcessesForSession(sessionId).filter(trusted);
@@ -132,9 +147,23 @@ export function createRegistryStatusFeed(
     return null;
   }
 
+  function prime(): void {
+    if (!registry.isActive()) { return; }
+    pruneToLatestScan();
+    for (const p of registry.getLiveProcesses()) {
+      if (p.status === 'busy' || p.status === 'waiting') { trusted(p); }
+    }
+  }
+
   return {
     verdictFor,
+    activityFor,
+    prime,
     enabled,
-    probeFor: (sessionId: string) => ({ enabled, verdict: () => verdictFor(sessionId) }),
+    probeFor: (sessionId: string) => ({
+      enabled,
+      verdict: () => verdictFor(sessionId),
+      activity: () => activityFor(sessionId),
+    }),
   };
 }

@@ -68,8 +68,10 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   if (!workspacePath) { return exports; }
   const wsPath: string = workspacePath;
 
+  // Disposed LAST (pushed just before the final return): subscriptions are
+  // disposed in order, and every teardown that logs (hook unpatch, discovery
+  // stop) threw "Channel has been closed" while it sat first.
   const log = vscode.window.createOutputChannel('Serac', { log: true });
-  context.subscriptions.push(log);
 
   // Hook ingress: router + leader socket + settings patch + toggle commands.
   // Mechanically extracted to hookWiring.ts (audit refactor-wiring-1); the
@@ -2018,6 +2020,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   // up by this timer's own throttle window either.
   setTimeout(() => sendUpdate(), 500);
 
+  context.subscriptions.push(log);
   return exports;
 }
 

@@ -453,12 +453,12 @@ declare function acquireVsCodeApi(): VsCodeApi;
    *  the header strip's live counts and totals are session-view-wide, not
    *  scoped to the selected agent (that's the agent strip's job). */
   function headerAgg(): {
-    running: number; waiting: number; done: number; failed: number;
+    running: number; waiting: number; done: number; failed: number; unfinished: number;
     tokens: number; durationMs: number | null; model: string; modelExtra: number;
     modelTitle: string; pillStatus: string;
   } {
     const agents = allAgents();
-    let running = 0, waiting = 0, done = 0, failed = 0, tokens = 0;
+    let running = 0, waiting = 0, done = 0, failed = 0, unfinished = 0, tokens = 0;
     let maxDur: number | null = null;
     const models = new Set<string>();
     let mostRecentModel = '';
@@ -466,7 +466,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
       if (a.status === 'running') { running++; }
       else if (a.status === 'waiting') { waiting++; }
       else if (a.status === 'failed') { failed++; }
-      else { done++; } // done/stale roll up to "done" in the glance count
+      else if (a.status === 'stale') { unfinished++; } // cut off or never launched (killed run)
+      else { done++; }
       tokens += a.tokens;
       if (a.durationMs !== null) { maxDur = maxDur === null ? a.durationMs : Math.max(maxDur, a.durationMs); }
       // allAgents() walks groups/agents in the same oldest-run-first order
@@ -489,7 +490,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       ? model.runStatus : null;
     const pillStatus = running > 0 ? 'running' : waiting > 0 ? 'waiting'
       : (runBad ?? (failed > 0 ? 'failed' : 'done'));
-    return { running, waiting, done, failed, tokens, durationMs: maxDur, model: modelLabel, modelExtra, modelTitle, pillStatus };
+    return { running, waiting, done, failed, unfinished, tokens, durationMs: maxDur, model: modelLabel, modelExtra, modelTitle, pillStatus };
   }
 
   /** A failed/incomplete pill carries the run's error as its tooltip — the
@@ -532,6 +533,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (agg.running > 0) { countBits.push(agg.running + ' running'); }
     if (agg.waiting > 0) { countBits.push(agg.waiting + ' waiting'); }
     if (agg.failed > 0) { countBits.push(agg.failed + ' failed'); }
+    if (agg.unfinished > 0) { countBits.push(agg.unfinished + ' not finished'); }
     if (agg.done > 0) { countBits.push(agg.done + ' done'); }
     // An empty roster on a failed/incomplete run reads "run failed", not the
     // absurd "0 done" the zero-drop fallback used to produce.
@@ -803,7 +805,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     // "Sonnet 5" on every pill in a same-model run was pure clutter — the
     // agent detail bar under the strip is now the one place it shows visibly.
     const modelLabel = a.model ? formatModelLabel(a.model) : '';
-    const nameWithStatus = a.label + ' · ' + a.status + (modelLabel ? ' · ' + modelLabel : '');
+    const nameWithStatus = a.label + ' · ' + (a.status === 'stale' ? 'not finished' : a.status) + (modelLabel ? ' · ' + modelLabel : '');
     return '<span class="wf-agent-pill' + (active ? ' active' : '') + '"'
       + ' data-group="' + escapeHtml(groupKey) + '" data-agent="' + escapeHtml(a.agentId) + '"'
       + ' role="button" tabindex="' + (active ? '0' : '-1') + '"'

@@ -167,6 +167,35 @@ describe('computeDemotion', () => {
       'running', lastActivity, 0, false, now, THRESHOLD, turnStart, false,
     )).toBe('done');
   });
+
+  // The ceilings defer to the registry saying busy/waiting (d3e643cc, 22 Oct:
+  // a 10-min Bash marked done at 3 min while the registry said busy).
+  describe('registry-active deferral', () => {
+    const at = (status: 'running' | 'waiting', age: number, active: boolean) => {
+      let asked = 0;
+      const r = computeDemotion(status, NOW - age, 1, false, NOW, THRESHOLD, 0, true, false, 1,
+        () => { asked++; return active; });
+      return { r, asked };
+    };
+
+    it('holds a running tool past 3 min and a wait past 10 min while active', () => {
+      expect(at('running', 181_000, true).r).toBe('waiting'); // past threshold: the usual demotion, not done
+      expect(at('waiting', 601_000, true).r).toBeNull();
+    });
+
+    it('an idle process still closes at the ceiling (phantom tool, 443baae4)', () => {
+      expect(at('running', 181_000, false).r).toBe('done');
+      expect(at('waiting', 601_000, false).r).toBe('done');
+    });
+
+    it('is only asked when the ceiling would fire', () => {
+      expect(at('running', 60_000, true).asked).toBe(0);
+    });
+
+    it('a stale entry cannot hold a card past the 24 h backstop', () => {
+      expect(at('waiting', 86_400_001, true).r).toBe('done');
+    });
+  });
 });
 
 describe('isAutoAcceptPermissionMode', () => {

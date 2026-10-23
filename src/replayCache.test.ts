@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   parseReplayCache, sameStamp, isHydratable, pruneEntries, pruneMissingFiles, mergeEntries, serialiseReplayCache,
-  makeReplayCacheStore, REPLAY_CACHE_VERSION, REPLAY_CACHE_QUIET_MS,
+  makeReplayCacheStore, replayCacheFileName, REPLAY_CACHE_VERSION, REPLAY_CACHE_QUIET_MS,
   type ReplayCacheEntry, type ReplayCacheStore,
 } from './replayCache.js';
 import type { Logger } from './sessionDiscovery.js';
@@ -574,6 +574,38 @@ describe('FileReplayCacheStore', () => {
     expect(renameSpy).not.toHaveBeenCalled();
   });
 
+  it('another build rewriting the file every poll costs one re-read and one write per interval, not one per poll', async () => {
+    // 2026-10-22: a v2 window and a v3 window shared one file. Each poll the
+    // other's write looked like an empty cache, so each rewrote it, twice a
+    // second, and every new window loaded nothing.
+    store.put(pathA, entry());
+    const t0 = Date.now();
+    await store.flush(t0);
+    const foreign = JSON.stringify({ version: REPLAY_CACHE_VERSION - 1, entries: {} });
+    const readSpy = vi.spyOn(fs.promises, 'readFile');
+    const renameSpy = vi.spyOn(fs.promises, 'rename');
+    for (let i = 1; i <= 5; i++) {
+      fs.writeFileSync(cachePath, foreign + ' '.repeat(i)); // a new stamp each time
+      await store.flush(t0 + i * 1000);
+    }
+    expect(readSpy.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(renameSpy.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
+  it('a skipped reconciliation retries once the interval has passed', async () => {
+    store.put(pathA, entry());
+    const t0 = Date.now();
+    await store.flush(t0);
+    fs.writeFileSync(cachePath, serialiseReplayCache(new Map()));
+    await store.flush(t0 + 1000); // reconciles: restores pathA
+    expect(readDiskEntries()[pathA]).toBeDefined();
+    fs.writeFileSync(cachePath, serialiseReplayCache(new Map()) + ' ');
+    await store.flush(t0 + 2000); // inside the interval: skipped
+    expect(readDiskEntries()[pathA]).toBeUndefined();
+    await store.flush(t0 + 32_000);
+    expect(readDiskEntries()[pathA]).toBeDefined();
+  });
+
   it('flush() only existence-checks entries newly seen from disk, not ones it already knew', async () => {
     // pathMine is already known (our own put()) — must NOT be existence
     // checked even though it's a real file we could stat.
@@ -612,5 +644,13 @@ describe('FileReplayCacheStore', () => {
     await store.load();
     expect(store.get('/unknown.jsonl')).toBeUndefined();
     expect(store.get(pathA)).toBeDefined();
+  });
+});
+
+describe('replayCacheFileName', () => {
+  it('names one file per cache version, never the pre-v3 shared name', () => {
+    expect(replayCacheFileName()).toBe(`serac-replay-cache.v${REPLAY_CACHE_VERSION}.json`);
+    expect(replayCacheFileName(2)).toBe('serac-replay-cache.v2.json');
+    expect(replayCacheFileName()).not.toBe('serac-replay-cache.json');
   });
 });

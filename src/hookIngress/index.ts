@@ -22,10 +22,17 @@
  *     crashing the ingress path.
  *
  * Dispose order: socket server closes + unlinks socket, then leader lock is
- * released. If reversed, a follower window's election could see the lock
- * released and try to bind the socket while we're still closing it.
+ * released. The hazard is a late unlink: an async close that finishes after a
+ * successor has bound would delete the successor's socket. releaseSync()
+ * (what extension teardown uses) unlinks the socket only while the lock is
+ * still ours, and removes the lock only if it still names this process.
+ *
+ * A workspace whose socket path exceeds the platform's sun_path limit (a deep
+ * Google Drive folder: 144 bytes) cannot bind (`listen EINVAL`), so ingress is
+ * skipped there before anything is written into the folder.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { tryAcquireLeader, type LeaderHandle } from './leaderElection.js';
 import { startSocketServer, type SocketServerHandle } from './socketServer.js';
@@ -38,6 +45,14 @@ export interface IngressHandle {
   readonly socketPath: string | undefined;
   /** Stop ingress, close socket, release lock. Idempotent. */
   dispose(): Promise<void>;
+  /** The same, synchronously, for extension teardown (see module doc). */
+  releaseSync(): void;
+  /** Whether the workspace lock names another window: a successor took it
+   *  over and owns the settings patch too, so teardown leaves the patch. A
+   *  missing or unreadable lock is not another window's (false). */
+  heldByOther(): boolean;
+  /** Set when ingress never started because the socket path is too long. */
+  readonly skipped?: 'socket-path-too-long';
 }
 
 export interface HookIngressOptions {
@@ -48,6 +63,8 @@ export interface HookIngressOptions {
   pid?: number;
   /** Override the liveness probe used for stale-lock recovery (tests). */
   isAlive?: (pid: number) => boolean;
+  /** Override the platform for the socket-path limit (tests). */
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -64,12 +81,18 @@ export async function startHookIngress(
 ): Promise<IngressHandle> {
   const onError = opts.onError ?? (() => {});
 
+  const socketPath = path.join(workspaceDir, '.serac', 'hook.sock');
+  if (Buffer.byteLength(socketPath) > maxSocketPathBytes(opts.platform ?? process.platform)) {
+    // An earlier build left an empty .serac/ in the synced folder; tidy it.
+    try { fs.rmdirSync(path.dirname(socketPath)); } catch { /* absent or not empty */ }
+    return { ...followerHandle(inertLock()), skipped: 'socket-path-too-long' };
+  }
+
   const lock = tryAcquireLeader(workspaceDir, { pid: opts.pid, isAlive: opts.isAlive });
   if (!lock.isLeader) {
     return followerHandle(lock);
   }
 
-  const socketPath = path.join(workspaceDir, '.serac', 'hook.sock');
   let socket: SocketServerHandle;
   try {
     socket = await startSocketServer(socketPath, router, { onError });
@@ -77,7 +100,7 @@ export async function startHookIngress(
     // Surrender the lock so a future activation can retry.
     lock.dispose();
     onError(err as Error, 'socket-bind');
-    return followerHandle({ isLeader: false, dispose() {} });
+    return followerHandle(inertLock());
   }
 
   let disposed = false;
@@ -90,7 +113,23 @@ export async function startHookIngress(
       await socket.dispose();
       lock.dispose();
     },
+    releaseSync() {
+      if (disposed) { return; }
+      disposed = true;
+      socket.closeSync(lock.ownsLock());
+      lock.dispose();
+    },
+    heldByOther: () => lock.heldByOther(),
   };
+}
+
+/** sun_path is 104 bytes on macOS/BSD and 108 on Linux, including the NUL. */
+export function maxSocketPathBytes(platform: NodeJS.Platform): number {
+  return platform === 'linux' ? 107 : 103;
+}
+
+function inertLock(): LeaderHandle {
+  return { isLeader: false, ownsLock: () => false, heldByOther: () => false, dispose() {} };
 }
 
 function followerHandle(lock: LeaderHandle): IngressHandle {
@@ -98,5 +137,7 @@ function followerHandle(lock: LeaderHandle): IngressHandle {
     isLeader: false,
     socketPath: undefined,
     async dispose() { lock.dispose(); },
+    releaseSync() { lock.dispose(); },
+    heldByOther: () => false,
   };
 }

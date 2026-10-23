@@ -677,7 +677,7 @@ describe('SessionManager: no running↔waiting flap on an exempt pending tool', 
     expect(transitions.filter(t => t.includes('waiting'))).toEqual([]);
     // Held running below the 3-min ceiling (an exempt Edit can still be a
     // real prompt in default mode), then done at the ceiling as before.
-    expect(transitions).toEqual(['running->done (session_done)']);
+    expect(transitions).toEqual(['running->done (hard_ceiling)']);
   });
 });
 

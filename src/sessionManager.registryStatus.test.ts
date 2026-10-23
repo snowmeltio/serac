@@ -75,6 +75,20 @@ describe('registry busy holds the card running', () => {
     expect(mgr.getStatus()).toBe('running');
   });
 
+  it('a quiet stretch after the last tool clears its subtitle while busy holds the card', async () => {
+    // Registry busy for background work after the turn: the card stays running
+    // but must not keep claiming the finished Bash call.
+    // 15f6d96b (2026-10-22): "Running command" for 90 min while the lead sat idle.
+    const mgr = make(probe(BUSY).p);
+    await feed(mgr, [user('go'), say('Starting the background run.'), toolUse('Bash', 'tu-1', { command: 'npm test' })]);
+    await feed(mgr, [toolResult('tu-1', 'Command running in background with ID: b1')]);
+    expect(mgr.getSnapshot().activity).toBe('Running command');
+    vi.advanceTimersByTime(60_000);
+    mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('running');
+    expect(mgr.getSnapshot().activity).toBe('');
+  });
+
   it('without a verdict the same stretch ends the turn, as before', async () => {
     const mgr = make(probe(null).p);
     await feed(mgr, [user('go'), say('Thinking out loud first.')]);
@@ -115,6 +129,16 @@ describe('registry waiting', () => {
     const mgr = make(reg.p);
     await feed(mgr, [user('go'), toolUse('AskUserQuestion', 'tu-q')]);
     reg.set(INPUT);
+    mgr.syncRegistryStatus();
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().activity).toBe('Waiting for your response');
+  });
+
+  it('a plan approval (registry says permission prompt) reads as waiting for your response', async () => {
+    const reg = probe(BUSY);
+    const mgr = make(reg.p);
+    await feed(mgr, [user('go'), toolUse('ExitPlanMode', 'tu-plan', { plan: 'x' })]);
+    reg.set(PERMISSION);
     mgr.syncRegistryStatus();
     expect(mgr.getStatus()).toBe('waiting');
     expect(mgr.getSnapshot().activity).toBe('Waiting for your response');
@@ -178,6 +202,41 @@ describe('registry idle ends the turn', () => {
     reg.set(IDLE);
     mgr.syncRegistryStatus();
     expect(mgr.getStatus()).toBe('done');
+  });
+});
+
+describe('flag off: the hard ceilings defer to registry busy/waiting', () => {
+  function activityProbe(initial: RegistryStatusVerdict | null) {
+    let a = initial;
+    const p: RegistryStatusProbe = { enabled: () => false, verdict: () => null, activity: () => a };
+    return { p, set: (next: RegistryStatusVerdict | null) => { a = next; } };
+  }
+
+  it('a 10-min Bash in auto mode stays running past 3 min while busy (d3e643cc)', async () => {
+    const transitions: string[] = [];
+    const reg = activityProbe(BUSY);
+    const mgr = make(reg.p, transitions);
+    await feed(mgr, [user('go', { permissionMode: 'auto' }), say('Running the census.'), toolUse('Bash', 'tu-1', { command: 'census' })]);
+    for (let t = 0; t < 200; t += 10) { vi.advanceTimersByTime(10_000); mgr.demoteIfStale(30_000); }
+    expect(mgr.getStatus()).toBe('running');
+    reg.set(IDLE); // the process went idle with the tool still open: a phantom
+    mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('done');
+    expect(transitions.at(-1)).toBe('running->done (hard_ceiling)');
+  });
+
+  it('a busy process does not hold a waiting card past 10 min (timer false positive on a slow tool)', async () => {
+    const mgr = make(activityProbe(BUSY).p);
+    await feed(mgr, [user('go'), say('Fetching.'), toolUse('mcp__x__slow', 'tu-1')]);
+    for (let t = 0; t < 620; t += 10) { vi.advanceTimersByTime(10_000); mgr.demoteIfStale(30_000); }
+    expect(mgr.getStatus()).toBe('done');
+  });
+
+  it('a registry wait holds a waiting card past 10 min', async () => {
+    const mgr = make(activityProbe(PERMISSION).p);
+    await feed(mgr, [user('go'), say('Fetching.'), toolUse('mcp__x__slow', 'tu-1')]);
+    for (let t = 0; t < 620; t += 10) { vi.advanceTimersByTime(10_000); mgr.demoteIfStale(30_000); }
+    expect(mgr.getStatus()).toBe('waiting');
   });
 });
 
