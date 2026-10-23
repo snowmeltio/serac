@@ -126,6 +126,8 @@ export function parseWorkflowSidecar(content: string, sessionId: string): Workfl
     });
   }
 
+  const runStatus = mapRunStatus(raw.status);
+
   // workflowProgress[] interleaves workflow_phase and workflow_agent entries.
   const agents: WorkflowAgentSnapshot[] = [];
   const counts: Record<string, number> = {};
@@ -153,7 +155,13 @@ export function parseWorkflowSidecar(content: string, sessionId: string): Workfl
       // "Transcript not available yet.") but the row and counts survive.
       const agentId = str(entry.agentId) ?? ('missing-' + agents.length);
 
-      const status = mapAgentState(entry.state);
+      // An in-flight state in a sidecar for a run that is no longer running
+      // (killed: 'progress' for agents cut off, 'start' for ones never
+      // launched) is not live. As 'running' it outranked the run's own
+      // outcome: a RUNNING pill and "57 running" on a killed run.
+      const mapped = mapAgentState(entry.state);
+      const status: WorkflowAgentStatus = runStatus !== 'running' && (mapped === 'running' || mapped === 'waiting')
+        ? 'stale' : mapped;
       counts[status] = (counts[status] ?? 0) + 1;
       const phaseIndex = num(entry.phaseIndex);
       agents.push({
@@ -195,7 +203,7 @@ export function parseWorkflowSidecar(content: string, sessionId: string): Workfl
     taskId: str(raw.taskId),
     name: str(raw.workflowName) ?? runId,
     summary: str(raw.summary) ?? '',
-    status: mapRunStatus(raw.status),
+    status: runStatus,
     source: 'sidecar',
     startTime: num(raw.startTime) ?? 0,
     durationMs: num(raw.durationMs),
@@ -210,4 +218,35 @@ export function parseWorkflowSidecar(content: string, sessionId: string): Workfl
     error,
     dismissed: false,
   };
+}
+
+/** Agents the run journal records as failed, with no later result. The
+ *  sidecar writes `state: 'done'` for an agent whose call the script caught
+ *  (e.g. "subagent completed without calling StructuredOutput"), so without
+ *  this a failure shown red while the run was live turns plain done the
+ *  moment the run completes (cms-spike-2, 2026-10-23). */
+export function journalFailedAgents(journal: string): Set<string> {
+  const last = new Map<string, 'failed' | 'result'>();
+  for (const line of journal.split('\n')) {
+    if (!line) { continue; }
+    let r: unknown;
+    try { r = JSON.parse(line); } catch { continue; }
+    if (!isObj(r)) { continue; }
+    const agentId = str(r.agentId);
+    if (!agentId) { continue; }
+    if (r.type === 'failed' || r.type === 'result') { last.set(agentId, r.type); }
+  }
+  const failed = new Set<string>();
+  for (const [agentId, t] of last) { if (t === 'failed') { failed.add(agentId); } }
+  return failed;
+}
+
+/** The sidecar snapshot with journal-failed agents marked failed. Only a
+ *  sidecar 'done' is overridden; counts are recomputed. */
+export function applyJournalFailures(snap: WorkflowSnapshot, failed: ReadonlySet<string>): WorkflowSnapshot {
+  if (failed.size === 0 || !snap.agents.some(a => a.status === 'done' && failed.has(a.agentId))) { return snap; }
+  const agents = snap.agents.map(a => (a.status === 'done' && failed.has(a.agentId) ? { ...a, status: 'failed' as const } : a));
+  const counts: Record<string, number> = {};
+  for (const a of agents) { counts[a.status] = (counts[a.status] ?? 0) + 1; }
+  return { ...snap, agents, counts };
 }

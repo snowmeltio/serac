@@ -255,6 +255,15 @@ describe('interim notifications', () => {
     await feed(mgr, [enqueue(notification())]);
     expect(row(mgr, BG_TOOL).running).toBe(false);
   });
+
+  it('a finished agent whose result quotes the interim wording still completes', async () => {
+    const mgr = makeManager();
+    await spawnBackground(mgr);
+    await feed(mgr, [enqueue(notification({
+      result: 'Fixed the filter that treated "waiting on its own background work" as interim.',
+    }))]);
+    expect(row(mgr, BG_TOOL).running).toBe(false);
+  });
 });
 
 describe('D3: SubagentHandback ending on toolEndsTurn (CLI 2.1.285+)', () => {

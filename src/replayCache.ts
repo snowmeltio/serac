@@ -40,6 +40,16 @@ import { isAtOrUnder } from './gitWorktreeUtil.js';
  *  absent rather than risk hydrating from a stale shape. */
 export const REPLAY_CACHE_VERSION = 3;
 
+/** The cache file's name for one REPLAY_CACHE_VERSION. Each version gets its
+ *  own file: windows on different Serac builds can stay open for days side by
+ *  side, and on one shared file each saw the other's write as an empty cache
+ *  (version mismatch) and rewrote it, twice a second, so every new window
+ *  started cold (2026-10-22). The pre-v3 builds' `serac-replay-cache.json` is
+ *  left to them. */
+export function replayCacheFileName(version: number = REPLAY_CACHE_VERSION): string {
+  return `serac-replay-cache.v${version}.json`;
+}
+
 /** A session must have been quiet (no lastActivity) for at least this long
  *  before it is eligible to be cached (exportCachedState). Reuses
  *  writerActivity.ts's EXTERNAL_WRITER_QUIET_MS rather than an
@@ -449,6 +459,10 @@ class FileReplayCacheStore implements ReplayCacheStore {
   private entries: Map<string, ReplayCacheEntry> = new Map();
   private dirty = false;
   private lastFlushAt = 0;
+  /** When the not-dirty reconciliation last re-read the file. A writer that
+   *  can't read our file (another build, another version) moves its stamp on
+   *  every poll; without this each 500 ms poll would re-parse it. */
+  private lastReconcileAt = 0;
   /** The cache FILE's own {size, mtimeMs} as of the last time this store
    *  actually read or wrote it — distinct from each per-session
    *  ReplayCacheEntry's stamp. Lets saveInner() skip the re-read+merge+parse
@@ -520,7 +534,7 @@ class FileReplayCacheStore implements ReplayCacheStore {
       const minInterval = this.opts.minFlushIntervalMs ?? REPLAY_CACHE_MIN_FLUSH_INTERVAL_MS;
       if (this.lastFlushAt > 0 && now - this.lastFlushAt < minInterval) { return; }
     }
-    this.saveQueue = this.saveQueue.then(() => this.flushInner(now));
+    this.saveQueue = this.saveQueue.then(() => this.flushInner(now, opts.force === true));
     await this.saveQueue;
   }
 
@@ -532,7 +546,7 @@ class FileReplayCacheStore implements ReplayCacheStore {
    *  in the common case (file unchanged since we last touched it, nothing to
    *  do); a re-read only when the file's own stamp moved; a write only when
    *  our memory actually holds something disk doesn't yet have. */
-  private async flushInner(now: number): Promise<void> {
+  private async flushInner(now: number, force: boolean): Promise<void> {
     if (this.dirty) {
       this.lastFlushAt = now;
       await this.saveInner(now);
@@ -541,6 +555,11 @@ class FileReplayCacheStore implements ReplayCacheStore {
     const currentStat = await statOrNull(this.cachePath);
     if (!currentStat) { return; }
     if (this.diskStamp && sameStamp(currentStat, this.diskStamp)) { return; }
+    // The stamp moved. Re-read at most once per interval: the stamp is not
+    // adopted on a skip, so the next poll past the interval retries.
+    const minInterval = this.opts.minFlushIntervalMs ?? REPLAY_CACHE_MIN_FLUSH_INTERVAL_MS;
+    if (!force && this.lastReconcileAt > 0 && now - this.lastReconcileAt < minInterval) { return; }
+    this.lastReconcileAt = now;
     const disk = await this.readDisk();
     if (!disk) { return; }
     let staleOrMissing = false;

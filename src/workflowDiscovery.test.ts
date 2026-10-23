@@ -264,6 +264,68 @@ describe('WorkflowDiscovery', () => {
     d.dispose();
   });
 
+  describe('live tier: cut-off and errored agents', () => {
+    const INTERRUPT = { type: 'user', timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } };
+    const apiError = (ageMs: number) => ({ type: 'assistant', isApiErrorMessage: true,
+      timestamp: new Date(Date.now() - ageMs).toISOString(),
+      message: { model: '<synthetic>', content: [{ type: 'text', text: 'API Error: 529' }] } });
+    const WORKING = { type: 'assistant', timestamp: new Date().toISOString(),
+      message: { model: 'claude-opus-5-5', content: [{ type: 'tool_use', name: 'Bash' }] } };
+
+    function writeRun(runId: string, journal: object[], transcripts: Record<string, object[]>): void {
+      const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
+      fs.mkdirSync(runDir, { recursive: true });
+      fs.writeFileSync(path.join(runDir, 'journal.jsonl'), journal.map(r => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
+      for (const [id, recs] of Object.entries(transcripts)) {
+        fs.writeFileSync(path.join(runDir, `agent-${id}.jsonl`), recs.map(r => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
+      }
+    }
+
+    async function statuses(): Promise<Record<string, string>> {
+      const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+      await d.scan();
+      const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+      d.dispose();
+      return Object.fromEntries(snap.agents.map(a => [a.agentId, a.status]));
+    }
+
+    it('a resume drops the cut-off agent its replacement superseded', async () => {
+      // wf_002216e8-42f (2026-10-22): resumeFromRunId after a script edit.
+      // The cut-off agent ends on the interrupt marker; its replacement has a
+      // new key but the same label and phase. It ran "running" for 88 min.
+      writeRun('wf_resume-001', [
+        { type: 'started', key: 'v2:old', agentId: 'cutoff01', label: 'census5:batch-9/36', phase: 'Census' },
+        { type: 'started', key: 'v2:new', agentId: 'replace1', label: 'census5:batch-9/36', phase: 'Census' },
+        { type: 'result', key: 'v2:new', agentId: 'replace1' },
+      ], { cutoff01: [WORKING, INTERRUPT], replace1: [WORKING] });
+      expect(await statuses()).toEqual({ replace1: 'done' });
+    });
+
+    it('keeps a same-label agent that is still working (concurrent fan-out)', async () => {
+      writeRun('wf_fanout-001', [
+        { type: 'started', key: 'v2:a', agentId: 'verify01', label: 'verify:x', phase: 'Verify' },
+        { type: 'started', key: 'v2:b', agentId: 'verify02', label: 'verify:x', phase: 'Verify' },
+      ], { verify01: [WORKING], verify02: [WORKING] });
+      expect(await statuses()).toEqual({ verify01: 'running', verify02: 'running' });
+    });
+
+    it('an interrupted agent with no replacement reads stale, not running', async () => {
+      writeRun('wf_killed-live', [
+        { type: 'started', key: 'v2:a', agentId: 'cut00001', label: 'one', phase: 'P' },
+      ], { cut00001: [WORKING, INTERRUPT] });
+      expect(await statuses()).toEqual({ cut00001: 'stale' });
+    });
+
+    it('an API-error tail is running for two minutes, then failed', async () => {
+      writeRun('wf_apierr-001', [
+        { type: 'started', key: 'v2:a', agentId: 'fresh001', label: 'a', phase: 'P' },
+        { type: 'started', key: 'v2:b', agentId: 'old00001', label: 'b', phase: 'P' },
+      ], { fresh001: [WORKING, apiError(5_000)], old00001: [WORKING, apiError(300_000)] });
+      expect(await statuses()).toEqual({ fresh001: 'running', old00001: 'failed' });
+    });
+  });
+
   describe('abandoned live run → incomplete (liveness probe)', () => {
     function writeLiveRun(runId: string): void {
       const runDir = path.join(sessionDir(), 'subagents', 'workflows', runId);
@@ -766,6 +828,34 @@ describe('WorkflowDiscovery', () => {
       expect(d.hasActiveRuns()).toBe(false);
       d.dispose();
     });
+  });
+
+  it('keeps an agent the journal recorded as failed red after the sidecar lands', async () => {
+    // cms-spike-2 (2026-10-23): spike:sveltia ended without StructuredOutput,
+    // the script caught it, and the sidecar wrote state 'done' for it.
+    writeSidecar('wf_fail-001', validSidecar('wf_fail-001', {
+      workflowProgress: [
+        { type: 'workflow_agent', index: 1, agentId: 'bad', phaseIndex: 1, state: 'done', label: 'spike:sveltia' },
+        { type: 'workflow_agent', index: 2, agentId: 'good', phaseIndex: 1, state: 'done', label: 'spike:emdash' },
+        { type: 'workflow_agent', index: 3, agentId: 'retried', phaseIndex: 1, state: 'done', label: 'rescore' },
+      ],
+    }));
+    const runDir = path.join(sessionDir(), 'subagents', 'workflows', 'wf_fail-001');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'journal.jsonl'), [
+      { type: 'started', agentId: 'bad' }, { type: 'started', agentId: 'good' }, { type: 'started', agentId: 'retried' },
+      { type: 'failed', agentId: 'bad' }, { type: 'result', agentId: 'good' },
+      { type: 'failed', agentId: 'retried' }, { type: 'result', agentId: 'retried' },
+    ].map(r => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
+    const d = new WorkflowDiscovery(projectsDir, WS_KEY, log);
+    await d.scan();
+    const snap = d.getWorkflowSnapshots(emptyMeta())[0];
+    expect(snap.source).toBe('sidecar');
+    expect(Object.fromEntries(snap.agents.map(a => [a.label, a.status]))).toEqual({
+      'spike:sveltia': 'failed', 'spike:emdash': 'done', rescore: 'done',
+    });
+    expect(snap.counts).toEqual({ failed: 1, done: 2 });
+    d.dispose();
   });
 
   it('prefers the sidecar over the live dir once a run completes', async () => {

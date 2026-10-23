@@ -32,6 +32,20 @@ export const NEEDS_INPUT_CEILING_MS = 600_000;
  *  truly hung process can't read `running` forever. */
 export const EXTENDED_THINKING_CEILING_MS = 900_000;
 
+/** How long the hard ceilings defer to Claude Code's own registry saying the
+ *  process is busy or waiting (24 h). A 10-min Bash or an unanswered prompt
+ *  writes nothing to the JSONL, so the 3/10-min ceilings marked live work
+ *  done (31 times on 22-23 Oct). Liveness alone is not enough: every open
+ *  tab has an entry, idle ones included, and a phantom tool (a dropped
+ *  result) on an idle process must still close at 3 min. This bound only
+ *  covers a stale entry under a reused pid. */
+export const REGISTRY_ACTIVE_BACKSTOP_MS = 86_400_000;
+
+/** The hard ceiling computeDemotion applies to `status`. */
+export function demotionCeilingMs(status: SessionStatus): number {
+  return status === 'waiting' ? NEEDS_INPUT_CEILING_MS : HARD_CEILING_MS;
+}
+
 // ── Tool profiles ────────────────────────────────────────────────────
 
 /** Tool metadata: consolidates exempt/slow/userInput/orchestration into a single lookup. */
@@ -166,6 +180,9 @@ export function computeDemotion(
    *  until the ceiling. Defaults to activeToolCount for callers that don't
    *  distinguish. */
   blockingToolCount = activeToolCount,
+  /** Asked only when the hard ceiling would fire: whether the registry says
+   *  the process is busy or waiting (see REGISTRY_ACTIVE_BACKSTOP_MS). */
+  isProcessActive: () => boolean = () => false,
 ): SessionStatus | null {
   if (status !== 'running' && status !== 'waiting') return null;
 
@@ -186,8 +203,8 @@ export function computeDemotion(
 
   // Hard ceiling: 3 min for running (with output / an active tool, or an
   // extended-thinking turn past its 15-min backstop), 10 min for waiting.
-  const ceiling = status === 'waiting' ? NEEDS_INPUT_CEILING_MS : HARD_CEILING_MS;
-  if (age > ceiling) return 'done';
+  if (age > demotionCeilingMs(status)
+      && !(age <= REGISTRY_ACTIVE_BACKSTOP_MS && isProcessActive())) return 'done';
 
   // Below ceiling: only demote 'running'
   if (status !== 'running') return null;

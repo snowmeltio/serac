@@ -122,7 +122,7 @@ describe('parseWorkflowSidecar', () => {
     const obj = {
       runId: 'wf_livestates-001',
       workflowName: 'live-states',
-      status: 'killed',
+      status: 'running',
       phases: [{ title: 'Only', detail: '' }],
       workflowProgress: [
         { type: 'workflow_phase', index: 1, title: 'Only' },
@@ -137,6 +137,26 @@ describe('parseWorkflowSidecar', () => {
     expect(snap!.agents.find(a => a.agentId === 'astart')!.status).toBe('running');
     expect(snap!.agents.find(a => a.agentId === 'aqueue')!.status).toBe('waiting');
     expect(snap!.agents.find(a => a.agentId === 'adone')!.status).toBe('done');
+  });
+
+  it('a killed run\'s in-flight agents read stale, not running', () => {
+    // wf_0adb22de-959 (2026-10-22): status killed, 120 done, 8 'progress'
+    // (cut off) and 49 'start' (never launched, no agentId). As running they
+    // gave the panel a RUNNING pill and "57 running · 120 done".
+    const obj = {
+      runId: 'wf_killed-002',
+      workflowName: 'killed',
+      status: 'killed',
+      workflowProgress: [
+        { type: 'workflow_agent', index: 1, agentId: 'adone', state: 'done' },
+        { type: 'workflow_agent', index: 2, agentId: 'aprog', state: 'progress' },
+        { type: 'workflow_agent', index: 3, state: 'start' },
+        { type: 'workflow_agent', index: 4, agentId: 'aqueue', state: 'queued' },
+      ],
+    };
+    const snap = parseWorkflowSidecar(JSON.stringify(obj), SID)!;
+    expect(snap.agents.map(a => a.status)).toEqual(['done', 'stale', 'stale', 'stale']);
+    expect(snap.counts).toEqual({ done: 1, stale: 3 });
   });
 
   it('maps agent "waiting" through; unknown/absent states degrade to terminal "done", never "running"', () => {
@@ -214,7 +234,8 @@ describe('parseWorkflowSidecar', () => {
     const snap = parseWorkflowSidecar(JSON.stringify(obj), SID);
     expect(snap!.phases).toEqual([{ index: 1, title: 'Recovered', detail: '' }]);
     expect(snap!.agents[0].phaseTitle).toBe('Recovered');
-    expect(snap!.counts.running).toBe(1);
+    // No status reads as completed, so a leftover in-flight agent is stale.
+    expect(snap!.counts.stale).toBe(1);
   });
 });
 

@@ -4,7 +4,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { HookEventRouter } from '../hookEventRouter.js';
-import { startHookIngress } from './index.js';
+import { startHookIngress, maxSocketPathBytes } from './index.js';
 
 function mktemp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'serac-ingress-'));
@@ -82,5 +82,41 @@ describe('startHookIngress', () => {
     const h = await startHookIngress(dir, new HookEventRouter(), { pid: 1, isAlive: () => false });
     expect(h.isLeader).toBe(true);
     await h.dispose();
+  });
+
+  it('releaseSync frees the lock and socket at once, so the next window leads', async () => {
+    const a = await startHookIngress(dir, new HookEventRouter(), { pid: 1, isAlive: () => true });
+    a.releaseSync();
+    expect(fs.existsSync(path.join(dir, '.serac', 'hook.lock'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, '.serac', 'hook.sock'))).toBe(false);
+    const b = await startHookIngress(dir, new HookEventRouter(), { pid: 2, isAlive: () => true });
+    expect(b.isLeader).toBe(true);
+    b.releaseSync();
+  });
+
+  it('releaseSync leaves a successor\'s lock and socket alone', async () => {
+    // A's lock looked stale to B (A's process gone), B took over and bound.
+    const a = await startHookIngress(dir, new HookEventRouter(), { pid: 1, isAlive: () => true });
+    fs.unlinkSync(path.join(dir, '.serac', 'hook.lock'));
+    const b = await startHookIngress(dir, new HookEventRouter(), { pid: 2, isAlive: () => false });
+    expect(b.isLeader).toBe(true);
+    a.releaseSync();
+    expect(fs.readFileSync(path.join(dir, '.serac', 'hook.lock'), 'utf8')).toBe('2');
+    expect(fs.existsSync(path.join(dir, '.serac', 'hook.sock'))).toBe(true);
+    b.releaseSync();
+  });
+
+  it('skips a workspace whose socket path is too long, writing nothing there', async () => {
+    const deep = path.join(dir, 'x'.repeat(120));
+    fs.mkdirSync(path.join(deep, '.serac'), { recursive: true }); // left by an earlier build
+    const h = await startHookIngress(deep, new HookEventRouter(), { pid: 1, isAlive: () => true, platform: 'darwin' });
+    expect(h.isLeader).toBe(false);
+    expect(h.skipped).toBe('socket-path-too-long');
+    expect(fs.existsSync(path.join(deep, '.serac'))).toBe(false);
+  });
+
+  it('sun_path limits', () => {
+    expect(maxSocketPathBytes('darwin')).toBe(103);
+    expect(maxSocketPathBytes('linux')).toBe(107);
   });
 });

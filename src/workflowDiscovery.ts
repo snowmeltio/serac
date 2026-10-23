@@ -1,8 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import type { SessionMeta, WorkflowAgentSnapshot, WorkflowRunStatus, WorkflowSnapshot } from './types.js';
+import type { SessionMeta, WorkflowAgentSnapshot, WorkflowAgentStatus, WorkflowRunStatus, WorkflowSnapshot } from './types.js';
 import type { Logger } from './sessionDiscovery.js';
-import { parseWorkflowSidecar, parseSidecarCompletedAt } from './workflowSidecar.js';
+import { parseWorkflowSidecar, parseSidecarCompletedAt, journalFailedAgents, applyJournalFailures } from './workflowSidecar.js';
+import { INTERRUPT_MARKER_PATTERN, SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
 import { extractWorkflowMeta, extractAgentCalls, expandIndirectCalls, matchAgentCall, recoverInterpolatedLabel, type WorkflowAgentCall } from './workflowScript.js';
 import { readSettings, ageGateMsFor } from './settings.js';
 import { makeRescanGate } from './sessionPolling.js';
@@ -133,6 +134,65 @@ function correlateAgent(
  *  Replaces a JSON.stringify deep-compare of old + new snapshots per cycle
  *  (audit perf-io-1). agentCount/counts are derived from agents and need no
  *  own term; phaseTitle is derived from phaseIndex + phases. */
+/** A workflow agent transcript's terminal last record, if it has one. */
+type AgentTail = 'interrupt' | 'apiError' | null;
+
+/** Per-transcript live stats, cached by file size. */
+interface AgentStats {
+  size: number;
+  scannedAt: number;
+  tokens: number;
+  toolCalls: number;
+  model: string;
+  tail: AgentTail;
+  /** The tail record's timestamp (ms), when it has one. */
+  tailAt: number | null;
+}
+
+/** Classify a transcript's last parseable record: the interrupt marker, or a
+ *  synthetic API-error assistant turn. Anything else (including nothing) is
+ *  null. Lines are walked from the end; a torn final line is skipped. */
+export function transcriptTail(raw: string): { tail: AgentTail; tailAt: number | null } {
+  const lines = raw.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.trim()) { continue; }
+    let rec: { type?: unknown; timestamp?: unknown; isApiErrorMessage?: unknown; message?: { model?: unknown; content?: unknown } };
+    try { rec = JSON.parse(line); } catch { continue; }
+    const at = typeof rec.timestamp === 'string' ? Date.parse(rec.timestamp) : NaN;
+    const tailAt = Number.isFinite(at) ? at : null;
+    if (rec.type === 'user') {
+      const c = rec.message?.content;
+      const text = typeof c === 'string' ? c
+        : Array.isArray(c) && c.length === 1 && c[0]?.type === 'text' && typeof c[0].text === 'string' ? c[0].text as string
+        : null;
+      return { tail: text !== null && INTERRUPT_MARKER_PATTERN.test(text.trim()) ? 'interrupt' : null, tailAt };
+    }
+    if (rec.type === 'assistant') {
+      const apiError = rec.isApiErrorMessage === true || rec.message?.model === SYNTHETIC_MODEL_ID;
+      return { tail: apiError ? 'apiError' : null, tailAt };
+    }
+    return { tail: null, tailAt: null };
+  }
+  return { tail: null, tailAt: null };
+}
+
+/** transcriptTail over the last `maxBytes` of a file too big to read whole. */
+async function readTranscriptTail(filePath: string, size: number, maxBytes: number): Promise<{ tail: AgentTail; tailAt: number | null }> {
+  let fh: fs.promises.FileHandle | undefined;
+  try {
+    fh = await fs.promises.open(filePath, 'r');
+    const len = Math.min(size, maxBytes);
+    const buf = Buffer.alloc(len);
+    const { bytesRead } = await fh.read(buf, 0, len, size - len);
+    return transcriptTail(buf.toString('utf-8', 0, bytesRead));
+  } catch {
+    return { tail: null, tailAt: null };
+  } finally {
+    await fh?.close();
+  }
+}
+
 function liveSnapshotSig(snap: WorkflowSnapshot): string {
   const parts: string[] = [
     snap.status,
@@ -388,11 +448,12 @@ export class WorkflowDiscovery {
         this.log.warn(`[workflows] Failed to read sidecar ${filePath}:`, err);
         continue;
       }
-      const snap = parseWorkflowSidecar(content, sessionId);
-      if (!snap) {
+      const parsed = parseWorkflowSidecar(content, sessionId);
+      if (!parsed) {
         this.log.warn(`[workflows] Skipping malformed sidecar: ${file}`);
         continue;
       }
+      const snap = applyJournalFailures(parsed, await this.readJournalFailures(sessionId, runId));
       this.snapshots.set(runId, snap);
       this.mtimes.set(runId, stat.mtimeMs);
       this.sidecarEvidence.set(runId, {
@@ -407,6 +468,19 @@ export class WorkflowDiscovery {
       // journal is one continuous, cumulative file across resume cycles.
       this.liveRuns.delete(runId);
       this.changedSincePoll = true;
+    }
+  }
+
+  /** Agents the run's journal records as failed (see journalFailedAgents).
+   *  Empty when the journal is missing, unreadable or over the cap. */
+  private async readJournalFailures(sessionId: string, runId: string): Promise<Set<string>> {
+    const journalPath = path.join(this.wsDir, sessionId, 'subagents', 'workflows', runId, 'journal.jsonl');
+    try {
+      const stat = await fs.promises.stat(journalPath);
+      if (stat.size > WorkflowDiscovery.JOURNAL_MAX_BYTES) { return new Set(); }
+      return journalFailedAgents(await fs.promises.readFile(journalPath, 'utf-8'));
+    } catch {
+      return new Set();
     }
   }
 
@@ -735,8 +809,39 @@ export class WorkflowDiscovery {
       }
     }
 
+    // A resumed run (resumeFromRunId) writes nothing to mark the boundary: an
+    // agent cut off by the resume and its replacement are two `started`
+    // records with the same label and phase (and the same key unless the
+    // script changed). The latest started ordinal per key and per label+phase
+    // lets a dead earlier one drop out instead of running forever.
+    const ordinal = new Map<string, number>();
+    const lastByKey = new Map<string, number>();
+    const lastByLabel = new Map<string, number>();
+    let n = 0;
     for (const [agentId, key] of state.started) {
-      const status = state.resolved.has(agentId) ? 'done' : state.failed.has(agentId) ? 'failed' : 'running';
+      ordinal.set(agentId, ++n);
+      if (key) { lastByKey.set(key, n); }
+      const jm = state.journalMeta.get(agentId);
+      if (jm?.label) { lastByLabel.set(jm.label + '\0' + (jm.phase ?? ''), n); }
+    }
+
+    for (const [agentId, key] of state.started) {
+      let status: WorkflowAgentStatus = state.resolved.has(agentId) ? 'done' : state.failed.has(agentId) ? 'failed' : 'running';
+      const stats = await this.liveAgentStats(runDir, agentId, status);
+      if (status === 'running' && stats.tail) {
+        // The transcript ends on a terminal record: an interrupt marker
+        // (always the last record of a workflow agent, 189/189) or a
+        // synthetic API-error turn (limit, 529, stalled stream; 11 of 488
+        // were followed by more activity within ~5 s).
+        const own = ordinal.get(agentId) ?? 0;
+        const jm = state.journalMeta.get(agentId);
+        const keyLater = !!key && (lastByKey.get(key) ?? 0) > own;
+        const labelLater = !!jm?.label && (lastByLabel.get(jm.label + '\0' + (jm.phase ?? '')) ?? 0) > own;
+        if (keyLater || (labelLater && stats.tail === 'interrupt')) { continue; } // superseded by its replacement
+        if (labelLater) { status = 'failed'; } // a later same-label call may be a retry of a different call
+        else if (stats.tail === 'interrupt') { status = 'stale'; }
+        else if (stats.tailAt !== null && Date.now() - stats.tailAt > WorkflowDiscovery.API_ERROR_SETTLE_MS) { status = 'failed'; }
+      }
       counts[status] = (counts[status] ?? 0) + 1;
 
       // Correlate this agent back to its agent() call via its record-0 prompt,
@@ -773,7 +878,6 @@ export class WorkflowDiscovery {
         phaseTitle = jm.phase;
       }
       if (jm?.label) { label = jm.label; }
-      const stats = await this.liveAgentStats(runDir, agentId, status);
       totalTokens += stats.tokens;
       totalToolCalls += stats.toolCalls;
 
@@ -863,7 +967,12 @@ export class WorkflowDiscovery {
    *  hardcoded zeros ("0 tokens · 0 tools" on a run mid-flight). Cost-bounded:
    *  a full re-read happens only when the file grew AND the last scan is older
    *  than the throttle, capped at 8 MB — beyond that the last stats stick. */
-  private agentStatsCache = new Map<string, { size: number; scannedAt: number; tokens: number; toolCalls: number; model: string }>();
+  private agentStatsCache = new Map<string, AgentStats>();
+  /** An agent whose transcript ends on a synthetic API-error turn for longer
+   *  than this, with no later call, has failed (the sidecar will say 'error'). */
+  private static readonly API_ERROR_SETTLE_MS = 120_000;
+  /** Bytes read from the end of an oversized transcript to find its tail. */
+  private static readonly TAIL_READ_BYTES = 64 * 1024;
   private static readonly STATS_RESCAN_MS = 5_000;
 
   private static readonly STATS_MAX_BYTES = 8 * 1024 * 1024;
@@ -883,7 +992,7 @@ export class WorkflowDiscovery {
   private static readonly SCRIPT_MAX_BYTES = 1024 * 1024;
   private static readonly JOURNAL_MAX_BYTES = 4 * 1024 * 1024;
 
-  private async liveAgentStats(runDir: string, agentId: string, status: string): Promise<{ tokens: number; toolCalls: number; model: string }> {
+  private async liveAgentStats(runDir: string, agentId: string, status: string): Promise<AgentStats> {
     const filePath = path.join(runDir, `agent-${agentId}.jsonl`);
     const cached = this.agentStatsCache.get(filePath);
     try {
@@ -892,7 +1001,12 @@ export class WorkflowDiscovery {
         || (status === 'running' && Date.now() - cached.scannedAt < WorkflowDiscovery.STATS_RESCAN_MS))) {
         return cached;
       }
-      if (stat.size > WorkflowDiscovery.STATS_MAX_BYTES) { return cached ?? { tokens: 0, toolCalls: 0, model: '' }; }
+      if (stat.size > WorkflowDiscovery.STATS_MAX_BYTES) {
+        const base = cached ?? { size: stat.size, scannedAt: Date.now(), tokens: 0, toolCalls: 0, model: '', tail: null, tailAt: null };
+        const entry = { ...base, size: stat.size, scannedAt: Date.now(), ...await readTranscriptTail(filePath, stat.size, WorkflowDiscovery.TAIL_READ_BYTES) };
+        this.agentStatsCache.set(filePath, entry);
+        return entry;
+      }
       const raw = await fs.promises.readFile(filePath, 'utf-8');
       let tokens = 0;
       let toolCalls = 0;
@@ -918,11 +1032,11 @@ export class WorkflowDiscovery {
           }
         } catch { /* malformed line — skip */ }
       }
-      const entry = { size: stat.size, scannedAt: Date.now(), tokens, toolCalls, model };
+      const entry = { size: stat.size, scannedAt: Date.now(), tokens, toolCalls, model, ...transcriptTail(raw) };
       this.agentStatsCache.set(filePath, entry);
       return entry;
     } catch {
-      return cached ?? { tokens: 0, toolCalls: 0, model: '' };
+      return cached ?? { size: 0, scannedAt: 0, tokens: 0, toolCalls: 0, model: '', tail: null, tailAt: null };
     }
   }
 

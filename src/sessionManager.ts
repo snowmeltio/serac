@@ -126,8 +126,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { JsonlTailer } from './jsonlTailer.js';
-import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType, getContentBlocks } from './jsonlValidator.js';
-import { computeDemotion, getToolProfile, isAutoAcceptPermissionMode, MAX_ACTIVE_TOOLS } from './toolProfiles.js';
+import { parseTimestamp, isMeaningfulRecord, getModelId, getInputTokens, getProgressType, getContentBlocks, INTERRUPT_MARKER_PATTERN } from './jsonlValidator.js';
+import { computeDemotion, demotionCeilingMs, getToolProfile, isAutoAcceptPermissionMode, MAX_ACTIVE_TOOLS } from './toolProfiles.js';
 import { sessionDirFromJsonl, subagentJsonlPath } from './paths.js';
 import { formatModelLabel } from './detailShared.js';
 import type { WriterAggregate } from './writerOwnership.js';
@@ -247,10 +247,7 @@ function isGenuinePrompt(record: JsonlRecord): boolean {
   return trimmed !== '' && !trimmed.startsWith('<local-command') && !trimmed.startsWith('<command-');
 }
 
-/** The harness's interrupt marker: a user record whose only content is
- *  `[Request interrupted by user]` (Esc mid-turn) or `[Request interrupted by
- *  user for tool use]` (a rejected permission prompt). Either ends the turn. */
-const INTERRUPT_MARKER_PATTERN = /^\[Request interrupted by user(?: for tool use)?\]$/;
+/** See INTERRUPT_MARKER_PATTERN (jsonlValidator.ts). */
 function isInterruptRecord(content: JsonlContentBlock[]): boolean {
   return content.length === 1 && content[0].type === 'text'
     && INTERRUPT_MARKER_PATTERN.test((content[0].text ?? '').trim());
@@ -271,6 +268,13 @@ function isCaughtUp(tailer: JsonlTailer | null): boolean {
  *  leaves a backgrounded shell behind), so D3 must close the row from the
  *  agent's own `toolEndsTurn` record; a later resume reopens it on growth. */
 const INTERIM_NOTIFICATION_PATTERN = /waiting on its own background work/;
+/** Only the <summary> carries the interim wording (`Agent "<name>" is waiting
+ *  on its own background work`). Testing the whole body also matched a
+ *  finished agent whose <result> quoted the phrase, and kept it running. */
+function isInterimNotification(body: string): boolean {
+  const summary = body.match(/<summary>([\s\S]*?)<\/summary>/)?.[1] ?? '';
+  return INTERIM_NOTIFICATION_PATTERN.test(summary);
+}
 
 /** The text a <task-notification> carrier holds: a plain string (enqueue
  *  `content`, queued_command `prompt`) or an array of content blocks. */
@@ -457,6 +461,9 @@ export class SessionManager {
    *  →done). Cleared by a genuine new-turn reopener (user / dequeue / compact).
    *  See ARCHITECTURE.md "The `Stop` turn-close guard". */
   private turnEndedByStop = false;
+  /** The subtitle the last tool_use wrote, so a vetoed turn end can tell a
+   *  finished tool's text from anything written since. */
+  private lastToolActivity: string | null = null;
   /** Enrichment from PostToolUse/PreToolUse. Display-only; never moves status. */
   private toolOutcomeTracker: ToolOutcomeTracker;
   /** SessionEnd (enrichment) + PreCompact (compacting grace window). */
@@ -1231,7 +1238,11 @@ export class SessionManager {
     const before = this.state.status;
     const beforeActivity = this.state.activity;
     if (v.status === 'waiting') {
-      const input = v.waitingFor === 'input needed';
+      // Plan approval reaches the registry as a "permission prompt", but the
+      // user is being asked for an answer, not a tool grant: label it from the
+      // open tool when that tool takes user input (ExitPlanMode).
+      const input = v.waitingFor === 'input needed'
+        || [...this.state.activeTools.values()].some(name => getToolProfile(name).userInput);
       this.setStatus('waiting', input ? 'registry_waiting_input' : 'registry_waiting');
       const label = input ? 'Waiting for your response' : 'Waiting for permission';
       if (this.state.activity !== label) { this.appendActivity(label); }
@@ -1404,7 +1415,19 @@ export class SessionManager {
     this.backgroundShellTracker.prune(now, BACKGROUND_SHELL_CEILING_MS);
     // The registry owns status while it gives a verdict: no stale-waiting
     // reconciliation, no demotion (syncRegistryStatus applies it instead).
-    if (this.registryVerdict()) { return false; }
+    if (this.registryVerdict()) {
+      // Busy with nothing open and nothing written for a stale stretch is
+      // usually background work after the turn ended. The last tool's
+      // subtitle would read as still running ("Running command" for 90 min
+      // on 15f6d96b, 22 Oct), so drop it; the next record writes a fresh one.
+      if (this.state.status === 'running' && this.state.activeTools.size === 0
+          && this.state.activity !== '' && this.state.activity === this.lastToolActivity
+          && now - this.state.lastActivity.getTime() > thresholdMs) {
+        this.state.activity = '';
+        return true;
+      }
+      return false;
+    }
 
     // Registry-confirmed process death: a process that has exited cannot be
     // running, nor waiting on a permission/input prompt. Resolve to done at
@@ -1459,6 +1482,10 @@ export class SessionManager {
       this.seenOutputInTurn,
       this.isAutoAcceptMode(),
       blockingToolCount,
+      () => {
+        const a = this.registryStatus?.activity?.();
+        return a?.status === 'running' || a?.status === 'waiting';
+      },
     );
 
     if (result === null) {
@@ -1476,7 +1503,8 @@ export class SessionManager {
     }
 
     if (result === 'done') {
-      this.markSessionDone();
+      const age = now - this.state.lastActivity.getTime();
+      this.markSessionDone(age > demotionCeilingMs(this.state.status) ? 'hard_ceiling' : 'session_done');
       return true;
     }
 
@@ -1972,6 +2000,19 @@ export class SessionManager {
     // the time setRunning() and the [F2] all-subagents-done check run below.
     this.processTaskNotification(record);
 
+    // A transcript-only notification (queueTranscriptOnly) is logged without
+    // re-invoking the lead: in a 2026-10-23 census of 129 it always came
+    // straight after a dequeue and never got a model reply. It completes its
+    // agent (above) but opens no turn, and closes the one its dequeue opened;
+    // treated as a prompt, it held the card running for the 15-min ceiling.
+    if (record.queueTranscriptOnly === true) {
+      if (this.state.status === 'running' && this.state.activeTools.size === 0 && !this.state.compacting) {
+        if (this.state.activity === 'Processing') { this.state.activity = ''; }
+        this.markSessionDone('transcript_only');
+      }
+      return true;
+    }
+
     // Count main-thread user turns
     this.state.userTurnCount++;
 
@@ -2195,7 +2236,8 @@ export class SessionManager {
         }
 
         // Update activity description
-        this.appendActivity(this.describeToolUse(block));
+        this.lastToolActivity = this.describeToolUse(block);
+        this.appendActivity(this.lastToolActivity);
       }
 
       if (block.type === 'text' && block.text) {
@@ -2533,7 +2575,7 @@ export class SessionManager {
       for (const match of text.matchAll(TASK_NOTIFICATION_PATTERN_ALL)) {
         const body = match[1];
         const status = body.match(/<status>([^<]+)<\/status>/)?.[1]?.trim();
-        if (!status || INTERIM_NOTIFICATION_PATTERN.test(body)) { continue; }
+        if (!status || isInterimNotification(body)) { continue; }
         const taskIds = new Set(Array.from(body.matchAll(/<task-id>([^<]+)<\/task-id>/g), m => m[1].trim()));
         const toolUseIds = new Set(Array.from(body.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g), m => m[1].trim()));
         const result = body.match(/<result>([\s\S]*?)<\/result>/)?.[1]?.trim();

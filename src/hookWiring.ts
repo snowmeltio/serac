@@ -135,21 +135,26 @@ export function wireHookIngress(opts: {
     }),
   );
 
+  // A closed channel throws ("Channel has been closed"). Teardown must never
+  // throw on a log line: on 22-23 Oct it skipped the lock release every time.
+  const safeLog = (level: 'info' | 'error', msg: string) => {
+    try { log[level](msg); } catch { /* channel closed during teardown */ }
+  };
   const tryPatch = () => {
     if (!ingressHandle?.isLeader || !hooksEnabled()) { return; }
     try {
       const result = applyForwarderPatch(wsPath, forwarderPath);
-      if (result.changed) { log.info(`hook settings patched: ${result.settingsPath}`); }
+      if (result.changed) { safeLog('info', `hook settings patched: ${result.settingsPath}`); }
     } catch (err) {
-      log.error(`hook settings patch failed: ${err instanceof Error ? err.message : String(err)}`);
+      safeLog('error', `hook settings patch failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
   const tryUnpatch = () => {
     try {
       const result = removeForwarderPatch(wsPath);
-      if (result.changed) { log.info(`hook settings unpatched: ${result.settingsPath}`); }
+      if (result.changed) { safeLog('info', `hook settings unpatched: ${result.settingsPath}`); }
     } catch (err) {
-      log.error(`hook settings unpatch failed: ${err instanceof Error ? err.message : String(err)}`);
+      safeLog('error', `hook settings unpatch failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
@@ -162,6 +167,8 @@ export function wireHookIngress(opts: {
       hooksDebugLog.info(`leader bound — socket=${handle.socketPath}`);
       tryPatch();
       if (hooksEnabled()) { startLivenessWatchdog(); }
+    } else if (handle.skipped === 'socket-path-too-long') {
+      log.info('hook ingress: off for this workspace (path too long for a Unix socket)');
     } else {
       log.debug('hook ingress: follower (another window owns this workspace)');
     }
@@ -185,8 +192,14 @@ export function wireHookIngress(opts: {
       // Order matters: unpatch settings while the socket is still bound, so a
       // hook event in flight isn't routed to a vanished socket. Then close
       // the socket. The leader-only patch path means followers no-op here.
-      if (ingressHandle?.isLeader) { tryUnpatch(); }
-      void ingressHandle?.dispose();
+      // Synchronous, and the release runs even if the unpatch fails: the
+      // exthost is killed about 2 s after teardown starts, and a lock left
+      // behind kept every later window a follower with no hooks.
+      try {
+        if (ingressHandle?.isLeader) { tryUnpatch(); }
+      } finally {
+        ingressHandle?.releaseSync();
+      }
     },
   });
 

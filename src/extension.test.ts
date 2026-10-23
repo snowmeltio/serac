@@ -2315,8 +2315,8 @@ describe('extension', () => {
       startCb(); // goes straight through
       startCb(); // schedules a deferred trailing send
 
-      // The last subscription is the dispose wrapper (see 'dispose' below).
-      const lastSub = context.subscriptions[context.subscriptions.length - 1];
+      // The dispose wrapper sits just before the log channel (see 'dispose' below).
+      const lastSub = context.subscriptions[context.subscriptions.length - 2]; // the log channel is last
       lastSub.dispose();
 
       // Without the cancelled-on-dispose fix this would still fire.
@@ -2410,7 +2410,7 @@ describe('extension', () => {
       mockPanelProvider.updateSessions.mockClear();
 
       startCb(); // t=0: immediate send
-      const lastSub = context.subscriptions[context.subscriptions.length - 1];
+      const lastSub = context.subscriptions[context.subscriptions.length - 2]; // the log channel is last
       lastSub.dispose();
 
       // A late async onChange after deactivation — e.g. a startup stage's
@@ -2614,12 +2614,21 @@ describe('extension', () => {
     it('stops discovery and usage provider', () => {
       activate(context as any);
 
-      // The last subscription should be the dispose wrapper
-      const lastSub = context.subscriptions[context.subscriptions.length - 1];
+      // The dispose wrapper sits just before the log channel
+      const lastSub = context.subscriptions[context.subscriptions.length - 2]; // the log channel is last
       lastSub.dispose();
 
       expect(mockDiscovery.stop).toHaveBeenCalled();
       expect(mockUsageProvider.stop).toHaveBeenCalled();
+    });
+
+    it('disposes the log channel last, after every teardown that logs', () => {
+      activate(context as any);
+      const create = vi.mocked(vscode.window.createOutputChannel);
+      const i = create.mock.calls.findIndex(c => c[0] === 'Serac');
+      const channel = create.mock.results[i]?.value;
+      expect(channel).toBeDefined();
+      expect(context.subscriptions[context.subscriptions.length - 1]).toBe(channel);
     });
   });
 

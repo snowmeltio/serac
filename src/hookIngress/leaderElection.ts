@@ -26,7 +26,11 @@ import * as path from 'node:path';
 export interface LeaderHandle {
   /** True if this caller acquired the lock. False if another window owns it. */
   readonly isLeader: boolean;
-  /** Release the lock. Idempotent. Followers' dispose is a no-op. */
+  /** Whether the lock file still names this process. False for followers,
+   *  after dispose, or once another window has taken the lock over. */
+  ownsLock(): boolean;
+  /** Release the lock if it is still ours. Idempotent. Followers' dispose is
+   *  a no-op. */
   dispose(): void;
 }
 
@@ -71,12 +75,19 @@ export function tryAcquireLeader(
       const fd = fs.openSync(lockPath, 'wx');
       try { fs.writeSync(fd, String(pid)); } finally { fs.closeSync(fd); }
       let disposed = false;
+      const ownsLock = (): boolean => {
+        if (disposed) { return false; }
+        try { return Number.parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10) === pid; } catch { return false; }
+      };
       return {
         isLeader: true,
+        ownsLock,
         dispose() {
           if (disposed) { return; }
+          // Never unlink a lock a successor already holds.
+          const ours = ownsLock();
           disposed = true;
-          try { fs.unlinkSync(lockPath); } catch { /* already gone */ }
+          if (ours) { try { fs.unlinkSync(lockPath); } catch { /* already gone */ } }
         },
       };
     } catch (err) {
@@ -100,5 +111,5 @@ function isLockStale(lockPath: string, isAlive: (pid: number) => boolean): boole
 }
 
 function inertHandle(): LeaderHandle {
-  return { isLeader: false, dispose() { /* no-op */ } };
+  return { isLeader: false, ownsLock: () => false, dispose() { /* no-op */ } };
 }

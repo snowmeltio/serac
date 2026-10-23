@@ -178,6 +178,38 @@ describe('background-agent completion via <task-notification>', () => {
     expect(mgr.getStatus()).toBe('running');
   });
 
+  it('a transcript-only notification completes the agent without reopening the turn', async () => {
+    // c03dcd20 / a13abcf3 (2026-10-22/23): end_turn, then dequeue, then the
+    // queueTranscriptOnly record. No model reply ever follows; the card held
+    // running for the 15-min extended-thinking ceiling.
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await feedRecords(mgr, [{ type: 'assistant', timestamp: new Date().toISOString(),
+      message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Waiting on the agent.' }] } } as JsonlRecord]);
+    vi.advanceTimersByTime(6_000);
+    mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('done');
+    await feedRecords(mgr, [
+      { type: 'queue-operation', operation: 'dequeue', timestamp: new Date().toISOString() },
+      { ...taskNotificationRecord({ taskId: AGENT_ID, status: 'stopped' }), queueTranscriptOnly: true },
+    ]);
+    expect(mgr.getSnapshot().subagents[0].running).toBe(false);
+    expect(mgr.getStatus()).toBe('done');
+    expect(mgr.getSnapshot().activity).not.toBe('Processing');
+    vi.advanceTimersByTime(60_000);
+    mgr.demoteIfStale(30_000);
+    expect(mgr.getStatus()).toBe('done');
+  });
+
+  it('a transcript-only notification mid-turn leaves an open tool call running', async () => {
+    const mgr = makeManager();
+    await spawnBackgroundAgent(mgr);
+    await feedRecords(mgr, [{ type: 'assistant', timestamp: new Date().toISOString(),
+      message: { content: [{ type: 'tool_use', name: 'Bash', id: 'tu-bash', input: { command: 'sleep 60' } }] } }]);
+    await feedRecords(mgr, [{ ...taskNotificationRecord({ taskId: AGENT_ID }), queueTranscriptOnly: true }]);
+    expect(mgr.getStatus()).toBe('running');
+  });
+
   it('falls back to tool-use-id matching when task-id is absent', async () => {
     const mgr = makeManager();
     await spawnBackgroundAgent(mgr);

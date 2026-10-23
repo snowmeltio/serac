@@ -21,7 +21,7 @@ import { readDefaultModel } from './claudeSettings.js';
 import { isValidSessionId } from './validation.js';
 import { SYNTHETIC_MODEL_ID } from './jsonlValidator.js';
 import { makeSessionMetaStore, type SessionMetaStore } from './sessionMetaStore.js';
-import { makeReplayCacheStore, NULL_REPLAY_CACHE, type ReplayCacheStore } from './replayCache.js';
+import { makeReplayCacheStore, NULL_REPLAY_CACHE, replayCacheFileName, type ReplayCacheStore } from './replayCache.js';
 import type { SessionSnapshot, SessionStatus, WorkspaceGroup, TeamSnapshot, WorkflowSnapshot, DiscoveryPhase } from './types.js';
 import type { HookEventRouter } from './hookEventRouter.js';
 
@@ -242,7 +242,7 @@ export class SessionDiscovery {
     // settings check — see the setting's own doc comment on why this takes
     // effect on the next window reload, not live.
     const replayCachePath = opts?.replayCachePath
-      ?? path.join(path.dirname(this.projectsDir), 'serac-replay-cache.json');
+      ?? path.join(path.dirname(this.projectsDir), replayCacheFileName());
     this.replayCache = readSettings().discovery.replayCache
       ? makeReplayCacheStore(replayCachePath, this.log, { keyRoot: this.projectsDir })
       : NULL_REPLAY_CACHE;

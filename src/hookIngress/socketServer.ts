@@ -40,6 +40,11 @@ export interface SocketServerHandle {
   readonly socketPath: string;
   /** Close the server and unlink the socket file. Idempotent. */
   dispose(): Promise<void>;
+  /** Teardown that finishes before the extension host is killed. When
+   *  `unlinkPath` (the path is still ours): unlink the socket file now and
+   *  stop listening without waiting for open connections. Otherwise leave
+   *  the path alone (see the body). Idempotent; a later dispose() no-ops. */
+  closeSync(unlinkPath: boolean): void;
 }
 
 export interface SocketServerOptions {
@@ -91,6 +96,19 @@ export async function startSocketServer(
         server.close(() => resolve());
       });
       await unlinkIfExists(socketPath);
+    },
+    closeSync(unlinkPath: boolean) {
+      if (disposed) { return; }
+      disposed = true;
+      if (unlinkPath) {
+        try { fs.unlinkSync(socketPath); } catch { /* already gone */ }
+        server.close();
+        return;
+      }
+      // Closing a Unix-socket server unlinks its path (libuv), which by now is
+      // a successor's live socket. Our own file was replaced, so nothing can
+      // reach this server; just let it stop holding the process open.
+      server.unref();
     },
   };
 }
