@@ -29,6 +29,9 @@ export interface LeaderHandle {
   /** Whether the lock file still names this process. False for followers,
    *  after dispose, or once another window has taken the lock over. */
   ownsLock(): boolean;
+  /** Whether the lock file names a different pid (a successor took over).
+   *  False when it is ours, missing, unreadable, or after dispose. */
+  heldByOther(): boolean;
   /** Release the lock if it is still ours. Idempotent. Followers' dispose is
    *  a no-op. */
   dispose(): void;
@@ -79,9 +82,17 @@ export function tryAcquireLeader(
         if (disposed) { return false; }
         try { return Number.parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10) === pid; } catch { return false; }
       };
+      const heldByOther = (): boolean => {
+        if (disposed) { return false; }
+        try {
+          const holder = Number.parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10);
+          return Number.isFinite(holder) && holder > 0 && holder !== pid;
+        } catch { return false; }
+      };
       return {
         isLeader: true,
         ownsLock,
+        heldByOther,
         dispose() {
           if (disposed) { return; }
           // Never unlink a lock a successor already holds.
@@ -111,5 +122,5 @@ function isLockStale(lockPath: string, isAlive: (pid: number) => boolean): boole
 }
 
 function inertHandle(): LeaderHandle {
-  return { isLeader: false, ownsLock: () => false, dispose() { /* no-op */ } };
+  return { isLeader: false, ownsLock: () => false, heldByOther: () => false, dispose() { /* no-op */ } };
 }

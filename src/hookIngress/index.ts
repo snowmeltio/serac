@@ -47,10 +47,10 @@ export interface IngressHandle {
   dispose(): Promise<void>;
   /** The same, synchronously, for extension teardown (see module doc). */
   releaseSync(): void;
-  /** Whether the workspace lock still names this window (false for
-   *  followers and after release). A successor that took the lock over owns
-   *  the settings patch too, so teardown unpatches only while this holds. */
-  ownsLock(): boolean;
+  /** Whether the workspace lock names another window: a successor took it
+   *  over and owns the settings patch too, so teardown leaves the patch. A
+   *  missing or unreadable lock is not another window's (false). */
+  heldByOther(): boolean;
   /** Set when ingress never started because the socket path is too long. */
   readonly skipped?: 'socket-path-too-long';
 }
@@ -119,7 +119,7 @@ export async function startHookIngress(
       socket.closeSync(lock.ownsLock());
       lock.dispose();
     },
-    ownsLock: () => !disposed && lock.ownsLock(),
+    heldByOther: () => lock.heldByOther(),
   };
 }
 
@@ -129,7 +129,7 @@ export function maxSocketPathBytes(platform: NodeJS.Platform): number {
 }
 
 function inertLock(): LeaderHandle {
-  return { isLeader: false, ownsLock: () => false, dispose() {} };
+  return { isLeader: false, ownsLock: () => false, heldByOther: () => false, dispose() {} };
 }
 
 function followerHandle(lock: LeaderHandle): IngressHandle {
@@ -138,6 +138,6 @@ function followerHandle(lock: LeaderHandle): IngressHandle {
     socketPath: undefined,
     async dispose() { lock.dispose(); },
     releaseSync() { lock.dispose(); },
-    ownsLock: () => false,
+    heldByOther: () => false,
   };
 }

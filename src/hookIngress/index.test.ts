@@ -100,12 +100,19 @@ describe('startHookIngress', () => {
     fs.unlinkSync(path.join(dir, '.serac', 'hook.lock'));
     const b = await startHookIngress(dir, new HookEventRouter(), { pid: 2, isAlive: () => false });
     expect(b.isLeader).toBe(true);
-    expect(a.ownsLock()).toBe(false);
-    expect(b.ownsLock()).toBe(true);
+    expect(a.heldByOther()).toBe(true);
+    expect(b.heldByOther()).toBe(false);
     a.releaseSync();
     expect(fs.readFileSync(path.join(dir, '.serac', 'hook.lock'), 'utf8')).toBe('2');
     expect(fs.existsSync(path.join(dir, '.serac', 'hook.sock'))).toBe(true);
     b.releaseSync();
+  });
+
+  it('a missing lock is not held by another window', async () => {
+    const a = await startHookIngress(dir, new HookEventRouter(), { pid: 1, isAlive: () => true });
+    fs.unlinkSync(path.join(dir, '.serac', 'hook.lock')); // e.g. git clean -fdX
+    expect(a.heldByOther()).toBe(false);
+    a.releaseSync();
   });
 
   it('skips a workspace whose socket path is too long, writing nothing there', async () => {

@@ -1233,7 +1233,7 @@ every later window on that workspace stayed a follower with no hooks (the hub
 went 19 h 48 m without). The channel is now pushed last, the wiring's logs
 cannot throw, and the dispose releases in a `finally`, synchronously
 (`IngressHandle.releaseSync()`): the socket file is unlinked only while the lock
-still names this pid, and the lock only if it does. The settings patch is removed only while the lock is still ours too: a successor that took the lock over also owns the patch. A server whose path a
+still names this pid, and the lock only if it does. The settings patch is left in place only when the lock names another window: a successor that took the lock over also owns the patch. A missing or unreadable lock (e.g. `git clean -fdX` removed `.serac/`) still unpatches. A server whose path a
 successor has rebound is unref'd, not closed, because closing a Unix-socket
 server unlinks its path (libuv), which is the successor's live socket by then.
 A workspace whose socket path exceeds `sun_path` (103 bytes on macOS, 107 on

@@ -196,7 +196,7 @@ export function wireHookIngress(opts: {
       // exthost is killed about 2 s after teardown starts, and a lock left
       // behind kept every later window a follower with no hooks.
       try {
-        if (ingressHandle?.isLeader && ingressHandle.ownsLock()) { tryUnpatch(); }
+        if (ingressHandle?.isLeader && !ingressHandle.heldByOther()) { tryUnpatch(); }
       } finally {
         ingressHandle?.releaseSync();
       }
