@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.30.0 (2026-10-26) - Works with Claude Code in its side view
+
+### Added
+- **Cards open sessions in Claude Code's side view when you keep it there.** With `claudeCode.preferredLocation` set to "sidebar" (Claude Code: Open in Side Bar), clicking a card, New chat, and a session brought here from another window now show in the side view. Before, every click opened a Claude tab in the editor area and reset the setting to "panel", so the side view never stuck and files kept landing next to Claude. The side view can sit in the secondary sidebar or be moved into the panel. With the default "panel", nothing changes.
+
+### Known limits
+- **A session shown in the side view can't be released to another window.** Asked by another window to hand over (Bring here, or keep-here on a ⚠ session), a window holding the session in its side view still reports that it could not find the session's tab, as it did before. Close it in that window's side view, then click the card.
+
 ## v1.29.1 (2026-10-23) - Status fixes from two days of logs
 
 ### Fixed
