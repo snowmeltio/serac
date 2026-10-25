@@ -48,6 +48,7 @@ import { sessionTitleCandidates, strongTitleCandidates, findTabByLabel, findReve
 import { wireHookIngress } from './hookWiring.js';
 import { readSettings, onSettingsChanged, type SeracSettings } from './settings.js';
 import { resolveRepoRoot } from './gitWorktreeUtil.js';
+import { claudeOpenArgs, preferredClaudeLocation } from './claudeOpen.js';
 import { appendInboxMessage, peekInboxMessages } from './teammateInbox.js';
 import {
   NativeDocsProvider, NATIVE_DOCS_SCHEME,
@@ -197,7 +198,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
           // fall through and open locally.
         }
       }
-      vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One).then(
+      vscode.commands.executeCommand('claude-vscode.editor.open', ...claudeOpenArgs(sessionId)).then(
         () => {
           // A card the webview marked external suppresses its own focus
           // highlight (the click usually means a handoff) — but this branch
@@ -294,8 +295,10 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
   );
 
   // Handle session focus: open Claude Code editor panel for the specific session.
-  // claude-vscode.editor.open accepts (sessionId, initialPrompt, viewColumn).
-  // When called with a session ID, it reveals the existing panel or creates one.
+  // claude-vscode.editor.open accepts (sessionId, initialPrompt, viewColumn,
+  // groupId, fullEditor, opts); claudeOpenArgs builds the call. With a session
+  // ID it reveals the existing panel or creates one, or, when the user keeps
+  // Claude in its side view, activates the session there.
   // Track the previously focused session so we can acknowledge it when focus moves away
   let previouslyFocusedSessionId: string | null = null;
 
@@ -476,8 +479,10 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       return findSessionTab(after, sessionId) ?? findRevealedTab(before, after, targetTitles, otherTitles);
     }, REVEAL_SETTLE_MS);
     try {
+      // 'tab': this pass needs a tab it can find and close, wherever the user
+      // keeps Claude (a session the side view holds still goes there).
       await withTimeout(
-        vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One),
+        vscode.commands.executeCommand('claude-vscode.editor.open', ...claudeOpenArgs(sessionId, 'tab')),
         TAB_COMMAND_TIMEOUT_MS, 'claude-vscode.editor.open');
     } catch (err) {
       log.warn(`Dual-writer release: reveal of ${sessionId} failed:`, err);
@@ -757,7 +762,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       const before = new Map(allClaudeTabs().map(t => [t, t.isActive] as const));
       try {
         await withTimeout(
-          vscode.commands.executeCommand('claude-vscode.editor.open', sessionId, undefined, vscode.ViewColumn.One),
+          vscode.commands.executeCommand('claude-vscode.editor.open', ...claudeOpenArgs(sessionId)),
           TAB_COMMAND_TIMEOUT_MS, 'claude-vscode.editor.open');
       } catch (err) {
         log.warn(`Bring: open of ${sessionId} failed:`, err);
@@ -766,8 +771,15 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       // A created tab is a real launch: give it the full budget (MCP servers
       // and hooks can make a cold start slow). A reveal of a held panel never
       // starts anything, so a short wait is enough to tell.
-      const created = allClaudeTabs().some(t => !before.has(t));
-      if (await startedHere(created ? BRING_LAUNCH_WAIT_MS : BRING_FIRST_LAUNCH_WAIT_MS)) { return true; }
+      // An open routed to the Claude side view creates or activates no tab,
+      // but is a real launch too, so it gets the full budget. A reveal that
+      // activated a held tab still gets the short wait.
+      const afterOpen = allClaudeTabs();
+      const created = afterOpen.some(t => !before.has(t));
+      const activated = afterOpen.some(t => t.isActive && before.get(t) === false);
+      const toSideView = preferredClaudeLocation() === 'sidebar' && !created && !activated;
+      const fullBudget = created || toSideView;
+      if (await startedHere(fullBudget ? BRING_LAUNCH_WAIT_MS : BRING_FIRST_LAUNCH_WAIT_MS)) { return true; }
       if (attempt === 1 || created) { break; }
       // Nothing started: a held panel the strong-title pass missed. Take the
       // tab the reveal activated, else the one tab whose label matches any of

@@ -256,6 +256,23 @@ import * as vscode from 'vscode';
 import { renderTranscript } from './transcriptRenderer.js';
 import { ensureSessionMetadata } from './sessionRepair.js';
 
+/** Every `claude-vscode.editor.open` call so far. A "never opens" check must
+ *  use this: `not.toHaveBeenCalledWith(cmd, expect.anything(), ...)` can never
+ *  fail, because the real call passes `undefined` as its initial prompt. */
+const editorOpenCalls = () =>
+  vi.mocked(vscode.commands.executeCommand).mock.calls.filter(c => c[0] === 'claude-vscode.editor.open');
+
+/** The factory's default config stub: every key reads its default. */
+const defaultConfig = (() => ({
+  get: <T>(_key: string, defaultValue?: T): T | undefined => defaultValue,
+})) as never;
+
+/** Config stub with Claude Code kept in its side view. */
+const sidebarConfig = ((section?: string) => ({
+  get: <T>(key: string, defaultValue?: T): T | undefined =>
+    (section === 'claudeCode' && key === 'preferredLocation' ? 'sidebar' : defaultValue) as T | undefined,
+})) as never;
+
 describe('extension', () => {
   let context: {
     extensionUri: { scheme: string; fsPath: string };
@@ -338,6 +355,41 @@ describe('extension', () => {
       });
     });
 
+    describe('with Claude Code kept in its side view', () => {
+      beforeEach(() => { vi.mocked(vscode.workspace.getConfiguration).mockImplementation(sidebarConfig); });
+      // clearAllMocks keeps implementations; don't leak the side-view stub.
+      afterEach(() => { vi.mocked(vscode.workspace.getConfiguration).mockImplementation(defaultConfig); });
+
+      it('a card click asks Claude Code to open the session there', async () => {
+        activate(context as any);
+        const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
+        mockDiscovery.isSessionRunning.mockReturnValue(true);
+
+        focusHandler('test-session');
+
+        await vi.waitFor(() => {
+          expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+            'claude-vscode.editor.open', 'test-session', undefined, 1, undefined, undefined,
+            { programmatic: 'honor-preferred-location' },
+          );
+        });
+      });
+
+      it('New chat opens there too (no session id)', async () => {
+        activate(context as any);
+        const newChat = vi.mocked(mockPanelProvider.setNewChatHandler).mock.calls[0][0];
+
+        newChat();
+
+        await vi.waitFor(() => {
+          expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+            'claude-vscode.editor.open', undefined, undefined, 1, undefined, undefined,
+            { programmatic: 'honor-preferred-location' },
+          );
+        });
+      });
+    });
+
     it('skips ensureSessionMetadata for running sessions', () => {
       activate(context as any);
       const focusHandler = vi.mocked(mockPanelProvider.setFocusHandler).mock.calls[0][0];
@@ -367,9 +419,7 @@ describe('extension', () => {
       // The gate ran with owner classification requested (the facade path
       // never pays that ps cost; the handoff must).
       expect(mockDiscovery.resolveOpenGate).toHaveBeenCalledWith('test-session', { classifyOwner: true });
-      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything(),
-      );
+      expect(editorOpenCalls()).toHaveLength(0);
       expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
     });
 
@@ -386,9 +436,7 @@ describe('extension', () => {
           expect.stringContaining('another VS Code window'),
         );
       });
-      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything(),
-      );
+      expect(editorOpenCalls()).toHaveLength(0);
     });
 
     it('opens locally when a non-addressable owner has been quiet past the window (legacy unlock)', async () => {
@@ -573,8 +621,7 @@ describe('extension', () => {
         await vi.waitFor(() => {
           expect(vscode.window.tabGroups.close).toHaveBeenCalledWith(target);
         });
-        expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-          'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+        expect(editorOpenCalls()).toHaveLength(0);
       });
 
       it('sidebar-held session: the reveal changes no tab, so the active (unrelated) Claude tab is NOT closed', async () => {
@@ -667,8 +714,7 @@ describe('extension', () => {
             expect.stringContaining('no longer live in two windows'), expect.any(Number));
         });
         expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
-        expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-          'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+        expect(editorOpenCalls()).toHaveLength(0);
       });
 
       it('keeps watching past an unrelated early tab event until the async reveal lands', async () => {
@@ -729,6 +775,40 @@ describe('extension', () => {
           expect(vscode.window.tabGroups.close).toHaveBeenCalledWith(target);
         });
         expect(vscode.window.tabGroups.close).not.toHaveBeenCalledWith(other);
+      });
+
+      it('side view: the reveal still asks for a tab it can close, and leaves the setting alone', async () => {
+        vi.mocked(vscode.workspace.getConfiguration).mockImplementation(sidebarConfig);
+        try {
+          activate(context as any);
+          armRelease();
+          mockDiscovery.getSnapshots.mockReturnValue([
+            { sessionId: 'dual-sess', customTitle: '', aiTitle: '', title: null, topic: 'Renamed elsewhere' },
+            snap('other-sess', 'Other'),
+          ]);
+          const target = realTab('Renamed elsewhere', false);
+          const other = realTab('Other', true);
+          (vscode.window.tabGroups as any).all = [{ tabs: [other, target] }];
+          vi.mocked(vscode.commands.executeCommand).mockImplementation(async (cmd: string) => {
+            if (cmd === 'claude-vscode.editor.open') { target.isActive = true; other.isActive = false; }
+            return undefined;
+          });
+
+          getHandler()('dual-sess');
+
+          await vi.waitFor(() => {
+            expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
+              'claude-vscode.editor.open', 'dual-sess', undefined, 1, undefined, undefined,
+              { programmatic: 'pin-to-panel' });
+          });
+          await vi.advanceTimersByTimeAsync(1100);
+          await vi.waitFor(() => {
+            expect(vscode.window.tabGroups.close).toHaveBeenCalledWith(target);
+          });
+          expect(vscode.window.tabGroups.close).not.toHaveBeenCalledWith(other);
+        } finally {
+          vi.mocked(vscode.workspace.getConfiguration).mockImplementation(defaultConfig);
+        }
       });
     });
 
@@ -825,8 +905,7 @@ describe('extension', () => {
       expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
       // The focus-then-close fallback must not run either — it would OPEN
       // the session in a window whose copy is already gone.
-      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      expect(editorOpenCalls()).toHaveLength(0);
     });
 
     it('mutual keep: a release hint arriving after this window requested keep is refused', async () => {
@@ -883,8 +962,7 @@ describe('extension', () => {
       await vi.advanceTimersByTimeAsync(50);
       expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
       // Never falls through to the focus-then-close fallback either.
-      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      expect(editorOpenCalls()).toHaveLength(0);
     });
   });
 
@@ -964,8 +1042,7 @@ describe('extension', () => {
       await otherWindowAnswers('closing');
       // Must not open while the other window's process is still registered.
       await vi.advanceTimersByTimeAsync(600);
-      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      expect(editorOpenCalls()).toHaveLength(0);
       procsNow = []; // the other window's CLI exits (deadPid is not alive)
 
       await vi.waitFor(() => {
@@ -977,6 +1054,38 @@ describe('extension', () => {
         .find(c => (c[0] as string).includes('bring-hint'))![1] as Record<string, unknown>;
       expect(hint).toMatchObject({ sessionId: 'bring-sess', requesterPid: process.pid });
       expect((hint.expiresAt as number) - (hint.requestedAt as number)).toBe(5000);
+    });
+
+    it('bring into the side view: opens there and gives a slow launch the full wait', async () => {
+      vi.mocked(vscode.workspace.getConfiguration).mockImplementation(sidebarConfig);
+      try {
+        activate(context as any);
+        pickBring();
+        // The side view creates no tab; the CLI shows up after 6 s, past the
+        // 4 s wait a tab reveal gets, inside the 8 s a real launch gets.
+        vi.mocked(vscode.commands.executeCommand).mockImplementation(async (cmd: string) => {
+          if (cmd === 'claude-vscode.editor.open') { setTimeout(() => { procsNow = [proc(5555)]; }, 6_000); }
+          return undefined;
+        });
+        getHandler()('bring-sess');
+
+        await otherWindowAnswers('closing');
+        await vi.advanceTimersByTimeAsync(600);
+        procsNow = []; // the other window's CLI exits
+
+        await vi.waitFor(() => { expect(editorOpenCalls()).toHaveLength(1); });
+        expect(editorOpenCalls()[0]).toEqual([
+          'claude-vscode.editor.open', 'bring-sess', undefined, 1, undefined, undefined,
+          { programmatic: 'honor-preferred-location' },
+        ]);
+        await vi.advanceTimersByTimeAsync(7_000);
+        await vi.waitFor(() => {
+          expect(vscode.window.setStatusBarMessage).toHaveBeenCalledWith('Brought the session here.', expect.any(Number));
+        });
+        expect(editorOpenCalls()).toHaveLength(1);
+      } finally {
+        vi.mocked(vscode.workspace.getConfiguration).mockImplementation(defaultConfig);
+      }
     });
 
     it('an ack carrying another request\'s nonce is not an answer', async () => {
@@ -991,8 +1100,7 @@ describe('extension', () => {
       await vi.waitFor(() => {
         expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('did not answer'));
       });
-      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      expect(editorOpenCalls()).toHaveLength(0);
       // No answer → the abort marker is left for the owner to find.
       expect(jsonStore.has(`bring-abort-${process.pid}-${nonce}.json`)).toBe(true);
     });
@@ -1064,8 +1172,7 @@ describe('extension', () => {
         await vi.waitFor(() => {
           expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('old process has not exited'));
         });
-        expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-          'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+        expect(editorOpenCalls()).toHaveLength(0);
       } finally {
         vi.mocked(pi.verifyClaudeProcess).mockResolvedValue({ kind: 'verified' });
       }
@@ -1079,8 +1186,7 @@ describe('extension', () => {
       await vi.waitFor(() => {
         expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('started working'));
       });
-      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      expect(editorOpenCalls()).toHaveLength(0);
     });
 
     it('closing but never exits: does not open, says what to do', async () => {
@@ -1092,8 +1198,7 @@ describe('extension', () => {
       await vi.waitFor(() => {
         expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('has not finished'));
       });
-      expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-        'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+      expect(editorOpenCalls()).toHaveLength(0);
     });
 
     it('the session changed while the picker was open: nothing is sent', async () => {
@@ -1246,8 +1351,7 @@ describe('extension', () => {
         deliver();
         await vi.advanceTimersByTimeAsync(500);
         expect(vscode.window.tabGroups.close).not.toHaveBeenCalled();
-        expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
-          'claude-vscode.editor.open', expect.anything(), expect.anything(), expect.anything());
+        expect(editorOpenCalls()).toHaveLength(0);
       } finally {
         vi.mocked(opener.writeJsonAtomic).mockImplementation(realWrite);
       }
