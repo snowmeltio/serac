@@ -183,6 +183,24 @@ export function fmtDuration(ms: number | null): string {
   return r > 0 ? m + 'm ' + r + 's' : m + 'm';
 }
 
+/** Elapsed time for the detail pane's ticking "latest" row: "14s", "2m 14s",
+ *  "3h 5m", "2d 3h". Unlike fmtDuration it never returns '' (a fresh entry
+ *  reads "0s") and drops seconds past the hour, where they only flicker.
+ *  Negative or non-finite input (host clock behind the transcript's) clamps
+ *  to "0s" rather than showing a negative age. */
+export function fmtAge(ms: number): string {
+  if (!isFinite(ms) || ms < 0) { ms = 0; }
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) { return secs + 's'; }
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) { const s = secs % 60; return s > 0 ? mins + 'm ' + s + 's' : mins + 'm'; }
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) { const m = mins % 60; return m > 0 ? hrs + 'h ' + m + 'm' : hrs + 'h'; }
+  const days = Math.floor(hrs / 24);
+  const h = hrs % 24;
+  return h > 0 ? days + 'd ' + h + 'h' : days + 'd';
+}
+
 /** One file touched by an Edit/Write/NotebookEdit tool call — the wire shape
  *  of evidenceExtractor.ts's FileTouch, posted alongside a transcript for
  *  Phase 3's Result strip (DESIGN-DETAIL-PANE-V2.md). Declared literally
