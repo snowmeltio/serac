@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.31.0 (2026-10-27) - See what an agent did last
+
+### Added
+- **The detail pane shows each agent's latest activity and how long ago it started.** A row under the agent's name bar shows its newest transcript entry with a ticking age ("✗ Bash exit 1 · 4m ago", "⚙ Edit · 3s ago"). Before, tool rows were hidden by default, so after a failed command the agent's successful retry was invisible and the error looked like the last thing it did. The row ignores the log's filters, search, and scroll.
+
+### Fixed
+- **An agent's final records now reach the detail pane.** The pane fetched an agent's transcript only while it was running, so the last records it wrote before finishing, or before you pressed Esc on a permission prompt, were often missing. Clicking back to an agent also showed whatever the pane had loaded when you left it. Both now refresh.
+
 ## v1.30.0 (2026-10-26) - Works with Claude Code in its side view
 
 ### Added
