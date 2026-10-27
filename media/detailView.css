@@ -563,6 +563,35 @@ body {
 .wf-astrip-meta { display: flex; flex-wrap: wrap; gap: 2px 0.3em; min-width: 0; }
 .wf-astrip-meta-item { white-space: nowrap; flex-shrink: 0; }
 
+/* ── 4c. Latest-activity row ──
+ * The selected agent's newest entry and its ticking age, pinned under the
+ * agent detail bar so the facet filters and the log's scroll can never hide
+ * it. Same rail-label + body shape as the bar above; the entry text is the
+ * one unit that gives way (ellipsis), the glyph and age never wrap. */
+.wf-latest {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  font-size: 11px;
+  /* Fixed line box: the 💬 glyph's fallback emoji font is taller, and the
+   * newest entry flips between 💬 and ⚙ most turns — without this the zone
+   * changes height and the whole log below it twitches by 4px. */
+  line-height: 15px;
+}
+.wf-latest-body { display: flex; align-items: baseline; gap: 9px; flex: 1; min-width: 0; }
+.wf-latest-text {
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-foreground);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+}
+.wf-latest-age { margin-left: auto; white-space: nowrap; flex-shrink: 0; color: var(--vscode-descriptionForeground); }
+
 /* ── 5. Facet bar ──
  * Phase 2.5: controls live in a wrapping body after the rail label (same
  * pattern as the header strip) — whole toggles flow to continuation lines,

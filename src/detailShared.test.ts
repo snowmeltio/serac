@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey, parseEditInput, unframeComputedTask, unframeWorkflowText } from './detailShared.js';
+import { fmtTokens, fmtDuration, fmtAge, formatModelLabel, transcriptKey, parseEditInput, unframeComputedTask, unframeWorkflowText } from './detailShared.js';
 
 describe('formatModelLabel', () => {
   it('derives tier + version from modern ids, stripping [1m] and date stamps', () => {
@@ -26,6 +26,22 @@ describe('fmtTokens', () => {
     expect(fmtTokens(999)).toBe('999');
     expect(fmtTokens(1500)).toBe('1.5k');
     expect(fmtTokens(12345)).toBe('12k');
+  });
+});
+
+describe('fmtAge', () => {
+  it('counts up from 0s, drops seconds past the hour, and clamps negative/non-finite to 0s', () => {
+    expect(fmtAge(0)).toBe('0s');
+    expect(fmtAge(999)).toBe('0s');
+    expect(fmtAge(14_000)).toBe('14s');
+    expect(fmtAge(120_000)).toBe('2m');
+    expect(fmtAge(134_000)).toBe('2m 14s');
+    expect(fmtAge(3_600_000)).toBe('1h');
+    expect(fmtAge(3 * 3_600_000 + 5 * 60_000 + 59_000)).toBe('3h 5m');
+    expect(fmtAge(2 * 86_400_000 + 3 * 3_600_000)).toBe('2d 3h');
+    expect(fmtAge(86_400_000)).toBe('1d');
+    expect(fmtAge(-5_000)).toBe('0s');
+    expect(fmtAge(NaN)).toBe('0s');
   });
 });
 

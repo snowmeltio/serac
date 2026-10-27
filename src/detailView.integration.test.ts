@@ -1158,7 +1158,7 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     // doesn't render here — see the dedicated agent-detail-bar tests above.
     // The trailing jump pill is absolutely positioned (out of flow), but it
     // is still a flow-order child after the scroll container.
-    const order = ['wf-view-row', 'wf-hstrip', 'wf-agentstrip', 'wf-permrow', 'wf-rstrip', 'wf-facets', 'wf-log-scroll', 'wf-jump-latest'];
+    const order = ['wf-view-row', 'wf-hstrip', 'wf-agentstrip', 'wf-latest', 'wf-permrow', 'wf-rstrip', 'wf-facets', 'wf-log-scroll', 'wf-jump-latest'];
     expect(classes).toEqual(order);
   });
 
@@ -1915,5 +1915,194 @@ describe('detailView.ts — zone reconciliation (flicker fix)', () => {
     expect(q('.wf-empty')).toBeNull();
     expect(q('.wf-agentstrip')).not.toBeNull();
     expect(q('.wf-log-scroll')).not.toBeNull();
+  });
+});
+
+describe('detailView.ts — latest-activity row', () => {
+  beforeEach(async () => {
+    postedMessages = [];
+    webviewState = undefined;
+    vi.useFakeTimers();              // fake before the IIFE import so the age ticker is faked
+    vi.setSystemTime(new Date('2026-06-10T10:05:00Z'));
+    document.body.innerHTML = '<div id="wf-root"></div>';
+    vi.resetModules();
+    (globalThis as any).acquireVsCodeApi = () => mockVscodeApi;
+    await import('./detailView.js');
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const KEY = 'workflow:wf_run1|wf_run1|agent001';
+  /** twoSourceModel with the auto-selected agent001 still running, so its
+   *  newest entry is live activity rather than a terminal RESULT row. */
+  function runningModel() {
+    const m = twoSourceModel() as any;
+    m.groups[0].agents[0].status = 'running';
+    return m;
+  }
+
+  it('is absent until the selected agent\'s transcript arrives', () => {
+    sendRender(runningModel());
+    expect(q('.wf-latest')).toBeNull();
+  });
+
+  it('shows the newest entry even when the Tool filter hides it, so a recovered error reads as recovered', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:01:00Z', role: 'tool', content: '> **Tool result**: exit 1', kind: 'tool_result', toolName: 'Bash', isError: true },
+      { timestamp: '2026-06-10T10:02:46Z', role: 'assistant', content: '> **Bash** npm test', kind: 'tool_use', toolName: 'Bash' },
+    ]);
+    // Tool is off by default: the log's last visible row is the error...
+    const visible = qa('.wf-log-row');
+    expect(visible[visible.length - 1].classList.contains('err')).toBe(true);
+    // ...but the pinned row shows the retry that followed it.
+    const latest = q('.wf-latest')!;
+    expect(latest.classList.contains('err')).toBe(false);
+    expect(latest.querySelector('.wf-zone-label')!.textContent).toBe('latest');
+    expect(latest.querySelector('.wf-log-glyph')!.textContent).toBe('⚙');
+    expect(latest.querySelector('.wf-latest-text')!.textContent).toBe('Bash npm test');
+    expect(latest.querySelector('.wf-latest-age')!.textContent).toBe('2m 14s ago');
+  });
+
+  it('flags an error that is still the newest entry', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:04:00Z', role: 'tool', content: '> **Tool result**: exit 1', kind: 'tool_result', toolName: 'Bash', isError: true },
+    ]);
+    const latest = q('.wf-latest')!;
+    expect(latest.classList.contains('err')).toBe(true);
+    expect(latest.querySelector('.wf-log-glyph')!.textContent).toBe('✗');
+    expect(latest.querySelector('.wf-latest-age')!.textContent).toBe('1m ago');
+  });
+
+  it('ticks the age every second without replacing the zone node', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [{ timestamp: '2026-06-10T10:04:50Z', role: 'user', content: 'the brief' }]);
+    const before = q('.wf-latest')!;
+    expect(before.querySelector('.wf-latest-age')!.textContent).toBe('10s ago');
+    vi.advanceTimersByTime(3000);
+    expect(q('.wf-latest')).toBe(before);
+    expect(before.querySelector('.wf-latest-age')!.textContent).toBe('13s ago');
+  });
+
+  it('survives search, which filters the log but not the pinned row', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:04:00Z', role: 'assistant', content: 'still working', kind: 'text' },
+    ]);
+    const input = q('.wf-facet-search-input') as HTMLInputElement;
+    input.value = 'zzz-no-match';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(q('.wf-log')!.textContent).not.toContain('still working');
+    expect(q('.wf-latest .wf-latest-text')!.textContent).toBe('still working');
+  });
+
+  it('ignores the teammate inbox suffix (mail queued to the agent is not its activity)', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:03:00Z', role: 'assistant', content: 'own reply', kind: 'text' },
+    ], [{ timestamp: '2026-06-10T10:04:59Z', role: 'system', content: 'Queued for delivery (from murray): hello' }]);
+    expect(q('.wf-latest .wf-latest-text')!.textContent).toBe('own reply');
+  });
+
+  it('a finished agent\'s newest entry carries the RESULT tag and glyph', () => {
+    sendRender(twoSourceModel()); // agent001 done
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:04:00Z', role: 'assistant', content: 'all done', kind: 'text' },
+    ]);
+    const latest = q('.wf-latest')!;
+    expect(latest.querySelector('.wf-log-glyph')!.textContent).toBe('✔');
+    expect(latest.querySelector('.wf-latest-text')!.textContent).toBe('RESULT all done');
+  });
+
+  const viewAgentMsgs = (id: string) =>
+    (postedMessages as any[]).filter(m => m.type === 'viewAgent' && m.agentId === id);
+
+  it('re-selecting a cached agent that finished meanwhile refetches, so the row shows its real last entry', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:01:00Z', role: 'tool', content: '> **Tool result**: exit 1', kind: 'tool_result', toolName: 'Bash', isError: true },
+    ]);
+    qa('.wf-agent-pill').find(p => p.dataset.agent === 'agent002')!.click();
+    sendRender(twoSourceModel()); // agent001 finished while agent002 was selected
+    postedMessages.length = 0;
+    qa('.wf-agent-pill').find(p => p.dataset.agent === 'agent001')!.click();
+    const req = viewAgentMsgs('agent001');
+    expect(req).toHaveLength(1);
+    expect(req[0].full).toBe(true);
+    // The cached rows stay up while the refetch is in flight (no loading flash).
+    expect(q('.wf-latest')).not.toBeNull();
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:01:00Z', role: 'tool', content: '> **Tool result**: exit 1', kind: 'tool_result', toolName: 'Bash', isError: true },
+      { timestamp: '2026-06-10T10:03:00Z', role: 'assistant', content: 'fixed and done', kind: 'text' },
+    ]);
+    const latest = q('.wf-latest')!;
+    expect(latest.classList.contains('err')).toBe(false);
+    expect(latest.querySelector('.wf-latest-text')!.textContent).toBe('RESULT fixed and done');
+  });
+
+  it('drains the transcript once when the selected agent stops running, and only once', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [{ timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' }]);
+    postedMessages.length = 0;
+    // Counted as a delta: webview instances imported by earlier tests in this
+    // file still listen on the shared jsdom window and see every 'render'.
+    sendRender(twoSourceModel()); // agent001 → done
+    const drained = viewAgentMsgs('agent001');
+    expect(drained.length).toBeGreaterThanOrEqual(1);
+    expect(drained.every(m => m.full === true)).toBe(true);
+    sendRender(twoSourceModel()); // still done: no second drain
+    vi.advanceTimersByTime(5200);  // and the steady poll stays off
+    expect(viewAgentMsgs('agent001')).toHaveLength(drained.length);
+  });
+
+  it('drains on running → waiting, stays quiet while waiting, and drains again when the waiting agent ends', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [{ timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' }]);
+    const waiting = () => { const m = twoSourceModel() as any; m.groups[0].agents[0].status = 'waiting'; return m; };
+    postedMessages.length = 0;
+    sendRender(waiting());
+    const afterWait = viewAgentMsgs('agent001').length;
+    expect(afterWait).toBeGreaterThanOrEqual(1);
+    sendRender(waiting());          // prompt still up: no storm
+    vi.advanceTimersByTime(5200);   // and no polling while waiting
+    expect(viewAgentMsgs('agent001')).toHaveLength(afterWait);
+    sendRender(twoSourceModel());   // Esc on the prompt: waiting → done
+    expect(viewAgentMsgs('agent001').length).toBeGreaterThan(afterWait);
+    expect(viewAgentMsgs('agent001').every(m => m.full === true)).toBe(true);
+  });
+
+  it('drains a key stuck in error when the agent ends, so a just-created transcript still loads', () => {
+    sendRender(runningModel());
+    window.dispatchEvent(new MessageEvent('message', { data: { type: 'agentTranscriptError', key: KEY, message: 'Transcript not available yet.' } }));
+    postedMessages.length = 0;
+    sendRender(twoSourceModel()); // agent001 → done
+    expect(viewAgentMsgs('agent001').length).toBeGreaterThanOrEqual(1);
+    sendTranscript(KEY, [{ timestamp: '2026-06-10T10:04:00Z', role: 'user', content: 'the brief' }]);
+    expect(q('.wf-latest')).not.toBeNull();
+  });
+
+  it('carries the frame tag of a de-framed harness message, like the log row does', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:04:00Z', role: 'user', content: '[Workflow harness — user request] The harness relays, verbatim and indented below, the user request.\n  Stop and summarise.' },
+    ]);
+    const latest = q('.wf-latest')!;
+    expect(latest.querySelector('.wf-log-tag')!.textContent).toBe('REQUEST');
+    expect(latest.textContent).not.toContain('Workflow harness');
+  });
+
+  it('omits the age when the newest entry has no parseable timestamp', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [{ timestamp: '', role: 'user', content: 'the brief' }]);
+    expect(q('.wf-latest')).not.toBeNull();
+    expect(q('.wf-latest-age')).toBeNull();
   });
 });

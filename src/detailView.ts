@@ -8,7 +8,7 @@
 
 import { isNearBottom, chooseReaderScrollTop, STICK_THRESHOLD_PX } from './detailViewScroll.js';
 import { escapeHtml, clickEndsSelection } from './panelUtils.js';
-import { fmtTokens, fmtDuration, formatModelLabel, transcriptKey, parseEditInput, unframeWorkflowText } from './detailShared.js';
+import { fmtTokens, fmtDuration, fmtAge, formatModelLabel, transcriptKey, parseEditInput, unframeWorkflowText } from './detailShared.js';
 import type {
   DetailAgentView, DetailGroupView, DetailViewChoice, DetailModel, TranscriptEntry,
   Evidence, Mismatch, FileTouch, CommandRun,
@@ -222,12 +222,19 @@ declare function acquireVsCodeApi(): VsCodeApi;
     selectedAgentId = agentId;
     saveState();
     const k = tkey(groupKey, agentId);
-    if (!transcripts.has(k) && model) {
-      transcripts.set(k, { state: 'loading' });
-      // full: the webview holds nothing for this key, so an append delta
-      // would be unanchored — the host must answer with a whole snapshot.
+    if (model) {
+      // A cached transcript can be stale: the agent may have advanced or
+      // finished while another agent was selected, and refreshTick never
+      // polls a terminal one. So re-selection refreshes too, keeping the
+      // cached rows on screen (no loading flash; an unchanged reply dedups).
+      // full: with nothing cached an append delta would be unanchored, and
+      // the host's single tail slot may belong to another agent either way.
+      if (!transcripts.has(k)) { transcripts.set(k, { state: 'loading' }); }
       vscode.postMessage({ type: 'viewAgent', source: model.source, containerId: model.containerId, groupKey, agentId, full: true });
     }
+    const sel = findAgent(groupKey, agentId);
+    liveSelKey = isActiveAgent(sel) ? k : null;
+    liveSelWasLive = isLiveAgent(sel);
     render();
   }
 
@@ -244,6 +251,26 @@ declare function acquireVsCodeApi(): VsCodeApi;
   const BURST_DURATION_MS = 15000;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
   let burstUntil = 0;
+  /** tkey of the selected agent while it is non-terminal (live or waiting),
+   *  and whether it was polled-live at the last render — so the render
+   *  handler drains the transcript once when polling stops (running →
+   *  waiting/done) and once more when a waiting agent ends (waiting → done,
+   *  e.g. the user pressed Esc on its permission prompt). */
+  let liveSelKey: string | null = null;
+  let liveSelWasLive = false;
+
+  /** Live agents stream; so do ALIVE teammates — an idle teammate reads done
+   *  to Task tracking but can wake on an inbox message at any moment, and its
+   *  transcript must follow in real time. */
+  function isLiveAgent(a: DetailAgentView | undefined): boolean {
+    return !!a && (a.status === 'running' || (a.teammate === true && a.alive === true));
+  }
+
+  /** Not yet terminal: live, or paused on a permission prompt (not polled —
+   *  it writes nothing until answered — but it can still end). */
+  function isActiveAgent(a: DetailAgentView | undefined): boolean {
+    return isLiveAgent(a) || (!!a && a.status === 'waiting');
+  }
 
   function startRefreshLoop(intervalMs: number): void {
     if (refreshTimer !== null) { clearInterval(refreshTimer); }
@@ -261,12 +288,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (burstUntil && Date.now() > burstUntil) { burstUntil = 0; startRefreshLoop(STEADY_REFRESH_MS); }
     if (typeof document !== 'undefined' && document.hidden) { return; } // don't poll a hidden panel
     if (!model || selectedGroupKey === null || selectedAgentId === null) { return; }
-    const agent = findAgent(selectedGroupKey, selectedAgentId);
-    // Live agents stream; so do ALIVE teammates — an idle teammate reads done
-    // to Task tracking but can wake on an inbox message at any moment, and its
-    // transcript must follow in real time.
-    const live = agent && (agent.status === 'running' || (agent.teammate === true && agent.alive === true));
-    if (!live) { return; }
+    if (!isLiveAgent(findAgent(selectedGroupKey, selectedAgentId))) { return; }
     vscode.postMessage({
       type: 'viewAgent', source: model.source, containerId: model.containerId,
       groupKey: selectedGroupKey, agentId: selectedAgentId,
@@ -1180,6 +1202,17 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return html + '</div>';
   }
 
+  /** BRIEF / frame / RESULT tags, shared by log rows and the latest row so
+   *  the two can't disagree on what an entry is. A non-task harness frame
+   *  (the relayed user request, say) keeps a tag naming what it is, since its
+   *  boilerplate header is no longer shown. */
+  function logRowTags(r: LogRow): string {
+    const frameTag = !r.isBrief && r.frameKind ? r.frameKind.replace(/^user /, '').toUpperCase() : '';
+    return (r.isBrief ? '<span class="wf-log-tag">BRIEF</span> ' : '')
+      + (frameTag ? '<span class="wf-log-tag">' + escapeHtml(frameTag) + '</span> ' : '')
+      + (r.isResult ? '<span class="wf-log-tag">RESULT</span> ' : '');
+  }
+
   function renderLogRow(r: LogRow, baseTs: number): string {
     const e = r.entry;
     const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
@@ -1210,12 +1243,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (r.isResult) { classes.push('result'); }
     if (expanded) { classes.push('expanded'); }
     if (hasExpand) { classes.push('expandable'); }
-    // A non-task harness frame (the relayed user request, say) keeps a tag
-    // naming what it is, since its boilerplate header is no longer shown.
-    const frameTag = !r.isBrief && r.frameKind ? r.frameKind.replace(/^user /, '').toUpperCase() : '';
-    const tags = (r.isBrief ? '<span class="wf-log-tag">BRIEF</span> ' : '')
-      + (frameTag ? '<span class="wf-log-tag">' + escapeHtml(frameTag) + '</span> ' : '')
-      + (r.isResult ? '<span class="wf-log-tag">RESULT</span> ' : '');
+    const tags = logRowTags(r);
     let body: string;
     if (prose) {
       // Flowing block: full text, newlines preserved (pre-wrap), UI font,
@@ -1260,6 +1288,53 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     if (shown === 0) { html += '<div class="wf-log-empty">No matching entries.</div>'; }
     return html + '</div>';
+  }
+
+  // ── Latest-activity row ─────────────────────────────────────────────
+  // The selected agent's newest entry, pinned above the log and immune to the
+  // facet filters, search, and scroll (Murray, 2026-10-26: "has the error
+  // been recovered from?"). With Tool off by default, a ✗ error followed by a
+  // successful retry left the error as the last VISIBLE row. The age ticks
+  // once a second without re-rendering the zone: the zone HTML carries only
+  // the entry's epoch (data-since), so its memoised string stays stable
+  // across steady refreshes, and updateLatestAge() fills the text after every
+  // paint and on each tick.
+
+  /** The newest row of the agent's own transcript. The inbox suffix is mail
+   *  queued TO a teammate, not its activity, and the synthesised
+   *  resultPreview row has no timestamp to age against — neither counts. */
+  function latestRow(agent: DetailAgentView): LogRow | null {
+    const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
+    if (!st || st.state !== 'ready' || st.entries.length === 0) { return null; }
+    // buildLogRows maps entries 1:1 in order, so the last entry's row sits at
+    // its own index.
+    return buildLogRows(agent)[st.entries.length - 1] ?? null;
+  }
+
+  function renderLatestRow(agent: DetailAgentView): string {
+    const r = latestRow(agent);
+    if (!r) { return ''; }
+    const e = r.entry;
+    const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
+    const glyph = logGlyph(e, r.isResult);
+    const label = logRowLabel(e);
+    const full = (e.toolName ? e.toolName + ' ' : '') + label;
+    return '<div class="wf-latest' + (e.isError ? ' err' : '') + '">'
+      + zoneLabel('latest')
+      + '<div class="wf-latest-body">'
+      + '<span class="wf-log-glyph ' + glyph.cls + '">' + glyph.glyph + '</span>'
+      + '<span class="wf-latest-text" title="' + escapeHtml(full + (!isNaN(t) ? ' · ' + fmtClock(t) : '')) + '">'
+      + logRowTags(r)
+      + (e.toolName ? '<b>' + escapeHtml(e.toolName) + '</b> ' : '')
+      + escapeHtml(label) + '</span>'
+      + (!isNaN(t) ? '<span class="wf-latest-age" data-since="' + t + '"></span>' : '')
+      + '</div></div>';
+  }
+
+  function updateLatestAge(): void {
+    const el = root.querySelector('.wf-latest-age') as HTMLElement | null;
+    if (!el) { return; }
+    el.textContent = fmtAge(Date.now() - Number(el.dataset.since)) + ' ago';
   }
 
   /** Show the jump-to-latest pill only while the log is scrolled away from
@@ -1357,6 +1432,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       ['empty', empty ? renderEmptyBody() : ''],
       ['agents', empty ? '' : renderAgentStrip()],
       ['astrip', empty ? '' : renderAgentDetailBar(agent)],
+      ['latest', agent ? renderLatestRow(agent) : ''],
       ['perm', empty ? '' : renderPermRow()],
       ['result', agent ? renderResultStrip(agent) : ''],
       ['facets', agent ? renderFacets(agent) : ''],
@@ -1365,6 +1441,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
         + '</div>'],
       ['jump', empty ? '' : '<div class="wf-jump-latest" role="button" tabindex="0" title="Jump to the latest entry">↓ latest</div>'],
     ]);
+    updateLatestAge();
 
     if (empty) {
       lastRenderedKey = null;
@@ -1748,6 +1825,31 @@ declare function acquireVsCodeApi(): VsCodeApi;
         selectedGroupKey = null;
         selectedAgentId = null;
       }
+      // Final drain: an agent's last records usually land between steady
+      // ticks, and refreshTick stops polling once it leaves running — so
+      // fetch once more when polling stops and again when a waiting agent
+      // ends, or the log and the latest row end on the last poll's entry
+      // instead of the agent's real last one. An 'error' entry drains too
+      // (its file can appear just as the agent ends); a 'loading' one is
+      // already fetching.
+      if (selectedGroupKey !== null && selectedAgentId !== null) {
+        const k = tkey(selectedGroupKey, selectedAgentId);
+        const a = findAgent(selectedGroupKey, selectedAgentId);
+        const live = isLiveAgent(a);
+        const active = isActiveAgent(a);
+        const st = transcripts.get(k);
+        if (liveSelKey === k && st && st.state !== 'loading' && ((liveSelWasLive && !live) || !active)) {
+          vscode.postMessage({
+            type: 'viewAgent', source: model.source, containerId: model.containerId,
+            groupKey: selectedGroupKey, agentId: selectedAgentId, full: true,
+          });
+        }
+        liveSelKey = active ? k : null;
+        liveSelWasLive = live;
+      } else {
+        liveSelKey = null;
+        liveSelWasLive = false;
+      }
       // Deep-link from an inline card agent row: select that agent if it exists.
       const sel = msg.select as { groupKey: string; agentId: string } | undefined;
       if (sel && findAgent(sel.groupKey, sel.agentId)) {
@@ -1857,4 +1959,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
 
   // Stream the selected running agent's transcript (no-op for terminal agents).
   startRefreshLoop(STEADY_REFRESH_MS);
+  // Tick the latest row's age (a text write, never a re-render).
+  setInterval(() => { if (!document.hidden) { updateLatestAge(); } }, 1000);
 })();
