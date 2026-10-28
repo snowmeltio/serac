@@ -147,6 +147,14 @@ export const MAX_ACTIVE_TOOLS = 500;
  *  been directly captured — it is the documented Claude Code CLI flag name
  *  for this mode and may be what that channel reports instead of `auto`.
  *  See project_permission_false_positives memory. */
+// Correction (2026-10-28): `auto` does NOT auto-accept everything. Its
+// classifier can still raise a real prompt (seen: a Claude in Chrome navigate
+// to a not-yet-allowed domain sat 24.5 s on a prompt while the card read
+// running, while the registry already said waiting). This gate is now only the
+// fallback for sessions without a registry verdict (kill switch off, or a
+// pre-2.1.269 CLI); with one, syncRegistryStatus() shows the wait directly.
+// Kept for that fallback because dropping `auto` brings back the slow-tool
+// false positives it was added for.
 const AUTO_ACCEPT_PERMISSION_MODES = new Set(['auto', 'bypassPermissions']);
 
 /** Whether `mode` is a known auto-accept permission mode (see

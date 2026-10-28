@@ -65,6 +65,12 @@ export interface SeracSettings {
      *  no-op — the cache file is never loaded, and nothing hydrates from or
      *  is written to it — not just a hidden affordance. Default on. */
     replayCache: boolean;
+    /** Let Claude Code's own session status (`~/.claude/sessions/<pid>.json`
+     *  `status`/`waitingFor`, CLI 2.1.269+) drive running/waiting/done.
+     *  Inference stays the fallback whenever no live registry entry carries a
+     *  status. Default on since v1.32.0 (was serac.experimental.registryStatus);
+     *  off is a kill switch back to inference only (the shadow log still runs). */
+    registryStatus: boolean;
     /** Leave foreign sessions whose cwd is inside another session's temp dir
      *  (`isAgentScratchPath`) out of "Other workspaces" and the foreign
      *  waiting/running strips. Read-time filter; default on. */
@@ -131,12 +137,6 @@ export interface SeracSettings {
      *  process and rewrites a transcript, both firsts for Serac. Off is a
      *  genuine no-op: no chip, and the host handler refuses. */
     transferPhoneSessions: boolean;
-    /** Let Claude Code's own session status (`~/.claude/sessions/<pid>.json`
-     *  `status`/`waitingFor`, CLI 2.1.269+) drive running/waiting/done.
-     *  Inference stays the fallback whenever no live registry entry carries a
-     *  status. Default off; off is byte-identical to today (the shadow log
-     *  still runs). */
-    registryStatus: boolean;
   };
   hooks: {
     /** Hook-ingress mode: patch Claude Code's settings.json so hook events
@@ -174,6 +174,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
     teamsAgeGateDays: null,
     workflowsAgeGateDays: null,
     replayCache: true,
+    registryStatus: true,
     hideAgentScratchpads: true,
   },
   foreignWorkspaces: { maxHeightPx: 280 },
@@ -182,7 +183,7 @@ export const DEFAULT_SETTINGS: SeracSettings = {
   animations: { enabled: true },
   cleanup: { confirmRequired: true },
   rc: { spawnMode: 'same-dir' },
-  experimental: { teammateMessaging: false, operatorName: 'operator', externalWriterBlock: false, transferPhoneSessions: false, registryStatus: false },
+  experimental: { teammateMessaging: false, operatorName: 'operator', externalWriterBlock: false, transferPhoneSessions: false },
   hooks: { enabled: false, debug: false },
 };
 
@@ -223,6 +224,7 @@ export function readSettings(): SeracSettings {
       teamsAgeGateDays: cfg.get<number | null>('discovery.teamsAgeGateDays', d.discovery.teamsAgeGateDays),
       workflowsAgeGateDays: cfg.get<number | null>('discovery.workflowsAgeGateDays', d.discovery.workflowsAgeGateDays),
       replayCache: cfg.get<boolean>('discovery.replayCache', d.discovery.replayCache),
+      registryStatus: cfg.get<boolean>('discovery.registryStatus', d.discovery.registryStatus),
       hideAgentScratchpads: cfg.get<boolean>('discovery.hideAgentScratchpads', d.discovery.hideAgentScratchpads),
     },
     foreignWorkspaces: {
@@ -253,7 +255,6 @@ export function readSettings(): SeracSettings {
       operatorName: cfg.get<string>('experimental.operatorName', d.experimental.operatorName),
       externalWriterBlock: cfg.get<boolean>('experimental.externalWriterBlock', d.experimental.externalWriterBlock),
       transferPhoneSessions: cfg.get<boolean>('experimental.transferPhoneSessions', d.experimental.transferPhoneSessions),
-      registryStatus: cfg.get<boolean>('experimental.registryStatus', d.experimental.registryStatus),
     },
     hooks: {
       enabled: cfg.get<boolean>('hooks.enabled', d.hooks.enabled),

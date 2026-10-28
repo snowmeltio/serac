@@ -246,3 +246,19 @@ describe('experimental.transferPhoneSessions', () => {
     expect(readSettings().experimental.transferPhoneSessions).toBe(true);
   });
 });
+
+describe('discovery.registryStatus', () => {
+  beforeEach(() => { _resetConfig(); });
+  it('defaults on (graduated from experimental in v1.32.0)', () => {
+    expect(readSettings().discovery.registryStatus).toBe(true);
+    expect(DEFAULT_SETTINGS.discovery.registryStatus).toBe(true);
+  });
+  it('the kill switch reads through', () => {
+    _setConfigValues({ 'serac.discovery.registryStatus': false });
+    expect(readSettings().discovery.registryStatus).toBe(false);
+  });
+  it('the old experimental key no longer has any effect', () => {
+    _setConfigValues({ 'serac.experimental.registryStatus': false });
+    expect(readSettings().discovery.registryStatus).toBe(true);
+  });
+});

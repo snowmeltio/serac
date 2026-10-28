@@ -49,7 +49,7 @@ export interface ClassifyInput {
   lastWriteMtimeMs: number | null;
   nowMs: number;
   quietMs?: number;
-  /** serac.experimental.registryStatus: trust the phone process's own
+  /** serac.discovery.registryStatus: trust the phone process's own
    *  `status` (busy or waiting = mid-turn) before Serac's inferred one. */
   useRegistryStatus?: boolean;
 }

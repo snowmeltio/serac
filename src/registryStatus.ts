@@ -3,7 +3,7 @@ import { deriveRegistryStatus, type RegistryVerdict } from './registryShadow.js'
 import { verifyClaudeProcess, registryStartMs } from './processIdentity.js';
 
 /**
- * Registry status as the source of truth (serac.experimental.registryStatus).
+ * Registry status as the source of truth (serac.discovery.registryStatus).
  * Claude Code 2.1.269+ writes its own turn state into each live process's
  * `~/.claude/sessions/<pid>.json`; the shadow log (registryShadow.ts) showed it
  * right in every disagreement with inference that was checked against the
@@ -113,6 +113,11 @@ export function createRegistryStatusFeed(
   }
 
   function verdictFor(sessionId: string): RegistryStatusVerdict | null {
+    // Windows has no ps, so the identity check can never run there, and an
+    // unchecked entry on a reused pid (Windows recycles pids fast) would pin
+    // the card with inference vetoed. Windows keeps inference for the card;
+    // activityFor() still backs the hard-ceiling hold, as it did before.
+    if (process.platform === 'win32') { return null; }
     return enabled() ? activityFor(sessionId) : null;
   }
 
