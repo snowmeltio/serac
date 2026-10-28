@@ -1213,7 +1213,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
       + (r.isResult ? '<span class="wf-log-tag">RESULT</span> ' : '');
   }
 
-  function renderLogRow(r: LogRow, baseTs: number): string {
+  function renderLogRow(r: LogRow, baseTs: number, isLatest = false): string {
     const e = r.entry;
     const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
     // Two representations (Phase 2.2): wall clock (default) needs only this
@@ -1243,6 +1243,7 @@ declare function acquireVsCodeApi(): VsCodeApi;
     if (r.isResult) { classes.push('result'); }
     if (expanded) { classes.push('expanded'); }
     if (hasExpand) { classes.push('expandable'); }
+    if (isLatest) { classes.push('latest'); }
     const tags = logRowTags(r);
     let body: string;
     if (prose) {
@@ -1264,7 +1265,8 @@ declare function acquireVsCodeApi(): VsCodeApi;
     }
     let html = '<div class="' + classes.join(' ') + '" data-idx="' + r.idx + '"'
       + ' role="button" tabindex="0" aria-expanded="' + (hasExpand ? String(expanded) : 'false') + '">'
-      + '<span class="wf-log-t"' + timeTitle + '>' + escapeHtml(timeLabel) + '</span>'
+      + (isLatest ? latestTimeCell(timeLabel, timeTitle, t)
+        : '<span class="wf-log-t"' + timeTitle + '>' + escapeHtml(timeLabel) + '</span>')
       + '<span class="wf-log-glyph ' + glyph.cls + '">' + glyph.glyph + '</span>'
       + body + '</div>';
     // The expand-below block is for raw tool payloads only — an expanded
@@ -1273,66 +1275,69 @@ declare function acquireVsCodeApi(): VsCodeApi;
     return html;
   }
 
+  // ── Latest-activity row ─────────────────────────────────────────────
+  // The selected agent's newest entry is marked in the log itself (Murray,
+  // 2026-10-28: "it'll read a lot better as part of the flow"; v1.31.0 had
+  // it as a pinned zone above the log). Its time cell stacks the timestamp,
+  // a LATEST label, and a ticking age. The row ignores the facet filters and
+  // search (Murray, 2026-10-26: "has the error been recovered from?"): with
+  // Tool off by default, a ✗ error followed by a successful retry would
+  // otherwise leave the error as the last VISIBLE row. The age ticks once a
+  // second without re-rendering: the log HTML carries only the entry's epoch
+  // (data-since), so its memoised zone string stays stable across steady
+  // refreshes, and updateLatestAge() fills the text after every paint and on
+  // each tick.
+
+  /** Row index of the agent's newest own-transcript entry, or -1. The inbox
+   *  suffix is mail queued TO a teammate, not its activity, and the
+   *  synthesised resultPreview row (idx -1) has no timestamp to age against,
+   *  so neither counts. buildLogRows maps entries 1:1 in order, so the last
+   *  entry's row carries idx entries.length - 1. */
+  function latestIdx(agent: DetailAgentView): number {
+    const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
+    if (!st || st.state !== 'ready') { return -1; }
+    return st.entries.length - 1;
+  }
+
+  /** The latest row's time cell: the timestamp as the gutter shows it now
+   *  (clock or offset), then LATEST, then the age. Still a .wf-log-t, so a
+   *  click anywhere in it flips the gutter format like every other row. */
+  function latestTimeCell(timeLabel: string, timeTitle: string, t: number): string {
+    return '<span class="wf-log-t latest"' + timeTitle + '>'
+      + (timeLabel ? '<span class="wf-log-t-stamp">' + escapeHtml(timeLabel) + '</span>' : '')
+      + '<span class="wf-log-t-latest">latest</span>'
+      + (!isNaN(t) ? '<span class="wf-log-age" data-since="' + t + '"></span>' : '')
+      + '</span>';
+  }
+
   /** The log itself (mockup §4a's rest-of-pane): one row per entry, the brief
-   *  always shown (it isn't one of the four filterable kinds), everything
-   *  else subject to the facet bar's kind filters + search. */
+   *  always shown (it isn't one of the four filterable kinds), the latest
+   *  entry always shown (see above), everything else subject to the facet
+   *  bar's kind filters + search. "No matching entries." still reports a
+   *  filter or search that matched nothing, ahead of the forced latest row. */
   function renderLogRows(agent: DetailAgentView): string {
     const rows = buildLogRows(agent);
     const baseTs = rows.length > 0 ? Date.parse(rows[0].entry.timestamp || '') : NaN;
-    let html = '<div class="wf-log">';
-    let shown = 0;
+    const latest = latestIdx(agent);
+    const parts: string[] = [];
+    let matched = 0;
+    let forcedAt = -1;
     for (const r of rows) {
-      if (!r.isBrief && !rowVisible(r.entry)) { continue; }
-      shown++;
-      html += renderLogRow(r, baseTs);
+      const isLatest = latest >= 0 && r.idx === latest;
+      const matches = r.isBrief || rowVisible(r.entry);
+      if (!matches && !isLatest) { continue; }
+      if (matches) { matched++; } else { forcedAt = parts.length; }
+      parts.push(renderLogRow(r, baseTs, isLatest));
     }
-    if (shown === 0) { html += '<div class="wf-log-empty">No matching entries.</div>'; }
-    return html + '</div>';
-  }
-
-  // ── Latest-activity row ─────────────────────────────────────────────
-  // The selected agent's newest entry, pinned above the log and immune to the
-  // facet filters, search, and scroll (Murray, 2026-10-26: "has the error
-  // been recovered from?"). With Tool off by default, a ✗ error followed by a
-  // successful retry left the error as the last VISIBLE row. The age ticks
-  // once a second without re-rendering the zone: the zone HTML carries only
-  // the entry's epoch (data-since), so its memoised string stays stable
-  // across steady refreshes, and updateLatestAge() fills the text after every
-  // paint and on each tick.
-
-  /** The newest row of the agent's own transcript. The inbox suffix is mail
-   *  queued TO a teammate, not its activity, and the synthesised
-   *  resultPreview row has no timestamp to age against — neither counts. */
-  function latestRow(agent: DetailAgentView): LogRow | null {
-    const st = transcripts.get(tkey(selectedGroupKey!, agent.agentId));
-    if (!st || st.state !== 'ready' || st.entries.length === 0) { return null; }
-    // buildLogRows maps entries 1:1 in order, so the last entry's row sits at
-    // its own index.
-    return buildLogRows(agent)[st.entries.length - 1] ?? null;
-  }
-
-  function renderLatestRow(agent: DetailAgentView): string {
-    const r = latestRow(agent);
-    if (!r) { return ''; }
-    const e = r.entry;
-    const t = e.timestamp ? Date.parse(e.timestamp) : NaN;
-    const glyph = logGlyph(e, r.isResult);
-    const label = logRowLabel(e);
-    const full = (e.toolName ? e.toolName + ' ' : '') + label;
-    return '<div class="wf-latest' + (e.isError ? ' err' : '') + '">'
-      + zoneLabel('latest')
-      + '<div class="wf-latest-body">'
-      + '<span class="wf-log-glyph ' + glyph.cls + '">' + glyph.glyph + '</span>'
-      + '<span class="wf-latest-text" title="' + escapeHtml(full + (!isNaN(t) ? ' · ' + fmtClock(t) : '')) + '">'
-      + logRowTags(r)
-      + (e.toolName ? '<b>' + escapeHtml(e.toolName) + '</b> ' : '')
-      + escapeHtml(label) + '</span>'
-      + (!isNaN(t) ? '<span class="wf-latest-age" data-since="' + t + '"></span>' : '')
-      + '</div></div>';
+    if (matched === 0) {
+      const empty = '<div class="wf-log-empty">No matching entries.</div>';
+      if (forcedAt >= 0) { parts.splice(forcedAt, 0, empty); } else { parts.push(empty); }
+    }
+    return '<div class="wf-log">' + parts.join('') + '</div>';
   }
 
   function updateLatestAge(): void {
-    const el = root.querySelector('.wf-latest-age') as HTMLElement | null;
+    const el = root.querySelector('.wf-log-age') as HTMLElement | null;
     if (!el) { return; }
     el.textContent = fmtAge(Date.now() - Number(el.dataset.since)) + ' ago';
   }
@@ -1432,7 +1437,6 @@ declare function acquireVsCodeApi(): VsCodeApi;
       ['empty', empty ? renderEmptyBody() : ''],
       ['agents', empty ? '' : renderAgentStrip()],
       ['astrip', empty ? '' : renderAgentDetailBar(agent)],
-      ['latest', agent ? renderLatestRow(agent) : ''],
       ['perm', empty ? '' : renderPermRow()],
       ['result', agent ? renderResultStrip(agent) : ''],
       ['facets', agent ? renderFacets(agent) : ''],

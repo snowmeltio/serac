@@ -563,35 +563,6 @@ body {
 .wf-astrip-meta { display: flex; flex-wrap: wrap; gap: 2px 0.3em; min-width: 0; }
 .wf-astrip-meta-item { white-space: nowrap; flex-shrink: 0; }
 
-/* ── 4c. Latest-activity row ──
- * The selected agent's newest entry and its ticking age, pinned under the
- * agent detail bar so the facet filters and the log's scroll can never hide
- * it. Same rail-label + body shape as the bar above; the entry text is the
- * one unit that gives way (ellipsis), the glyph and age never wrap. */
-.wf-latest {
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-  padding: 5px 14px;
-  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
-  font-size: 11px;
-  /* Fixed line box: the 💬 glyph's fallback emoji font is taller, and the
-   * newest entry flips between 💬 and ⚙ most turns — without this the zone
-   * changes height and the whole log below it twitches by 4px. */
-  line-height: 15px;
-}
-.wf-latest-body { display: flex; align-items: baseline; gap: 9px; flex: 1; min-width: 0; }
-.wf-latest-text {
-  font-family: var(--vscode-editor-font-family, monospace);
-  color: var(--vscode-foreground);
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 0 1 auto;
-}
-.wf-latest-age { margin-left: auto; white-space: nowrap; flex-shrink: 0; color: var(--vscode-descriptionForeground); }
-
 /* ── 5. Facet bar ──
  * Phase 2.5: controls live in a wrapping body after the rail label (same
  * pattern as the header strip) — whole toggles flow to continuation lines,
@@ -751,6 +722,22 @@ body {
  * run offset, Phase 2.2) — hence the pointer even on non-expandable rows. */
 .wf-log-t { color: var(--vscode-descriptionForeground); font-size: 10px; width: var(--wf-gutter); flex-shrink: 0; text-align: right; opacity: 0.8; cursor: pointer; }
 .wf-log-row:hover .wf-log-t { opacity: 1; }
+/* The latest row (the agent's newest entry, shown whatever the filters
+ * say): its time cell stacks the timestamp, a LATEST label, and the ticking
+ * age, right-aligned in the gutter. A column flex box takes its baseline
+ * from the first item, so the timestamp still sits on the body's baseline
+ * in a one-line tool row; the label and age below it hang in tight 12px
+ * lines. In a prose row the stamp keeps the prose line box (rule below). */
+.wf-log-t.latest { display: flex; flex-direction: column; align-items: flex-end; opacity: 1; }
+.wf-log-t-latest {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+.wf-log-age { line-height: 12px; white-space: nowrap; }
 .wf-log-glyph { width: 12px; flex-shrink: 0; text-align: center; }
 .wf-log-glyph.k-tool { color: var(--vscode-descriptionForeground); }
 .wf-log-glyph.k-text { color: var(--vscode-foreground); }
