@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.32.2 (2026-10-28) - Latest activity sits in the log
+
+### Changed
+- **An agent's latest activity now sits at the bottom of its log.** v1.31.0 showed it in a row of its own above the log. The newest entry is now the log's last row, and its time column reads the timestamp, then LATEST, then how long ago it started. It still shows when the log's filters or search would hide it, so a failed command followed by a successful retry reads as recovered. It scrolls with the log; the "↓ latest" pill brings it back.
+
 ## v1.32.1 (2026-10-28) - MCP tool names keep their underscores
 
 ### Fixed
