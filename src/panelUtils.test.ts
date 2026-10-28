@@ -68,6 +68,12 @@ describe('stripMarkdown', () => {
   it('strips underscore bold/italic', () => {
     expect(stripMarkdown('__bold__ and _italic_')).toBe('bold and italic');
   });
+
+  it('keeps intraword underscores (MCP tool names, snake_case)', () => {
+    expect(stripMarkdown('Using mcp__claude-in-chrome__navigate')).toBe('Using mcp__claude-in-chrome__navigate');
+    expect(stripMarkdown('Using mcp__claude_ai_Slack__slack_send_message')).toBe('Using mcp__claude_ai_Slack__slack_send_message');
+    expect(stripMarkdown('set file_path and old_string')).toBe('set file_path and old_string');
+  });
   it('strips inline code', () => {
     expect(stripMarkdown('run `npm test` now')).toBe('run npm test now');
   });
