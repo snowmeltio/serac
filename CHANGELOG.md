@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.32.0 (2026-10-28) - Status comes from Claude Code
+
+### Changed
+- **Cards take running, waiting, and done from Claude Code itself, by default.** Claude Code 2.1.269 and later record each session's state. Serac now follows that record instead of guessing from transcript activity, wherever it exists. Older Claude Code falls back to the guess as before. The setting moved from `serac.experimental.registryStatus` (off) to `serac.discovery.registryStatus` (on); turn it off to go back to inference alone. A value set under the old name is ignored.
+
+### Fixed
+- **Permission prompts in auto mode now show as waiting.** Serac assumed a session in auto mode could never be asked for permission, so the card read running while a prompt sat open. Auto mode still asks for some calls, such as a Claude in Chrome visit to a site you haven't allowed yet. The card now shows waiting within a second.
+- **A slow command in a subagent no longer marks its row waiting.** After 15 seconds without output, a subagent's row and the detail chip read waiting even though the card said running. They now follow Claude Code: waiting only while it says a prompt is open.
+
+### Known limits
+- **Windows keeps the old inference.** Serac can't confirm on Windows that a status record still belongs to a live Claude process, so it doesn't use the record there.
+
 ## v1.31.0 (2026-10-27) - See what an agent did last
 
 ### Added
