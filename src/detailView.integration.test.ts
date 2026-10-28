@@ -72,6 +72,11 @@ function emptyEvidence(overrides: Partial<RawEvidence> = {}): RawEvidence {
 const root = () => document.getElementById('wf-root')!;
 const q = (sel: string) => root().querySelector(sel) as HTMLElement | null;
 const qa = (sel: string) => Array.from(root().querySelectorAll(sel)) as HTMLElement[];
+/** A time cell's timestamp text. The latest row's cell also stacks a LATEST
+ *  label and the age under the stamp, so read its stamp span alone. */
+const stampText = (t: Element) => t.classList.contains('latest')
+  ? (t.querySelector('.wf-log-t-stamp')?.textContent ?? '')
+  : t.textContent;
 
 /** A two-source workflow drill-in: one Audit phase with two agents, plus a
  *  Subagents view — so the switcher has both a `workflow` and `subagents` kind. */
@@ -671,6 +676,8 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: 'some prose here', kind: 'text' },
       { timestamp: '2026-06-10T10:00:02Z', role: 'assistant', content: '> **Bash** rm -rf build/', kind: 'tool_use', toolName: 'Bash' },
+      // A newer entry, so the Bash row isn't the latest (which always shows).
+      { timestamp: '2026-06-10T10:00:03Z', role: 'assistant', content: 'wrap-up prose', kind: 'text' },
     ];
     sendTranscript(KEY1, ENTRIES);
     // Default: prose is the primary read; tool chatter is hidden.
@@ -708,6 +715,9 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:00:01Z', role: 'assistant', content: 'alpha content line', kind: 'text' },
       { timestamp: '2026-06-10T10:00:02Z', role: 'assistant', content: 'beta content line', kind: 'text' },
+      // The latest entry always shows, so a newer non-matching row keeps
+      // alpha and beta in the hands of the search alone.
+      { timestamp: '2026-06-10T10:00:03Z', role: 'assistant', content: 'gamma wrap-up', kind: 'text' },
     ]);
     const input = q('.wf-facet-search-input') as HTMLInputElement;
     input.value = 'alpha';
@@ -717,6 +727,9 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     expect(q('.wf-log')!.textContent).toContain('alpha');
     expect(q('.wf-log')!.textContent).not.toContain('beta content line');
+    const alphaRow = qa('.wf-log-row').find(r => r.textContent!.includes('alpha'))!;
+    expect(alphaRow.classList.contains('latest')).toBe(false);
+    expect(q('.wf-log-row.latest')!.textContent).toContain('gamma wrap-up');
     const hl = q('.wf-hl');
     expect(hl).not.toBeNull();
     expect(hl!.textContent!.toLowerCase()).toBe('alpha');
@@ -775,8 +788,8 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
       { timestamp: '2026-06-10T10:00:41.200Z', role: 'assistant', content: 'later', kind: 'text' },
     ]);
     const cells = qa('.wf-log-t');
-    expect(cells.map(t => t.textContent)).toContain(clockOf('2026-06-10T10:00:41.200Z'));
-    for (const c of cells) { expect(c.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/); }
+    expect(cells.map(stampText)).toContain(clockOf('2026-06-10T10:00:41.200Z'));
+    for (const c of cells) { expect(stampText(c)).toMatch(/^\d{2}:\d{2}:\d{2}$/); }
     // The alternate representation rides the tooltip.
     expect(cells.some(c => c.getAttribute('title') === '00:41.2')).toBe(true);
   });
@@ -788,7 +801,7 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
       { timestamp: '2026-06-10T10:00:41.200Z', role: 'assistant', content: 'later', kind: 'text' },
     ]);
     qa('.wf-log-t')[0].click();
-    const times = qa('.wf-log-t').map(t => t.textContent);
+    const times = qa('.wf-log-t').map(stampText);
     expect(times).toContain('00:00.0');
     expect(times).toContain('00:41.2');
     // Tooltip now carries the wall clock; the choice is persisted globally.
@@ -823,9 +836,9 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
       { timestamp: '', role: 'assistant', content: 'no stamp', kind: 'text' },
     ]);
     const cellOf = () => qa('.wf-log-row.prose').find(r => r.textContent!.includes('no stamp'))!.querySelector('.wf-log-t')!;
-    expect(cellOf().textContent).toBe('');
+    expect(stampText(cellOf())).toBe('');
     qa('.wf-log-t')[0].click(); // → offset mode
-    expect(cellOf().textContent).toBe('');
+    expect(stampText(cellOf())).toBe('');
   });
 
   it('the log scroll container is keyboard-focusable, with the jump pill hidden at the bottom', () => {
@@ -1158,7 +1171,7 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     // doesn't render here — see the dedicated agent-detail-bar tests above.
     // The trailing jump pill is absolutely positioned (out of flow), but it
     // is still a flow-order child after the scroll container.
-    const order = ['wf-view-row', 'wf-hstrip', 'wf-agentstrip', 'wf-latest', 'wf-permrow', 'wf-rstrip', 'wf-facets', 'wf-log-scroll', 'wf-jump-latest'];
+    const order = ['wf-view-row', 'wf-hstrip', 'wf-agentstrip', 'wf-permrow', 'wf-rstrip', 'wf-facets', 'wf-log-scroll', 'wf-jump-latest'];
     expect(classes).toEqual(order);
   });
 
@@ -1317,7 +1330,7 @@ describe('detailView.ts — log view (Phase 2, default mode)', () => {
     chip().click();
     expect(chip().textContent).toBe('◷ session');
     expect(chip().dataset.mode).toBe('offset');
-    expect(qa('.wf-log-t').map(t => t.textContent)).toContain('00:41.2');
+    expect(qa('.wf-log-t').map(stampText)).toContain('00:41.2');
     expect((webviewState as { timeMode?: string }).timeMode).toBe('offset');
 
     // The timestamp-column route (Phase 2.2) still toggles, and the chip
@@ -1940,28 +1953,71 @@ describe('detailView.ts — latest-activity row', () => {
     return m;
   }
 
+  /** The latest row and its time-cell parts. */
+  const latest = () => q('.wf-log-row.latest');
+  const cellParts = (row: HTMLElement) =>
+    Array.from(row.querySelector('.wf-log-t')!.children).map(c => (c as HTMLElement).className);
+  const ageText = () => q('.wf-log-row.latest .wf-log-age')!.textContent;
+
   it('is absent until the selected agent\'s transcript arrives', () => {
     sendRender(runningModel());
-    expect(q('.wf-latest')).toBeNull();
+    expect(latest()).toBeNull();
+    expect(q('.wf-latest')).toBeNull(); // the v1.31.0 pinned zone is gone
   });
 
-  it('shows the newest entry even when the Tool filter hides it, so a recovered error reads as recovered', () => {
+  it('marks the newest entry\'s own log row: timestamp, then LATEST, then the age', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:04:00Z', role: 'assistant', content: 'still working', kind: 'text' },
+    ]);
+    const rows = qa('.wf-log-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toBe(latest());
+    expect(rows[0].classList.contains('latest')).toBe(false);
+    expect(qa('.wf-log-row.latest')).toHaveLength(1);
+    expect(cellParts(rows[1])).toEqual(['wf-log-t-stamp', 'wf-log-t-latest', 'wf-log-age']);
+    expect(rows[1].querySelector('.wf-log-t-stamp')!.textContent).toMatch(/^\d\d:\d\d:\d\d$/);
+    expect(rows[1].querySelector('.wf-log-t-latest')!.textContent).toBe('latest');
+    expect(ageText()).toBe('1m ago');
+    expect(rows[1].textContent).toContain('still working');
+  });
+
+  it('shows the newest entry at the bottom even when the Tool filter hides it, so a recovered error reads as recovered', () => {
     sendRender(runningModel());
     sendTranscript(KEY, [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:01:00Z', role: 'tool', content: '> **Tool result**: exit 1', kind: 'tool_result', toolName: 'Bash', isError: true },
+      { timestamp: '2026-06-10T10:01:30Z', role: 'assistant', content: '> **Read** a.ts', kind: 'tool_use', toolName: 'Read' },
       { timestamp: '2026-06-10T10:02:46Z', role: 'assistant', content: '> **Bash** npm test', kind: 'tool_use', toolName: 'Bash' },
     ]);
-    // Tool is off by default: the log's last visible row is the error...
-    const visible = qa('.wf-log-row');
-    expect(visible[visible.length - 1].classList.contains('err')).toBe(true);
-    // ...but the pinned row shows the retry that followed it.
-    const latest = q('.wf-latest')!;
-    expect(latest.classList.contains('err')).toBe(false);
-    expect(latest.querySelector('.wf-zone-label')!.textContent).toBe('latest');
-    expect(latest.querySelector('.wf-log-glyph')!.textContent).toBe('⚙');
-    expect(latest.querySelector('.wf-latest-text')!.textContent).toBe('Bash npm test');
-    expect(latest.querySelector('.wf-latest-age')!.textContent).toBe('2m 14s ago');
+    const rows = qa('.wf-log-row');
+    // Tool is off: the earlier Read stays hidden; only the newest tool row is forced in.
+    expect(rows).toHaveLength(3);
+    expect(rows[1].classList.contains('err')).toBe(true);
+    const last = rows[2];
+    expect(last).toBe(latest());
+    expect(last.classList.contains('err')).toBe(false);
+    expect(last.classList.contains('tool')).toBe(true);
+    expect(last.querySelector('.wf-log-glyph')!.textContent).toBe('⚙');
+    expect(last.querySelector('.wf-log-body')!.textContent).toBe('Bash npm test');
+    expect(ageText()).toBe('2m 14s ago');
+    expect(q('.wf-log')!.textContent).not.toContain('a.ts');
+  });
+
+  it('moves the marker when a newer entry streams in, and drops the forced row it leaves behind', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:02:00Z', role: 'assistant', content: '> **Bash** npm test', kind: 'tool_use', toolName: 'Bash' },
+    ]);
+    expect(latest()!.textContent).toContain('npm test');
+    sendTranscriptAppend(KEY, [{ timestamp: '2026-06-10T10:04:30Z', role: 'assistant', content: 'tests pass', kind: 'text' }]);
+    expect(qa('.wf-log-row.latest')).toHaveLength(1);
+    expect(latest()!.textContent).toContain('tests pass');
+    expect(ageText()).toBe('30s ago');
+    // The Bash row is no longer the newest, so the Tool filter hides it again.
+    expect(q('.wf-log')!.textContent).not.toContain('npm test');
   });
 
   it('flags an error that is still the newest entry', () => {
@@ -1970,23 +2026,42 @@ describe('detailView.ts — latest-activity row', () => {
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:04:00Z', role: 'tool', content: '> **Tool result**: exit 1', kind: 'tool_result', toolName: 'Bash', isError: true },
     ]);
-    const latest = q('.wf-latest')!;
-    expect(latest.classList.contains('err')).toBe(true);
-    expect(latest.querySelector('.wf-log-glyph')!.textContent).toBe('✗');
-    expect(latest.querySelector('.wf-latest-age')!.textContent).toBe('1m ago');
+    const row = latest()!;
+    expect(row.classList.contains('err')).toBe(true);
+    expect(row.querySelector('.wf-log-glyph')!.textContent).toBe('✗');
+    expect(ageText()).toBe('1m ago');
   });
 
-  it('ticks the age every second without replacing the zone node', () => {
+  it('ticks the age every second without replacing the log', () => {
     sendRender(runningModel());
     sendTranscript(KEY, [{ timestamp: '2026-06-10T10:04:50Z', role: 'user', content: 'the brief' }]);
-    const before = q('.wf-latest')!;
-    expect(before.querySelector('.wf-latest-age')!.textContent).toBe('10s ago');
+    const log = q('.wf-log-scroll')!;
+    const before = latest()!;
+    expect(ageText()).toBe('10s ago');
     vi.advanceTimersByTime(3000);
-    expect(q('.wf-latest')).toBe(before);
-    expect(before.querySelector('.wf-latest-age')!.textContent).toBe('13s ago');
+    expect(q('.wf-log-scroll')).toBe(log);
+    expect(latest()).toBe(before);
+    expect(ageText()).toBe('13s ago');
   });
 
-  it('survives search, which filters the log but not the pinned row', () => {
+  it('survives search, which hides every other row; the empty notice sits above it', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:01:00Z', role: 'assistant', content: 'first thought', kind: 'text' },
+      { timestamp: '2026-06-10T10:04:00Z', role: 'assistant', content: 'still working', kind: 'text' },
+    ]);
+    const input = q('.wf-facet-search-input') as HTMLInputElement;
+    input.value = 'zzz-no-match';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const log = q('.wf-log')!;
+    expect(log.textContent).not.toContain('first thought');
+    const kids = Array.from(log.children) as HTMLElement[];
+    expect(kids.map(k => k.className.split(' ')[0])).toEqual(['wf-log-empty', 'wf-log-row']);
+    expect(kids[1].classList.contains('latest')).toBe(true);
+    expect(kids[1].textContent).toContain('still working');
+  });
+
+  it('keeps the brief and the latest row when the brief is the only match', () => {
     sendRender(runningModel());
     sendTranscript(KEY, [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
@@ -1995,8 +2070,9 @@ describe('detailView.ts — latest-activity row', () => {
     const input = q('.wf-facet-search-input') as HTMLInputElement;
     input.value = 'zzz-no-match';
     input.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(q('.wf-log')!.textContent).not.toContain('still working');
-    expect(q('.wf-latest .wf-latest-text')!.textContent).toBe('still working');
+    expect(q('.wf-log-empty')).toBeNull(); // the brief always matches
+    expect(qa('.wf-log-row')).toHaveLength(2);
+    expect(latest()!.textContent).toContain('still working');
   });
 
   it('ignores the teammate inbox suffix (mail queued to the agent is not its activity)', () => {
@@ -2005,7 +2081,9 @@ describe('detailView.ts — latest-activity row', () => {
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:03:00Z', role: 'assistant', content: 'own reply', kind: 'text' },
     ], [{ timestamp: '2026-06-10T10:04:59Z', role: 'system', content: 'Queued for delivery (from murray): hello' }]);
-    expect(q('.wf-latest .wf-latest-text')!.textContent).toBe('own reply');
+    expect(qa('.wf-log-row.latest')).toHaveLength(1);
+    expect(latest()!.textContent).toContain('own reply');
+    expect(latest()!.textContent).not.toContain('Queued for delivery');
   });
 
   it('a finished agent\'s newest entry carries the RESULT tag and glyph', () => {
@@ -2014,9 +2092,31 @@ describe('detailView.ts — latest-activity row', () => {
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:04:00Z', role: 'assistant', content: 'all done', kind: 'text' },
     ]);
-    const latest = q('.wf-latest')!;
-    expect(latest.querySelector('.wf-log-glyph')!.textContent).toBe('✔');
-    expect(latest.querySelector('.wf-latest-text')!.textContent).toBe('RESULT all done');
+    const row = latest()!;
+    expect(row.classList.contains('result')).toBe(true);
+    expect(row.querySelector('.wf-log-glyph')!.textContent).toBe('✔');
+    expect(row.querySelector('.wf-log-tag')!.textContent).toBe('RESULT');
+  });
+
+  it('a synthesised resultPreview row (no transcript entries) gets no marker', () => {
+    const m = twoSourceModel() as any;
+    m.groups[0].agents[0].resultPreview = 'sidecar summary';
+    sendRender(m);
+    sendTranscript(KEY, []);
+    expect(q('.wf-log')!.textContent).toContain('sidecar summary');
+    expect(latest()).toBeNull();
+  });
+
+  it('clicking the latest row\'s time cell still flips the gutter format', () => {
+    sendRender(runningModel());
+    sendTranscript(KEY, [
+      { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
+      { timestamp: '2026-06-10T10:04:00Z', role: 'assistant', content: 'still working', kind: 'text' },
+    ]);
+    (latest()!.querySelector('.wf-log-t-latest') as HTMLElement).click();
+    expect(latest()!.querySelector('.wf-log-t-stamp')!.textContent).toBe('04:00.0');
+    expect(latest()!.querySelector('.wf-log-t-latest')!.textContent).toBe('latest');
+    (latest()!.querySelector('.wf-log-t') as HTMLElement).click(); // back to the clock
   });
 
   const viewAgentMsgs = (id: string) =>
@@ -2036,15 +2136,16 @@ describe('detailView.ts — latest-activity row', () => {
     expect(req).toHaveLength(1);
     expect(req[0].full).toBe(true);
     // The cached rows stay up while the refetch is in flight (no loading flash).
-    expect(q('.wf-latest')).not.toBeNull();
+    expect(q('.wf-log-row.latest')).not.toBeNull();
     sendTranscript(KEY, [
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:01:00Z', role: 'tool', content: '> **Tool result**: exit 1', kind: 'tool_result', toolName: 'Bash', isError: true },
       { timestamp: '2026-06-10T10:03:00Z', role: 'assistant', content: 'fixed and done', kind: 'text' },
     ]);
-    const latest = q('.wf-latest')!;
-    expect(latest.classList.contains('err')).toBe(false);
-    expect(latest.querySelector('.wf-latest-text')!.textContent).toBe('RESULT fixed and done');
+    const row = q('.wf-log-row.latest')!;
+    expect(row.classList.contains('err')).toBe(false);
+    expect(row.querySelector('.wf-log-tag')!.textContent).toBe('RESULT');
+    expect(row.textContent).toContain('fixed and done');
   });
 
   it('drains the transcript once when the selected agent stops running, and only once', () => {
@@ -2085,7 +2186,7 @@ describe('detailView.ts — latest-activity row', () => {
     sendRender(twoSourceModel()); // agent001 → done
     expect(viewAgentMsgs('agent001').length).toBeGreaterThanOrEqual(1);
     sendTranscript(KEY, [{ timestamp: '2026-06-10T10:04:00Z', role: 'user', content: 'the brief' }]);
-    expect(q('.wf-latest')).not.toBeNull();
+    expect(q('.wf-log-row.latest')).not.toBeNull();
   });
 
   it('carries the frame tag of a de-framed harness message, like the log row does', () => {
@@ -2094,15 +2195,18 @@ describe('detailView.ts — latest-activity row', () => {
       { timestamp: '2026-06-10T10:00:00Z', role: 'user', content: 'the brief' },
       { timestamp: '2026-06-10T10:04:00Z', role: 'user', content: '[Workflow harness — user request] The harness relays, verbatim and indented below, the user request.\n  Stop and summarise.' },
     ]);
-    const latest = q('.wf-latest')!;
-    expect(latest.querySelector('.wf-log-tag')!.textContent).toBe('REQUEST');
-    expect(latest.textContent).not.toContain('Workflow harness');
+    const row = q('.wf-log-row.latest')!;
+    expect(row.querySelector('.wf-log-tag')!.textContent).toBe('REQUEST');
+    expect(row.textContent).not.toContain('Workflow harness');
   });
 
   it('omits the age when the newest entry has no parseable timestamp', () => {
     sendRender(runningModel());
     sendTranscript(KEY, [{ timestamp: '', role: 'user', content: 'the brief' }]);
-    expect(q('.wf-latest')).not.toBeNull();
-    expect(q('.wf-latest-age')).toBeNull();
+    const row = q('.wf-log-row.latest')!;
+    expect(row).not.toBeNull();
+    expect(row.querySelector('.wf-log-t-latest')!.textContent).toBe('latest');
+    expect(row.querySelector('.wf-log-t-stamp')).toBeNull();
+    expect(q('.wf-log-age')).toBeNull();
   });
 });
