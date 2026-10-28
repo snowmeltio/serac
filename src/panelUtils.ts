@@ -144,8 +144,10 @@ export function stripMarkdown(str: string | undefined | null): string {
   return str
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
-    .replace(/__(.+?)__/g, '$1')
-    .replace(/_(.+?)_/g, '$1')
+    // Underscores only mark emphasis at word boundaries (CommonMark), so tool
+    // names like mcp__server__tool and snake_case identifiers survive.
+    .replace(/(?<!\w)__(.+?)__(?!\w)/g, '$1')
+    .replace(/(?<!\w)_(.+?)_(?!\w)/g, '$1')
     .replace(/`(.+?)`/g, '$1')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/^#{1,6}\s+/gm, '')
