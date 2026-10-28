@@ -139,3 +139,21 @@ describe('registry status feed', () => {
     expect(probe.verdict()).toMatchObject({ status: 'waiting', waitingFor: 'input needed' });
   });
 });
+
+describe('Windows', () => {
+  it('gives the card no verdict (no ps to check identity), but keeps activity for the ceiling hold', async () => {
+    const orig = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      const { reg } = fakeRegistry([proc({ status: 'busy' })]);
+      const feed = createRegistryStatusFeed(reg, () => true, Date.now, ok);
+      feed.activityFor('s1');
+      await new Promise(r => setTimeout(r, 0));
+      expect(feed.verdictFor('s1')).toBeNull();
+      // The ceiling hold still reads the registry, as before v1.32.0.
+      expect(feed.activityFor('s1')?.status).toBe('running');
+    } finally {
+      Object.defineProperty(process, 'platform', orig);
+    }
+  });
+});

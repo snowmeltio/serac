@@ -64,7 +64,7 @@ export class SiblingWorktreeManager {
   /** Per-session registry liveness probe factory, injected by SessionDiscovery
    *  (freshness parity: sibling cards get the same death gate as primary). */
   private probeFactory?: (sessionId: string) => () => boolean | null;
-  /** Registry status probe factory (serac.experimental.registryStatus), injected
+  /** Registry status probe factory (serac.discovery.registryStatus), injected
    *  by SessionDiscovery alongside the liveness probe. */
   private statusProbeFactory?: (sessionId: string) => RegistryStatusProbe;
   /** Per-session writer-ownership probe factory, injected by SessionDiscovery —

@@ -1,5 +1,5 @@
 /**
- * Registry-primary status (serac.experimental.registryStatus): while Claude
+ * Registry-primary status (serac.discovery.registryStatus): while Claude
  * Code's own status gives a verdict, inference may only move the card to the
  * status the registry already says, and syncRegistryStatus() applies it.
  * Scenarios are from the 2026-10-21 shadow log: auto-mode permission prompts
@@ -295,4 +295,53 @@ describe('hand-back and parity', () => {
     expect(await run(probe(BUSY, false).p)).toEqual(await run(undefined));
   });
 
+});
+
+describe('subagent rows follow the registry', () => {
+  const spawn = (id: string): JsonlRecord =>
+    ({ type: 'assistant', timestamp: ts(), message: { content: [{ type: 'tool_use', name: 'Agent', id, input: { description: 'worker' } }] } });
+  const sideTool = (name: string, id: string, parent: string): JsonlRecord =>
+    ({ type: 'assistant', isSidechain: true, parentToolUseID: parent, timestamp: ts(), message: { content: [{ type: 'tool_use', name, id }] } } as JsonlRecord);
+
+  it('a slow subagent tool does not mark its row waiting while the registry says busy', async () => {
+    const { p } = probe(BUSY);
+    const mgr = make(p);
+    await feed(mgr, [user('go'), spawn('agent-1')]);
+    await feed(mgr, [sideTool('Bash', 'sc-1', 'agent-1')]);
+    vi.advanceTimersByTime(20_000);
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(false);
+    expect(mgr.getStatus()).toBe('running');
+  });
+
+  it('in auto mode, a subagent prompt the registry reports marks the row, and busy clears it', async () => {
+    const { p, set } = probe(BUSY);
+    const mgr = make(p);
+    await feed(mgr, [user('go', { permissionMode: 'auto' }), spawn('agent-1')]);
+    await feed(mgr, [sideTool('Bash', 'sc-1', 'agent-1')]);
+    set(PERMISSION);
+    mgr.syncRegistryStatus();
+    vi.advanceTimersByTime(20_000);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(true);
+    set(BUSY);
+    mgr.syncRegistryStatus();
+    expect(mgr.getStatus()).toBe('running');
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(false);
+  });
+});
+
+describe('subagent rows and an input-needed wait', () => {
+  it('in auto mode, the parent asking the user something does not mark a slow subagent waiting', async () => {
+    const spawn: JsonlRecord = { type: 'assistant', timestamp: ts(), message: { content: [{ type: 'tool_use', name: 'Agent', id: 'agent-1', input: { description: 'worker' } }] } };
+    const sideBash = { type: 'assistant', isSidechain: true, parentToolUseID: 'agent-1', timestamp: ts(), message: { content: [{ type: 'tool_use', name: 'Bash', id: 'sc-1' }] } } as JsonlRecord;
+    const { p, set } = probe(BUSY);
+    const mgr = make(p);
+    await feed(mgr, [user('go', { permissionMode: 'auto' }), spawn]);
+    await feed(mgr, [sideBash]);
+    set(INPUT);
+    mgr.syncRegistryStatus();
+    vi.advanceTimersByTime(20_000);
+    expect(mgr.getStatus()).toBe('waiting');
+    expect(mgr.getSnapshot().subagents[0].waitingOnPermission).toBe(false);
+  });
 });

@@ -61,7 +61,7 @@
  *               (permission false-positive gate: a dead process can't be waiting on a prompt; also
  *                suppresses the permission timer firing 'waiting' on a confirmed-dead session)
  *
- * Registry status (serac.experimental.registryStatus): while the registry gives
+ * Registry status (serac.discovery.registryStatus): while the registry gives
  * a verdict, setStatus() refuses inference-driven changes to any other status
  * and syncRegistryStatus() applies it — waiting (registry_waiting[_input]),
  * running (registry_busy), done (registry_idle, as Stop). See ARCHITECTURE.md
@@ -1235,7 +1235,7 @@ export class SessionManager {
     return this.registryStatus?.verdict() ?? null;
   }
 
-  /** Apply the registry's verdict (serac.experimental.registryStatus).
+  /** Apply the registry's verdict (serac.discovery.registryStatus).
    *  Called by discovery each poll and whenever the registry dir changes.
    *  Returns whether anything changed. Transitions carry `registry_*`
    *  reasons, which the inference gate in setStatus() always lets through. */
@@ -1254,6 +1254,13 @@ export class SessionManager {
       const label = input ? 'Waiting for your response' : 'Waiting for permission';
       if (this.state.activity !== label) { this.appendActivity(label); }
     } else if (v.status === 'running') {
+      // Waiting → busy: the prompt was answered, so no subagent row can still
+      // be blocked on it. Only on that edge: a hook can mark a row a moment
+      // before the registry's own waiting lands, and clearing on every busy
+      // sync would drop that mark for good.
+      if (before === 'waiting') {
+        for (const sa of this.state.subagents) { sa.waitingOnPermission = false; }
+      }
       this.setRunning('registry_busy');
     } else if (this.state.status !== 'done') {
       // Turn over, exactly as Stop would end it: tools cleared, foreground
@@ -2641,7 +2648,16 @@ export class SessionManager {
     // be blocked on a prompt either. A HOOK fire is ground truth (Claude Code
     // confirming a real prompt for this subagent) and must never be
     // suppressed by mode. See isAutoAcceptMode().
-    if (source === 'timer' && !needsUserInput && this.isAutoAcceptMode()) { return; }
+    // Under a registry verdict the registry decides instead: a timer fire
+    // marks the row only while Claude Code says the session is waiting (so a
+    // slow subagent Bash no longer reads waiting under busy, and a real prompt
+    // in auto mode does mark its row).
+    if (source === 'timer' && !needsUserInput) {
+      const v = this.registryVerdict();
+      // An "input needed" wait is the parent asking the user something, not
+      // a prompt this subagent could be blocked on.
+      if (v ? v.status !== 'waiting' || v.waitingFor === 'input needed' : this.isAutoAcceptMode()) { return; }
+    }
     subagent.waitingOnPermission = true;
     if (this.state.status === 'running' && this.allRunningSubagentsBlocked()) {
       this.setStatus('waiting', 'subagent_permission_bubble');

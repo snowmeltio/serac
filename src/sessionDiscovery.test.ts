@@ -3007,7 +3007,7 @@ describe('registry status shadow mode', () => {
   });
 });
 
-describe('registry status (serac.experimental.registryStatus)', () => {
+describe('registry status (serac.discovery.registryStatus)', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sd-regstatus-'));
     workspacePath = path.join(tmpDir, 'workspace');
@@ -3053,7 +3053,7 @@ describe('registry status (serac.experimental.registryStatus)', () => {
   }
 
   it('a local card follows the registry, and the watcher path pushes the change', async () => {
-    _setConfigValues({ 'serac.experimental.registryStatus': true });
+    _setConfigValues({ 'serac.discovery.registryStatus': true });
     createJsonlFile(SID);
     const onChange = vi.fn();
     const { discovery, refresh } = await startDiscovery(onChange);
@@ -3076,7 +3076,8 @@ describe('registry status (serac.experimental.registryStatus)', () => {
     discovery.stop();
   });
 
-  it('flag off: a registry scan starts the identity check for a busy process before any ceiling asks', async () => {
+  it('kill switch off: a registry scan still starts the identity check for a busy process before any ceiling asks', async () => {
+    _setConfigValues({ 'serac.discovery.registryStatus': false });
     createJsonlFile(SID);
     const verified: number[] = [];
     const discovery = new SessionDiscovery(workspacePath, { projectsDir, defaultModelGuess: '',
@@ -3089,7 +3090,7 @@ describe('registry status (serac.experimental.registryStatus)', () => {
   });
 
   it('a foreign session follows the registry too', async () => {
-    _setConfigValues({ 'serac.experimental.registryStatus': true });
+    _setConfigValues({ 'serac.discovery.registryStatus': true });
     const otherWs = path.join(tmpDir, 'other-ws');
     fs.mkdirSync(otherWs, { recursive: true });
     const otherKey = otherWs.replace(/[^a-zA-Z0-9]/g, '-');
@@ -3107,7 +3108,7 @@ describe('registry status (serac.experimental.registryStatus)', () => {
   });
 
   it('a busy applied from the registry clears the done card\'s acknowledgement at once', async () => {
-    _setConfigValues({ 'serac.experimental.registryStatus': true });
+    _setConfigValues({ 'serac.discovery.registryStatus': true });
     createJsonlFile(SID);
     const { discovery, refresh } = await startDiscovery();
     writeStatus(SID, 'idle');
@@ -3125,7 +3126,17 @@ describe('registry status (serac.experimental.registryStatus)', () => {
     discovery.stop();
   });
 
-  it('flag off: the registry never moves a card', async () => {
+  it('on by default: with no setting, a local card follows the registry', async () => {
+    createJsonlFile(SID);
+    const { discovery, refresh } = await startDiscovery();
+    writeStatus(SID, 'waiting', 'permission prompt');
+    await refresh();
+    expect(discovery.getSnapshots().find(s => s.sessionId === SID)?.status).toBe('waiting');
+    discovery.stop();
+  });
+
+  it('kill switch off: the registry never moves a card', async () => {
+    _setConfigValues({ 'serac.discovery.registryStatus': false });
     createJsonlFile(SID);
     const { discovery, refresh } = await startDiscovery();
     const before = discovery.getSnapshots().find(s => s.sessionId === SID)?.status;

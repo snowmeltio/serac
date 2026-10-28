@@ -124,10 +124,10 @@ export class SessionDiscovery {
   private readonly sessionsDir: string;
   private readonly shadowRegistry: ProcessRegistry;
   private readonly registryShadow = createRegistryShadow();
-  /** serac.experimental.registryStatus, read once per poll (a SessionManager
+  /** serac.discovery.registryStatus, read once per poll (a SessionManager
    *  consults its probe on every status change). */
-  private registryStatusOn = readSettings().experimental.registryStatus;
-  /** Per-session registry verdicts for the experimental registry status,
+  private registryStatusOn = readSettings().discovery.registryStatus;
+  /** Per-session registry verdicts for registry status,
    *  read from the shadow registry (watcher-fresh). */
   private readonly registryStatusFeed: RegistryStatusFeed;
   private stopRegistryWatch: (() => void) | null = null;
@@ -1598,7 +1598,7 @@ export class SessionDiscovery {
       return;
     }
     if (this.disposed) { return; }
-    // Registry status (experimental): a verdict that lands between polls is
+    // Registry status: a verdict that lands between polls is
     // applied and pushed now, not at the next poll.
     if (this.syncRegistryStatus() && this.onChangeCallback) { this.onChangeCallback(); }
     this.observeRegistryShadow();
@@ -1606,7 +1606,7 @@ export class SessionDiscovery {
 
   /** Apply the registry's verdict to every tracked session (local, sibling,
    *  foreign, team) and reconcile acknowledgements. True when anything
-   *  changed. A no-op while serac.experimental.registryStatus is off. */
+   *  changed. A no-op while serac.discovery.registryStatus is off. */
   private syncRegistryStatus(): boolean {
     if (!this.registryStatusOn) { return false; }
     let changed = false;
@@ -1908,7 +1908,7 @@ export class SessionDiscovery {
 
   private async pollInner(pollStart: number): Promise<void> {
     try {
-      this.registryStatusOn = readSettings().experimental.registryStatus;
+      this.registryStatusOn = readSettings().discovery.registryStatus;
 
       // Reload meta only if externally modified (prevents overwriting in-memory mutations) [H2]
       await this.meta.reloadIfChanged();
@@ -2105,6 +2105,7 @@ export class SessionDiscovery {
       // WriterOwnership.resolveFor() at the point of decision instead. Don't
       // add an authoritative gate against this cached path without giving it
       // the same treatment.
+      let shadowScannedThisPoll = false;
       if (this.processRegistry.shouldRescan()) {
         await this.processRegistry.scan();
         // Remote Control server presence, for the top-bar indicator. Same
@@ -2127,11 +2128,18 @@ export class SessionDiscovery {
         // The watcher misses a process that dies without removing its file
         // (kill -9), so the shadow rescans on this cadence too.
         await this.shadowRegistry.scan();
+        shadowScannedThisPoll = true;
       }
 
       // Registry status, shadow mode: compare after every cycle so Serac's
       // side of each disagreement is at most one poll old.
       this.ensureRegistryWatch(Date.now());
+      // No watcher (fs.watch failed or died): the 4-poll rescan above would
+      // leave a verdict up to ~8 s old, and a stale verdict vetoes inference,
+      // so a short turn could read done throughout. Rescan every poll instead.
+      if (!this.stopRegistryWatch && this.registryStatusOn && !shadowScannedThisPoll) {
+        try { await this.shadowRegistry.scan(); } catch (err) { this.log.warn('[status] shadow registry scan failed:', err); }
+      }
       if (this.syncRegistryStatus()) { changed = true; }
       this.observeRegistryShadow();
 

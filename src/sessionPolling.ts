@@ -174,7 +174,7 @@ export function collectTrackedStatuses(
   }
 }
 
-/** Apply each tracked session's registry verdict (serac.experimental.
+/** Apply each tracked session's registry verdict (serac.discovery.
  *  registryStatus). True when any card changed. */
 export function syncTrackedRegistryStatus(sessions: Map<string, SessionManager>): boolean {
   let changed = false;

@@ -848,7 +848,7 @@ export function activate(context: vscode.ExtensionContext): SeracExports {
       return classifyTransfer({
         procs, nowMs, lastWriteMtimeMs,
         sessionRunning: discovery.isSessionRunning(sessionId),
-        useRegistryStatus: readSettings().experimental.registryStatus,
+        useRegistryStatus: readSettings().discovery.registryStatus,
       });
     };
     const busy = () => vscode.window.setStatusBarMessage('This session is still working from your phone. Try again when it goes quiet.', 5000);

@@ -270,6 +270,12 @@
             "minimum": 1,
             "description": "Staleness window (days) for Workflow runs. Leave empty to inherit serac.discovery.ageGateDays."
           },
+          "serac.discovery.registryStatus": {
+            "type": "boolean",
+            "default": true,
+            "scope": "application",
+            "description": "Takes each session's running, waiting, or done state from Claude Code itself (Claude Code 2.1.269 and later record it), instead of inferring it from transcript activity. This catches permission prompts in auto mode and long silent steps. A session stays running while its background agents or workflows work. Sessions without that record (older Claude Code) fall back to inference. Turn off only to go back to inference alone if the status looks wrong."
+          },
           "serac.discovery.replayCache": {
             "type": "boolean",
             "default": true,
@@ -413,12 +419,6 @@
             "default": false,
             "scope": "application",
             "description": "Experimental, off by default. Shows a 📡→ chip on sessions started from your phone (Remote Control). Clicking it brings the session into this window: if the phone's copy is still running and idle, Serac asks first, then ends that process (SIGTERM, never forced), rewrites the transcript's entrypoint so the Claude Code panel will restore it, and opens the chat here. The session reappears on your phone once it is open here. Off means no chip, no rewrite, and a click on such a card does what it does today."
-          },
-          "serac.experimental.registryStatus": {
-            "type": "boolean",
-            "default": false,
-            "scope": "application",
-            "description": "Experimental, off by default. When on, Serac takes each session's running, waiting, or done state from Claude Code itself (Claude Code 2.1.269 and later record it), instead of inferring it from transcript activity. This catches permission prompts in auto mode and long silent steps. A session stays running while its background agents or workflows work. Sessions without that record (older Claude Code) fall back to inference. Off keeps today's behaviour."
           },
           "serac.experimental.operatorName": {
             "type": "string",
