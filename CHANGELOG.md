@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.32.1 (2026-10-28) - MCP tool names keep their underscores
+
+### Fixed
+- **Activity lines show MCP tool names in full.** A card running a tool such as `mcp__claude-in-chrome__navigate` read "Using mcpclaude-in-chromenavigate", because Serac treated the double underscores as bold markers and removed them. Names with single underscores, such as `file_path`, lost theirs the same way. Underscores inside a word now stay.
+
 ## v1.32.0 (2026-10-28) - Status comes from Claude Code
 
 ### Changed
