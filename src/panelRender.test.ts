@@ -990,7 +990,44 @@ describe('renderUsageHtml', () => {
     };
     const html = renderUsageHtml(makeCtx({ settings }), { ...liveUsage, quotaPct5h: null }, [], NOW);
     expect(html).not.toContain('usage-bar-row');
+    expect(html).toContain('Weekly usage is hidden in settings.');
     expect(html).toContain('Updated <1m ago');
+  });
+
+  it('no 5-hour limit and no active weekly window explains the empty section', () => {
+    const html = renderUsageHtml(makeCtx(), {
+      ...liveUsage, quotaPct5h: null, quotaPctWeekly: 0, weeklyResetTime: undefined,
+    }, [], NOW);
+    expect(html).not.toContain('usage-bar-row');
+    expect(html).toContain('No active usage windows.');
+  });
+
+  it('a visible row suppresses the empty-section message', () => {
+    expect(renderUsageHtml(makeCtx(), liveUsage, [], NOW)).not.toContain('usage-ghost-msg');
+    expect(renderUsageHtml(makeCtx(), { ...liveUsage, quotaPct5h: null }, [], NOW)).not.toContain('usage-ghost-msg');
+  });
+
+  it('weekly over-quota shows its own status line under the weekly bar', () => {
+    const html = renderUsageHtml(makeCtx(), { ...liveUsage, quotaPct5h: null, quotaPctWeekly: 100 }, [], NOW);
+    expect(html).toContain('LIMIT REACHED');
+    // The label sits inside the weekly block, after its bar.
+    expect(html.indexOf('LIMIT REACHED')).toBeGreaterThan(html.indexOf('Weekly session usage'));
+    expect(renderUsageHtml(makeCtx(), { ...liveUsage, quotaPctWeekly: 100, extraUsageEnabled: true }, [], NOW))
+      .toContain('EXTRA USAGE');
+  });
+
+  it('Fable over-quota shows its own status line under the Fable bar', () => {
+    const html = renderUsageHtml(makeCtx(), {
+      ...liveUsage, quotaPctWeeklyFable: 100, weeklyResetTimeFable: NOW + 86_400_000,
+    }, [], NOW);
+    expect(html.split('LIMIT REACHED').length - 1).toBe(1);
+    expect(html.indexOf('LIMIT REACHED')).toBeGreaterThan(html.indexOf('Weekly Fable usage'));
+  });
+
+  it('under-quota rows show no status line', () => {
+    expect(renderUsageHtml(makeCtx(), {
+      ...liveUsage, quotaPctWeekly: 99, quotaPctWeeklyFable: 99, weeklyResetTimeFable: NOW + 86_400_000,
+    }, [], NOW)).not.toContain('usage-status');
   });
 });
 

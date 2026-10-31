@@ -1073,6 +1073,11 @@ export function renderUsageHtml(
     return html + slotsFooter;
   }
 
+  // Over-quota status line, shared by the session, weekly and Fable rows.
+  const overQuotaHtml = (pct: number | null | undefined) => (pct || 0) >= 100
+    ? '<div class="usage-status critical">' + (u.extraUsageEnabled ? 'EXTRA USAGE' : 'LIMIT REACHED') + '</div>'
+    : '';
+
   // --- Current session (5h) ---
   // null = the account has no 5-hour limit (removed server-side): no row.
   const sessionExpired = u.resetTime && u.resetTime <= now;
@@ -1092,7 +1097,6 @@ export function renderUsageHtml(
   } else {
     const sessionTickPct = getElapsedPct(u.resetTime, 5 * 60 * 60 * 1000);
     const sessionCls = quotaClass(u.quotaPct5h || 0, sessionTickPct, ctx.settings.usage.warnAtPercent, ctx.settings.usage.criticalAtPercent);
-    const overQuota = (u.quotaPct5h || 0) >= 100;
 
     html += '<div class="usage-row">';
     html += '<div class="usage-row-label">Current session usage</div>';
@@ -1109,10 +1113,7 @@ export function renderUsageHtml(
     html += '<span class="usage-bar-pct ' + sessionCls + '">' + Math.round(u.quotaPct5h || 0) + '%<span class="usage-bar-elapsed"> / ' + Math.round(sessionTickPct) + '%</span></span>';
     html += '</div>';
 
-    if (overQuota) {
-      const overLabel = u.extraUsageEnabled ? 'EXTRA USAGE' : 'LIMIT REACHED';
-      html += '<div class="usage-status critical">' + overLabel + '</div>';
-    }
+    html += overQuotaHtml(u.quotaPct5h);
   }
 
   // A weekly block draws its top separator only when a row sits above it.
@@ -1153,6 +1154,7 @@ export function renderUsageHtml(
     html += '</div>';
     html += '<span class="usage-bar-pct ' + weeklyCls + '">' + Math.round(u.quotaPctWeekly || 0) + '%<span class="usage-bar-elapsed"> / ' + Math.round(weeklyTickPct) + '%</span></span>';
     html += '</div>';
+    html += overQuotaHtml(u.quotaPctWeekly);
     html += '</div>';
   }
 
@@ -1187,9 +1189,18 @@ export function renderUsageHtml(
     html += '</div>';
     html += '<span class="usage-bar-pct ' + fableCls + '">' + Math.round(u.quotaPctWeeklyFable || 0) + '%<span class="usage-bar-elapsed"> / ' + Math.round(fableTickPct) + '%</span></span>';
     html += '</div>';
+    html += overQuotaHtml(u.quotaPctWeeklyFable);
     html += '</div>';
   }
   } // end showWeekly gate
+
+  // No rows drawn (only possible without a 5-hour limit): say why, so the
+  // section doesn't read as broken next to a healthy footer.
+  if (!html) {
+    html += '<div class="usage-ghost-msg">' + (ctx.settings.usage.showWeekly
+      ? 'No active usage windows.'
+      : 'No 5-hour limit. Weekly usage is hidden in settings.') + '</div>';
+  }
 
   // Footer row: companion slots on the left, Updated-ago on the right
   let footer = '';
