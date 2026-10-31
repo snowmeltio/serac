@@ -49,14 +49,17 @@ function findWeeklyModelLimit(
  *  window still reports `five_hour: { utilization: 0, resets_at: null }`
  *  plus a `session` limits entry; an account with the 5-hour limit removed
  *  reports `five_hour: null` and no `session` entry. Either signal alone
- *  keeps the quota, so a half-migrated response doesn't hide a live bar. */
+ *  keeps the quota, so a half-migrated response doesn't hide a live bar.
+ *  Only an unscoped `session` entry counts: a per-model session cap (none
+ *  observed yet, but weekly quotas went that way) isn't the account's
+ *  5-hour limit. */
 function findSessionQuota(
   data: UsageApiResponse | null,
 ): { utilization: number; resetsAt: string | null } | null {
   if (data?.five_hour) {
     return { utilization: data.five_hour.utilization, resetsAt: data.five_hour.resets_at };
   }
-  const session = data?.limits?.find((l) => l.group === 'session');
+  const session = data?.limits?.find((l) => l.group === 'session' && !l.scope?.model);
   return session ? { utilization: session.percent, resetsAt: session.resets_at } : null;
 }
 

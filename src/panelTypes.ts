@@ -24,7 +24,8 @@ export type DiscoveryPhase = 'pending' | 'partial' | 'ready';
 export interface UsageSnapshot {
   /** 5-hour session utilisation as 0-100 (from Anthropic API), or null when
    *  the account has no 5-hour limit (the API reports `five_hour: null` and
-   *  no `session` limits entry). The panel hides the session row on null. */
+   *  no unscoped `session` limits entry). The panel hides the session row
+   *  on null. */
   quotaPct5h: number | null;
   /** Session reset time as epoch ms */
   resetTime: number | null;

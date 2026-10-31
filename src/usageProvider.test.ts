@@ -406,6 +406,39 @@ describe('snapshot mapping from API response', () => {
     expect(s.resetTime).toBe(new Date('2026-06-01T10:00:00Z').getTime());
   });
 
+  it('ignores a model-scoped session entry when five_hour is null', async () => {
+    setupApiMock(JSON.stringify({
+      five_hour: null,
+      limits: [{
+        kind: 'session_scoped', group: 'session', percent: 40, resets_at: '2026-06-01T10:00:00Z',
+        scope: { model: { id: null, display_name: 'Fable' } },
+      }],
+    }));
+    const p = makeProvider();
+    await p.refresh();
+    const s = p.getSnapshot();
+    expect(s.quotaPct5h).toBeNull();
+    expect(s.resetTime).toBeNull();
+  });
+
+  it('picks the unscoped session entry over a model-scoped one listed first', async () => {
+    setupApiMock(JSON.stringify({
+      five_hour: null,
+      limits: [
+        {
+          kind: 'session_scoped', group: 'session', percent: 40, resets_at: '2026-06-01T11:00:00Z',
+          scope: { model: { id: null, display_name: 'Fable' } },
+        },
+        { kind: 'session', group: 'session', percent: 12, resets_at: '2026-06-01T10:00:00Z', scope: { model: null } },
+      ],
+    }));
+    const p = makeProvider();
+    await p.refresh();
+    const s = p.getSnapshot();
+    expect(s.quotaPct5h).toBe(12);
+    expect(s.resetTime).toBe(new Date('2026-06-01T10:00:00Z').getTime());
+  });
+
   it('ignores limits entries that are not a weekly model-scoped Fable quota', async () => {
     const apiResponse = {
       five_hour: { utilization: 10, resets_at: '2026-06-01T10:00:00Z' },
