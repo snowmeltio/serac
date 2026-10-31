@@ -886,14 +886,13 @@ describe('SessionManager.sweepBackgroundWork (idle done-card maintenance)', () =
     // Simulates a reload replaying yesterday's JSONL: the launch record's
     // timestamp is already past the ceiling. startedAt must come from the record,
     // not wall-clock-at-processing — otherwise the age would reset to ~0 on reload.
+    // The end-of-replay prune drops it before any snapshot is taken (it used to
+    // count until the first sweep, painting the done card running at window open).
     const mgr = makeManager();
     const oldTs = new Date(Date.now() - BACKGROUND_SHELL_CEILING_MS - 60_000).toISOString();
     await feedRecords(mgr, [launchRecord('shell_old', 't9', oldTs)]);
-    expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
-    // Sweeping at "now" (NOT now+ceiling) already drops it: its real age exceeds
-    // the ceiling because the start is anchored to the old record timestamp.
-    expect(mgr.sweepBackgroundWork(Date.now())).toBe(true);
     expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
+    expect(mgr.sweepBackgroundWork(Date.now())).toBe(false); // nothing left to drop
   });
 
   it('does NOT clear on a registry miss (never seen live → unknown, not dead)', async () => {

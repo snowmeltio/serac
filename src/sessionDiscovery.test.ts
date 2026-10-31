@@ -2145,6 +2145,72 @@ describe('SessionDiscovery', () => {
     });
   });
 
+  // ── Background shell: same display override as L1 (2026-10-31) ──
+  // An acknowledged card rolled to "Seen" beside its own 🐚 badge while a
+  // run_in_background gate run was still going. The turn is closed here by
+  // an interrupt marker (a definite, synchronous turn end) so no idle timer
+  // is needed; the old enqueue keeps the C3 guard out of the way.
+  describe('background shell: done + outstanding shell presents as running, never stale', () => {
+    const SHELL_ID = 'bshell01';
+
+    function shellSessionJsonl(t0: number, opts: { finished?: boolean } = {}): string {
+      const at = (ms: number) => new Date(t0 + ms).toISOString();
+      const lines: object[] = [
+        { type: 'user', timestamp: at(-300_000), message: { content: [{ type: 'text', text: 'run the gates' }] } },
+        { type: 'assistant', timestamp: at(-299_000), message: { content: [{ type: 'tool_use', id: 'toolu_bash_bg', name: 'Bash', input: { command: 'make gates', run_in_background: true } }] } },
+        { type: 'user', timestamp: at(-298_000), message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_bash_bg', content: `Command running in background with ID: ${SHELL_ID}. Output is being written to: /tmp/${SHELL_ID}.output.` }] } },
+        { type: 'user', timestamp: at(-297_000), message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] } },
+      ];
+      if (opts.finished) {
+        lines.push({
+          type: 'queue-operation', operation: 'enqueue', timestamp: at(-200_000),
+          content: `<task-notification>\n<task-id>${SHELL_ID}</task-id>\n<tool-use-id>toolu_bash_bg</tool-use-id>\n<status>completed</status>\n<summary>Background command "make gates" completed (exit code 0)</summary>\n</task-notification>`,
+        });
+      }
+      return lines.map(l => JSON.stringify(l)).join('\n');
+    }
+
+    it('an acknowledged done card with an outstanding shell reads running past the 10s rollover', async () => {
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        createJsonlFile('shell-live', shellSessionJsonl(t0));
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        discovery.acknowledgeSession('shell-live');
+
+        vi.setSystemTime(t0 + 11_000);
+        const snap = discovery.getSnapshots().find(s => s.sessionId === 'shell-live');
+        expect(snap?.backgroundShellCount).toBe(1);
+        expect(snap?.status).toBe('running');
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('once the shell notification lands, the same card rolls to stale as before', async () => {
+      const t0 = Date.now();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(t0);
+        createJsonlFile('shell-finished', shellSessionJsonl(t0, { finished: true }));
+        const discovery = makeDiscovery();
+        await discovery.start(() => {});
+        discovery.acknowledgeSession('shell-finished');
+
+        vi.setSystemTime(t0 + 11_000);
+        const snap = discovery.getSnapshots().find(s => s.sessionId === 'shell-finished');
+        expect(snap?.backgroundShellCount).toBeUndefined();
+        expect(snap?.status).toBe('stale');
+        discovery.stop();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   // ── L2 (H-2): C3 enqueue-vs-stale guard + primary done->stale rollover ──
   describe('L2: done+acknowledged+10s -> stale rollover, gated by the C3 enqueue guard', () => {
     /** Writes an already-done, already-acknowledged session and returns its id.

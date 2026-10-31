@@ -108,6 +108,35 @@ describe('BackgroundShellTracker', () => {
     expect(t.outstandingIds()).toEqual(['bfzrk3tz9']);
   });
 
+  it('complete() clears one shell by id (the <task-notification> path)', () => {
+    const t = makeBackgroundShellTracker();
+    t.noteToolResult(LAUNCH_BFZRK, 1000);
+    t.noteToolResult(LAUNCH_B5LKU, 2000);
+    expect(t.complete('bfzrk3tz9')).toBe(true);
+    expect(t.outstandingIds()).toEqual(['b5lku6yoc']);
+    // An agent's task-id, or a shell already cleared, is a no-op.
+    expect(t.complete('bfzrk3tz9')).toBe(false);
+    expect(t.complete('a14975e12a105f04f')).toBe(false);
+    expect(t.count()).toBe(1);
+  });
+
+  it('a foreground Bash moved to the background at its timeout counts as a launch', () => {
+    const t = makeBackgroundShellTracker();
+    t.noteToolResult('Command did not complete within its 120s timeout and was moved to the background '
+      + '(ID: bdageiwn0). Output is being written to: /private/tmp/claude-501/x/tasks/bdageiwn0.output. '
+      + 'You will be notified when it completes.', 1000);
+    expect(t.outstandingIds()).toEqual(['bdageiwn0']);
+  });
+
+  it('a TaskStop result clears its shell (stopped shells get no notification)', () => {
+    const t = makeBackgroundShellTracker();
+    t.noteToolResult(LAUNCH_BFZRK, 1000);
+    t.noteToolResult(LAUNCH_B5LKU, 2000);
+    t.noteToolResult('{"message":"Successfully stopped task: bfzrk3tz9 (npx wrangler tail)",'
+      + '"task_id":"bfzrk3tz9","task_type":"local_bash","command":"npx wrangler tail"}', 3000);
+    expect(t.outstandingIds()).toEqual(['b5lku6yoc']);
+  });
+
   it('prunes shells past the hard ceiling (abandoned / missed completion)', () => {
     const t = makeBackgroundShellTracker();
     t.noteToolResult(LAUNCH_BFZRK, 1000);
