@@ -353,7 +353,7 @@ describe('snapshot mapping from API response', () => {
     await p.refresh();
     const s = p.getSnapshot();
 
-    expect(s.quotaPct5h).toBe(0);
+    expect(s.quotaPct5h).toBeNull();
     expect(s.resetTime).toBeNull();
     expect(s.quotaPctWeekly).toBe(0);
     expect(s.quotaPctWeeklySonnet).toBeNull();
@@ -363,6 +363,47 @@ describe('snapshot mapping from API response', () => {
     expect(s.extraUsageCredits).toBeNull();
     expect(s.apiConnected).toBe(true);
     expect(s.loaded).toBe(true);
+  });
+
+  it('maps a removed 5-hour limit (five_hour null, no session entry) to null', async () => {
+    // Shape observed live on 2026-10-31 for an account with the limit removed.
+    setupApiMock(JSON.stringify({
+      five_hour: null,
+      seven_day: { utilization: 3, resets_at: '2026-11-04T08:59:59Z' },
+      limits: [
+        { kind: 'weekly_all', group: 'weekly', percent: 3, resets_at: '2026-11-04T08:59:59Z', scope: null },
+      ],
+    }));
+    const p = makeProvider();
+    await p.refresh();
+    const s = p.getSnapshot();
+    expect(s.quotaPct5h).toBeNull();
+    expect(s.resetTime).toBeNull();
+    expect(s.quotaPctWeekly).toBe(3);
+  });
+
+  it('keeps an idle 5-hour window (0%, no reset time) at 0, not null', async () => {
+    setupApiMock(JSON.stringify({
+      five_hour: { utilization: 0, resets_at: null },
+      limits: [{ kind: 'session', group: 'session', percent: 0, resets_at: null, scope: null }],
+    }));
+    const p = makeProvider();
+    await p.refresh();
+    const s = p.getSnapshot();
+    expect(s.quotaPct5h).toBe(0);
+    expect(s.resetTime).toBeNull();
+  });
+
+  it('falls back to the session limits entry when five_hour is null', async () => {
+    setupApiMock(JSON.stringify({
+      five_hour: null,
+      limits: [{ kind: 'session', group: 'session', percent: 12, resets_at: '2026-06-01T10:00:00Z', scope: null }],
+    }));
+    const p = makeProvider();
+    await p.refresh();
+    const s = p.getSnapshot();
+    expect(s.quotaPct5h).toBe(12);
+    expect(s.resetTime).toBe(new Date('2026-06-01T10:00:00Z').getTime());
   });
 
   it('ignores limits entries that are not a weekly model-scoped Fable quota', async () => {

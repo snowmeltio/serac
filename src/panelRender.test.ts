@@ -962,6 +962,36 @@ describe('renderUsageHtml', () => {
     }, [], NOW);
     expect(html).not.toContain('Weekly Fable');
   });
+
+  it('hides the session row when the account has no 5-hour limit', () => {
+    // An expired resetTime must not resurrect the ghost row either.
+    const html = renderUsageHtml(makeCtx(), {
+      ...liveUsage, quotaPct5h: null, resetTime: NOW - 1,
+      quotaPctWeeklyFable: 0, weeklyResetTimeFable: NOW + 3 * 86_400_000,
+    }, [], NOW);
+    expect(html).not.toContain('Current session');
+    expect(html).not.toContain('window expired');
+    expect(html).toContain('Weekly session usage');
+    expect(html).toContain('Weekly Fable usage');
+    // Weekly is now the first row: no separator above it, but Fable keeps one.
+    expect(html.startsWith('<div><div class="usage-row">')).toBe(true);
+    expect(html.split('usage-weekly-sep').length - 1).toBe(1);
+  });
+
+  it('keeps the weekly separator while the session row is shown', () => {
+    const html = renderUsageHtml(makeCtx(), liveUsage, [], NOW);
+    expect(html.split('usage-weekly-sep').length - 1).toBe(1);
+  });
+
+  it('no 5-hour limit and showWeekly=false leaves only the footer', () => {
+    const settings = {
+      ...DEFAULT_PANEL_SETTINGS,
+      usage: { ...DEFAULT_PANEL_SETTINGS.usage, showWeekly: false },
+    };
+    const html = renderUsageHtml(makeCtx({ settings }), { ...liveUsage, quotaPct5h: null }, [], NOW);
+    expect(html).not.toContain('usage-bar-row');
+    expect(html).toContain('Updated <1m ago');
+  });
 });
 
 describe('renderFooterSlots', () => {
