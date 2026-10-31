@@ -18,11 +18,23 @@
  *
  * Detection is string-matched from main-thread `tool_result` text, so it is
  * brittle by nature: the markers are Claude Code surface strings, not a stable
- * API. Two signals, both carried in `tool_result` blocks of user records:
- *   - START:      "Command running in background with ID: <id>"
- *   - COMPLETION: a retrieval result carrying `<task_id><id></task_id>` together
- *                 with a terminal `<status>completed|failed|killed|…</status>`.
- *                 A `<status>running</status>` poll does NOT clear the shell.
+ * API. Two start forms and three completion forms:
+ *   - START:      "Command running in background with ID: <id>" (a main-thread
+ *                 `tool_result` for `run_in_background: true`).
+ *   - START:      "… was moved to the background (ID: <id>)": a foreground
+ *                 Bash that hit its timeout keeps running detached (315
+ *                 distinct ids on disk, 2026-10-31).
+ *   - COMPLETION: a retrieval `tool_result` carrying `<task_id><id></task_id>`
+ *                 together with a terminal `<status>completed|failed|killed|…
+ *                 </status>`. A `<status>running</status>` poll does NOT clear
+ *                 the shell.
+ *   - COMPLETION: the harness's `<task-notification>` (`<task-id><id></task-id>`
+ *                 plus a terminal `<status>`), the only completion current CLIs
+ *                 write ("You will be notified when it completes"). SessionManager
+ *                 parses it alongside background agents and calls `complete()`.
+ *   - COMPLETION: a TaskStop `tool_result` ("Successfully stopped task: <id>").
+ *                 A stopped shell gets no `<task-notification>` (10 of the 17
+ *                 notification-less shells in a 30-day sample were stopped).
  *
  * Hard ceiling: a shell never observed completing is dropped after
  * `BACKGROUND_SHELL_CEILING_MS` (assume abandoned, or we missed the retrieval).
@@ -39,7 +51,8 @@
  *  generous relative to the 3-min running / 10-min waiting status ceilings. */
 export const BACKGROUND_SHELL_CEILING_MS = 15 * 60 * 1000;
 
-const START_RE = /Command running in background with ID:\s*([A-Za-z0-9_-]+)/;
+const START_RE = /(?:Command running in background with ID:|was moved to the background \(ID:)\s*([A-Za-z0-9_-]+)/;
+const STOPPED_RE = /Successfully stopped task:\s*([A-Za-z0-9_-]+)/;
 const TASK_ID_RE = /<task_id>\s*([A-Za-z0-9_-]+)\s*<\/task_id>/;
 const STATUS_RE = /<status>\s*([A-Za-z_]+)\s*<\/status>/;
 
@@ -69,6 +82,10 @@ export interface BackgroundShellTracker {
    *  completion id is a harmless no-op (covers `local_agent` task retrievals
    *  that share the `<task_id>` shape but were never tracked as shells). */
   noteToolResult(text: string, now: number): void;
+  /** Clear one shell by id: the `<task-notification>` completion path. Returns
+   *  true when the id was outstanding; an unknown id (a background agent's
+   *  task-id, or a shell already pruned) is a harmless no-op. */
+  complete(id: string): boolean;
   /** Drop shells launched more than `ceilingMs` ago — abandoned, or we missed
    *  the completion retrieval. Call on the poll cadence with a monotonic-ish
    *  `now` (the demote path already has one). */
@@ -93,10 +110,14 @@ class JsonlBackgroundShellTracker implements BackgroundShellTracker {
     // A retrieval result and a fresh launch are distinct tool_results in
     // practice; handle completion first and return, so an output that happens
     // to echo the launch banner can't re-add a just-finished shell.
-    const completed = parseBackgroundCompletion(text);
+    const completed = parseBackgroundCompletion(text) ?? STOPPED_RE.exec(text)?.[1];
     if (completed) { this.startedAt.delete(completed); return; }
     const started = parseBackgroundStart(text);
     if (started && !this.startedAt.has(started)) { this.startedAt.set(started, now); }
+  }
+
+  complete(id: string): boolean {
+    return this.startedAt.delete(id);
   }
 
   prune(now: number, ceilingMs: number): void {

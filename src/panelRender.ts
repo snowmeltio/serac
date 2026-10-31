@@ -506,8 +506,9 @@ export function renderCardInner(ctx: RenderContext, s: PanelSession, now: number
     }
   }
   // Background-shell badge — a detached `run_in_background` shell is still
-  // going after the turn ended. Non-status (the card keeps its real status);
-  // a quiet running-tinted chip so a `done` card still flags the live build.
+  // going after the turn ended. The badge itself is non-status; discovery
+  // presents a done card with outstanding shells as running (see
+  // SessionDiscovery.getSnapshots), and the chip names what it waits on.
   const bgShells = s.backgroundShellCount ?? 0;
   if (bgShells > 0) {
     const bgLabel = bgShells + ' \u{1F41A}';
