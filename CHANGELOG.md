@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.33.1 (2026-10-31) - Background commands keep the card running
+
+### Fixed
+- **A card waiting on a background command no longer reads Seen.** When an agent started a command in the background and ended its turn, the card read Done, then Seen once you'd looked at it, even though the agent would pick up again when the command finished. The card now reads Running until the command finishes or is stopped. A command that never reports, such as a dev server, stops counting after 15 minutes or when its session ends.
+- **The 🐚 badge clears when a background command finishes.** Current Claude Code reports a finished command in a form Serac didn't read, so the badge stayed up to 15 minutes after the command was done. It now clears straight away, including for commands stopped by the agent and commands moved to the background after timing out.
+
 ## v1.33.0 (2026-10-31) - The 5-hour bar goes when the limit does
 
 ### Changed
