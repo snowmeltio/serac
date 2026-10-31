@@ -45,6 +45,21 @@ function findWeeklyModelLimit(
   );
 }
 
+/** The 5-hour session quota, or null when the account has none. An idle
+ *  window still reports `five_hour: { utilization: 0, resets_at: null }`
+ *  plus a `session` limits entry; an account with the 5-hour limit removed
+ *  reports `five_hour: null` and no `session` entry. Either signal alone
+ *  keeps the quota, so a half-migrated response doesn't hide a live bar. */
+function findSessionQuota(
+  data: UsageApiResponse | null,
+): { utilization: number; resetsAt: string | null } | null {
+  if (data?.five_hour) {
+    return { utilization: data.five_hour.utilization, resetsAt: data.five_hour.resets_at };
+  }
+  const session = data?.limits?.find((l) => l.group === 'session');
+  return session ? { utilization: session.percent, resetsAt: session.resets_at } : null;
+}
+
 /**
  * Provides usage data from two sources:
  * 1. Anthropic OAuth API — real quota percentages and reset times (server truth)
@@ -147,12 +162,14 @@ export class UsageProvider {
       const now = Date.now();
       const fableLimit = findWeeklyModelLimit(apiData?.limits, 'Fable');
       if (fableLimit) { this.fableQuotaSeen = true; }
+      const session = findSessionQuota(apiData);
 
       this.snapshot = {
         // API-sourced quota data (server truth, cached across transient failures)
-        quotaPct5h: apiData?.five_hour?.utilization ?? 0,
-        resetTime: apiData?.five_hour?.resets_at
-          ? new Date(apiData.five_hour.resets_at).getTime() : null,
+        // null claims "no 5-hour limit", so only a real response may say it;
+        // with no data at all the value stays 0 (unknown) as before.
+        quotaPct5h: session ? session.utilization : (apiData ? null : 0),
+        resetTime: session?.resetsAt ? new Date(session.resetsAt).getTime() : null,
         quotaPctWeekly: apiData?.seven_day?.utilization ?? 0,
         weeklyResetTime: apiData?.seven_day?.resets_at
           ? new Date(apiData.seven_day.resets_at).getTime() : null,

@@ -90,7 +90,8 @@ export interface UsageData {
   apiConnected?: boolean;
   /** False on platforms where quota polling isn't available (non-macOS). */
   platformSupported?: boolean;
-  quotaPct5h?: number;
+  /** null = the account has no 5-hour limit; the session row is hidden. */
+  quotaPct5h?: number | null;
   quotaPctWeekly?: number;
   quotaPctWeeklyFable?: number;
   resetTime?: number;

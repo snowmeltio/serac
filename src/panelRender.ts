@@ -1073,9 +1073,17 @@ export function renderUsageHtml(
     return html + slotsFooter;
   }
 
+  // Over-quota status line, shared by the session, weekly and Fable rows.
+  const overQuotaHtml = (pct: number | null | undefined) => (pct || 0) >= 100
+    ? '<div class="usage-status critical">' + (u.extraUsageEnabled ? 'EXTRA USAGE' : 'LIMIT REACHED') + '</div>'
+    : '';
+
   // --- Current session (5h) ---
+  // null = the account has no 5-hour limit (removed server-side): no row.
   const sessionExpired = u.resetTime && u.resetTime <= now;
-  if (sessionExpired) {
+  if (u.quotaPct5h === null) {
+    // Nothing to render; the weekly block below becomes the first row.
+  } else if (sessionExpired) {
     // Ghost state: window expired
     html += '<div class="usage-row ghost">';
     html += '<div class="usage-row-label">Current session</div>';
@@ -1089,7 +1097,6 @@ export function renderUsageHtml(
   } else {
     const sessionTickPct = getElapsedPct(u.resetTime, 5 * 60 * 60 * 1000);
     const sessionCls = quotaClass(u.quotaPct5h || 0, sessionTickPct, ctx.settings.usage.warnAtPercent, ctx.settings.usage.criticalAtPercent);
-    const overQuota = (u.quotaPct5h || 0) >= 100;
 
     html += '<div class="usage-row">';
     html += '<div class="usage-row-label">Current session usage</div>';
@@ -1106,11 +1113,11 @@ export function renderUsageHtml(
     html += '<span class="usage-bar-pct ' + sessionCls + '">' + Math.round(u.quotaPct5h || 0) + '%<span class="usage-bar-elapsed"> / ' + Math.round(sessionTickPct) + '%</span></span>';
     html += '</div>';
 
-    if (overQuota) {
-      const overLabel = u.extraUsageEnabled ? 'EXTRA USAGE' : 'LIMIT REACHED';
-      html += '<div class="usage-status critical">' + overLabel + '</div>';
-    }
+    html += overQuotaHtml(u.quotaPct5h);
   }
+
+  // A weekly block draws its top separator only when a row sits above it.
+  const sepOpen = () => html ? '<div class="usage-weekly-sep">' : '<div>';
 
   // --- Weekly ---
   if (!ctx.settings.usage.showWeekly) {
@@ -1119,7 +1126,7 @@ export function renderUsageHtml(
   const weeklyExpired = u.weeklyResetTime && u.weeklyResetTime <= now;
   if (weeklyExpired) {
     // Ghost state: weekly window expired
-    html += '<div class="usage-weekly-sep">';
+    html += sepOpen();
     html += '<div class="usage-row ghost">';
     html += '<div class="usage-row-label">Weekly session usage</div>';
     html += '<div class="usage-row-reset" style="color:#555555">no active window</div>';
@@ -1133,7 +1140,7 @@ export function renderUsageHtml(
     const weeklyTickPct = getElapsedPct(u.weeklyResetTime, 7 * 24 * 60 * 60 * 1000);
     const weeklyCls = quotaClass(u.quotaPctWeekly || 0, weeklyTickPct, ctx.settings.usage.warnAtPercent, ctx.settings.usage.criticalAtPercent);
 
-    html += '<div class="usage-weekly-sep">';
+    html += sepOpen();
     html += '<div class="usage-row">';
     html += '<div class="usage-row-label">Weekly session usage</div>';
     if (u.weeklyResetTime) {
@@ -1147,13 +1154,14 @@ export function renderUsageHtml(
     html += '</div>';
     html += '<span class="usage-bar-pct ' + weeklyCls + '">' + Math.round(u.quotaPctWeekly || 0) + '%<span class="usage-bar-elapsed"> / ' + Math.round(weeklyTickPct) + '%</span></span>';
     html += '</div>';
+    html += overQuotaHtml(u.quotaPctWeekly);
     html += '</div>';
   }
 
   // --- Weekly Fable (model-scoped weekly quota) ---
   const fableExpired = u.weeklyResetTimeFable && u.weeklyResetTimeFable <= now;
   if (fableExpired) {
-    html += '<div class="usage-weekly-sep">';
+    html += sepOpen();
     html += '<div class="usage-row ghost">';
     html += '<div class="usage-row-label">Weekly Fable usage</div>';
     html += '<div class="usage-row-reset" style="color:#555555">no active window</div>';
@@ -1167,7 +1175,7 @@ export function renderUsageHtml(
     const fableTickPct = getElapsedPct(u.weeklyResetTimeFable, 7 * 24 * 60 * 60 * 1000);
     const fableCls = quotaClass(u.quotaPctWeeklyFable || 0, fableTickPct, ctx.settings.usage.warnAtPercent, ctx.settings.usage.criticalAtPercent);
 
-    html += '<div class="usage-weekly-sep">';
+    html += sepOpen();
     html += '<div class="usage-row">';
     html += '<div class="usage-row-label">Weekly Fable usage</div>';
     if (u.weeklyResetTimeFable) {
@@ -1181,9 +1189,18 @@ export function renderUsageHtml(
     html += '</div>';
     html += '<span class="usage-bar-pct ' + fableCls + '">' + Math.round(u.quotaPctWeeklyFable || 0) + '%<span class="usage-bar-elapsed"> / ' + Math.round(fableTickPct) + '%</span></span>';
     html += '</div>';
+    html += overQuotaHtml(u.quotaPctWeeklyFable);
     html += '</div>';
   }
   } // end showWeekly gate
+
+  // No rows drawn (only possible without a 5-hour limit): say why, so the
+  // section doesn't read as broken next to a healthy footer.
+  if (!html) {
+    html += '<div class="usage-ghost-msg">' + (ctx.settings.usage.showWeekly
+      ? 'No active usage windows.'
+      : 'No 5-hour limit. Weekly usage is hidden in settings.') + '</div>';
+  }
 
   // Footer row: companion slots on the left, Updated-ago on the right
   let footer = '';
