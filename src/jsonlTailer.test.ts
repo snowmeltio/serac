@@ -6,12 +6,14 @@ import * as path from 'path';
 
 let tmpFile: string;
 
+// A fresh directory per test: a Date.now() file name collides when two runs
+// reach the same test in the same millisecond.
 beforeEach(() => {
-  tmpFile = path.join(os.tmpdir(), `jsonl-tailer-test-${Date.now()}.jsonl`);
+  tmpFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jsonl-tailer-test-')), 'session.jsonl');
 });
 
 afterEach(() => {
-  try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+  fs.rmSync(path.dirname(tmpFile), { recursive: true, force: true });
 });
 
 describe('JsonlTailer', () => {

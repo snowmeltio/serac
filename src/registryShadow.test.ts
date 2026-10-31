@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Wraps fs.watch in a vi.fn() so the debounce test can drive the watcher
+// listener directly under fake timers. `fs` is a sealed ES module namespace,
+// so vi.spyOn(fs, 'watch') can't redefine it; the wrap has to happen at
+// vi.mock() time. Every other export passes through unchanged, and watch
+// itself stays real unless a test overrides it.
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return { ...actual, watch: vi.fn(actual.watch) };
+});
+
 import * as fs from 'fs';
+import { EventEmitter } from 'events';
 import * as os from 'os';
 import * as path from 'path';
 import type { LiveProcess } from './processRegistry.js';
@@ -139,17 +151,72 @@ describe('watchRegistryDir', () => {
     expect(watchRegistryDir(path.join(dir, 'nope'), () => {}, () => {})).toBeNull();
   });
 
-  it('collapses a burst of writes into one callback', async () => {
+  it('calls back on a real write to the directory', async () => {
     const onChange = vi.fn();
-    const stop = watchRegistryDir(dir, onChange, () => {}, 50);
+    const stop = watchRegistryDir(dir, onChange, () => {}, 20);
     expect(stop).not.toBeNull();
-    for (let i = 0; i < 5; i++) {
-      fs.writeFileSync(path.join(dir, '123.json'), JSON.stringify({ i }));
+    // macOS starts the FSEvents stream asynchronously, so a write straight
+    // after watch() can go unseen. Rewrite on each poll until one lands.
+    try {
+      await vi.waitFor(() => {
+        fs.writeFileSync(path.join(dir, '123.json'), '{}');
+        expect(onChange).toHaveBeenCalled();
+      }, { timeout: 4000, interval: 100 });
+    } finally {
+      stop!();
     }
-    await vi.waitFor(() => expect(onChange).toHaveBeenCalled(), { timeout: 2000 });
-    await new Promise(r => setTimeout(r, 150));
-    expect(onChange).toHaveBeenCalledTimes(1);
-    stop!();
+  });
+
+  describe('debounce (driven listener, fake timers)', () => {
+    type Listener = (event: string, filename: string | null) => void;
+    let fire: Listener;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      // macOS can deliver fs.watch events late under load, so a real-fs burst
+      // can't pin an exact callback count. Drive the listener instead.
+      vi.mocked(fs.watch).mockImplementationOnce(((_dir: unknown, _opts: unknown, listener: Listener) => {
+        fire = listener;
+        return Object.assign(new EventEmitter(), { close: vi.fn() });
+      }) as unknown as typeof fs.watch);
+    });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('collapses a burst of events into one callback', () => {
+      const onChange = vi.fn();
+      const stop = watchRegistryDir(dir, onChange, () => {}, 50);
+      for (let i = 0; i < 5; i++) {
+        fire('change', '123.json');
+        vi.advanceTimersByTime(40);
+      }
+      expect(onChange).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(10);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(500);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      stop!();
+    });
+
+    it('disposing drops a pending callback', () => {
+      const onChange = vi.fn();
+      const stop = watchRegistryDir(dir, onChange, () => {}, 50);
+      fire('change', '123.json');
+      stop!();
+      vi.advanceTimersByTime(100);
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('ignores non-JSON files but not a missing filename', () => {
+      const onChange = vi.fn();
+      const stop = watchRegistryDir(dir, onChange, () => {}, 50);
+      fire('rename', '123.json.tmp');
+      vi.advanceTimersByTime(100);
+      expect(onChange).not.toHaveBeenCalled();
+      fire('rename', null);
+      vi.advanceTimersByTime(50);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      stop!();
+    });
   });
 
   it('stops calling back once disposed', async () => {
