@@ -112,6 +112,20 @@ async function spawnExternalProcess(): Promise<{ pid: number; cleanup: () => voi
   };
 }
 
+/** Drive poll() until `check` stops throwing. The registry only rescans every
+ *  REGISTRY_SCAN_INTERVAL (4) real cycles, and start() has already armed the
+ *  scheduled poll loop: a scheduled poll can take the rescan before the
+ *  process dies, and a manual poll() that overlaps one returns at once (the
+ *  overlap guard). A fixed count of manual polls can therefore fall short of
+ *  a post-death rescan, so poll until the outcome lands. */
+async function pollUntil(discovery: unknown, check: () => void): Promise<void> {
+  const poll = (discovery as { poll: () => Promise<void> }).poll.bind(discovery);
+  await vi.waitFor(async () => {
+    await poll();
+    check();
+  }, { timeout: 4000, interval: 20 });
+}
+
 /** Writes a live-process registry entry (~/.claude/sessions/<pid>.json
  *  equivalent) under the test's isolated sessions dir. Unlike the two
  *  `writeRegistryEntry` helpers scoped to individual describe blocks above,
@@ -1932,17 +1946,9 @@ describe('SessionDiscovery', () => {
         expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBe(true);
 
         ext.cleanup();
-        // kill(pid, 0) can still report a just-SIGKILL'd pid as alive for a
-        // few ms until the OS finishes tearing it down — same allowance the
-        // other process-death tests in this file give; without it the next
-        // scan's isPidAlive() races the kernel and flakes.
-        await new Promise(r => setTimeout(r, 100));
-        // processRegistry.shouldRescan() only fires every REGISTRY_SCAN_INTERVAL
-        // (4) poll cycles — drive enough cycles to force it.
-        const poll = (discovery as unknown as { poll: () => Promise<void> }).poll.bind(discovery);
-        for (let i = 0; i < 4; i++) { await poll(); }
-
-        expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBeUndefined();
+        await pollUntil(discovery, () => {
+          expect(discovery.getSnapshots().find(s => s.sessionId === sessionId)?.externalWriter).toBeUndefined();
+        });
         discovery.stop();
       } finally {
         ext.cleanup();
@@ -1969,11 +1975,7 @@ describe('SessionDiscovery', () => {
         expect(resolve(sessionId)).toBe('external');
 
         ext.cleanup();
-        await new Promise(r => setTimeout(r, 100));
-        const poll = (discovery as unknown as { poll: () => Promise<void> }).poll.bind(discovery);
-        for (let i = 0; i < 4; i++) { await poll(); }
-
-        expect(resolve(sessionId)).toBeUndefined();
+        await pollUntil(discovery, () => { expect(resolve(sessionId)).toBeUndefined(); });
         discovery.stop();
       } finally {
         ext.cleanup();
