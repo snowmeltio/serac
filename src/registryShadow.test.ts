@@ -157,11 +157,14 @@ describe('watchRegistryDir', () => {
     expect(stop).not.toBeNull();
     // macOS starts the FSEvents stream asynchronously, so a write straight
     // after watch() can go unseen. Rewrite on each poll until one lands.
-    await vi.waitFor(() => {
-      fs.writeFileSync(path.join(dir, '123.json'), '{}');
-      expect(onChange).toHaveBeenCalled();
-    }, { timeout: 5000, interval: 100 });
-    stop!();
+    try {
+      await vi.waitFor(() => {
+        fs.writeFileSync(path.join(dir, '123.json'), '{}');
+        expect(onChange).toHaveBeenCalled();
+      }, { timeout: 4000, interval: 100 });
+    } finally {
+      stop!();
+    }
   });
 
   describe('debounce (driven listener, fake timers)', () => {
@@ -192,6 +195,15 @@ describe('watchRegistryDir', () => {
       vi.advanceTimersByTime(500);
       expect(onChange).toHaveBeenCalledTimes(1);
       stop!();
+    });
+
+    it('disposing drops a pending callback', () => {
+      const onChange = vi.fn();
+      const stop = watchRegistryDir(dir, onChange, () => {}, 50);
+      fire('change', '123.json');
+      stop!();
+      vi.advanceTimersByTime(100);
+      expect(onChange).not.toHaveBeenCalled();
     });
 
     it('ignores non-JSON files but not a missing filename', () => {
