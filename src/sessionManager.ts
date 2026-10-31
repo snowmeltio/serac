@@ -998,6 +998,15 @@ export class SessionManager {
     if (this.tailer.lastMtimeMs > 0) {
       this.initialReplayDone = true;
     }
+    // A replay re-adds every shell whose completion never reached the
+    // transcript (stopped by an older CLI, or alive when its session exited).
+    // Their launch timestamps are long past the ceiling, but nothing prunes
+    // until the first poll's sweep, so the display override in
+    // SessionDiscovery.getSnapshots() painted those done cards running for
+    // the first seconds after every window open. Prune them here.
+    if (isReplay) {
+      this.backgroundShellTracker.prune(Date.now(), BACKGROUND_SHELL_CEILING_MS);
+    }
 
     if (!anyRecords && !this.subagentLifecycle.needsPoll(this.state.subagents)) {
       return sawTruncation;
@@ -2558,9 +2567,10 @@ export class SessionManager {
   }
 
   /** Detect a harness-injected <task-notification> user record — the genuine
-   *  completion signal for a run_in_background agent. Carries <task-id> (the
-   *  agentId), <tool-use-id> (the spawning tool_use), a terminal <status>, and
-   *  a <result> body. Returns true when a tracked subagent was completed. */
+   *  completion signal for a run_in_background agent or shell. Carries
+   *  <task-id> (the agentId or shell id), <tool-use-id> (the spawning
+   *  tool_use), a terminal <status>, and for agents a <result> body. Returns
+   *  true when a tracked subagent or shell was completed. */
   private processTaskNotification(record: JsonlRecord): boolean {
     return this.completeFromTaskNotificationTexts(notificationTexts(getContentBlocks(record)));
   }
@@ -2578,14 +2588,17 @@ export class SessionManager {
     return this.completeFromTaskNotificationTexts(notificationTexts(attachment.prompt));
   }
 
-  /** Complete every running subagent named by a terminal <task-notification>
-   *  in `texts`. Shared by all three carriers (enqueue, queued_command
-   *  attachment, user record). Every block in every text is read, and every
-   *  <task-id> in a block: the CLI's resume-time orphan scan aggregates up
-   *  to 20 task-ids under one `stopped`/`failed` status. A block without
-   *  <status> is not a completion — the "was resumed by the user" and
-   *  "now reports to another agent" notices carry none and the agent is
-   *  still working (CLI 2.1.286 bundle). */
+  /** Complete every running subagent and background shell named by a
+   *  terminal <task-notification> in `texts`. Shared by all three carriers
+   *  (enqueue, queued_command attachment, user record). Every block in every
+   *  text is read, and every <task-id> in a block: the CLI's resume-time
+   *  orphan scan aggregates up to 20 task-ids under one `stopped`/`failed`
+   *  status. A block without <status> is not a completion — the "was resumed
+   *  by the user" and "now reports to another agent" notices carry none and
+   *  the agent is still working (CLI 2.1.286 bundle). A backgrounded shell's
+   *  notification carries the shell id as its <task-id> ("Background command
+   *  … completed (exit code 0)", CLI 2.1.314); it is the only completion the
+   *  shell tracker sees on current CLIs. */
   private completeFromTaskNotificationTexts(texts: string[]): boolean {
     let completed = false;
     for (const text of texts) {
@@ -2594,6 +2607,9 @@ export class SessionManager {
         const status = body.match(/<status>([^<]+)<\/status>/)?.[1]?.trim();
         if (!status || isInterimNotification(body)) { continue; }
         const taskIds = new Set(Array.from(body.matchAll(/<task-id>([^<]+)<\/task-id>/g), m => m[1].trim()));
+        for (const id of taskIds) {
+          if (this.backgroundShellTracker.complete(id)) { completed = true; }
+        }
         const toolUseIds = new Set(Array.from(body.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g), m => m[1].trim()));
         const result = body.match(/<result>([\s\S]*?)<\/result>/)?.[1]?.trim();
         const preview = ((status !== 'completed' ? `[${status}] ` : '')
