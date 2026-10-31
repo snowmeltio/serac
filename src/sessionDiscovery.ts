@@ -781,7 +781,16 @@ export class SessionDiscovery {
       // before the two-zone sort (so it sorts into the active zone).
       // Sibling snapshots are deliberately out of scope — this only reads
       // the primary session's own subagents.
-      if (snapshot.status === 'done' && snapshot.subagents.some(s => s.running && s.background)) {
+      //
+      // An outstanding run_in_background SHELL gets the same treatment: the
+      // harness re-invokes the lead with a <task-notification> when it
+      // exits, so the session is mid-task, not finished. Without it the
+      // acknowledged card rolled to "Seen" beside its own 🐚 badge while a
+      // gate run was still going (2026-10-31). The shell tracker's 15-min
+      // ceiling and registry-death clear bound a shell that never reports
+      // (a backgrounded dev server).
+      if (snapshot.status === 'done'
+        && (snapshot.subagents.some(s => s.running && s.background) || (snapshot.backgroundShellCount ?? 0) > 0)) {
         snapshot.status = 'running';
       }
 

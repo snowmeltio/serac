@@ -185,7 +185,9 @@ read `DONE` while detached agents kept working for many minutes (found live
   never rolled to `stale`) and before the two-zone sort (so it sorts into the
   active zone). Sibling snapshots are out of scope. The underlying
   machine-level demotion is untouched — this is purely presentational,
-  terminated by the same backstops as before.
+  terminated by the same backstops as before. The same override covers a
+  `done` snapshot with `backgroundShellCount > 0` (2026-10-31): see
+  **Background-shell signal** below.
 - **Completion** — the harness-injected `<task-notification>` user record in
   the **main** JSONL (carries `<task-id>` = agentId, `<tool-use-id>`,
   `<status>`, `<result>`). It completes the matched subagent (the `<result>`
@@ -326,25 +328,37 @@ read `DONE` while detached agents kept working for many minutes (found live
   (by `startTime`), not any run ever — a failure a later retry superseded
   reads as done, not failed.
 
-### Background-shell signal (SPIKE — non-status enrichment)
+### Background-shell signal (non-status enrichment, display override)
 
 A `Bash` launched with `run_in_background: true` returns its `tool_result`
 immediately ("Command running in background with ID: `<id>`"), so the turn ends
 and the idle/`Stop` path correctly marks the session `done` — while a detached
-build/deploy keeps running, invisible to the JSONL until the agent retrieves it
-in a later turn. `BackgroundShellTracker` (`trackers/backgroundShellTracker.ts`)
-tracks those outstanding shells purely for display: it is **strictly
-non-status** (same charter as `ToolOutcomeTracker`) and never moves
-`running`/`waiting`/`done` — `done` still means the turn ended, which is true.
+build/deploy keeps running, invisible to the JSONL until the harness re-invokes
+the lead with a `<task-notification>` when the shell exits.
+`BackgroundShellTracker` (`trackers/backgroundShellTracker.ts`) tracks those
+outstanding shells: the tracker itself is **strictly non-status** (same charter
+as `ToolOutcomeTracker`) and never moves `running`/`waiting`/`done` inside
+SessionManager — `done` still means the turn ended, which is true.
 
-- **Source:** main-thread `tool_result` text only (string-matched, hence
-  brittle — these are Claude Code surface strings, not an API). Launch banner
-  adds a shell; a terminal retrieval (`<task_id>` + `<status>completed|failed|
-  killed|…</status>`) clears it. A `<status>running</status>` poll does not.
-- **Clearing (three paths):** (1) a terminal retrieval clears its shell on the
-  normal update path; (2) a shell never observed completing is pruned after
+- **Source:** string-matched (hence brittle — these are Claude Code surface
+  strings, not an API). A launch banner in a main-thread `tool_result` adds a
+  shell: "Command running in background with ID: `<id>`", or "… was moved to
+  the background (ID: `<id>`)" for a foreground Bash that hit its timeout.
+  A TaskStop `tool_result` ("Successfully stopped task: `<id>`") clears it; a
+  stopped shell gets no notification. Two more forms clear it: a terminal
+  retrieval `tool_result` (`<task_id>` +
+  `<status>completed|failed|killed|…</status>`; a `<status>running</status>`
+  poll does not), and a terminal `<task-notification>` naming the shell id as
+  its `<task-id>` ("Background command … completed (exit code N)"), read by
+  the shared `completeFromTaskNotificationTexts()` on all three carriers
+  (enqueue, `queued_command` attachment, user record). CLI 2.1.314 writes only
+  the notification form.
+- **Clearing (three paths):** (1) a terminal retrieval, notification, or
+  TaskStop result clears its shell on the normal update path; (2) a shell never observed completing is pruned after
   `BACKGROUND_SHELL_CEILING_MS` (15 min), mirroring the status ceilings so the
-  signal can't stick forever; (3) confirmed process death clears all outstanding
+  signal can't stick forever (also applied once at the end of a full replay,
+  so a window open never counts a shell launched past the ceiling while it
+  waits for the first poll); (3) confirmed process death clears all outstanding
   shells at once. Paths 2–3 run in `SessionManager.sweepBackgroundWork(now)`,
   which the poll loop calls over **dormant** (done/stale/idle) sessions every
   cycle — decoupled from mtime/new-data, because an idle `done` card never
@@ -368,10 +382,17 @@ non-status** (same charter as `ToolOutcomeTracker`) and never moves
   carried through to the webview on `PanelSession`.
 - **Display:** rendered as a quiet `.bg-shell-badge` ("N 🐚", tooltip names the shells;
   running-accent tint) in the card meta row by `panelRender.ts:renderCardInner`,
-  whenever the count is `> 0` — on any status, including `done`. The badge is
-  additive and never changes the card's status class, so the flicker-prone
-  status path stays untouched. Ungated: the count is only non-zero when
+  whenever the count is `> 0`. Ungated: the count is only non-zero when
   detection fires, and the fail-safe on a wording change is to show nothing.
+- **Status override (2026-10-31):** `SessionDiscovery.getSnapshots()` presents
+  a `done` primary snapshot with `backgroundShellCount > 0` as `running`, the
+  same display-only derivation as the done-while-delegating override for
+  background agents (applied before the stale rollover and the two-zone sort).
+  Before it, an acknowledged card rolled to "Seen" beside its own 🐚 badge
+  while a gate run was still going. A shell that never reports (a backgrounded
+  dev server) holds the card `running` until the 15-min ceiling or a
+  registry-confirmed death clears it. Sibling snapshots are out of scope, as
+  for agents.
 
 ### Loops badge (pendingWakeup / session crons)
 

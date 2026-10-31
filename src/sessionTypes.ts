@@ -269,11 +269,11 @@ export interface SessionSnapshot {
   endReason?: string;
   /** True while a compaction is in progress (PreCompact grace window). */
   compacting?: boolean;
-  /** SPIKE — count of outstanding backgrounded Bash shells (`run_in_background`)
-   *  whose completion has not yet been observed. Display-only enrichment; does
-   *  NOT affect `status`. Present (and > 0) typically on a `done`/`stale` card
-   *  whose turn ended while a detached build/deploy keeps running. Undefined
-   *  when none outstanding. See BACKLOG.md for the UI/policy follow-up. */
+  /** Count of outstanding backgrounded Bash shells (`run_in_background`, or a
+   *  foreground Bash moved to the background at its timeout) whose completion
+   *  has not yet been observed. SessionManager never moves `status` on it;
+   *  SessionDiscovery.getSnapshots() presents a `done` primary snapshot with a
+   *  count > 0 as `running`. Undefined when none outstanding. */
   backgroundShellCount?: number;
   /** Git branch from the most recent JSONL record carrying one. Display-only
    *  (meta-row pill) — distinguishes same-repo sessions on different branches. */

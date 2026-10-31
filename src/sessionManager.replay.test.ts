@@ -223,6 +223,87 @@ describe('Background-shell completion replay (e2e, BACKLOG item)', () => {
     mgr.dispose();
     await fs.promises.rm(dir, { recursive: true, force: true });
   });
+
+  // CLI 2.1.314 never writes a <task_id> retrieval: the shell's exit arrives
+  // only as a <task-notification> naming the shell id as <task-id>, enqueued
+  // and then folded into the next turn (verbatim shape from session 7d039c93,
+  // 2026-10-31). Without these the badge, and the running override built on
+  // it, held for the full 15-min ceiling after the shell had finished.
+  const SHELL_NOTIFICATION = '<task-notification>\n<task-id>bash_42</task-id>\n'
+    + '<tool-use-id>tu-bash</tool-use-id>\n<output-file>/tmp/x.out</output-file>\n'
+    + '<status>completed</status>\n'
+    + '<summary>Background command "Deploy it" completed (exit code 0)</summary>\n'
+    + '</task-notification>';
+
+  it('the enqueued <task-notification> for the shell clears the badge', async () => {
+    const t0 = Date.now() - 30_000;
+    const { mgr, file, dir } = await makeLive(launchTurn(t0));
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
+
+    await fs.promises.appendFile(file, JSON.stringify({
+      type: 'queue-operation', operation: 'enqueue', timestamp: new Date().toISOString(),
+      sessionId: 'bg-sid', content: SHELL_NOTIFICATION,
+    }) + '\n');
+    await mgr.update();
+    expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+
+  it('the mid-turn queued_command attachment carrier clears the badge too', async () => {
+    const t0 = Date.now() - 30_000;
+    const { mgr, file, dir } = await makeLive(launchTurn(t0));
+    expect(mgr.getStatus()).toBe('running'); // still mid-turn: no idle advance
+    expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
+
+    await fs.promises.appendFile(file, JSON.stringify({
+      type: 'attachment', timestamp: new Date().toISOString(), isSidechain: false,
+      attachment: { type: 'queued_command', prompt: SHELL_NOTIFICATION },
+    }) + '\n');
+    await mgr.update();
+    expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+
+  it('a notification without <status> (a resume notice) leaves the shell outstanding', async () => {
+    const t0 = Date.now() - 30_000;
+    const { mgr, file, dir } = await makeLive(launchTurn(t0));
+    await vi.advanceTimersByTimeAsync(6_000);
+    await fs.promises.appendFile(file, JSON.stringify({
+      type: 'queue-operation', operation: 'enqueue', timestamp: new Date().toISOString(),
+      content: '<task-notification>\n<task-id>bash_42</task-id>\n<summary>resumed</summary>\n</task-notification>',
+    }) + '\n');
+    await mgr.update();
+    expect(mgr.getSnapshot().backgroundShellCount).toBe(1);
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+
+  it('cold replay drops a shell launched past the ceiling with no completion on disk', async () => {
+    // A shell alive when its session exited (or stopped by an older CLI)
+    // leaves only its launch. Before the replay prune it counted until the
+    // first poll's sweep, painting the done card running at window open.
+    const t0 = Date.now() - 20 * 60_000;
+    const { mgr, dir } = await makeLive(launchTurn(t0));
+    expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
+
+  it('cold replay through a shell notification never resurrects the badge', async () => {
+    const t0 = Date.now() - 30_000;
+    const all = [
+      ...launchTurn(t0),
+      { type: 'queue-operation', operation: 'enqueue', timestamp: new Date(t0 + 10_000).toISOString(), content: SHELL_NOTIFICATION },
+      rec('user', [{ type: 'text', text: SHELL_NOTIFICATION }], t0 + 10_100),
+    ];
+    const { mgr, dir } = await makeLive(all);
+    expect(mgr.getSnapshot().backgroundShellCount).toBeUndefined();
+    mgr.dispose();
+    await fs.promises.rm(dir, { recursive: true, force: true });
+  });
 });
 
 describe('file-history-snapshot → SessionSnapshot.trackedFiles', () => {
