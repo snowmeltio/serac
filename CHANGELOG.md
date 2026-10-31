@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.33.0 (2026-10-31) - The 5-hour bar goes when the limit does
+
+### Changed
+- **Accounts without a 5-hour limit no longer show a session bar.** Anthropic is removing the 5-hour limit. When the usage API reports no 5-hour limit for an account, Serac hides the "Current session usage" row, and the weekly bar moves to the top. Accounts that still have the limit see no change, including an idle window at 0%.
+- **Weekly and Fable bars show LIMIT REACHED at 100%.** Before, only the session bar carried the label, so an account without a 5-hour limit got no warning when its weekly limit ran out. Each bar now shows its own LIMIT REACHED, or EXTRA USAGE when extra usage is on.
+
+### Added
+- **A short note when the usage section has no bars to show.** With no 5-hour limit and the weekly bars hidden in settings, or no weekly window started yet, the section explains why instead of showing only the footer.
+
 ## v1.32.2 (2026-10-28) - Latest activity sits in the log
 
 ### Changed
