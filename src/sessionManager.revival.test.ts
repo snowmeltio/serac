@@ -164,8 +164,12 @@ async function feed(mgr: Manager, records: JsonlRecord[]): Promise<boolean> {
   return mgr.update();
 }
 
-/** Let the un-awaited reopen (stat) and any pending tailer reads settle. */
-async function flush(): Promise<void> {
+/** Wait for the un-awaited reopen to land a tailer, then let any pending
+ *  tailer reads settle. The reopen stats the real agent file, and under a
+ *  loaded parallel run that I/O can outlast any fixed number of event-loop
+ *  turns, so this polls the outcome instead of counting ticks. */
+async function waitForReopen(mgr: Manager): Promise<void> {
+  await vi.waitFor(() => expect(mgr.getActiveSubagentTailerCount()).toBeGreaterThan(0), { timeout: 2000, interval: 5 });
   for (let i = 0; i < 4; i++) { await new Promise(r => setImmediate(r)); }
 }
 
@@ -403,7 +407,7 @@ describe('revival rebuilds torn-down state', () => {
     expect(mgr.getSnapshot().subagents).toHaveLength(0);
     await feed(mgr, [toolUseRecord('SendMessage', 'sm1', { to: AGENT_ID })]);
     await feed(mgr, [toolResultRecord('sm1', queuedResult())]);
-    await flush();
+    await waitForReopen(mgr);
     const subs = mgr.getSnapshot().subagents;
     expect(subs).toHaveLength(1);
     expect(subs[0].running).toBe(true);
@@ -439,7 +443,7 @@ describe('revival rebuilds torn-down state', () => {
       notificationRecord({ result: 'mid' }),
       toolResultRecord('sm2', queuedResult()),
     ]);
-    await flush();
+    await waitForReopen(mgr);
     const sub = mgr.getSnapshot().subagents[0];
     expect(sub.running).toBe(true);
     expect(sub.revivalCount).toBe(2);
